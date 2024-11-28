@@ -1,4 +1,4 @@
-import { ActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
+import { TypedActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
 import { OnMessage, Postman } from "../classes/PostMan.ts";
 import { wait } from "../actorsystem/utils.ts";
 import { OpenVRType } from "../OpenVR_TS_Bindings_Deno/utils.ts";
@@ -22,7 +22,7 @@ const state: State & BaseState = {
   addressBook: new Set(),
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
   MAIN: (payload) => {
     main(payload);
   },
@@ -62,7 +62,7 @@ async function main(_payload: Payload["MAIN"]) {
     });
   }
 
-  
+
 
   await wait(5000);
 

@@ -1,20 +1,34 @@
 import { PostalService } from "./actorsystem/PostalService.ts";
-import "./actors/main.ts";
+import "./actors3/main.ts";
 import "./actorsOther/exampleActor.ts";
 import "./actorsOther/signalingDenoServer.ts";
+import type { Message } from "./actorsystem/types.ts";
+import { wait } from "./actorsystem/utils.ts";
 
 const postalservice = new PostalService();
 
-//const mainAddress = await postalservice.add("main.ts");
-const mainAddress = await postalservice.add("main.ts");
+const mainAddress = await postalservice.add("mainE.ts");
+const portal = await postalservice.add("IrohActor.ts")
+
+postalservice.portal = portal
 
 console.log("mainAddress", mainAddress);
+
+postalservice.Post({
+  address: { fm: "system", to: portal },
+  type: "INITNETWORK",
+  payload: null,
+});
+
+await wait(1000)
 
 postalservice.Post({
   address: { fm: "system", to: mainAddress },
   type: "MAIN",
   payload: null,
-});
+} satisfies Message );
+
+
 
 const stream = Deno.stdin.readable.values();
 async function asyncPrompt(): Promise<string> {

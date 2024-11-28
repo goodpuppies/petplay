@@ -1,4 +1,4 @@
-import { ActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
+import { TypedActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
 import { OnMessage, Postman } from "../classes/PostMan.ts";
 import { wait } from "../actorsystem/utils.ts";
 import { OpenVRType } from "../OpenVR_TS_Bindings_Deno/utils.ts";
@@ -22,14 +22,14 @@ const state: State & BaseState = {
   addressBook: new Set()
 };
 
-const functions: ActorFunctions = {
-  MAIN: (payload) => {
+export const functions = {
+  MAIN: (payload: string) => {
     main(payload);
   },
-  LOG: (_payload) => {
+  LOG: (_payload: null) => {
     CustomLogger.log("actor", state.id);
   },
-  STDIN: (payload) => {
+  STDIN: (payload: string) => {
     CustomLogger.log("actor", "stdin:", payload);
   },
 };
@@ -70,7 +70,7 @@ async function main(_payload: Payload["MAIN"]) {
     payload: ivrsystem
   })
   Postman.PostMessage({
-    address: { fm: state.id, to: [ overlayactorVRC, vrcorigin ] },
+    address: { fm: state.id, to: [overlayactorVRC, vrcorigin] },
     type: "INITOPENVR",
     payload: ivroverlay
   })

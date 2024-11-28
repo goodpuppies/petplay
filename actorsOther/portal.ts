@@ -1,5 +1,5 @@
 import {
-  ActorFunctions,
+  TypedActorFunctions,
   BaseState,
   MessageAddressReal,
   ToAddress,
@@ -20,7 +20,7 @@ const state: State & BaseState = {
   registry: {},
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
   CUSTOMINIT: (_payload) => {
     hyperswarm();
   },

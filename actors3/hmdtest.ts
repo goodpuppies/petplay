@@ -1,4 +1,4 @@
-import { ActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
+import { TypedActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
 import { OnMessage, Postman } from "../classes/PostMan.ts";
 import { wait } from "../actorsystem/utils.ts";
 import { OpenVRType } from "../OpenVR_TS_Bindings_Deno/utils.ts";
@@ -22,7 +22,7 @@ const state: State & BaseState = {
     addressBook: new Set(),
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
     MAIN: (payload) => {
         main(payload);
     },
@@ -60,7 +60,7 @@ async function main(_payload: Payload["MAIN"]) {
 
     while (true) {
         const x = await Postman.PostMessage({
-            address: {fm: state.id, to: net1},
+            address: { fm: state.id, to: net1 },
             type: "GETHMDPOSITION",
             payload: null
         }, true)
@@ -79,12 +79,12 @@ async function main(_payload: Payload["MAIN"]) {
 
     await wait(1000);
 
-/*     const _topic = await Postman.PostMessage({
-        address: { fm: state.id, to: net1},
-        type: "SET_TOPIC",
-        payload: "muffin",
-    }, true);
- */
+    /*     const _topic = await Postman.PostMessage({
+            address: { fm: state.id, to: net1},
+            type: "SET_TOPIC",
+            payload: "muffin",
+        }, true);
+     */
 
 
 

@@ -1,5 +1,5 @@
 import {
-    ActorFunctions,
+    TypedActorFunctions,
     BaseState,
     worker,
     MessageAddressReal,
@@ -36,7 +36,7 @@ const state: State & BaseState = {
     originChangeCount: 0,
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
     CUSTOMINIT: (_payload) => {
         Postman.functions?.HYPERSWARM?.(null, state.id);
     },
@@ -286,7 +286,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
         }
         const currentTime = Date.now();
         if (currentTime - lastLogTime >= 1000) {
-            console.log( `Origin changed ${state.originChangeCount} times in the last second`);
+            console.log(`Origin changed ${state.originChangeCount} times in the last second`);
             state.originChangeCount = 0;
             lastLogTime = currentTime;
         }

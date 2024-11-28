@@ -1,19 +1,23 @@
 export const CustomLogger = (() => {
-    let activeChannel = "default";
-
-    const setChannel = (channel: string) => {
-        activeChannel = channel;
+    let activeChannels: string[] = ["default", "postman"]; // Initialize with default channel
+    const setChannel = (channel: string | string[]) => {
+        if (Array.isArray(channel)) {
+            activeChannels = channel;
+        } else {
+            activeChannels = [channel];
+        }
     };
 
     const log = (channelOrMessage: string, ...messages: unknown[]) => {
+
         if (typeof channelOrMessage === 'string' && messages.length > 0) {
             // A channel was specified
-            if (channelOrMessage === activeChannel) {
-                console.log(...messages);
+            if (activeChannels.includes(channelOrMessage)) {
+                console.log(`${channelOrMessage.toUpperCase()}:`, ...messages);
             }
         } else {
-            // No channel specified, use active channel
-            if (activeChannel === "default") {
+            // No channel specified, use active channels
+            if (activeChannels.includes("default")) {
                 console.log(channelOrMessage, ...messages);
             }
         }
@@ -22,12 +26,13 @@ export const CustomLogger = (() => {
     const error = (channelOrMessage: string, ...messages: unknown[]) => {
         if (typeof channelOrMessage === 'string' && messages.length > 0) {
             // A channel was specified
-            if (channelOrMessage === activeChannel) {
+            if (activeChannels.includes(channelOrMessage)) {
+                
                 console.error(...messages);
             }
         } else {
-            // No channel specified, use active channel
-            if (activeChannel === "default") {
+            // No channel specified, use active channels
+            if (activeChannels.includes("default")) {
                 console.error(channelOrMessage, ...messages);
             }
         }
@@ -37,6 +42,5 @@ export const CustomLogger = (() => {
         setChannel,
         log,
         error
-    };
+    }
 })();
-

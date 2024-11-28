@@ -1,5 +1,5 @@
 import {
-    ActorFunctions,
+    TypedActorFunctions,
     BaseState,
     worker,
     MessageAddressReal,
@@ -29,7 +29,7 @@ const state: State & BaseState = {
     addressBook: new Array<string>(),
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
     CUSTOMINIT: (_payload) => {
         main();
     },

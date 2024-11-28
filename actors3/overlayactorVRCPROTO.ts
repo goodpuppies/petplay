@@ -1,5 +1,5 @@
 import {
-    ActorFunctions,
+    TypedActorFunctions,
     BaseState,
     worker,
     ToAddress,
@@ -44,7 +44,7 @@ const state: State & BaseState = {
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
     CUSTOMINIT: (_payload) => {
         Postman.functions?.HYPERSWARM?.(null, state.id);
         //main()
@@ -243,8 +243,8 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
 
     while (true) {
 
-        
-        
+
+
         if (state.vrc != "") {
             interface coord {
                 [key: string]: number;

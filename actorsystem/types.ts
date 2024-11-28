@@ -1,246 +1,144 @@
-import { type } from "arktype";
+
 import { ActorWorker } from "./ActorWorker.ts";
+import { functions as MAINEAF } from "../actors/mainE.ts";
+import { functions as IROHAF } from "../actors/IrohActor.ts";
+import { functions as POSTAF } from "../classes/PostMan.ts";
+import { functions as SERVICEAF } from "./PostalService.ts";
+
 
 export const worker = self as unknown as ActorWorker;
 
-export const xToAddress = type("string");
-export type ToAddress = typeof xToAddress.infer;
 
-interface PeerInfo {
+export type ToAddress = string & { readonly _: unique symbol };
+
+export interface PeerInfo {
   actorId: string;
   hyperswarmId: string;
 }
 
 export type BaseState = {
   name: string;
-  id: string;
+  id: string | ToAddress;
   addressBook: Set<string>;
   [key: string]: unknown;
 };
 
-export const System = "SYSTEM";
-export const xSystem = type("'System'");
-export type SystemType = typeof xSystem.infer;
-export const xString = type("string");
-export const xStringOrStringArray = type("string").or(xString.array());
+export const System = "SYSTEM" as const;
 
-export const xPairAddress = type({
-  fm: "string",
-  to: "string|null",
-});
-export type PairAddress = typeof xPairAddress.infer;
+export type SystemType = typeof System;
 
-export const xSystemCommand = type({
-  fm: xSystem,
-  to: "null",
-});
-export type SystemCommand = typeof xSystemCommand.infer;
+// Message Address Interfaces
 
-export const xWorkerToSystem = type({
-  fm: "string",
-  to: xSystem,
-});
-export type WorkerToSystem = typeof xWorkerToSystem.infer;
 
-export const xMessageAddressSingle = type(
-  xPairAddress,
-).or(
-  xSystemCommand,
-).or(
-  xWorkerToSystem,
-);
+export interface SystemCommand {
+  fm: typeof System;
+  to: null;
+}
 
-export const xMessageAddressArray = type(
-  {
-    fm: "string",
-    to: xStringOrStringArray,
-  },
-);
-export const xMessageAddressReal = type({
-  fm: "string",
-  to: xToAddress,
-});
+export interface WorkerToSystem {
+  fm: string;
+  to: typeof System;
+}
 
-export type MessageAddressReal = typeof xMessageAddressReal.infer;
+// Union of single address types
+export type MessageAddressSingle = PairAddress | SystemCommand | WorkerToSystem;
 
-const xMessageAddress = type(
-  xMessageAddressSingle,
-).or(
-  xMessageAddressArray,
-);
+// Address with array of strings or single string
+export interface MessageAddressArray {
+  fm: string;
+  to: string | string[];
+}
 
-export type MessageAddress = typeof xMessageAddress.infer;
+// Real message address with ToAddress
+export interface MessageAddressReal {
+  fm: string;
+  to: ToAddress;
+}
 
-//#endregion
+// Union of all possible message addresses
+export type MessageAddress = MessageAddressSingle | MessageAddressArray;
 
-//#region payloads
 
-export const xPayloadSys = type({
-  type: "'KEEPALIVE'",
-  payload: "null",
-}).or({
-  type: "'LOADED'",
-  payload: "string",
-}).or({
-  type: "'CREATE'",
-  payload: "string",
-}).or({
-  type: "'MURDER'",
-  payload: "string",
-}).or({
-  type: "'FIND_ROUTE'",
-  payload: [xToAddress, "'CBROUTE'"],
-}).or({
-  type: "'SHUT'",
-  payload: "null",
-}).or({
-  type: "'DELETE'",
-  payload: xToAddress,
-}).or({
-  type: "'STDIN'",
-  payload: "string",
-}).or({
-  type: "'CB'",
-  payload: "unknown",
-});
 
-export const xPayloadMain = type({
-  type: "'MAIN'",
-  payload: "null|string",
-});
+type AllActorFunctions = typeof MAINEAF & typeof IROHAF & typeof POSTAF & typeof SERVICEAF;
 
-export const xPayloadActor = type({
-  type: "'LOG'",
-  payload: "null",
-}).or({
-  type: "'INIT'",
-  payload: "null|string",
-}).or({
-  type: "'REGISTER'",
-  payload: xToAddress,
-}).or({
-  type: "'CUSTOMINIT'",
-  payload: "null",
-}).or({
-  type: "'CB:GETID'|'GETID'",
-  payload: "null|string",
-}).or({
-  type: "'MESSAGE'",
-  payload: xToAddress,
-});
 
-export const xPayloadHYPERSWARM = type({
-  type: "'HYPERSWARM'",
-  payload: "null",
-}).or({
-  type: "'CONNECT'",
-  payload: xToAddress,
-}).or({
-  type: "'CB:CONNECT'",
-  payload: "boolean",
-}).or({
-  type: "'ADDREMOTE'",
-  payload: xToAddress,
-}).or({
-  type: "'SET_TOPIC'|'CB:SET_TOPIC'",
-  payload: "string",
-}).or({
-  type: "'RECEIVEADDRESS'",
-  payload: "string",
-}).or({
-  type: "'ADDADDRESS'",
-  payload: xToAddress,
-});
-
-export const xPayloadSignaling = type({
-  type: "'STARTSERVER'",
-  payload: "number",
-});
-
-export const xPayloadPortal = type({
-  type: "'PREGISTER'",
-  payload: { name: xString, address: xToAddress },
-}).or({
-  type: "'CB:LOOKUP'|'LOOKUP'",
-  payload: xToAddress,
-}).or({
-  type: "'CB:GET_ALL'|'GET_ALL'",
-  payload: "null|Array",
-});
-
-export const xPayloadPetplay = type({
-  type: "'ASSIGNVRC'",
-  payload: xToAddress,
-}).or({
-  type: "'CB:GETCOORDINATE'|'GETCOORDINATE'",
-  payload: "any",
-}).or({
-  type: "'CB:GETOVERLAYLOCATION'|'GETOVERLAYLOCATION'",
-  payload: "any",
-}).or({
-  type: "'SETOVERLAYLOCATION'",
-  payload: "any",
-}).or({
-  type: "'CB:GETCONTROLLERDATA'|'GETCONTROLLERDATA'",
-  payload: "any",
-}).or({
-  type: "'STARTOVERLAY'",
-  payload: {
-    name: "string",
-    texture: "string",
-    sync: "boolean",
-  },
-});
-
-export const xPayload = type(
-  xPayloadSys,
-).or(
-  xPayloadMain,
-).or(
-  xPayloadActor,
-).or(
-  xPayloadHYPERSWARM,
-).or(
-  xPayloadSignaling,
-).or(
-  xPayloadPortal,
-).or(
-  xPayloadPetplay,
-);
-
-export type xPayload = typeof xPayload.infer;
-export type MessageType = typeof xPayload.infer.type;
-
-export type Payload = {
-  [K in MessageType]: Extract<
-    xPayload,
-    { type: K }
-  >["payload"];
+export type TypedActorFunctions = {
+  [K in keyof AllActorFunctions]: (
+    payload: Parameters<AllActorFunctions[K]>[0],
+    address: string,
+  ) => ReturnType<AllActorFunctions[K]>;
 };
 
-//#endregion
+export type MessageType = keyof TypedActorFunctions;
 
-export const xMessage = type([
-  { address: xMessageAddress },
-  "&",
-  xPayload,
-]);
-export type Message = typeof xMessage.infer;
+export type ValidateMessageType<T extends string> = T extends MessageType
+  ? T
+  : T extends string
+  ? never
+  : `Invalid message type. Valid types are: ${MessageType extends string ? MessageType : never}`;
 
-//payloads
 export type hFunction = (_payload: Payload[MessageType]) => void;
+
+type CBType = `CB:${MessageType}`;
+
+// Then extend Payload to include both regular and callback types
+export type Payload = {
+  [K in MessageType | CBType]: K extends `CB:${infer T}`
+  ? T extends MessageType
+  ? Parameters<TypedActorFunctions[T]>[0]
+  : never
+  : Parameters<TypedActorFunctions[K & MessageType]>[0];
+};
 
 export type PayloadHandler<T extends MessageType> = (
   payload: Payload[T],
   address: MessageAddressReal | ToAddress,
 ) => hFunction | void | Promise<void>;
 
-export type ActorFunctions = { [K in MessageType]?: PayloadHandler<K> };
+export type tsfile = string
 
-export type nonArrayAddress = PairAddress | SystemCommand | WorkerToSystem;
+type CallbackType<T extends string> = `CB:${T}`;
 
+
+
+export type Message = {
+  [K in MessageType]: {
+    address: {
+      fm: string;
+      to: string | ToAddress | null;
+    };
+    type: ValidateMessageType<K> | CallbackType<ValidateMessageType<K>>;
+    payload: Parameters<TypedActorFunctions[K]>[0];
+  };
+}[MessageType];
+
+export type GenericMessage = {
+  address: {
+    fm: string;
+    to: string;
+  };
+  type: string;
+  payload: unknown;
+};
+
+
+export type GenericActorFunctions = {
+  readonly [key: string]: (payload: any, address: MessageAddressReal) => void | Promise<void>;
+};
+
+export type Topic = string
+
+
+export interface PairAddress {
+  fm: string;
+  to: string | null;
+}
+export type NonArrayAddress = PairAddress | SystemCommand | WorkerToSystem;
+
+// Type Guard to check if address is not an array
 export function notAddressArray(
-  address: Message["address"],
-): address is nonArrayAddress {
+  address: Message["address"]
+): address is NonArrayAddress {
   return !Array.isArray(address);
 }

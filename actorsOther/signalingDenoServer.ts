@@ -1,5 +1,5 @@
 import { OnMessage, Postman } from "../classes/PostMan.ts";
-import { ActorFunctions, BaseState, worker } from "../actorsystem/types.ts";
+import { TypedActorFunctions, BaseState, worker } from "../actorsystem/types.ts";
 import { SignalingServer } from "../classes/signalingClass.ts";
 
 const state: BaseState = {
@@ -12,7 +12,7 @@ const state: BaseState = {
   rtcSocket: null,
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
   CUSTOMINIT: (_payload) => {
     Postman.functions?.STARTSERVER?.(8081, state.id);
   },

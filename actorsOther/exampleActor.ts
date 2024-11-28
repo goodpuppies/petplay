@@ -1,5 +1,5 @@
 import {
-  ActorFunctions,
+  TypedActorFunctions,
   BaseState,
 
   worker,
@@ -25,7 +25,7 @@ const state: State & BaseState = {
   addressbook: [],
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
   CUSTOMINIT: (_payload) => {
     hyperswarm()
   },

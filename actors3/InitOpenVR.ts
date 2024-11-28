@@ -1,5 +1,5 @@
 import {
-    ActorFunctions,
+    TypedActorFunctions,
     BaseState,
     worker,
     MessageAddressReal,
@@ -30,7 +30,7 @@ const state: State & BaseState = {
     addressBook: new Set(),
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
     CUSTOMINIT: (_payload) => {
         Postman.functions?.HYPERSWARM?.(null, state.id);
         initializeOpenVR();
@@ -100,7 +100,7 @@ function initializeOpenVR() {
 
     const systemPtr = OpenVR.VR_GetGenericInterface(stringToPointer(OpenVR.IVRSystem_Version), initErrorPtr);
     const overlayPtr = OpenVR.VR_GetGenericInterface(stringToPointer(OpenVR.IVROverlay_Version), initErrorPtr);
-    
+
     const interfaceError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
 
     if (interfaceError !== OpenVR.InitError.VRInitError_None) {
@@ -118,7 +118,7 @@ function initializeOpenVR() {
     state.vrSystemPTR = systemPtr
     state.overlayPTR = overlayPtr
 
-    
+
 
     CustomLogger.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
 }

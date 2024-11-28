@@ -1,5 +1,5 @@
 import {
-    ActorFunctions,
+    TypedActorFunctions,
     BaseState,
     worker,
     ToAddress,
@@ -44,7 +44,7 @@ let lastNonOverlayMessageTime = 0;
 const smoothingWindow: OpenVR.HmdMatrix34[] = [];
 const smoothingWindowSize = 10;
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
     CUSTOMINIT: (_payload) => {
         Postman.functions?.HYPERSWARM?.(null, state.id);
     },

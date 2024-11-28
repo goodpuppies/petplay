@@ -1,6 +1,8 @@
 import { Signal } from "../actorsystem/utils.ts";
 import {
-  ActorFunctions,
+  GenericActorFunctions,
+  tsfile,
+  GenericMessage,
   BaseState,
   Message,
   MessageAddressReal,
@@ -9,6 +11,7 @@ import {
   PayloadHandler,
   System,
   ToAddress,
+  Topic
 } from "../actorsystem/types.ts";
 import { ActorWorker } from "../actorsystem/ActorWorker.ts";
 import { wait } from "../actorsystem/utils.ts";
@@ -16,13 +19,77 @@ import { HyperswarmInterface } from "./hyperswarmInterface.ts";
 import { getAvailablePort } from "jsr:@std/net";
 import * as JSON from "../classes/JSON.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
+import { State } from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 
 export const OnMessage = (handler: (message: Message) => void) => {
   const worker = self as unknown as ActorWorker;
   worker.onmessage = (event: MessageEvent) => {
+    //console.log("huh", event.data)
     const message = event.data as Message;
     handler(message);
   };
+};
+
+export const functions = {
+  //initialize actor
+  INIT: (payload: string | null) => {
+    Postman.state.id = `${Postman.state.name}@${crypto.randomUUID()}`;
+    Postman.PostMessage({
+      address: { fm: Postman.state.id, to: System },
+      type: "LOADED",
+      payload: Postman.state.id as ToAddress,
+    });
+    // @ts-ignore: get custominit from importer
+    Postman.functions.CUSTOMINIT?.(null, Postman.state.id);
+    CustomLogger.log("class", `initied ${Postman.state.id} actor with args:`, payload);
+  },
+  CB: (payload: unknown) => {
+    //console.log("CB", payload)
+    if (!Postman.customCB) {
+      console.log("CB", payload)
+      console.log(Postman.state.id)
+      throw new Error("UNEXPECTED CALLBACK");
+    }
+    Postman.customCB.trigger(payload);
+  },
+  //register self to system
+  REGISTER: (payload: ToAddress) => {
+    CustomLogger.log("postman", "received the created actor in", Postman.state.id, "received", payload)
+    if (!Postman.creationSignal) throw new Error("UNEXPECTED REGISTER MESSAGE")
+    Postman.creationSignal.trigger(payload as ToAddress);
+  },
+  //terminate
+  SHUT: (_payload: null) => {
+    CustomLogger.log("class", "Shutting down...");
+    Postman.worker.terminate();
+  },
+  OPENPORTAL: async (payload: Topic) => {
+    // get portal from system
+    const portal = await Postman.PostMessage({
+      address: { fm: Postman.state.id, to: System },
+      type: "GETPORTAL",
+      payload: null,
+    }, true);
+    Postman.portal = portal as ToAddress
+
+
+    Postman.PostMessage({
+      address: { fm: Postman.state.id, to: Postman.portal },
+      type: "ADDCONTACT",
+      payload: Postman.state.id as ToAddress
+    })
+    Postman.PostMessage({
+      address: { fm: Postman.state.id, to: Postman.portal },
+      type: "SET_TOPIC",
+      payload: payload
+    })
+
+
+  },
+  ADDCONTACT: (payload: ToAddress) => {
+    Postman.state.addressBook.add(payload)
+    console.log("book", Postman.state.addressBook)
+  },
 };
 
 export class Postman {
@@ -31,58 +98,18 @@ export class Postman {
   static creationSignal: Signal<ToAddress>;
   static portalCheckSignal: Signal<boolean>;
   static customCB: Signal<unknown>;
-  static portals: Array<ToAddress>;
-  static hyperswarmInterface: HyperswarmInterface;
+  static portal: ToAddress | null = null;
   private static topic: string | null = null;
   static addressBook: Set<string>;
   static hmm: any;
 
   private static pendingTopicSet: string | null = null;
 
-  public static functions: ActorFunctions = {
-    //initialize actor
-    INIT: (payload) => {
-      Postman.state.id = `${Postman.state.name}@${crypto.randomUUID()}`;
-      Postman.PostMessage({
-        address: { fm: Postman.state.id, to: System },
-        type: "LOADED",
-        payload: Postman.state.id,
-      });
-      Postman.functions.CUSTOMINIT?.(null, Postman.state.id);
-      CustomLogger.log("class", `initied ${Postman.state.id} actor with args:`, payload);
-    },
-    CB: (payload) => {
-      /* console.log("CB", payload) */
-      if (!Postman.customCB) throw new Error("UNEXPECTED CALLBACK");
-      Postman.customCB.trigger(payload);
-    },
-
-    //register self to system
-    REGISTER: (payload) => {
-      Postman.creationSignal.trigger(payload as ToAddress);
-    },
-
-    //terminate
-    SHUT: (_payload) => {
-      CustomLogger.log("class", "Shutting down...");
-      this.worker.terminate();
-    },
-
-    HYPERSWARM: async (_payload) => {
-      CustomLogger.log("class", "Initializing Hyperswarm interface");
-      await Postman.inithyperswarmInterface();
-    },
-    SET_TOPIC: async (payload, address) => {
-      const addr = address as MessageAddressReal;
-      Postman.hmm = addr.fm
-      const topicId = payload as string | null;
-      Postman.attemptSetTopic(topicId);
-    },
-  };
+  public static functions = functions
 
   constructor(
     _worker: ActorWorker,
-    functions: ActorFunctions,
+    functions: GenericActorFunctions,
     state: BaseState,
   ) {
     Postman.state = state;
@@ -91,7 +118,7 @@ export class Postman {
   }
 
   //#region TOPIC
-  private static attemptSetTopic(topicId: string | null) {
+  /* private static attemptSetTopic(topicId: string | null) {
     if (Postman.hyperswarmInterface.isSocketOpen()) {
       Postman.setTopicImmediate(topicId);
     } else {
@@ -119,7 +146,7 @@ export class Postman {
     Postman.hyperswarmInterface.setTopic(topicId);
     Postman.pendingTopicSet = null;
     CustomLogger.log("class", `Topic set to: ${Postman.topic}`);
-  }
+  } */
 
   //#endregion
 
@@ -131,12 +158,16 @@ export class Postman {
     //console.log("customcb check: ", Postman.customCB)
     if (notAddressArray(message.address)) {
       const address = message.address as MessageAddressReal;
-      CustomLogger.log(
-        "class",
+      /* CustomLogger.log(
+        "postman",
         `[${address.to}]Actor running function, type: ${message.type}, payload: ${JSON.stringify(message.payload)
         }`,
-      );
+      ); */
 
+      if (message.type.startsWith("CB:") && !Postman.customCB) {
+        throw new Error(`Callback received without a receiver: ${message.type}`);
+      }
+      //@ts-ignore: uhh
       (this.functions[message.type] as PayloadHandler<typeof message.type>)?.(
         message.payload as Payload[typeof message.type],
         address,
@@ -144,10 +175,19 @@ export class Postman {
     } else throw new Error("not address array");
   }
 
+
+  static PostMessage(
+    message: Message,
+    cb: true
+  ): Promise<unknown>;
+  static PostMessage(
+    message: Message,
+    cb?: false
+  ): Promise<void>;
   static async PostMessage(
     message: Message,
-    cb?: boolean,
-  ): Promise<unknown | undefined> {
+    cb?: boolean
+  ): Promise<unknown | void> {
     if (cb) {
       CustomLogger.log("class", "cb enabled");
       Postman.customCB = new Signal<unknown>();
@@ -161,21 +201,47 @@ export class Postman {
   }
 
   static async posterr(message: Message) {
-    const addresses = Array.isArray(message.address.to) ? message.address.to : [message.address.to];
+
+    const addresses = (Array.isArray(message.address.to)
+      ? message.address.to
+      : [message.address.to]
+    ).filter((addr): addr is ToAddress => addr !== null);
+
 
     const addr = message.address as MessageAddressReal;
 
-    await Promise.all(addresses.map(async (address) => {
+
+    await Promise.all(addresses.map(async (address: ToAddress) => {
       message.address.to = address!;
       //console.log("addressbook of",this.state.name, Postman.addressBook)
-      if (Postman.hyperswarmInterface && Postman.addressBook.has(message.address.to)) {
-        console.log("send to node", message)
-        Postman.hyperswarmInterface.sendToNodeProcess({
-          type: "send_message",
-          targetPeerId: message.address.to,
-          payload: message,
-        });
+
+
+      if (Postman.portal && Postman.addressBook.has(message.address.to)) {
+        console.log("Trying portal route for", message.address.to);
+        try {
+          const sent = await Postman.PostMessage({
+            address: { fm: Postman.state.id, to: Postman.portal },
+            type: "SEND",
+            payload: message as GenericMessage,
+          }, true);
+          if (!sent) {
+            console.log("Portal send failed, falling back to local");
+            this.worker.postMessage(message);
+          }
+        } catch (error) {
+          console.log("Portal error, falling back to local");
+          this.worker.postMessage(message);
+        }
       }
+
+
+
+
+      else {
+        //console.log("send", message)
+        this.worker.postMessage(message);
+      }
+
       //#region stuff
       /* else if (Postman.hyperswarmInterface) {
         //check portal
@@ -205,16 +271,16 @@ export class Postman {
         }
       } */
       //#endregion
-      else {
-        //console.log("send", message)
-        this.worker.postMessage(message);
-      }
+
     }));
   }
 
+
   static async create(
-    actorname: string,
+    actorname: tsfile,
   ): Promise<ToAddress> {
+    CustomLogger.log("postman", "creating actor: " + actorname)
+
     Postman.creationSignal = new Signal<ToAddress>();
 
     this.worker.postMessage({
@@ -222,8 +288,10 @@ export class Postman {
       type: "CREATE",
       payload: actorname,
     });
-
+    CustomLogger.log("postman", "waiting actor creation: " + actorname)
     const result = await Postman.creationSignal.wait();
+    CustomLogger.log("postman", "actor created!: " + actorname)
+    Postman.addressBook.add(result)
 
     return result;
   }
@@ -236,7 +304,7 @@ export class Postman {
     }
   }
 
-  static async inithyperswarmInterface() {
+  /* static async inithyperswarmInterface() {
     const port = await getAvailablePort();
     if (!port) {
       throw new Error("No port available");
@@ -265,5 +333,5 @@ export class Postman {
         });
       }
     });
-  }
+  } */
 }

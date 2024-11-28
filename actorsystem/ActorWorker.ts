@@ -11,7 +11,6 @@ import { CustomLogger } from "../classes/customlogger.ts";
 export class ActorWorker extends Worker {
     static signal: Signal<ToAddress>;
     constructor(scriptURL: string | URL, options?: WorkerOptions) {
-        console.log("constructing")
         super(scriptURL, options);
         CustomLogger.log("actorsys", "ActorWorker constructor called");
     }
@@ -24,7 +23,7 @@ export class ActorWorker extends Worker {
     ): void {
 
         const address = message.address as MessageAddressReal;
-
+        //console.log("wa", message)
         if (PostalService.actors.has(address.to) || address.to == System) {
             CustomLogger.log("actorsys",
                 `sending from actor ${address.fm} to actor ${address.to}`,

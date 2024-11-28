@@ -1,5 +1,5 @@
 import {
-  ActorFunctions,
+  TypedActorFunctions,
   BaseState,
   Payload,
   ToAddress,
@@ -28,7 +28,7 @@ const state: State & BaseState = {
   addressBook: new Set(),
 };
 
-const functions: ActorFunctions = {
+const functions: TypedActorFunctions = {
   MAIN: (payload) => {
     main(payload);
   },

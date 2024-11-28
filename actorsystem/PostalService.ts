@@ -1,8 +1,9 @@
-import { ActorFunctions, MessageAddressReal } from "./types.ts";
+import { TypedActorFunctions, MessageAddressReal } from "./types.ts";
 import { Signal } from "./utils.ts";
 import {
   Message,
-  nonArrayAddress,
+  MessageType,
+  NonArrayAddress,
   notAddressArray,
   Payload,
   PayloadHandler,
@@ -11,23 +12,88 @@ import {
 } from "./types.ts";
 import { ActorWorker } from "./ActorWorker.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
+import { PairAddress } from "./types.ts";
+
 
 export class PostalService {
   public static actors: Map<string, ActorWorker> = new Map();
   public static remoteActors: Array<ToAddress> = [];
+  public portal: ToAddress | null = null
   static signal: Signal<ToAddress>;
+  private worker: ActorWorker | null = null
+
+
+  public functions = {
+    //create an actor
+    CREATE: async (payload: string, address: PairAddress) => {
+      const id = await this.add(payload);
+      CustomLogger.log("postalservice", "created actor id: ", id, "sending back to creator")
+      const message = {
+        address: { fm: System, to: address.fm },
+        type: "REGISTER",
+        payload: id,
+      }
+      this.Post(message)
+    },
+    //actor notified us that it had loaded
+    LOADED: (payload: ToAddress) => {
+      CustomLogger.log("postalservice", "new actor loaded, id: ", payload)
+      PostalService.signal.trigger(payload);
+    },
+    DELETE: (payload: ToAddress) => {
+      PostalService.actors.delete(payload);
+    },
+    //actor murders someone
+    MURDER: (payload: ToAddress) => {
+      PostalService.murder(payload);
+    },
+    ADDREMOTE: (payload: ToAddress) => {
+      PostalService.remoteActors.push(payload);
+    },
+
+    GETPORTAL: (_payload: null, address: PairAddress) => {
+      const portal = this.portal
+      this.Post({
+        address: { fm: System, to: address.fm },
+        type: "CB", // calling raw cb here seems pretty bad, need to figure how to fix
+        payload: portal
+      })
+    }
+  };
+
+
+
+  systemFunctions(Aworker: ActorWorker, message: Message): void {
+
+    this.worker = Aworker;
+    if (!this.worker) throw new Error("worker is null")
+
+    const address = message.address as MessageAddressReal;
+
+    //console.log("worker is", this.worker)
+    try {
+      //@ts-ignore: uhh
+      this.functions[message.type]?.(
+        message.payload as Payload[typeof message.type],
+        address,
+      );
+    }
+    catch (error) {
+      CustomLogger.error("actorsyserr", "PostalService systemFunctions error:%.*", error)
+    }
+  }
 
   async add(address: string): Promise<ToAddress> {
     PostalService.signal = new Signal<ToAddress>();
 
-    console.log("creating", address)
+    CustomLogger.log("postalservice","creating", address)
     const worker: ActorWorker = new ActorWorker(
       new URL(`../actors/${address}`, import.meta.url).href,
       {
         type: "module",
       },
     );
-    
+
 
     //attach message handler
     worker.onmessage = (event: MessageEvent<Message>) => {
@@ -42,12 +108,12 @@ export class PostalService {
     });
 
     const id = await PostalService.signal.wait();
-    CustomLogger.log("actorsys", "created", id);
+    CustomLogger.log("postalservice", "created", id);
     PostalService.actors.set(id, worker);
     return id;
   }
 
-  murder(address: string) {
+  static murder(address: string) {
     const worker = PostalService.actors.get(address);
     if (worker) {
       worker.terminate();
@@ -68,11 +134,10 @@ export class PostalService {
 
       // if message type starts with CB
       if (message.type.startsWith("CB")) {
-        //CustomLogger.log("actorsys", "CB message", message);
         message.type = "CB";
       }
 
-      CustomLogger.log("actorsys", "postalService handleMessage", message.address.to, message.type);
+      CustomLogger.log("postalservice", "postalService handleMessage", message.address, message.type);
       // redirect message
       switch (message.address.to) {
         case null: {
@@ -91,58 +156,17 @@ export class PostalService {
           }
           CustomLogger.error("actorsyserr", message.address.to);
           CustomLogger.error("actorsyserr", PostalService.actors);
-          const targetWorker = PostalService.actors.get(message.address.to)!;
+          const targetWorker = PostalService.actors.get(message.address.to);
+          if (!targetWorker) throw new Error(`no target worker found under ${message.address.to}` )
           targetWorker.postMessage(message);
         }
       }
     });
   };
 
-  systemFunctions(worker: ActorWorker, message: Message): void {
-    const functions: ActorFunctions = {
-      KEEPALIVE: (_payload) => {
-        worker.postMessage({
-          address: { fm: System, to: null },
-          type: "KEEPALIVE",
-          payload: null,
-        });
-      },
 
-      //create an actor
-      CREATE: async (payload) => {
-        const id = await this.add(payload as string);
-        worker.postMessage({
-          address: { fm: System, to: null },
-          type: "REGISTER",
-          payload: id,
-        });
-      },
-
-      //actor notified us that it had loaded
-      LOADED: (payload) => {
-        PostalService.signal.trigger(payload as ToAddress);
-      },
-      DELETE: (payload) => {
-        PostalService.actors.delete(payload as ToAddress);
-      },
-
-      //actor murders someone
-      MURDER: (payload) => {
-        this.murder(payload);
-      },
-      ADDREMOTE: (payload) => {
-        PostalService.remoteActors.push(payload);
-      },
-    };
-
-    const address = message.address as MessageAddressReal;
-    (functions[message.type] as PayloadHandler<typeof message.type>)?.(
-      message.payload as Payload[typeof message.type],
-      address,
-    );
-  }
-
-  Post(rMessage: Message): void {
+  
+  Post<T extends MessageType>(rMessage: Message & { type: T }): void {
     // if address not valid json, stringify it
     if (typeof rMessage.address === "object") {
       rMessage.address = JSON.stringify(
@@ -151,10 +175,10 @@ export class PostalService {
     }
 
     const address = JSON.parse(rMessage.address as unknown as string);
-    CustomLogger.log(
+    /* CustomLogger.log(
       "default",
       `PostalService processing message:\n${rMessage.address}\nmessage type: ${rMessage.type}\npayload: ${rMessage.payload}\n`,
-    );
+    ); */
     if (!notAddressArray(address)) {
       throw new Error("not address array");
     }

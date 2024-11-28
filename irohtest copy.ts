@@ -1,4 +1,3 @@
-// test_full_stack.ts
 import { Iroh } from "@number0/iroh";
 import { Buffer } from "node:buffer";
 
@@ -54,8 +53,10 @@ const server = Deno.serve({
 //#region test_clients
 async function runTest() {
     const TOPIC_PROTOCOL_STR = "test-topic/0";
+    const JSON_PROTOCOL_STR = "json-test/0";
     const TOPIC_PROTOCOL = Buffer.from(TOPIC_PROTOCOL_STR);
-    
+    const JSON_PROTOCOL = Buffer.from(JSON_PROTOCOL_STR);
+
     const protocols = {
         [TOPIC_PROTOCOL_STR]: (_err: unknown, _ep: unknown, client: any) => ({
             accept: async (err: unknown, connecting: any) => {
@@ -63,12 +64,35 @@ async function runTest() {
                 const conn = await connecting.connect();
                 const remote = await conn.getRemoteNodeId();
                 console.log(`Direct connection established with ${remote}`);
-                
+
                 const bi = await conn.acceptBi();
                 const bytes = await bi.recv.readToEnd(64);
                 console.log(`Node received: ${bytes.toString()} from ${remote}`);
-                
+
                 await bi.send.writeAll(Buffer.from("connected"));
+                await bi.send.finish();
+                await bi.send.stopped();
+            }
+        }),
+        [JSON_PROTOCOL_STR]: (_err: unknown, _ep: unknown, client: any) => ({
+            accept: async (err: unknown, connecting: any) => {
+                if (err) return;
+                const conn = await connecting.connect();
+                const remote = await conn.getRemoteNodeId();
+                console.log(`JSON connection established with ${remote}`);
+
+                const bi = await conn.acceptBi();
+                const bytes = await bi.recv.readToEnd(1024);
+                const jsonData = JSON.parse(bytes.toString());
+                console.log(`Node received JSON:`, jsonData, `from ${remote}`);
+
+                const response = {
+                    status: "success",
+                    receivedAt: new Date().toISOString(),
+                    echo: jsonData
+                };
+
+                await bi.send.writeAll(Buffer.from(JSON.stringify(response)));
                 await bi.send.finish();
                 await bi.send.stopped();
             }
@@ -90,11 +114,12 @@ async function runTest() {
     // Track connections to verify network topology
     const connections = new Map<string, Set<string>>();
     let connectionCount = 0;
+    let jsonTestsCompleted = 0;
 
     const createClient = (index: number, topic: string) => {
         const client = new WebSocket("ws://localhost:8000");
         const nodeId = nodeAddrs[index].nodeId;
-        
+
         connections.set(nodeId, new Set());
 
         client.onopen = () => {
@@ -117,11 +142,12 @@ async function runTest() {
 
             const endpoint = nodes[index].node.endpoint();
             if (!endpoint) throw new Error("No endpoint");
-            
+
             try {
                 if (!connections.get(nodeId)!.has(msg.irohId)) {
+                    // First establish the basic connection
                     const conn = await endpoint.connect(msg.addr, TOPIC_PROTOCOL);
-                    
+
                     const bi = await conn.openBi();
                     await bi.send.writeAll(Buffer.from(`hello from ${nodeId}`));
                     await bi.send.finish();
@@ -132,7 +158,28 @@ async function runTest() {
                         connections.get(nodeId)!.add(msg.irohId);
                         connectionCount++;
                         console.log(`Connection established ${nodeId} -> ${msg.irohId}`);
-                        
+
+                        // Now test JSON protocol
+                        const jsonConn = await endpoint.connect(msg.addr, JSON_PROTOCOL);
+                        const jsonBi = await jsonConn.openBi();
+
+                        const testData = {
+                            sender: nodeId,
+                            timestamp: new Date().toISOString(),
+                            testMessage: "Hello JSON world!",
+                            numericalData: 42
+                        };
+
+                        await jsonBi.send.writeAll(Buffer.from(JSON.stringify(testData)));
+                        await jsonBi.send.finish();
+
+                        const jsonResponse = await jsonBi.recv.readToEnd(1024);
+                        const parsedResponse = JSON.parse(jsonResponse.toString());
+                        console.log(`JSON test completed ${nodeId} -> ${msg.irohId}:`, parsedResponse);
+
+                        await jsonBi.send.stopped();
+                        jsonTestsCompleted++;
+
                         checkNetworkComplete();
                     }
                 }
@@ -148,13 +195,13 @@ async function runTest() {
         // Expected: 
         // topic1: 3 nodes = 6 connections (each node connects to 2 others)
         // topic2: 2 nodes = 2 connections (nodes connect to each other)
-        // Total: 8 connections
-        if (connectionCount >= 8) {
+        // Total: 8 connections and 8 JSON tests
+        if (connectionCount >= 8 && jsonTestsCompleted >= 8) {
             console.log("\n✅ Network topology verification:");
             for (const [nodeId, peers] of connections) {
                 console.log(`Node ${nodeId} connected to:`, Array.from(peers));
             }
-            
+
             // Clean shutdown
             Promise.all(nodes.map(n => n.node.shutdown(false)))
                 .then(() => Deno.exit(0));
