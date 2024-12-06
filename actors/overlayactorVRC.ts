@@ -10,7 +10,12 @@ import { wait } from "../actorsystem/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
-import { ScreenCapture, FrameData } from "../screen_capture_module.ts";
+import { ScreenCapture } from "../ScreenCapture.ts";
+import * as gl from "https://deno.land/x/gluten@0.1.9/api/gles23.2.ts";
+import {
+    createWindow,
+    getProcAddress,
+} from "https://deno.land/x/dwm@0.3.4/mod.ts";
 
 type State = {
     id: string;
@@ -26,6 +31,8 @@ type State = {
     relativePosition: OpenVR.HmdMatrix34;
     isRunning: boolean;
     screenCapture: ScreenCapture | null;
+    currentTexture: number | null;
+    glWindow: any | null;
     [key: string]: unknown;
 };
 
@@ -55,6 +62,8 @@ const state: State & BaseState = {
     },
     isRunning: false,
     screenCapture: null,
+    currentTexture: null,
+    glWindow: null,
 };
 
 const smoothingWindowSize = 10;
@@ -70,35 +79,46 @@ async function startDesktopCapture(fps: number = 30): Promise<void> {
     CustomLogger.log("overlay", "Initializing screen capture...");
     
     try {
-        state.screenCapture = new ScreenCapture({
-            port: 8080,
-            quality: 50,
-            scale: 0.5,
-            targetFps: fps
-        });
-
-        state.screenCapture.addEventListener("frame", (event) => {
-            try {
-                const frameData = event.detail;
-                if (!frameData) {
-                    CustomLogger.error("overlay", "Received null frame data");
-                    return;
-                }
-                
-                if (!frameData.buffer || !(frameData.buffer instanceof ArrayBuffer)) {
-                    CustomLogger.error("overlay", "Invalid frame buffer:", frameData.buffer);
-                    return;
-                }
-
-                CustomLogger.log("overlay", `Received frame: ${frameData.width}x${frameData.height}, ${frameData.buffer.byteLength} bytes`);
-                updateOverlayTexture(frameData);
-            } catch (err) {
-                CustomLogger.error("overlay", "Error in frame handler:", err);
+        state.screenCapture = new ScreenCapture(); // Still capture at 60fps but update overlay slower
+        const intervalId = setInterval(() => {
+            if (state.screenCapture?.isWorkerReady()) {
+                console.log("Starting screen capture...");
+                state.screenCapture.start();
+                clearInterval(intervalId);
             }
-        });
+        }, 100);
+        console.log("Starting screen capture test...");
+        
+        // Start a loop to update the overlay texture
+        const updateLoop = async () => {
+            let lastUpdateTime = 0;
+            const UPDATE_INTERVAL = 2000; // Update at ~60fps
+            console.log("Starting update loop...");
 
-        CustomLogger.log("overlay", `Starting desktop capture at ${fps} FPS`);
-        await state.screenCapture.start();
+            while (state.screenCapture && state.isRunning) {
+                const currentTime = Date.now();
+                if (currentTime - lastUpdateTime >= UPDATE_INTERVAL) {
+                    console.log("getframe")
+                    const frame = state.screenCapture.getCurrentFrame();
+                    let pixels: Uint8Array | null = null;
+                    let width = 0;
+                    let height = 0;
+
+                    if (frame && frame.pixels) {
+                        ({ pixels, width, height } = frame);
+                        if (width > 0 && height > 0) {
+                            updateOverlayTexture(frame);
+                            lastUpdateTime = currentTime;
+                        }
+                    } else {
+                        await wait(100);
+                    }
+                }
+                await wait(16); // Check every frame
+            }
+        };
+        
+        updateLoop();
         CustomLogger.log("overlay", "Screen capture started successfully");
     } catch (err) {
         CustomLogger.error("overlay", "Failed to start screen capture:", err);
@@ -112,12 +132,59 @@ async function stopDesktopCapture(): Promise<void> {
         return;
     }
 
-    await state.screenCapture.stop();
+    state.screenCapture.stop();
     state.screenCapture = null;
     CustomLogger.log("overlay", "Stopped desktop capture");
 }
 
-function updateOverlayTexture(frameData: FrameData) {
+function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): number {
+    // Delete old texture if it exists
+    if (state.currentTexture !== null) {
+        const textures = new Uint32Array([state.currentTexture]);
+        gl.DeleteTextures(1, textures);
+    }
+
+    // Create new texture
+    const texture = new Uint32Array(1);
+    gl.GenTextures(1, texture);
+    gl.BindTexture(gl.TEXTURE_2D, texture[0]);
+    
+    // Set texture parameters - these are required for OpenVR
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Clear any existing errors
+    gl.GetError();
+    
+    // Upload texture data
+    gl.TexImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA8,  // Use RGBA8 format explicitly
+        width,
+        height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        pixels
+    );
+
+    // Check for errors
+    const error = gl.GetError();
+    if (error !== gl.NO_ERROR) {
+        CustomLogger.error("overlay", `GL Error creating texture: ${error}`);
+    }
+
+    // Make sure the texture is bound and active
+    gl.ActiveTexture(gl.TEXTURE0);
+    gl.BindTexture(gl.TEXTURE_2D, texture[0]);
+
+    return texture[0];
+}
+
+function updateOverlayTexture(frameData: { pixels: Uint8Array, width: number, height: number }) {
     if (!state.overlayClass || !state.overlayHandle) {
         CustomLogger.error("overlay", "Overlay not initialized");
         return;
@@ -128,30 +195,41 @@ function updateOverlayTexture(frameData: FrameData) {
 
         // Validate frame data
         const expectedSize = frameData.width * frameData.height * 4; // RGBA = 4 bytes per pixel
-        if (frameData.buffer.byteLength !== expectedSize) {
+        if (frameData.pixels.length !== expectedSize) {
             CustomLogger.error(
                 "overlay",
-                `Invalid buffer size. Expected ${expectedSize}, got ${frameData.buffer.byteLength}`
+                `Invalid buffer size. Expected ${expectedSize}, got ${frameData.pixels.length}`
             );
             return;
         }
 
-        // Create pointer to frame buffer
-        const uint8Array = new Uint8Array(frameData.buffer);
-        const imageDataPtr = Deno.UnsafePointer.of(uint8Array);
+        // Create or update OpenGL texture
+        state.currentTexture = createTextureFromScreenshot(frameData.pixels, frameData.width, frameData.height);
+
+        // Create OpenVR Texture struct
+        const textureStructBuffer = new ArrayBuffer(OpenVR.TextureStruct.byteSize);
+        const textureStructView = new DataView(textureStructBuffer);
         
-        if (!imageDataPtr) {
-            CustomLogger.error("overlay", "Failed to create pointer for image data");
-            return;
+        // Create the texture struct data
+        const textureData = {
+            handle: BigInt(state.currentTexture),
+            eType: OpenVR.TextureType.TextureType_OpenGL,
+            eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto
+        };
+
+        // Write the texture struct to the buffer
+        OpenVR.TextureStruct.write(textureData, textureStructView);
+
+        // Create a pointer to the texture struct
+        const textureStructPtr = Deno.UnsafePointer.of(textureStructBuffer) as Deno.PointerValue<OpenVR.Texture>;
+        if (!textureStructPtr) {
+            throw new Error("Failed to create texture struct pointer");
         }
 
-        // Update OpenVR texture with raw RGBA data
-        const error = state.overlayClass.SetOverlayRaw(
+        // Update OpenVR overlay with the texture struct
+        const error = state.overlayClass.SetOverlayTexture(
             state.overlayHandle,
-            imageDataPtr,
-            frameData.width >>> 0,
-            frameData.height >>> 0,
-            4 // RGBA = 4 bytes per pixel
+            textureStructPtr
         );
 
         if (error !== OpenVR.OverlayError.VROverlayError_None) {
@@ -162,11 +240,27 @@ function updateOverlayTexture(frameData: FrameData) {
             return;
         }
 
+        // Create event struct buffer
+        const eventBuffer = new ArrayBuffer(OpenVR.EventStruct.byteSize);
+        const eventView = new DataView(eventBuffer);
+        const eventPtr = Deno.UnsafePointer.of(eventBuffer) as Deno.PointerValue<OpenVR.Event>;
+
+        // Process overlay events
+        while (state.overlayClass.PollNextOverlayEvent(
+            state.overlayHandle,
+            eventPtr,
+            OpenVR.EventStruct.byteSize
+        )) {
+            // Read event data if needed
+            const event = OpenVR.EventStruct.read(eventView);
+            // Handle event based on event.eventType if needed
+        }
+
         const endTime = performance.now();
         const updateTime = endTime - startTime;
         
-        if (updateTime > 50) { // Log if update takes more than 50ms
-            CustomLogger.log("perf", `Slow overlay update: ${updateTime.toFixed(1)}ms`);
+        if (updateTime > 50) {
+            CustomLogger.log("warn", `Slow overlay update: ${updateTime.toFixed(1)}ms`);
         }
 
     } catch (error) {
@@ -180,7 +274,7 @@ function updateOverlayTexture(frameData: FrameData) {
 const functions = {
     CUSTOMINIT: (_payload) => {
         //Postman.functions?.HYPERSWARM?.(null, state.id);
-        startDesktopCapture(30).catch(error => console.log(`Desktop capture error: ${error}`));
+        //startDesktopCapture(30).catch(error => console.log(`Desktop capture error: ${error}`));
     },
     LOG: (_payload) => {
         CustomLogger.log("actor", state.id);
@@ -377,6 +471,22 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
     try {
         state.sync = sync;
 
+        // Initialize OpenGL context with a hidden window
+        state.glWindow = createWindow({
+            title: "Hidden GL Context",
+            width: 1024,  // Match texture size
+            height: 512,  // Match texture size
+            visible: false,
+            glVersion: [3, 2],
+            gles: true,
+        });
+        gl.load(getProcAddress);
+
+        // Initialize OpenGL state
+        gl.Enable(gl.TEXTURE_2D);
+        gl.Enable(gl.BLEND);
+        gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
         CustomLogger.log("overlay", "Creating overlay...");
         const overlay = state.overlayClass as OpenVR.IVROverlay;
         const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
@@ -389,12 +499,22 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
         CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
-
-        const imgpath = Deno.realPathSync(overlaytexture);
-        overlay.SetOverlayFromFile(overlayHandle, imgpath);
         
         // Set size to 1.6 meters wide (16:9 ratio will make it 0.9 meters tall)
         overlay.SetOverlayWidthInMeters(overlayHandle, 1.6);
+
+        // Set texture bounds to control texture mapping
+        const bounds = {
+            uMin: 0,
+            uMax: 1,
+            vMin: 0,
+            vMax: 1
+        };
+        const boundsbuf = new ArrayBuffer(OpenVR.TextureBoundsStruct.byteSize);
+        OpenVR.TextureBoundsStruct.write(bounds, new DataView(boundsbuf));
+        const boundsptr = Deno.UnsafePointer.of<OpenVR.TextureBounds>(boundsbuf)!;
+        overlay.SetOverlayTextureBounds(overlayHandle, boundsptr);
+
         overlay.ShowOverlay(overlayHandle);
         
         // Position it slightly further back to accommodate the larger size
@@ -465,6 +585,29 @@ function matrixEquals(a: OpenVR.HmdMatrix34, b: OpenVR.HmdMatrix34): boolean {
     }
     return true;
 }
+
+function cleanup() {
+    if (state.currentTexture !== null) {
+        const textures = new Uint32Array([state.currentTexture]);
+        gl.DeleteTextures(1, textures);
+        state.currentTexture = null;
+    }
+
+    if (state.glWindow) {
+        state.glWindow.close();
+        state.glWindow = null;
+    }
+
+    if (state.screenCapture) {
+        state.screenCapture.stop();
+        state.screenCapture = null;
+    }
+
+    state.isRunning = false;
+}
+
+// Handle cleanup on exit
+globalThis.addEventListener("unload", cleanup);
 
 new Postman(worker, functions, state);
 

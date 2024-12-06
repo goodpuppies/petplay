@@ -295,7 +295,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
         }
         const currentTime = Date.now();
         if (currentTime - lastLogTime >= 1000) {
-            console.log(`Origin changed ${state.originChangeCount} times in the last second`);
+            CustomLogger.log("origin",`Origin changed ${state.originChangeCount} times in the last second`);
             state.originChangeCount = 0;
             lastLogTime = currentTime;
         }

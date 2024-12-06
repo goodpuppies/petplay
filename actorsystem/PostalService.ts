@@ -123,6 +123,7 @@ export class PostalService {
 
   //onmessage
   handleMessage = (worker: Worker, message: Message) => {
+    CustomLogger.log("postalservice", "postalService handleMessage", message);
     const addresses = Array.isArray(message.address.to) ? message.address.to : [message.address.to];
 
     CustomLogger.error("actorsyserr", "PostalService handleMessage");

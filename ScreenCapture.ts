@@ -33,6 +33,12 @@ export class ScreenCapture {
             case "frame":
                 if (frame) {
                     //console.log(`Frame received`);
+                    if (!frame.encodedData) {
+                        console.log("No encoded data in frame");
+                        await new Promise((resolve) => setTimeout(resolve, 16));
+                        this.captureWorker.postMessage({ type: "getFrame" });
+                        return;
+                    }
                     const pixels = this.stringToBinary(frame.encodedData);
                     this.currentFrame = {
                         pixels,

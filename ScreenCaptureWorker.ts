@@ -34,7 +34,7 @@ self.onmessage = async (e: MessageEvent) => {
     }
 };
 
-export class ScreenCapture {
+class ScreenCapture {
     private capture: any;
     private textEncoder: TextEncoder;
     private currentFrame: Uint8Array | null = null;
@@ -157,7 +157,7 @@ class CaptureManager:
             # Log less frequently
             if self.frame_count % 60 == 0:  # Log every ~60 frames instead of time-based
                 self.stats.record('total_capture', elapsed)
-                print(f"Capture FPS: {self.frame_count / (time.perf_counter() - self.start_time):5.1f}")
+                #print(f"Python Capture FPS: {self.frame_count / (time.perf_counter() - self.start_time):5.1f}")
                 self.frame_count = 0
                 self.start_time = time.perf_counter()
         
@@ -211,7 +211,7 @@ class CaptureManager:
 
         if (elapsed >= 1000) { // Update FPS every second
             this.currentFps = (this.frameCount * 1000) / elapsed;
-            console.log(`Capture FPS TS: ${this.currentFps.toFixed(1)}`);
+            //console.log(`Capture FPS TS: ${this.currentFps.toFixed(1)}`);
             this.frameCount = 0;
             this.lastFpsUpdate = now;
         }
@@ -245,9 +245,9 @@ class CaptureManager:
         this.capture.stop();
     }
 
-    public getCurrentFrame(): { encodedData: Uint8Array, width: number, height: number } {
+    public getCurrentFrame(): { encodedData: Uint8Array|null, width: number, height: number } {
         return {
-            encodedData: this.currentFrame || "",
+            encodedData: this.currentFrame,
             width: this.width,
             height: this.height
         };
