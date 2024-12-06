@@ -29,7 +29,7 @@ const state: State & BaseState = {
     addressBook: new Set(),
     irohNodes: new Map(),
     IDNoderaddrs: new Map(),
-    connections: new Map(),
+    connections: new Map(), // Base connections
     topicPeers: new Map(),
     IDTopics: new Map(),
     actordocs: new Map(),
@@ -110,7 +110,7 @@ export const functions = {
                 state.IDTopics.set(address.fm, payload)
                 state.IDNoderaddrs.set(address.fm, nodeAddr)
 
-                console.log("Sending announcement:", announcement);
+                //console.log("Sending announcement:", announcement);
                 ws.send(JSON.stringify(announcement));
                 state.petplayServer = ws
             } catch (err) {
@@ -157,6 +157,7 @@ export const functions = {
         const message = payload as GenericMessage;
         const sourceActor = address.fm;
         const targetId = message.address.to;
+        const connectionKey = `${sourceActor}-${targetId}`;
 
         // Get the Iroh node for the sending actor
         const irohNode = state.irohNodes.get(sourceActor);
@@ -165,17 +166,35 @@ export const functions = {
             return false;
         }
 
-        const conn = state.connections.get(`${sourceActor}-${targetId}`);
+        let conn = state.connections.get(connectionKey);
         if (!conn) {
-            CustomLogger.log("iroh", `No connection found for ${sourceActor} to ${targetId}`);
-            return false;
+            CustomLogger.log("iroh", `No connection found for ${sourceActor} to ${targetId}, attempting to establish...`);
+            const targetAddr = state.IDNoderaddrs.get(targetId);
+            if (!targetAddr) {
+                CustomLogger.log("iroh", `No node address found for target ${targetId}`);
+                return false;
+            }
+            
+            try {
+                conn = await connectToPeer(targetAddr, irohNode, sourceActor, targetId);
+                if (!conn) {
+                    CustomLogger.log("iroh", `Failed to establish connection to ${targetId}`);
+                    return false;
+                }
+            } catch (err) {
+                CustomLogger.log("iroh", "Failed to establish connection:", err);
+                return false;
+            }
         }
 
-        CustomLogger.log("iroh", "Sending message from", sourceActor, "to", targetId);
-        CustomLogger.log("iroh", "Message content:", message);
-
         try {
+            // Create a new bi-directional stream for each message
+            CustomLogger.log("iroh", "Opening new bi-directional stream");
             const bi = await conn.openBi();
+
+            CustomLogger.log("iroh", "Sending message from", sourceActor, "to", targetId);
+
+            // Send the message
             await bi.send.writeAll(Buffer.from(JSON.stringify(message)));
             await bi.send.finish();
 
@@ -185,10 +204,17 @@ export const functions = {
                 CustomLogger.log("iroh", "Message successfully delivered and acknowledged");
             }
 
+            // Close only the bi-directional stream, keep the base connection
             await bi.send.stopped();
+
             return true;
         } catch (err) {
             CustomLogger.log("iroh", "Failed to send:", err);
+            // If the base connection is dead, remove it and try to reconnect next time
+            if (err.message?.includes("connection lost")) {
+                CustomLogger.log("iroh", "Connection lost, removing from state");
+                state.connections.delete(connectionKey);
+            }
             return false;
         }
     },
@@ -239,36 +265,44 @@ async function initIroh() {
                     }
                 }
 
-                CustomLogger.log("iroh", `Node ${nodeId} (owned by actor ${ownerActorId}) receiving message from ${remote}`);
+                CustomLogger.log("iroh", `Node ${nodeId} (owned by actor ${ownerActorId}) receiving messages from ${remote}`);
 
-                const bi = await conn.acceptBi();
-                try {
-                    const bytes = await bi.recv.readToEnd(1024 * 1024);
-                    const message = JSON.parse(bytes.toString());
+                // Continuously accept messages on this connection
+                while (true) {
+                    try {
+                        const bi = await conn.acceptBi();
+                        const bytes = await bi.recv.readToEnd(1024 * 1024);
+                        const message = JSON.parse(bytes.toString());
+                        
+                        CustomLogger.log("iroh", `Node ${nodeId} (owned by actor ${ownerActorId}) sending message to actorsystem ${message}`);
+                        
+                        // Enhanced logging with node identity
+                        CustomLogger.log("iroh", "Message received:", {
+                            receivingNode: nodeId,
+                            receivingActor: ownerActorId,
+                            message: {
+                                from: message.address.fm,
+                                to: message.address.to,
+                                type: message.type,
+                                payload: message.payload
+                            }
+                        });
 
-                    Postman.PostMessage(message)
+                        // Send acknowledgment
+                        await bi.send.writeAll(Buffer.from("received"));
+                        await bi.send.finish();
+                        await bi.send.stopped();
 
-                    // Enhanced logging with node identity
-                    CustomLogger.log("iroh", "Message received:", {
-                        receivingNode: nodeId,
-                        receivingActor: ownerActorId,
-                        message: {
-                            from: message.address.fm,
-                            to: message.address.to,
-                            type: message.type,
-                            payload: message.payload
+                        // Run the message through Postman
+                        Postman.PostMessage(message);
+                        Postman.runFunctions(message);
+                    } catch (e) {
+                        if (e.message?.includes('connection lost')) {
+                            CustomLogger.log("iroh", `Connection lost with ${remote} for node ${nodeId} (actor ${ownerActorId})`);
+                            break;
                         }
-                    });
-
-                    // Send acknowledgment
-                    await bi.send.writeAll(Buffer.from("received"));
-                    await bi.send.finish();
-                    await bi.send.stopped();
-
-                    // Run the message through Postman
-                    Postman.runFunctions(message);
-                } catch (e) {
-                    CustomLogger.log("iroh", `Error in message handler for node ${nodeId} (actor ${ownerActorId}):`, e);
+                        CustomLogger.log("iroh", `Error in message handler for node ${nodeId} (actor ${ownerActorId}):`, e);
+                    }
                 }
             }
         })
@@ -287,10 +321,12 @@ async function connectToPeer(peerAddr: any, irohNode: any, actorId: string, remo
         const conn = await endpoint.connect(peerAddr, PROTOCOL);
         const _remote = await conn.getRemoteNodeId();
 
-        // Store connection with compound key
-        state.connections.set(`${actorId}-${remote}`, conn);
+        // Store only the base connection
+        const connectionKey = `${actorId}-${remote}`;
+        state.connections.set(connectionKey, conn);
 
         CustomLogger.log("iroh", "Connected to peer:", remote, "for actor:", actorId);
+        CustomLogger.log("iroh", "Base connection established");
 
         return conn;
     } catch (err) {

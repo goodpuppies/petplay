@@ -28,6 +28,20 @@ export const functions = {
     STDIN: (payload: string) => {
         CustomLogger.log("actor", "stdin:", payload);
     },
+    SCREENDATA: (payload: string) => {
+        try {
+            const data = JSON.parse(payload);
+            const { width, height, data: imageData, format } = data;
+            
+            CustomLogger.log("default", `Received ${format} screen data: ${width}x${height}, ${imageData.length} bytes in base64`);
+            
+            // Try to decode a few bytes just to verify data integrity
+            const sampleBytes = atob(imageData.slice(0, 10));
+            CustomLogger.log("default", `First few bytes verified: ${Array.from(sampleBytes).map(b => b.charCodeAt(0))}`);
+        } catch (err) {
+            CustomLogger.log("default", "Error handling screen data:", err);
+        }
+    },
 } as const;
 
 async function main(_payload: unknown) {
@@ -41,12 +55,12 @@ async function main(_payload: unknown) {
         name: "muffin"
     }
 
-    const doc = await Postman.PostMessage({
+    /* const doc = await Postman.PostMessage({
         address: { fm: state.id, to: Postman.portal },
         type: "CREATEDOC",
         payload: null
     }, true)
-    console.log(doc)
+    console.log(doc) */
 
 
 }

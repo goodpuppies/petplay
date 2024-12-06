@@ -1,6 +1,6 @@
 
 import { ActorWorker } from "./ActorWorker.ts";
-import { functions as MAINEAF } from "../actors/mainE.ts";
+import { functions as MAINEAF } from "../actorsirohtest/mainE.ts";
 import { functions as IROHAF } from "../actors/IrohActor.ts";
 import { functions as POSTAF } from "../classes/PostMan.ts";
 import { functions as SERVICEAF } from "./PostalService.ts";

@@ -119,7 +119,7 @@ async function main(_payload: Payload["MAIN"]) {
     type: "STARTOVERLAY",
     payload: {
       name: "overlay1",
-      texture: "./resources/PetPlay.png",
+      texture: "./resources/P1.png",
       sync: true,
     },
   });

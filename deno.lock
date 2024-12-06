@@ -1,6 +1,7 @@
 {
   "version": "4",
   "specifiers": {
+    "jsr:@denosaurs/python@*": "0.4.3",
     "jsr:@quentinadam/assert@~0.1.7": "0.1.7",
     "jsr:@quentinadam/uint8array-extension@~0.1.4": "0.1.4",
     "jsr:@quentinadam/zip@0.1": "0.1.1",
@@ -10,6 +11,9 @@
     "npm:hyperswarm@*": "4.8.2"
   },
   "jsr": {
+    "@denosaurs/python@0.4.3": {
+      "integrity": "75ab100f29b66fa4abdd0f385e1176f6f530acca2cd0c518249419a4164606c2"
+    },
     "@quentinadam/assert@0.1.7": {
       "integrity": "0246fb7fd3aa7b286535db40feefdafc588272d3f287b4eb995c96263ab6dfca"
     },
@@ -373,12 +377,60 @@
     }
   },
   "redirects": {
-    "https://deno.land/std/http/server.ts": "https://deno.land/std@0.224.0/http/server.ts"
+    "https://deno.land/std/http/server.ts": "https://deno.land/std@0.224.0/http/server.ts",
+    "https://deno.land/x/python/mod.ts": "https://deno.land/x/python@0.4.3/mod.ts"
   },
   "remote": {
+    "https://deno.land/std@0.165.0/_util/asserts.ts": "d0844e9b62510f89ce1f9878b046f6a57bf88f208a10304aab50efcb48365272",
+    "https://deno.land/std@0.165.0/bytes/bytes_list.ts": "aba5e2369e77d426b10af1de0dcc4531acecec27f9b9056f4f7bfbf8ac147ab4",
+    "https://deno.land/std@0.165.0/bytes/equals.ts": "3c3558c3ae85526f84510aa2b48ab2ad7bdd899e2e0f5b7a8ffc85acb3a6043a",
+    "https://deno.land/std@0.165.0/bytes/mod.ts": "b2e342fd3669176a27a4e15061e9d588b89c1aaf5008ab71766e23669565d179",
+    "https://deno.land/std@0.165.0/fmt/colors.ts": "9e36a716611dcd2e4865adea9c4bec916b5c60caad4cdcdc630d4974e6bb8bd4",
+    "https://deno.land/std@0.165.0/io/buffer.ts": "245f1762a949082ddc0a6e9b15589d0be2d29c150266decd04320b8a8318f9f6",
+    "https://deno.land/std@0.165.0/io/mod.ts": "6e781ebafd5cdccf9ab4afa1f499b08c513602d023cb08ceebc58758501f78bd",
+    "https://deno.land/std@0.165.0/io/readers.ts": "45847ad404afd2f605eae1cff193f223462bc55eeb9ae313c2f3db28aada0fd6",
+    "https://deno.land/std@0.165.0/io/util.ts": "294d163962e3310bd9485d3315c183dc3d0da1e6ddf23495c682f8e17e0413a8",
+    "https://deno.land/std@0.165.0/io/writers.ts": "2e1c63ffd0cfba411b1fd8374609abff9ea86187c9d4d885d42e6fc20325ef0e",
+    "https://deno.land/std@0.165.0/testing/_diff.ts": "a23e7fc2b4d8daa3e158fa06856bedf5334ce2a2831e8bf9e509717f455adb2c",
+    "https://deno.land/std@0.165.0/testing/_format.ts": "cd11136e1797791045e639e9f0f4640d5b4166148796cad37e6ef75f7d7f3832",
+    "https://deno.land/std@0.165.0/testing/asserts.ts": "1e340c589853e82e0807629ba31a43c84ebdcdeca910c4a9705715dfdb0f5ce8",
     "https://deno.land/std@0.224.0/async/delay.ts": "f90dd685b97c2f142b8069082993e437b1602b8e2561134827eeb7c12b95c499",
     "https://deno.land/std@0.224.0/http/server.ts": "f9313804bf6467a1704f45f76cb6cd0a3396a3b31c316035e6a4c2035d1ea514",
+    "https://deno.land/std@0.92.0/_util/assert.ts": "2f868145a042a11d5ad0a3c748dcf580add8a0dbc0e876eaa0026303a5488f58",
+    "https://deno.land/std@0.92.0/_util/has_own_property.ts": "f5edd94ed3f3c20c517d812045deb97977e18501c9b7105b5f5c11a31893d7a2",
+    "https://deno.land/std@0.92.0/async/deferred.ts": "624bef4b755b71394620508a0c234a93cb8020cbd1b04bfcdad41c174392cef6",
+    "https://deno.land/std@0.92.0/async/delay.ts": "9de1d8d07d1927767ab7f82434b883f3d8294fb19cad819691a2ad81a728cf3d",
+    "https://deno.land/std@0.92.0/async/mod.ts": "253b41c658d768613eacfb11caa0a9ca7148442f932018a45576f7f27554c853",
+    "https://deno.land/std@0.92.0/async/mux_async_iterator.ts": "b9091909db04cdb0af6f7807677372f64c1488de6c4bd86004511b064bf230d6",
+    "https://deno.land/std@0.92.0/async/pool.ts": "876f9e6815366cd017a3b4fbb9e9ae40310b1b6972f1bd541c94358bc11fb7e5",
+    "https://deno.land/std@0.92.0/bytes/mod.ts": "1ae1ccfe98c4b979f12b015982c7444f81fcb921bea7aa215bf37d84f46e1e13",
+    "https://deno.land/std@0.92.0/fmt/colors.ts": "db22b314a2ae9430ae7460ce005e0a7130e23ae1c999157e3bb77cf55800f7e4",
+    "https://deno.land/std@0.92.0/hash/sha1.ts": "1cca324b4b253885a47f121adafcfac55b4cc96113e22b338e1db26f37a730b8",
+    "https://deno.land/std@0.92.0/http/_io.ts": "bf1331dd3be8aace9120614c1fedc2bb2449edc4779e31b74c0181ea9173f702",
+    "https://deno.land/std@0.92.0/http/http_status.ts": "ebaa9bebfb8adc3d7b20c49e11037e4eefd79629ad80d81383933f4cdc91b3eb",
+    "https://deno.land/std@0.92.0/http/server.ts": "d4e17c2aa5a5c65a2d19b9f24483be5f6c2a3e03665996fdf973e53c43091b48",
+    "https://deno.land/std@0.92.0/io/buffer.ts": "2a92f02c1d8daaebaf13e5678ea5969c89f4fab533f687b9e7e86f49f11c3118",
+    "https://deno.land/std@0.92.0/io/bufio.ts": "4053ea5d978479be68ae4d73424045a59c6b7a6e8f66727e4bfde516baa07126",
+    "https://deno.land/std@0.92.0/io/ioutil.ts": "275fa440494df9b4b3aa656301ced2eeac533feec128b3a39b2b40f4cd957e42",
+    "https://deno.land/std@0.92.0/io/util.ts": "03ca10e063afce551c501505c607ec336a40b9cb72363f5508e2a9ac81096bbf",
+    "https://deno.land/std@0.92.0/node/_utils.ts": "33b06f2877d3ee80f17190ee81fdc436755ce74b9c2a9a4492c7cdfe2a03e4c6",
+    "https://deno.land/std@0.92.0/node/events.ts": "0feda0707e2229363f5df8b799fed41bb91de6ca7106f27c7a9f0a02ea11b9d4",
+    "https://deno.land/std@0.92.0/testing/_diff.ts": "961eaf6d9f5b0a8556c9d835bbc6fa74f5addd7d3b02728ba7936ff93364f7a3",
+    "https://deno.land/std@0.92.0/testing/asserts.ts": "83889f9a37bdab16cb68b023a15f9172ceb644f62c0e727c72d4870a666e53d6",
+    "https://deno.land/std@0.92.0/textproto/mod.ts": "1c89b39a079dd158893ab2e9ff79391c66049433d6ca82da7d64b32280570d51",
+    "https://deno.land/std@0.92.0/ws/mod.ts": "bc521b3066441eb115ac94e3507bcc73098542f81d8d3ce7aad8d837316ce990",
     "https://deno.land/x/get_ip@v2.0.0/mod.ts": "8a967dece886ddf7f7bf6c8d6000c98a4ff374834a90a4e0fde868ce4301873d",
+    "https://deno.land/x/osc@v0.1.0/deps.ts": "fd1c1b8221673a7fddda6e410e722452f00826e268598d944126f22ba93a7f4e",
+    "https://deno.land/x/osc@v0.1.0/mod.ts": "e8de4b2c9b04566c2c6286af417b0b844aa5c6e5c1c0ad8ebc3a9d6d5dd3d4ab",
+    "https://deno.land/x/python@0.4.3/mod.ts": "36292020f3a7e8c9774d5de7fe32e261b3b5ddfbb6689a78bb499014d40baa82",
+    "https://deno.land/x/python@0.4.3/src/ffi.ts": "9e96f50eda08a2a37adb2b51cac9db3cf71dae5ec4e6e8045af39359eff1ea97",
+    "https://deno.land/x/python@0.4.3/src/python.ts": "f6e54bd7a62a0a3589fe27bc626cfbcfa9f15787482640b18134b3c8009fdd72",
+    "https://deno.land/x/python@0.4.3/src/symbols.ts": "10947b73f1c79ffa87d55074f47b3952e5983a4af02e3c36c404567dfa7bd980",
+    "https://deno.land/x/python@0.4.3/src/util.ts": "8abfee48a2f3870401db000c66d3bb66bcc4e9a9ca947eafc0600822a5369aba",
+    "https://deno.land/x/websocket@v0.1.4/deps.ts": "1299887e27e09209d2eedc5c3b6552090842fac9e08f00dd235de39219efbd42",
+    "https://deno.land/x/websocket@v0.1.4/lib/errors.ts": "efb2251dac1ac2036809b0bfb520d737aee70e362eba1e287c84d5299fb211e8",
+    "https://deno.land/x/websocket@v0.1.4/lib/websocket.ts": "3363e0a8f59284de5439f5f3bd8831b65a2cfba047113fbc72e32934ebec3208",
+    "https://deno.land/x/websocket@v0.1.4/mod.ts": "6b24e14dd1c5d64c1671dd678ca545cce9e2ebc91f67e8be864069808b948267",
     "https://esm.sh/arktype@2.0.0-dev.25": "251bdb750d5690f80c29d3e90cec49bd2e1ec4b3e74396eca292e3bf179dda3c",
     "https://esm.sh/v135/@arktype/schema@0.1.17/denonext/config.js": "553ab3052c1b7f7a1bd57a398eedd5dc615ef613cfd3b71f854f37752008e073",
     "https://esm.sh/v135/@arktype/schema@0.1.17/denonext/internal/ast.js": "b9ee89f4f196bea888edb3792ad5248b7c829b822481cd19e4078cada248f8bf",
@@ -491,6 +543,7 @@
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/mod.ts": "2e6eaa208bbd7a39be9ca80d51ce1f660c69c60f38db3aa49cd8feadce4ca604",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/sized_array.ts": "b2de484087076c08b76d3a399ff5f550fc04932ee3e015929776788f381702ab",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/typed_array.ts": "d966cb09bc0bf80ded4c738a0970582c06f34d59e760dd69ae56dd97f2a402c0",
+    "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/_common.ts": "0b6bbfa1a39e9301f157c4f552c55d28128e49429d71e6b1c4a270429346b703",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/bitflags16.ts": "1ebd50d376db22cdfaece2ac48505360d34fbf8b207844eaa07ab5d52d1a0856",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/bitflags32.ts": "8e8c9d7ff79d3b19d9e08a37a21887a9b0778eb21d602bbd54cb73d74262e05a",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/bitflags64.ts": "51c89f3836146b534294b28808a3d7744d9b635707eee702f5057733d83e8f2e",

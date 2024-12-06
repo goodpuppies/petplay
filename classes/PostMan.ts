@@ -214,9 +214,9 @@ export class Postman {
     await Promise.all(addresses.map(async (address: ToAddress) => {
       message.address.to = address!;
       //console.log("addressbook of",this.state.name, Postman.addressBook)
+      this.worker.postMessage(message);
 
-
-      if (Postman.portal && Postman.addressBook.has(message.address.to)) {
+      /* if (Postman.portal && Postman.addressBook.has(message.address.to)) {
         console.log("Trying portal route for", message.address.to);
         try {
           const sent = await Postman.PostMessage({
@@ -240,7 +240,7 @@ export class Postman {
       else {
         //console.log("send", message)
         this.worker.postMessage(message);
-      }
+      } */
 
       //#region stuff
       /* else if (Postman.hyperswarmInterface) {

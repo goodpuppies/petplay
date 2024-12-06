@@ -1,5 +1,5 @@
 import { PostalService } from "./actorsystem/PostalService.ts";
-import "./actors3/main.ts";
+import "./actors/main.ts";
 import "./actorsOther/exampleActor.ts";
 import "./actorsOther/signalingDenoServer.ts";
 import type { Message } from "./actorsystem/types.ts";
@@ -7,7 +7,7 @@ import { wait } from "./actorsystem/utils.ts";
 
 const postalservice = new PostalService();
 
-const mainAddress = await postalservice.add("mainE.ts");
+const mainAddress = await postalservice.add("main.ts");
 const portal = await postalservice.add("IrohActor.ts")
 
 postalservice.portal = portal

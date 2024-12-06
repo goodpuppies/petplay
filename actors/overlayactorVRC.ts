@@ -10,6 +10,7 @@ import { wait } from "../actorsystem/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
+import { ScreenCapture, FrameData } from "../screen_capture_module.ts";
 
 type State = {
     id: string;
@@ -24,8 +25,7 @@ type State = {
     smoothedVrcOrigin: OpenVR.HmdMatrix34 | null;
     relativePosition: OpenVR.HmdMatrix34;
     isRunning: boolean;
-    captureProcess: Deno.ChildProcess | null;
-    latestFrame: Uint8Array | null;
+    screenCapture: ScreenCapture | null;
     [key: string]: unknown;
 };
 
@@ -54,153 +54,133 @@ const state: State & BaseState = {
         ]
     },
     isRunning: false,
-    captureProcess: null,
-    latestFrame: null,
+    screenCapture: null,
 };
 
 const smoothingWindowSize = 10;
 const smoothingWindow: OpenVR.HmdMatrix34[] = [];
 const vrcOriginSmoothingWindow: OpenVR.HmdMatrix34[] = [];
 
-async function captureDesktop(): Promise<void> {
-    const ffmpegCommand = new Deno.Command("ffmpeg", {
-        args: [
-            "-f", "gdigrab",
-            "-framerate", "30",
-            "-i", "desktop",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-f", "rawvideo", // Output raw video
-            "-pix_fmt", "bgra", // Correct pixel format
-            "-s", "1920x1080", // Resolution
-            "-"  // Output to stdout
-        ],
-        stdout: "piped", // Piping stdout
-        stderr: "piped", // Piping stderr for error logging
-    });
-
-    console.log("Starting desktop capture to buffer...");
-
-    const child = ffmpegCommand.spawn();
-    const { stdout, stderr } = child;
-
-    if (!stdout || !stderr) {
-        throw new Error("Failed to get stdout or stderr from FFmpeg process");
+async function startDesktopCapture(fps: number = 30): Promise<void> {
+    if (state.screenCapture) {
+        CustomLogger.log("overlay", "Desktop capture already running");
+        return;
     }
 
-    // Define the correct frame size (1920x1080 resolution, 4 bytes per pixel)
-    const frameSize = 1920 * 1080 * 4;
-    let buffer = new Uint8Array(frameSize); // Buffer to accumulate full frames
-    let bufferOffset = 0; // Tracks how much of the frame we've accumulated
-
-    const reader = stdout.getReader();
-
-    // Function to print progress as a bar
-    function showProgressBar(offset: number, total: number) {
-        const progress = (offset / total) * 100;
-        const barLength = 30;
-        const filledLength = Math.round((barLength * offset) / total);
-        const bar = '█'.repeat(filledLength) + '-'.repeat(barLength - filledLength);
-        console.log(`Progress: [${bar}] ${progress.toFixed(2)}%`);
-    }
-
-    // Read from stdout in real-time and send the data to the VR overlay
-    console.log("Reading data from stdout...");
+    CustomLogger.log("overlay", "Initializing screen capture...");
+    
     try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break; // No more data to read
+        state.screenCapture = new ScreenCapture({
+            port: 8080,
+            quality: 50,
+            scale: 0.5,
+            targetFps: fps
+        });
 
-            if (value) {
-                console.log(`Received chunk of size: ${value.length}`);
-
-                // Handle filling the buffer with chunked data
-                let remainingData = value;
-                while (remainingData.length > 0) {
-                    const bytesToCopy = Math.min(remainingData.length, frameSize - bufferOffset);
-                    buffer.set(remainingData.subarray(0, bytesToCopy), bufferOffset);
-                    bufferOffset += bytesToCopy;
-                    remainingData = remainingData.subarray(bytesToCopy);
-
-                    // Show progress in the console
-                    showProgressBar(bufferOffset, frameSize);
-
-                    // If buffer is full (we have a complete frame), send it to the overlay
-                    if (bufferOffset === frameSize) {
-                        updateOverlayTexture(buffer);  // Send the complete frame to the VR overlay
-                        bufferOffset = 0; // Reset for the next frame
-                        console.log("Full frame received and sent to overlay.");
-                    }
+        state.screenCapture.addEventListener("frame", (event) => {
+            try {
+                const frameData = event.detail;
+                if (!frameData) {
+                    CustomLogger.error("overlay", "Received null frame data");
+                    return;
                 }
+                
+                if (!frameData.buffer || !(frameData.buffer instanceof ArrayBuffer)) {
+                    CustomLogger.error("overlay", "Invalid frame buffer:", frameData.buffer);
+                    return;
+                }
+
+                CustomLogger.log("overlay", `Received frame: ${frameData.width}x${frameData.height}, ${frameData.buffer.byteLength} bytes`);
+                updateOverlayTexture(frameData);
+            } catch (err) {
+                CustomLogger.error("overlay", "Error in frame handler:", err);
             }
+        });
+
+        CustomLogger.log("overlay", `Starting desktop capture at ${fps} FPS`);
+        await state.screenCapture.start();
+        CustomLogger.log("overlay", "Screen capture started successfully");
+    } catch (err) {
+        CustomLogger.error("overlay", "Failed to start screen capture:", err);
+        state.screenCapture = null;
+    }
+}
+
+async function stopDesktopCapture(): Promise<void> {
+    if (!state.screenCapture) {
+        CustomLogger.log("overlay", "Desktop capture not running");
+        return;
+    }
+
+    await state.screenCapture.stop();
+    state.screenCapture = null;
+    CustomLogger.log("overlay", "Stopped desktop capture");
+}
+
+function updateOverlayTexture(frameData: FrameData) {
+    if (!state.overlayClass || !state.overlayHandle) {
+        CustomLogger.error("overlay", "Overlay not initialized");
+        return;
+    }
+
+    try {
+        const startTime = performance.now();
+
+        // Validate frame data
+        const expectedSize = frameData.width * frameData.height * 4; // RGBA = 4 bytes per pixel
+        if (frameData.buffer.byteLength !== expectedSize) {
+            CustomLogger.error(
+                "overlay",
+                `Invalid buffer size. Expected ${expectedSize}, got ${frameData.buffer.byteLength}`
+            );
+            return;
         }
+
+        // Create pointer to frame buffer
+        const uint8Array = new Uint8Array(frameData.buffer);
+        const imageDataPtr = Deno.UnsafePointer.of(uint8Array);
+        
+        if (!imageDataPtr) {
+            CustomLogger.error("overlay", "Failed to create pointer for image data");
+            return;
+        }
+
+        // Update OpenVR texture with raw RGBA data
+        const error = state.overlayClass.SetOverlayRaw(
+            state.overlayHandle,
+            imageDataPtr,
+            frameData.width >>> 0,
+            frameData.height >>> 0,
+            4 // RGBA = 4 bytes per pixel
+        );
+
+        if (error !== OpenVR.OverlayError.VROverlayError_None) {
+            CustomLogger.error(
+                "overlay",
+                `Failed to update overlay texture: ${OpenVR.OverlayError[error]} (${error})`
+            );
+            return;
+        }
+
+        const endTime = performance.now();
+        const updateTime = endTime - startTime;
+        
+        if (updateTime > 50) { // Log if update takes more than 50ms
+            CustomLogger.log("perf", `Slow overlay update: ${updateTime.toFixed(1)}ms`);
+        }
+
     } catch (error) {
-        console.error("Error while reading/writing data:", error);
-    } finally {
-        reader.releaseLock();
-    }
-
-    // Log stderr output to see if FFmpeg throws any errors
-    const errorReader = stderr.getReader();
-    (async () => {
-        while (true) {
-            const { done, value } = await errorReader.read();
-            if (done) break;
-            if (value) {
-                console.error(new TextDecoder().decode(value));
-            }
+        CustomLogger.error("overlay", "Error updating overlay texture:", error);
+        if (error instanceof Error) {
+            CustomLogger.error("overlay", "Stack:", error.stack);
         }
-    })();
-
-    // Wait for the process to finish
-    const status = await child.status;
-
-    if (!status.success) {
-        console.error("FFmpeg process failed.");
-    } else {
-        console.log("Desktop capture stream completed successfully.");
     }
 }
-
-
-
-
-
-function updateOverlayTexture(buffer: ArrayBuffer) {
-    console.log("Updating overlay texture with new frame...");
-    if (!state.overlayClass || !state.overlayHandle) return;
-
-    const overlay = state.overlayClass;
-    const width = 1920; // Assuming 1920x1080 resolution
-    const height = 1080;
-    const bytesPerPixel = 4; // 4 bytes per pixel for BGRA
-
-    // Create a pointer to the ArrayBuffer
-    const imageDataPtr = Deno.UnsafePointer.of(buffer);
-
-    if (!imageDataPtr) {
-        throw new Error("Failed to create pointer for image data.");
-    }
-
-    // Call the FFI function to update the overlay
-    const error = overlay.SetOverlayRaw(
-        state.overlayHandle,
-        imageDataPtr,
-        width,
-        height,
-        bytesPerPixel
-    );
-
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-        CustomLogger.error("overlay", `Failed to update overlay texture: ${OpenVR.OverlayError[error]}`);
-    }
-}
-
-
 
 const functions = {
     CUSTOMINIT: (_payload) => {
-        Postman.functions?.HYPERSWARM?.(null, state.id);
+        //Postman.functions?.HYPERSWARM?.(null, state.id);
+        startDesktopCapture(30).catch(error => console.log(`Desktop capture error: ${error}`));
     },
     LOG: (_payload) => {
         CustomLogger.log("actor", state.id);
@@ -255,6 +235,9 @@ const functions = {
         state.vrcOriginActor = payload as string;
         CustomLogger.log("actor", `VRC Origin Actor assigned: ${state.vrcOriginActor}`);
     },
+    STOP: (_payload) => {
+        stopDesktopCapture();
+    },
 };
 
 function isValidMatrix(m: OpenVR.HmdMatrix34 | null): boolean {
@@ -268,7 +251,6 @@ function isValidMatrix(m: OpenVR.HmdMatrix34 | null): boolean {
     }
     return true;
 }
-
 
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
     const overlay = state.overlayClass!;
@@ -391,40 +373,51 @@ function getSmoothedTransform(window: (OpenVR.HmdMatrix34 | null)[]): OpenVR.Hmd
     return smoothedTransform;
 }
 
-
-
-
 async function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
-    state.sync = sync;
+    try {
+        state.sync = sync;
 
-    const overlay = state.overlayClass as OpenVR.IVROverlay;
-    const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-    const error = overlay.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
-    const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
-    state.overlayHandle = overlayHandle;
+        CustomLogger.log("overlay", "Creating overlay...");
+        const overlay = state.overlayClass as OpenVR.IVROverlay;
+        const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
+        const error = overlay.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
+        
+        if (error !== OpenVR.OverlayError.VROverlayError_None) {
+            throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
+        }
 
-    CustomLogger.log("actor", `Overlay created with handle: ${overlayHandle}`);
+        const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
+        state.overlayHandle = overlayHandle;
+        CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
 
-    const imgpath = Deno.realPathSync(overlaytexture);
-    overlay.SetOverlayFromFile(overlayHandle, imgpath);
-    overlay.SetOverlayWidthInMeters(overlayHandle, 0.2);
-    overlay.ShowOverlay(overlayHandle);
+        const imgpath = Deno.realPathSync(overlaytexture);
+        overlay.SetOverlayFromFile(overlayHandle, imgpath);
+        
+        // Set size to 1.6 meters wide (16:9 ratio will make it 0.9 meters tall)
+        overlay.SetOverlayWidthInMeters(overlayHandle, 1.6);
+        overlay.ShowOverlay(overlayHandle);
+        
+        // Position it slightly further back to accommodate the larger size
+        const initialTransform: OpenVR.HmdMatrix34 = {
+            m: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, -2.5]
+            ]
+        };
+        setOverlayTransformAbsolute(initialTransform);
 
-    const initialTransform: OpenVR.HmdMatrix34 = {
-        m: [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 1.0],
-            [0.0, 0.0, 1.0, -2.0]
-        ]
-    };
-    setOverlayTransformAbsolute(initialTransform);
+        CustomLogger.log("overlay", "Overlay initialized and shown");
 
-    CustomLogger.log("default", "Overlay created and shown.");
-
-    state.isRunning = true;
-    captureDesktop().catch(error => console.log(`Desktop capture error: ${error}`));
-    updateLoop();
-
+        state.isRunning = true;
+        await startDesktopCapture(30);
+        updateLoop();
+    } catch (error) {
+        CustomLogger.error("overlay", "Error in mainX:", error);
+        if (error instanceof Error) {
+            CustomLogger.error("overlay", "Stack:", error.stack);
+        }
+    }
 }
 
 async function updateLoop() {
