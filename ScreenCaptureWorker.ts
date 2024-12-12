@@ -59,8 +59,6 @@ import time
 import numpy as np
 import base64
 from numba import njit, prange
-import gc
-gc.disable()
 
 buffer = np.empty(8294400, dtype=np.uint8)  # Pre-allocate buffer
 
@@ -245,7 +243,7 @@ class CaptureManager:
         this.capture.stop();
     }
 
-    public getCurrentFrame(): { encodedData: Uint8Array|null, width: number, height: number } {
+    public getCurrentFrame(): { encodedData: Uint8Array | null, width: number, height: number } {
         return {
             encodedData: this.currentFrame,
             width: this.width,

@@ -132,8 +132,6 @@ const RotationY: string = "/avatar/parameters/CustomObjectSync/RotationY";
 
 const lastKnownPosition: LastKnownPosition = { x: 0, y: 0, z: 0 };
 const lastKnownRotation: LastKnownRotation = { y: 0 };
-let lastVRCRotation = 0;
-let isVRCRotating = false;
 
 interface LastKnownPosition {
     x: number;
@@ -225,42 +223,32 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
             if (coordinate[PositionX] !== undefined) lastKnownPosition.x = coordinate[PositionX];
             if (coordinate[PositionY] !== undefined) lastKnownPosition.y = coordinate[PositionY];
             if (coordinate[PositionZ] !== undefined) lastKnownPosition.z = coordinate[PositionZ];
-            if (coordinate[RotationY] !== undefined) {
-                isVRCRotating = lastKnownRotation.y !== coordinate[RotationY];
-                lastKnownRotation.y = coordinate[RotationY];
-            }
+            if (coordinate[RotationY] !== undefined) lastKnownRotation.y = coordinate[RotationY];
 
             const hmdX = hmdMatrix[0][3];  // Extract HMD X position
             const hmdY = hmdMatrix[1][3];  // Extract HMD Y position
             const hmdZ = hmdMatrix[2][3];  // Extract HMD Z position
-            
-            // Only apply VRChat rotation if actually rotating
-            const vrChatYaw = isVRCRotating ? transformRotation(lastKnownRotation.y) : lastVRCRotation;
-            lastVRCRotation = vrChatYaw;
+            const vrChatYaw = transformRotation(lastKnownRotation.y);
+            const correctedYaw = hmdYaw + vrChatYaw;
 
-            let rotatedHmdX, rotatedHmdZ;
-            if (!isVRCRotating) {
-                // When not rotating, use raw HMD position without any rotation
-                rotatedHmdX = hmdX;
-                rotatedHmdZ = hmdZ;
-            } else {
-                // When rotating, apply the full rotation
-                const cosVrChatYaw = Math.cos(vrChatYaw);
-                const sinVrChatYaw = Math.sin(vrChatYaw);
-                rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
-                rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
-            }
+            const cosVrChatYaw = Math.cos(correctedYaw);
+            const sinVrChatYaw = Math.sin(correctedYaw);
+            const rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
+            const rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
+
 
             const transformedX = transformCoordinate(lastKnownPosition.x) + rotatedHmdX;
             const transformedY = transformCoordinate(lastKnownPosition.y);
             const transformedZ = transformCoordinate(lastKnownPosition.z) - rotatedHmdZ;
 
-            // Final rotation matrix
-            const cosCorrectedYaw = Math.cos(vrChatYaw);  // Use vrChatYaw directly instead of correctedYaw
-            const sinCorrectedYaw = Math.sin(vrChatYaw);
+
+            const cosCorrectedYaw = Math.cos(correctedYaw);
+            const sinCorrectedYaw = Math.sin(correctedYaw);
 
             const rotatedX = transformedX * cosCorrectedYaw - transformedZ * sinCorrectedYaw;
             const rotatedZ = transformedX * sinCorrectedYaw + transformedZ * cosCorrectedYaw;
+
+
 
             const pureMatrix: OpenVR.HmdMatrix34 = {
                 m: [
@@ -275,7 +263,8 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                 lastOrigin = pureMatrix;
             }
 
-            // Visual
+
+            //#region visual
             const angle = -Math.PI / 2; // -90 degrees, pointing straight down
 
             // Sin and cos of the angle
@@ -292,10 +281,12 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
 
             //CustomLogger.log("default", "Overlay Transformation Matrix: ", matrix);
             setOverlayTransformAbsolute(matrix);
+            //#endregion
+
         }
         const currentTime = Date.now();
         if (currentTime - lastLogTime >= 1000) {
-            CustomLogger.log("origin",`Origin changed ${state.originChangeCount} times in the last second`);
+            console.log(`Origin changed ${state.originChangeCount} times in the last second`);
             state.originChangeCount = 0;
             lastLogTime = currentTime;
         }
