@@ -1,5 +1,4 @@
 import { ScreenCapture } from "./ScreenCapture.ts";
-import imgDecode from "https://deno.land/x/wasm_image_decoder@v0.0.7/mod.js";
 import {
     createWindow,
     getProcAddress,
@@ -12,10 +11,7 @@ import { wait } from "./actorsystem/utils.ts";
 
 
 // Constants
-const WIDTH = 800;
-const HEIGHT = 600;
-
-
+const OVERLAY_WIDTH_METERS = 2;
 
 //#region OpenVR Initialization
 function initOpenVR(): { overlay: OpenVR.IVROverlay; overlayHandle: OpenVR.OverlayHandle } {
@@ -59,9 +55,9 @@ function setOverlayTransform(
         ],
     };
     const transformBuffer = new ArrayBuffer(OpenVR.HmdMatrix34Struct.byteSize);
-    const transformView = new DataView(transformBuffer);
-    OpenVR.HmdMatrix34Struct.write(transform, transformView);
+    OpenVR.HmdMatrix34Struct.write(transform, new DataView(transformBuffer));
     const transformPtr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(transformBuffer)!;
+
     overlay.SetOverlayTransformAbsolute(
         overlayHandle,
         OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
@@ -115,7 +111,7 @@ checkGLError("texture creation");
 //#region OpenVR Program Code
 const { overlay, overlayHandle } = initOpenVR();
 setOverlayTransform(overlay, overlayHandle);
-overlay.SetOverlayWidthInMeters(overlayHandle, 2);
+overlay.SetOverlayWidthInMeters(overlayHandle, OVERLAY_WIDTH_METERS);
 overlay.ShowOverlay(overlayHandle);
 
 const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
@@ -138,12 +134,10 @@ const intervalId = setInterval(() => {
 }, 100);
 console.log("Starting screen capture test...");
 
-let currentTexture: number | null = null;
-
 // Function to flip texture data vertically
 function flipVertical(pixels: Uint8Array, width: number, height: number): Uint8Array {
     const flippedPixels = new Uint8Array(pixels.length);
-    const bytesPerRow = width * 4; // Assuming RGBA
+    const bytesPerRow = width * 4;
     for (let y = 0; y < height; y++) {
         const srcRowStart = y * bytesPerRow;
         const destRowStart = (height - 1 - y) * bytesPerRow;
@@ -153,33 +147,23 @@ function flipVertical(pixels: Uint8Array, width: number, height: number): Uint8A
 }
 
 
-function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): number {
+function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
+    const flippedPixels = flipVertical(pixels, width, height);
 
-    // Create new texture
-    const texture = new Uint32Array(1);
-    gl.GenTextures(1, texture);
     gl.BindTexture(gl.TEXTURE_2D, texture[0]);
-
-    // Set texture parameters
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    // Upload texture data
     gl.TexImage2D(
         gl.TEXTURE_2D,
         0,
-        gl.RGBA, // Explicitly stating we're using RGBA
+        gl.RGBA,
         width,
         height,
         0,
         gl.BGRA,
         gl.UNSIGNED_BYTE,
-        pixels
+        flippedPixels
     );
 
-    return texture[0];
+    checkGLError("upload texture data");
 }
 //#endregion
 
@@ -198,49 +182,21 @@ async function main() {
     OpenVR.TextureStruct.write(textureData, new DataView(textureStructBuffer));
     const textureStructPtr = Deno.UnsafePointer.of(textureStructBuffer) as Deno.PointerValue<OpenVR.Texture>;
 
-    let frameNumber = 0;
     while (true) {
         const frame = screen.getCurrentFrame();
-        let pixels: Uint8Array | null = null;
-        let width = 0;
-        let height = 0;
-
         if (frame && frame.pixels) {
-            ({ pixels, width, height } = frame);
-            if (width > 0 && height > 0) {
-                //upload new data
-                const flippedPixels = flipVertical(pixels, width, height);
-                gl.BindTexture(gl.TEXTURE_2D, texture[0]);
-                gl.TexImage2D(
-                    gl.TEXTURE_2D,
-                    0,
-                    gl.RGBA, // Ensuring RGBA format
-                    width,
-                    height,
-                    0,
-                    gl.BGRA, // Ensuring RGBA format
-                    gl.UNSIGNED_BYTE,
-                    flippedPixels
-                );
-                checkGLError("upload texture data");
-                // Set overlay texture
-                const error = overlay.SetOverlayTexture(overlayHandle, textureStructPtr);
-                if (error !== OpenVR.OverlayError.VROverlayError_None) {
-                    console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
-                }
+            createTextureFromScreenshot(frame.pixels, frame.width, frame.height)
+            // Set overlay texture
+            const error = overlay.SetOverlayTexture(overlayHandle, textureStructPtr);
+            if (error !== OpenVR.OverlayError.VROverlayError_None) {
+                console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
             }
-        }
-        else {
+        } else {
             console.log("No frame available.");
             await wait(100);
         }
-
-
-
         // Wait frame sync
         overlay.WaitFrameSync(100);
-        frameNumber++;
-
         // Add a small delay
         await new Promise((resolve) => setTimeout(resolve, 16));
     }
@@ -249,7 +205,6 @@ async function main() {
 
 // Cleanup function
 function cleanup() {
-
     screen.stop();
 }
 
