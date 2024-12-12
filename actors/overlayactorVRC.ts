@@ -11,12 +11,13 @@ import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { ScreenCapture } from "../ScreenCapture.ts";
-import * as gl from "https://deno.land/x/gluten@0.1.9/api/gles23.2.ts";
 import {
     createWindow,
     getProcAddress,
 } from "https://deno.land/x/dwm@0.3.4/mod.ts";
+import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
 
+//#region state
 type State = {
     id: string;
     db: Record<string, unknown>;
@@ -65,6 +66,7 @@ const state: State & BaseState = {
     currentTexture: null,
     glWindow: null,
 };
+//#endregion
 
 const smoothingWindowSize = 10;
 const smoothingWindow: OpenVR.HmdMatrix34[] = [];
@@ -137,52 +139,7 @@ async function stopDesktopCapture(): Promise<void> {
     CustomLogger.log("overlay", "Stopped desktop capture");
 }
 
-function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): number {
-    // Delete old texture if it exists
-    if (state.currentTexture !== null) {
-        const textures = new Uint32Array([state.currentTexture]);
-        gl.DeleteTextures(1, textures);
-    }
 
-    // Create new texture
-    const texture = new Uint32Array(1);
-    gl.GenTextures(1, texture);
-    gl.BindTexture(gl.TEXTURE_2D, texture[0]);
-    
-    // Set texture parameters - these are required for OpenVR
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    // Clear any existing errors
-    gl.GetError();
-    
-    // Upload texture data
-    gl.TexImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA8,  // Use RGBA8 format explicitly
-        width,
-        height,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        pixels
-    );
-
-    // Check for errors
-    const error = gl.GetError();
-    if (error !== gl.NO_ERROR) {
-        CustomLogger.error("overlay", `GL Error creating texture: ${error}`);
-    }
-
-    // Make sure the texture is bound and active
-    gl.ActiveTexture(gl.TEXTURE0);
-    gl.BindTexture(gl.TEXTURE_2D, texture[0]);
-
-    return texture[0];
-}
 
 function updateOverlayTexture(frameData: { pixels: Uint8Array, width: number, height: number }) {
     if (!state.overlayClass || !state.overlayHandle) {
@@ -203,30 +160,6 @@ function updateOverlayTexture(frameData: { pixels: Uint8Array, width: number, he
             return;
         }
 
-        // Create or update OpenGL texture
-        state.currentTexture = createTextureFromScreenshot(frameData.pixels, frameData.width, frameData.height);
-
-        // Create OpenVR Texture struct
-        const textureStructBuffer = new ArrayBuffer(OpenVR.TextureStruct.byteSize);
-        const textureStructView = new DataView(textureStructBuffer);
-        
-        // Create the texture struct data
-        const textureData = {
-            handle: BigInt(state.currentTexture),
-            eType: OpenVR.TextureType.TextureType_OpenGL,
-            eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto
-        };
-
-        // Write the texture struct to the buffer
-        OpenVR.TextureStruct.write(textureData, textureStructView);
-
-        // Create a pointer to the texture struct
-        const textureStructPtr = Deno.UnsafePointer.of(textureStructBuffer) as Deno.PointerValue<OpenVR.Texture>;
-        if (!textureStructPtr) {
-            throw new Error("Failed to create texture struct pointer");
-        }
-
-        // Update OpenVR overlay with the texture struct
         const error = state.overlayClass.SetOverlayTexture(
             state.overlayHandle,
             textureStructPtr
@@ -334,6 +267,7 @@ const functions = {
     },
 };
 
+//#region random funcs
 function isValidMatrix(m: OpenVR.HmdMatrix34 | null): boolean {
     if (!m) return false;
     for (let i = 0; i < 3; i++) {
@@ -467,6 +401,18 @@ function getSmoothedTransform(window: (OpenVR.HmdMatrix34 | null)[]): OpenVR.Hmd
     return smoothedTransform;
 }
 
+function matrixEquals(a: OpenVR.HmdMatrix34, b: OpenVR.HmdMatrix34): boolean {
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 4; j++) {
+            if (Math.abs(a.m[i][j] - b.m[i][j]) > 0.0001) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+//#endregion
+
 async function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
     try {
         state.sync = sync;
@@ -575,35 +521,12 @@ async function updateLoop() {
     }
 }
 
-function matrixEquals(a: OpenVR.HmdMatrix34, b: OpenVR.HmdMatrix34): boolean {
-    for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 4; j++) {
-            if (Math.abs(a.m[i][j] - b.m[i][j]) > 0.0001) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
+
 
 function cleanup() {
-    if (state.currentTexture !== null) {
-        const textures = new Uint32Array([state.currentTexture]);
-        gl.DeleteTextures(1, textures);
-        state.currentTexture = null;
-    }
+    //cleanup GL
+    
 
-    if (state.glWindow) {
-        state.glWindow.close();
-        state.glWindow = null;
-    }
-
-    if (state.screenCapture) {
-        state.screenCapture.stop();
-        state.screenCapture = null;
-    }
-
-    state.isRunning = false;
 }
 
 // Handle cleanup on exit
