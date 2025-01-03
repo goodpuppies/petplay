@@ -1,9 +1,9 @@
-# AR in VR for VRChat
+# AR in VR for VRChat and other platforms
 
 - [x] preliminary VRC integration
-- [ ] [WIP] iroh-net MP 
-- [ ] add rust desk
-- [ ] advanced vrc ( instance, friends, etc api )
+- [X] iroh-net P2P
+- [ ] [WIP] desktop capture
+- [ ] advanced vrc api integration ( instance, friends, etc api )
 
 
 ##### YouTube demo
