@@ -12,7 +12,7 @@ import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
 import { OpenGLManager } from "./openglManager.ts";
-import { flipVertical } from "./screenutils.ts";
+import { OpenVRTransform } from "./openvrTransform.ts";
 import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "./matrixutils.ts";
 
 //#region state
@@ -22,7 +22,7 @@ type State = {
     overlayClass: OpenVR.IVROverlay | null;
     overlayHandle: OpenVR.OverlayHandle;
     overlayerror: OpenVR.OverlayError;
-    OverlayTransform: OpenVR.HmdMatrix34 | null;
+    overlayTransform: OpenVRTransform | null;
     vrSystem: OpenVR.IVRSystem | null;
     vrcOriginActor: string | null;
     vrcOrigin: OpenVR.HmdMatrix34 | null;
@@ -38,11 +38,9 @@ const state: State & BaseState = {
     id: "",
     db: {},
     name: "overlay1",
-    socket: null,
     sync: false,
     overlayClass: null,
-    OverlayTransform: null,
-    numbah: 0,
+    overlayTransform: null,
     addressBook: new Set(),
     overlayHandle: 0n,
     TrackingUniverseOriginPTR: null,
@@ -64,56 +62,6 @@ const state: State & BaseState = {
 };
 //#endregion
 
-const smoothingWindowSize = 10;
-const smoothingWindow: OpenVR.HmdMatrix34[] = [];
-const vrcOriginSmoothingWindow: OpenVR.HmdMatrix34[] = [];
-
-//#region init screencapture
-
-function INITSCREENCAP(): ScreenCapturer {
-    const capturer = new ScreenCapturer({
-        debug: false,
-        onStats: ({ fps, avgLatency }) => {
-            CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
-        }
-    });
-    return capturer;
-}
-
-//#endregion
-
-function INITGL() {
-    state.glManager = new OpenGLManager();
-    state.glManager.initialize();
-}
-
-function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
-    if (!state.glManager) { throw new Error("glManager is null"); }
-    state.glManager.createTextureFromScreenshot(pixels, width, height);
-}
-
-//#region screencapture
-
-async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay, textureStructPtr: Deno.PointerValue<OpenVR.Texture>) {
-    while (true) {
-        const frame = await capturer.getLatestFrame();
-        if (frame) {
-            createTextureFromScreenshot(frame.data, frame.width, frame.height)
-            // Set overlay texture
-            const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
-            if (error !== OpenVR.OverlayError.VROverlayError_None) {
-                console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
-            }
-        }
-        // Wait frame sync
-        overlay.WaitFrameSync(100);
-        // Add a small delay to match VR frame rate
-        await new Promise((resolve) => setTimeout(resolve, 11)); // ~90fps
-    }
-}
-
-//#endregion
-
 const functions = {
     CUSTOMINIT: (_payload: void) => {
         //Postman.functions?.HYPERSWARM?.(null, state.id);
@@ -131,7 +79,7 @@ const functions = {
         }, false);
     },
     STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }, _address: MessageAddressReal) => {
-        mainX(payload.name, payload.texture, payload.sync);
+        main(payload.name, payload.texture, payload.sync);
     },
     GETOVERLAYLOCATION: (_payload: void, address: MessageAddressReal) => {
         const addr = address as MessageAddressReal;
@@ -178,35 +126,34 @@ const functions = {
     },
 };
 
-//#region random funcs
+//#region init 
 
-function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
-    const overlay = state.overlayClass!;
-    const transformBuffer = new ArrayBuffer(OpenVR.HmdMatrix34Struct.byteSize);
-    const transformView = new DataView(transformBuffer);
-    OpenVR.HmdMatrix34Struct.write(transform, transformView);
-    const transformPtr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(transformBuffer)!;
-    overlay.SetOverlayTransformAbsolute(state.overlayHandle, OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding, transformPtr);
+
+function INITSCREENCAP(): ScreenCapturer {
+    const capturer = new ScreenCapturer({
+        debug: false,
+        onStats: ({ fps, avgLatency }) => {
+            CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+        }
+    });
+    return capturer;
+}
+function INITGL() {
+    state.glManager = new OpenGLManager();
+    state.glManager.initialize();
 }
 
-function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
-    let error = state.overlayerror;
-    const overlay = state.overlayClass!;
-    const overlayHandle = state.overlayHandle;
-    const TrackingUniverseOriginPTR = P.Int32P<OpenVR.TrackingUniverseOrigin>();
-    const hmd34size = OpenVR.HmdMatrix34Struct.byteSize;
-    const hmd34buf = new ArrayBuffer(hmd34size);
-    const hmd34view = new DataView(hmd34buf);
-    const m34ptr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(hmd34buf)!;
-
-    error = overlay.GetOverlayTransformAbsolute(overlayHandle, TrackingUniverseOriginPTR, m34ptr);
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-        CustomLogger.error("actorerr", `Failed to get overlay transform: ${OpenVR.OverlayError[error]}`);
-        throw new Error("Failed to get overlay transform");
-    }
-    const m34 = OpenVR.HmdMatrix34Struct.read(hmd34view) as OpenVR.HmdMatrix34;
-    return m34;
+function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
+    if (!state.glManager) { throw new Error("glManager is null"); }
+    state.glManager.createTextureFromScreenshot(pixels, width, height);
 }
+
+//#endregion
+
+//#region smoothing
+const smoothingWindowSize = 10;
+const smoothingWindow: OpenVR.HmdMatrix34[] = [];
+const vrcOriginSmoothingWindow: OpenVR.HmdMatrix34[] = [];
 
 function addToSmoothingWindow(window: OpenVR.HmdMatrix34[], transform: OpenVR.HmdMatrix34) {
     if (window.length >= smoothingWindowSize) {
@@ -248,11 +195,44 @@ function getSmoothedTransform(window: (OpenVR.HmdMatrix34 | null)[]): OpenVR.Hmd
 
     return smoothedTransform;
 }
+//#endregion
 
+//#region screencapture
+async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay, textureStructPtr: Deno.PointerValue<OpenVR.Texture>) {
+    while (true) {
+        const frame = await capturer.getLatestFrame();
+        if (frame) {
+            createTextureFromScreenshot(frame.data, frame.width, frame.height)
+            // Set overlay texture
+            const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
+            if (error !== OpenVR.OverlayError.VROverlayError_None) {
+                console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
+            }
+        }
+        // Wait frame sync
+        overlay.WaitFrameSync(100);
+        // Add a small delay to match VR frame rate
+        await new Promise((resolve) => setTimeout(resolve, 11)); // ~90fps
+    }
+}
 
 //#endregion
 
-function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
+//#region openvr funcs
+
+function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
+    if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
+    state.overlayTransform.setTransformAbsolute(transform);
+}
+
+function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
+    if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
+    return state.overlayTransform.getTransformAbsolute();
+}
+
+//#endregion
+
+function main(overlayname: string, overlaytexture: string, sync: boolean) {
     try {
         state.sync = sync;
 
@@ -270,6 +250,7 @@ function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
 
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
+        state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
         CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
 
         // Set size to 1.6 meters wide (16:9 ratio will make it 0.9 meters tall)
@@ -322,7 +303,7 @@ function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
         DeskCapLoop(state.screenCapturer, overlay, textureStructPtr);
         updateLoop();
     } catch (error) {
-        CustomLogger.error("overlay", "Error in mainX:", error);
+        CustomLogger.error("overlay", "Error in main:", error);
         if (error instanceof Error) {
             CustomLogger.error("overlay", "Stack:", error.stack);
         }

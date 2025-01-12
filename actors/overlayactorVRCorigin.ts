@@ -9,6 +9,7 @@ import { wait } from "../actorsystem/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
+import { OpenVRTransform } from "./openvrTransform.ts";
 
 type State = {
     id: string;
@@ -19,6 +20,7 @@ type State = {
     overlayerror: OpenVR.OverlayError;
     origin: OpenVR.HmdMatrix34 | null
     sync: boolean;
+    overlayTransform: OpenVRTransform | null;
     originChangeCount: number;
 };
 
@@ -33,6 +35,7 @@ const state: State & BaseState = {
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
     sync: false,
     addressBook: new Set(),
+    overlayTransform: null,
     originChangeCount: 0,
 };
 
@@ -97,32 +100,13 @@ const functions = {
 };
 
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
-    const overlay = state.overlayClass!;
-    const transformBuffer = new ArrayBuffer(OpenVR.HmdMatrix34Struct.byteSize);
-    const transformView = new DataView(transformBuffer);
-    OpenVR.HmdMatrix34Struct.write(transform, transformView);
-    const transformPtr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(transformBuffer)!;
-    overlay.SetOverlayTransformAbsolute(state.overlayHandle, OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding, transformPtr);
+    if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
+    state.overlayTransform.setTransformAbsolute(transform);
 }
 
 function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
-    let error = state.overlayerror;
-    const overlay = state.overlayClass!;
-    const overlayHandle = state.overlayHandle;
-
-    const TrackingUniverseOriginPTR = P.Int32P<OpenVR.TrackingUniverseOrigin>();
-    const hmd34size = OpenVR.HmdMatrix34Struct.byteSize;
-    const hmd34buf = new ArrayBuffer(hmd34size);
-    const hmd34view = new DataView(hmd34buf);
-    const m34ptr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(hmd34buf)!;
-
-    error = overlay.GetOverlayTransformAbsolute(overlayHandle, TrackingUniverseOriginPTR, m34ptr);
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-        CustomLogger.error("actorerr", `Failed to get overlay transform: ${OpenVR.OverlayError[error]}`);
-        throw new Error("Failed to get overlay transform");
-    }
-    const m34 = OpenVR.HmdMatrix34Struct.read(hmd34view) as OpenVR.HmdMatrix34;
-    return m34;
+    if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
+    return state.overlayTransform.getTransformAbsolute();
 }
 
 const PositionX: string = "/avatar/parameters/CustomObjectSync/PositionX";
@@ -144,154 +128,156 @@ interface LastKnownRotation {
 }
 
 async function mainX(overlaymame: string, overlaytexture: string, sync: boolean) {
-    state.sync = sync;
-    const overlay = state.overlayClass as OpenVR.IVROverlay;
+    try {
+        state.sync = sync;
 
-    const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-    const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
-    const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
-    state.overlayHandle = overlayHandle;
+        CustomLogger.log("overlay", "Creating overlay...");
+        const overlay = state.overlayClass as OpenVR.IVROverlay;
+        const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
+        const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
 
-    CustomLogger.log("actor", `Overlay created with handle: ${overlayHandle}`);
-
-    const imgpath = Deno.realPathSync(overlaytexture);
-    overlay.SetOverlayFromFile(overlayHandle, imgpath);
-    overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
-    overlay.ShowOverlay(overlayHandle);
-
-    const initialTransformSize = OpenVR.HmdMatrix34Struct.byteSize;
-    const initialTransformBuf = new ArrayBuffer(initialTransformSize);
-    const initialTransformView = new DataView(initialTransformBuf);
-
-    const initialTransform: OpenVR.HmdMatrix34 = {
-        m: [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 1.0],
-            [0.0, 0.0, 1.0, -2.0]
-        ]
-    };
-    OpenVR.HmdMatrix34Struct.write(initialTransform, initialTransformView);
-    state.trackingUniverseOriginPTR = Deno.UnsafePointer.of<OpenVR.TrackingUniverseOrigin>(new Int32Array(1))!;
-    setOverlayTransformAbsolute(initialTransform);
-
-    CustomLogger.log("default", "Overlay created and shown.");
-
-
-
-    function transformCoordinate(value: number): number {
-        return (value - 0.5) * 340;
-    }
-
-    function transformRotation(value: number): number {
-        return value * 2 * Math.PI;
-    }
-
-    let lastOrigin: OpenVR.HmdMatrix34 | null = null;
-    let lastLogTime = Date.now();
-
-    function isOriginChanged(newOrigin: OpenVR.HmdMatrix34): boolean {
-        if (!lastOrigin) return true;
-        for (let i = 0; i < 3; i++) {
-            for (let j = 0; j < 4; j++) {
-                if (newOrigin.m[i][j] !== lastOrigin.m[i][j]) return true;
-            }
-        }
-        return false;
-    }
-
-    while (true) {
-        if (state.vrc != "") {
-            interface coord {
-                [key: string]: number;
-            }
-
-            const hmdPose = await Postman.PostMessage({
-                address: { fm: state.id, to: state.hmd },
-                type: "GETHMDPOSITION",
-                payload: null,
-            }, true) as OpenVR.TrackedDevicePose;
-
-            const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m;
-            const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[0][0]);
-
-            const coordinate = await Postman.PostMessage({
-                address: { fm: state.id, to: state.vrc },
-                type: "GETCOORDINATE",
-                payload: null,
-            }, true) as coord;
-
-            if (coordinate[PositionX] !== undefined) lastKnownPosition.x = coordinate[PositionX];
-            if (coordinate[PositionY] !== undefined) lastKnownPosition.y = coordinate[PositionY];
-            if (coordinate[PositionZ] !== undefined) lastKnownPosition.z = coordinate[PositionZ];
-            if (coordinate[RotationY] !== undefined) lastKnownRotation.y = coordinate[RotationY];
-
-            const hmdX = hmdMatrix[0][3];  // Extract HMD X position
-            const hmdY = hmdMatrix[1][3];  // Extract HMD Y position
-            const hmdZ = hmdMatrix[2][3];  // Extract HMD Z position
-            const vrChatYaw = transformRotation(lastKnownRotation.y);
-            const correctedYaw = hmdYaw + vrChatYaw;
-
-            const cosVrChatYaw = Math.cos(correctedYaw);
-            const sinVrChatYaw = Math.sin(correctedYaw);
-            const rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
-            const rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
-
-
-            const transformedX = transformCoordinate(lastKnownPosition.x) + rotatedHmdX;
-            const transformedY = transformCoordinate(lastKnownPosition.y);
-            const transformedZ = transformCoordinate(lastKnownPosition.z) - rotatedHmdZ;
-
-
-            const cosCorrectedYaw = Math.cos(correctedYaw);
-            const sinCorrectedYaw = Math.sin(correctedYaw);
-
-            const rotatedX = transformedX * cosCorrectedYaw - transformedZ * sinCorrectedYaw;
-            const rotatedZ = transformedX * sinCorrectedYaw + transformedZ * cosCorrectedYaw;
-
-
-
-            const pureMatrix: OpenVR.HmdMatrix34 = {
-                m: [
-                    [cosCorrectedYaw, 0, sinCorrectedYaw, rotatedX],
-                    [0, 1, 0, -transformedY],
-                    [-sinCorrectedYaw, 0, cosCorrectedYaw, -rotatedZ]
-                ]
-            };
-            if (isOriginChanged(pureMatrix)) {
-                state.origin = pureMatrix;
-                state.originChangeCount++;
-                lastOrigin = pureMatrix;
-            }
-
-
-            //#region visual
-            const angle = -Math.PI / 2; // -90 degrees, pointing straight down
-
-            // Sin and cos of the angle
-            const s = Math.sin(angle);
-            const c = Math.cos(angle);
-
-            const matrix: OpenVR.HmdMatrix34 = {
-                m: [
-                    [cosCorrectedYaw, sinCorrectedYaw * s, sinCorrectedYaw * c, rotatedX],
-                    [0, c, -s, -transformedY + 2.9],
-                    [-sinCorrectedYaw, cosCorrectedYaw * s, cosCorrectedYaw * c, -rotatedZ]
-                ]
-            };
-
-            //CustomLogger.log("default", "Overlay Transformation Matrix: ", matrix);
-            setOverlayTransformAbsolute(matrix);
-            //#endregion
-
-        }
-        const currentTime = Date.now();
-        if (currentTime - lastLogTime >= 1000) {
-            CustomLogger.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
-            state.originChangeCount = 0;
-            lastLogTime = currentTime;
+        if (error !== OpenVR.OverlayError.VROverlayError_None) {
+            throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
         }
 
-        await wait(11);
+        const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
+        state.overlayHandle = overlayHandle;
+        state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
+
+        const imgpath = Deno.realPathSync(overlaytexture);
+        overlay.SetOverlayFromFile(overlayHandle, imgpath);
+        overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
+        overlay.ShowOverlay(overlayHandle);
+
+        const initialTransformSize = OpenVR.HmdMatrix34Struct.byteSize;
+        const initialTransformBuf = new ArrayBuffer(initialTransformSize);
+        const initialTransformView = new DataView(initialTransformBuf);
+
+        const initialTransform: OpenVR.HmdMatrix34 = {
+            m: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, -2.0]
+            ]
+        };
+        OpenVR.HmdMatrix34Struct.write(initialTransform, initialTransformView);
+        setOverlayTransformAbsolute(initialTransform);
+
+        CustomLogger.log("default", "Overlay created and shown.");
+
+
+
+        function transformCoordinate(value: number): number {
+            return (value - 0.5) * 340;
+        }
+
+        function transformRotation(value: number): number {
+            return value * 2 * Math.PI;
+        }
+
+        let lastOrigin: OpenVR.HmdMatrix34 | null = null;
+        let lastLogTime = Date.now();
+
+        function isOriginChanged(newOrigin: OpenVR.HmdMatrix34): boolean {
+            if (!lastOrigin) return true;
+            for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 4; j++) {
+                    if (newOrigin.m[i][j] !== lastOrigin.m[i][j]) return true;
+                }
+            }
+            return false;
+        }
+
+        while (true) {
+            if (state.vrc != "") {
+                interface coord {
+                    [key: string]: number;
+                }
+
+                const hmdPose = await Postman.PostMessage({
+                    address: { fm: state.id, to: state.hmd },
+                    type: "GETHMDPOSITION",
+                    payload: null,
+                }, true) as OpenVR.TrackedDevicePose;
+
+                const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m;
+                const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[0][0]);
+
+                const coordinate = await Postman.PostMessage({
+                    address: { fm: state.id, to: state.vrc },
+                    type: "GETCOORDINATE",
+                    payload: null,
+                }, true) as coord;
+
+                if (coordinate[PositionX] !== undefined) lastKnownPosition.x = coordinate[PositionX];
+                if (coordinate[PositionY] !== undefined) lastKnownPosition.y = coordinate[PositionY];
+                if (coordinate[PositionZ] !== undefined) lastKnownPosition.z = coordinate[PositionZ];
+                if (coordinate[RotationY] !== undefined) lastKnownRotation.y = coordinate[RotationY];
+
+                const hmdX = hmdMatrix[0][3];  // Extract HMD X position
+                const hmdY = hmdMatrix[1][3];  // Extract HMD Y position
+                const hmdZ = hmdMatrix[2][3];  // Extract HMD Z position
+                const vrChatYaw = transformRotation(lastKnownRotation.y);
+                const correctedYaw = hmdYaw + vrChatYaw;
+
+                const cosVrChatYaw = Math.cos(correctedYaw);
+                const sinVrChatYaw = Math.sin(correctedYaw);
+                const rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
+                const rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
+
+
+                const transformedX = transformCoordinate(lastKnownPosition.x) + rotatedHmdX;
+                const transformedY = transformCoordinate(lastKnownPosition.y);
+                const transformedZ = transformCoordinate(lastKnownPosition.z) - rotatedHmdZ;
+
+
+                const cosCorrectedYaw = Math.cos(correctedYaw);
+                const sinCorrectedYaw = Math.sin(correctedYaw);
+
+                const rotatedX = transformedX * cosCorrectedYaw - transformedZ * sinCorrectedYaw;
+                const rotatedZ = transformedX * sinCorrectedYaw + transformedZ * cosCorrectedYaw;
+
+                const pureMatrix: OpenVR.HmdMatrix34 = {
+                    m: [
+                        [cosCorrectedYaw, 0, sinCorrectedYaw, rotatedX],
+                        [0, 1, 0, -transformedY],
+                        [-sinCorrectedYaw, 0, cosCorrectedYaw, -rotatedZ]
+                    ]
+                };
+                if (isOriginChanged(pureMatrix)) {
+                    state.origin = pureMatrix;
+                    state.originChangeCount++;
+                    lastOrigin = pureMatrix;
+                }
+
+                const angle = -Math.PI / 2; // -90 degrees, pointing straight down
+
+                // Sin and cos of the angle
+                const s = Math.sin(angle);
+                const c = Math.cos(angle);
+
+                const matrix: OpenVR.HmdMatrix34 = {
+                    m: [
+                        [cosCorrectedYaw, sinCorrectedYaw * s, sinCorrectedYaw * c, rotatedX],
+                        [0, c, -s, -transformedY + 2.9],
+                        [-sinCorrectedYaw, cosCorrectedYaw * s, cosCorrectedYaw * c, -rotatedZ]
+                    ]
+                };
+
+                setOverlayTransformAbsolute(matrix);
+            }
+
+            const currentTime = Date.now();
+            if (currentTime - lastLogTime >= 1000) {
+                CustomLogger.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
+                state.originChangeCount = 0;
+                lastLogTime = currentTime;
+            }
+
+            await wait(11);
+        }
+    } catch (e) {
+        CustomLogger.error("overlay", `Error in mainX: ${e.message}`);
     }
 }
 
