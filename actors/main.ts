@@ -61,6 +61,8 @@ async function main(_payload: Payload["MAIN"]) {
 
   const vrcorigin = await Postman.create("overlayactorVRCorigin.ts");
 
+  const laser = await Postman.create("laserPointerActor.ts");
+
 
   await wait(1000)
 
@@ -70,7 +72,7 @@ async function main(_payload: Payload["MAIN"]) {
     payload: ivrsystem
   })
   Postman.PostMessage({
-    address: { fm: state.id, to: [overlayactorVRC, vrcorigin] },
+    address: { fm: state.id, to: [overlayactorVRC, vrcorigin, laser] },
     type: "INITOPENVR",
     payload: ivroverlay
   })
@@ -89,6 +91,12 @@ async function main(_payload: Payload["MAIN"]) {
     address: { fm: state.id, to: vrcorigin },
     type: "ASSIGNHMD",
     payload: hmd,
+  });
+
+  Postman.PostMessage({
+    address: { fm: state.id, to: laser },
+    type: "SETINPUTACTOR",
+    payload: inputactor,
   });
 
 
@@ -110,6 +118,11 @@ async function main(_payload: Payload["MAIN"]) {
     payload: vrcorigin,
   });
 
+  Postman.PostMessage({
+    address: { fm: state.id, to: laser },
+    type: "STARTLASERS",
+    payload: null,
+  });
 
 
 

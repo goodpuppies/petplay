@@ -28,9 +28,9 @@ const state: State & BaseState = {
     addressBook: new Set(),
 };
 
-const functions: TypedActorFunctions = {
+const functions = {
     CUSTOMINIT: (_payload) => {
-        Postman.functions?.HYPERSWARM?.(null, state.id);
+        //Postman.functions?.HYPERSWARM?.(null, state.id);
     },
     LOG: (_payload) => {
         CustomLogger.log("actor", state.id);
