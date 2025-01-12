@@ -10,7 +10,7 @@ import { wait } from "../actorsystem/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
-import { ScreenCapture } from "../ScreenCapture.ts";
+import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
 import {
     createWindow,
     getProcAddress,
@@ -31,7 +31,7 @@ type State = {
     smoothedVrcOrigin: OpenVR.HmdMatrix34 | null;
     relativePosition: OpenVR.HmdMatrix34;
     isRunning: boolean;
-    screenCapture: ScreenCapture | null;
+    screenCapturer: ScreenCapturer | null;
     currentTexture: number | null;
     glWindow: any | null;
     texture: Uint32Array
@@ -64,7 +64,7 @@ const state: State & BaseState = {
         ]
     },
     isRunning: false,
-    screenCapture: null,
+    screenCapturer: null,
     currentTexture: null,
     glWindow: null,
 };
@@ -76,19 +76,15 @@ const vrcOriginSmoothingWindow: OpenVR.HmdMatrix34[] = [];
 
 //#region init screencapture
 
-function INITSCREENCAP(): ScreenCapture {
-    const screen = new ScreenCapture();
-    const intervalId = setInterval(() => {
-        if (screen.isWorkerReady()) {
-            console.log("Starting screen capture...");
-            screen.start();
-            clearInterval(intervalId);
+function INITSCREENCAP(): ScreenCapturer {
+    const capturer = new ScreenCapturer({
+        debug: false,
+        onStats: ({ fps, avgLatency }) => {
+            CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
         }
-    }, 100);
-    console.log("Starting screen capture test...");
-    return screen
+    });
+    return capturer;
 }
-
 
 // Function to flip texture data vertically
 function flipVertical(pixels: Uint8Array, width: number, height: number): Uint8Array {
@@ -102,11 +98,9 @@ function flipVertical(pixels: Uint8Array, width: number, height: number): Uint8A
     return flippedPixels;
 }
 
-
 //#endregion
 
 //#region opengl init
-
 
 function checkGLError(message: string) {
     const error = gl.GetError();
@@ -122,7 +116,6 @@ function checkGLError(message: string) {
         console.trace();
     }
 }
-
 
 function INITGL() {
     // Create window and initialize GL
@@ -172,24 +165,21 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
 
 //#region screencapture
 
-async function DeskCapLoop(screen: ScreenCapture, overlay: OpenVR.IVROverlay, textureStructPtr: Deno.PointerValue<OpenVR.Texture>) {
+async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay, textureStructPtr: Deno.PointerValue<OpenVR.Texture>) {
     while (true) {
-        const frame = screen.getCurrentFrame();
-        if (frame && frame.pixels) {
-            createTextureFromScreenshot(frame.pixels, frame.width, frame.height)
+        const frame = await capturer.getLatestFrame();
+        if (frame) {
+            createTextureFromScreenshot(frame.data, frame.width, frame.height)
             // Set overlay texture
             const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
             if (error !== OpenVR.OverlayError.VROverlayError_None) {
                 console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
             }
-        } else {
-            console.log("No frame available.");
-            await wait(100);
         }
         // Wait frame sync
         overlay.WaitFrameSync(100);
-        // Add a small delay
-        await new Promise((resolve) => setTimeout(resolve, 16));
+        // Add a small delay to match VR frame rate
+        await new Promise((resolve) => setTimeout(resolve, 11)); // ~90fps
     }
 }
 
@@ -253,8 +243,12 @@ const functions = {
         state.vrcOriginActor = payload as string;
         CustomLogger.log("actor", `VRC Origin Actor assigned: ${state.vrcOriginActor}`);
     },
-    STOP: (_payload) => {
-        stopDesktopCapture();
+    STOP: async (_payload) => {
+        state.isRunning = false;
+        if (state.screenCapturer) {
+            await state.screenCapturer.dispose();
+            state.screenCapturer = null;
+        }
     },
 };
 
@@ -410,7 +404,6 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
 
         INITGL()
 
-
         //#region create overlay
         CustomLogger.log("overlay", "Creating overlay...");
         const overlay = state.overlayClass as OpenVR.IVROverlay;
@@ -435,8 +428,6 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
         const boundsPtr = Deno.UnsafePointer.of(boundsBuf) as Deno.PointerValue<OpenVR.TextureBounds>;
         overlay.SetOverlayTextureBounds(overlayHandle, boundsPtr);
 
-
-
         overlay.ShowOverlay(overlayHandle);
 
         // Position it slightly further back to accommodate the larger size
@@ -452,7 +443,9 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
         CustomLogger.log("overlay", "Overlay initialized and shown");
         //#endregion
 
-        const screen = INITSCREENCAP()
+        // Initialize screen capture
+        state.screenCapturer = INITSCREENCAP();
+        CustomLogger.log("overlay", "Screen capture initialized");
 
         // Setup OpenVR texture struct
         const textureData = {
@@ -465,14 +458,10 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
         OpenVR.TextureStruct.write(textureData, new DataView(textureStructBuffer));
         const textureStructPtr = Deno.UnsafePointer.of(textureStructBuffer) as Deno.PointerValue<OpenVR.Texture>;
 
-
-
         state.isRunning = true;
-        overlay
 
-        DeskCapLoop(screen, overlay, textureStructPtr)
-
-
+        // Start the desktop capture loop
+        DeskCapLoop(state.screenCapturer, overlay, textureStructPtr);
         updateLoop();
     } catch (error) {
         CustomLogger.error("overlay", "Error in mainX:", error);
@@ -517,10 +506,12 @@ async function updateLoop() {
     }
 }
 
-
-
-function cleanup() {
-
+async function cleanup() {
+    state.isRunning = false;
+    if (state.screenCapturer) {
+        await state.screenCapturer.dispose();
+        state.screenCapturer = null;
+    }
 }
 
 // Handle cleanup on exit
