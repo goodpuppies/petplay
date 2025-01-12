@@ -1,3 +1,4 @@
+// deno-lint-ignore-file no-inner-declarations
 import {
     TypedActorFunctions,
     BaseState,
@@ -10,6 +11,7 @@ import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { OpenVRTransform } from "./openvrTransform.ts";
+import { TransformStabilizer } from "./transformStabilizer.ts";
 
 type State = {
     id: string;
@@ -22,6 +24,7 @@ type State = {
     sync: boolean;
     overlayTransform: OpenVRTransform | null;
     originChangeCount: number;
+    transformStabilizer: TransformStabilizer | null;
 };
 
 const state: State & BaseState = {
@@ -37,6 +40,7 @@ const state: State & BaseState = {
     addressBook: new Set(),
     overlayTransform: null,
     originChangeCount: 0,
+    transformStabilizer: null,
 };
 
 const functions = {
@@ -130,6 +134,7 @@ interface LastKnownRotation {
 async function mainX(overlaymame: string, overlaytexture: string, sync: boolean) {
     try {
         state.sync = sync;
+        state.transformStabilizer = new TransformStabilizer();
 
         CustomLogger.log("overlay", "Creating overlay...");
         const overlay = state.overlayClass as OpenVR.IVROverlay;
@@ -244,19 +249,21 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                         [-sinCorrectedYaw, 0, cosCorrectedYaw, -rotatedZ]
                     ]
                 };
-                if (isOriginChanged(pureMatrix)) {
-                    state.origin = pureMatrix;
-                    state.originChangeCount++;
-                    lastOrigin = pureMatrix;
-                }
+
+                // Create HMD transform matrix
+                const hmdTransform: OpenVR.HmdMatrix34 = {
+                    m: [
+                        [hmdMatrix[0][0], hmdMatrix[0][1], hmdMatrix[0][2], hmdX],
+                        [hmdMatrix[1][0], hmdMatrix[1][1], hmdMatrix[1][2], hmdY],
+                        [hmdMatrix[2][0], hmdMatrix[2][1], hmdMatrix[2][2], hmdZ]
+                    ]
+                };
 
                 const angle = -Math.PI / 2; // -90 degrees, pointing straight down
-
-                // Sin and cos of the angle
                 const s = Math.sin(angle);
                 const c = Math.cos(angle);
 
-                const matrix: OpenVR.HmdMatrix34 = {
+                const finalMatrix: OpenVR.HmdMatrix34 = {
                     m: [
                         [cosCorrectedYaw, sinCorrectedYaw * s, sinCorrectedYaw * c, rotatedX],
                         [0, c, -s, -transformedY + 2.9],
@@ -264,20 +271,43 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                     ]
                 };
 
-                setOverlayTransformAbsolute(matrix);
-            }
+                if (state.transformStabilizer) {
+                    const stabilizedMatrix = state.transformStabilizer.getStabilizedTransform(
+                        pureMatrix,
+                        hmdTransform,
+                        finalMatrix
+                    );
+                    setOverlayTransformAbsolute(finalMatrix);
+                    
+                    // Use stabilized matrix for origin updates too
+                    if (isOriginChanged(stabilizedMatrix)) {
+                        state.origin = stabilizedMatrix;
+                        state.originChangeCount++;
+                        lastOrigin = stabilizedMatrix;
+                    }
+                } else {
+                    setOverlayTransformAbsolute(finalMatrix);
+                    
+                    if (isOriginChanged(pureMatrix)) {
+                        state.origin = pureMatrix;
+                        state.originChangeCount++;
+                        lastOrigin = pureMatrix;
+                    }
+                }
 
-            const currentTime = Date.now();
-            if (currentTime - lastLogTime >= 1000) {
-                CustomLogger.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
-                state.originChangeCount = 0;
-                lastLogTime = currentTime;
-            }
+                const currentTime = Date.now();
+                if (currentTime - lastLogTime >= 1000) {
+                    CustomLogger.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
+                    state.originChangeCount = 0;
+                    lastLogTime = currentTime;
+                }
 
+                await wait(11);
+            }
             await wait(11);
         }
     } catch (e) {
-        CustomLogger.error("overlay", `Error in mainX: ${e.message}`);
+        CustomLogger.error("overlay", `Error in mainX: ${(e as Error).message}`);
     }
 }
 

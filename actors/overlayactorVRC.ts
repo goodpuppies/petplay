@@ -97,13 +97,11 @@ const functions = {
         if (state.smoothedVrcOrigin && isValidMatrix(state.smoothedVrcOrigin)) {
             // Update relative position
             state.relativePosition = multiplyMatrix(invertMatrix(state.smoothedVrcOrigin), transform);
+            // When explicitly setting location, apply it immediately without smoothing
+            setOverlayTransformAbsolute(transform);
         } else {
-            // If no valid VRC origin, set absolute position
-            addToSmoothingWindow(smoothingWindow, transform);
-            const smoothedTransform = getSmoothedTransform(smoothingWindow);
-            if (smoothedTransform) {
-                setOverlayTransformAbsolute(smoothedTransform);
-            }
+            // If no valid VRC origin, set absolute position directly without smoothing
+            setOverlayTransformAbsolute(transform);
         }
     },
     INITOPENVR: (payload: bigint) => {
