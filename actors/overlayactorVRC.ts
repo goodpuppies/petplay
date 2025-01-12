@@ -16,6 +16,8 @@ import {
     getProcAddress,
 } from "https://deno.land/x/dwm@0.3.4/mod.ts";
 import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
+import { flipVertical } from "./screenutils.ts";
+import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "./matrixutils.ts";
 
 //#region state
 type State = {
@@ -33,7 +35,6 @@ type State = {
     isRunning: boolean;
     screenCapturer: ScreenCapturer | null;
     currentTexture: number | null;
-    glWindow: any | null;
     texture: Uint32Array | null;
     [key: string]: unknown;
 };
@@ -66,7 +67,6 @@ const state: State & BaseState = {
     isRunning: false,
     screenCapturer: null,
     currentTexture: null,
-    glWindow: null,
 };
 //#endregion
 
@@ -84,18 +84,6 @@ function INITSCREENCAP(): ScreenCapturer {
         }
     });
     return capturer;
-}
-
-// Function to flip texture data vertically
-function flipVertical(pixels: Uint8Array, width: number, height: number): Uint8Array {
-    const flippedPixels = new Uint8Array(pixels.length);
-    const bytesPerRow = width * 4;
-    for (let y = 0; y < height; y++) {
-        const srcRowStart = y * bytesPerRow;
-        const destRowStart = (height - 1 - y) * bytesPerRow;
-        flippedPixels.set(pixels.slice(srcRowStart, srcRowStart + bytesPerRow), destRowStart);
-    }
-    return flippedPixels;
 }
 
 //#endregion
@@ -216,10 +204,7 @@ const functions = {
     },
     SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34, address: MessageAddressReal) => {
         const transform = payload;
-        if (!isValidMatrix(transform)) {
-            //CustomLogger.warn("SETOVERLAYLOCATION", "Received invalid transform");
-            return;
-        }
+        if (!isValidMatrix(transform)) {throw new Error("Received invalid transform");}
 
         if (state.smoothedVrcOrigin && isValidMatrix(state.smoothedVrcOrigin)) {
             // Update relative position
@@ -254,17 +239,6 @@ const functions = {
 };
 
 //#region random funcs
-function isValidMatrix(m: OpenVR.HmdMatrix34 | null): boolean {
-    if (!m) return false;
-    for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 4; j++) {
-            if (typeof m.m[i][j] !== 'number' || isNaN(m.m[i][j])) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
 
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
     const overlay = state.overlayClass!;
@@ -292,58 +266,6 @@ function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
     }
     const m34 = OpenVR.HmdMatrix34Struct.read(hmd34view) as OpenVR.HmdMatrix34;
     return m34;
-}
-
-function multiplyMatrix(a: OpenVR.HmdMatrix34, b: OpenVR.HmdMatrix34): OpenVR.HmdMatrix34 {
-    const result: OpenVR.HmdMatrix34 = {
-        m: [
-            [0, 0, 0, 0],
-            [0, 0, 0, 0],
-            [0, 0, 0, 0]
-        ]
-    };
-
-    for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 4; j++) {
-            result.m[i][j] = 0;
-            for (let k = 0; k < 3; k++) {
-                result.m[i][j] += a.m[i][k] * b.m[k][j];
-            }
-            if (j === 3) {
-                result.m[i][j] += a.m[i][3];
-            }
-        }
-    }
-
-    return result;
-}
-
-function invertMatrix(m: OpenVR.HmdMatrix34): OpenVR.HmdMatrix34 {
-    const result: OpenVR.HmdMatrix34 = {
-        m: [
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 1, 0]
-        ]
-    };
-
-    // Invert 3x3 rotation matrix
-    for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 3; j++) {
-            result.m[i][j] = m.m[j][i];
-        }
-    }
-
-    // Invert translation
-    for (let i = 0; i < 3; i++) {
-        result.m[i][3] = -(
-            result.m[i][0] * m.m[0][3] +
-            result.m[i][1] * m.m[1][3] +
-            result.m[i][2] * m.m[2][3]
-        );
-    }
-
-    return result;
 }
 
 function addToSmoothingWindow(window: OpenVR.HmdMatrix34[], transform: OpenVR.HmdMatrix34) {
@@ -387,19 +309,10 @@ function getSmoothedTransform(window: (OpenVR.HmdMatrix34 | null)[]): OpenVR.Hmd
     return smoothedTransform;
 }
 
-function matrixEquals(a: OpenVR.HmdMatrix34, b: OpenVR.HmdMatrix34): boolean {
-    for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 4; j++) {
-            if (Math.abs(a.m[i][j] - b.m[i][j]) > 0.0001) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
+
 //#endregion
 
-async function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
+function mainX(overlayname: string, overlaytexture: string, sync: boolean) {
     try {
         state.sync = sync;
 
