@@ -18,6 +18,8 @@ type State = {
     targetOverlayHandle: bigint;
     leftWasIntersecting: boolean;
     rightWasIntersecting: boolean;
+    leftWasGrabbing: boolean;
+    rightWasGrabbing: boolean;
     overlayActor: string;
     [key: string]: unknown;
 };
@@ -33,6 +35,8 @@ const state: State & BaseState = {
     targetOverlayHandle: 0n,
     leftWasIntersecting: false,
     rightWasIntersecting: false,
+    leftWasGrabbing: false,
+    rightWasGrabbing: false,
     overlayActor: ""
 };
 
@@ -108,6 +112,26 @@ const functions = {
         );
         const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(grabDataViewR);
 
+        // Check for grab release
+        if (state.leftWasGrabbing && !leftGrabData.bState) {
+            Postman.PostMessage({
+                address: { fm: state.id, to: state.overlayActor },
+                type: "OVERLAY_GRAB_END",
+                payload: {
+                    controller: "left"
+                }
+            });
+        }
+        if (state.rightWasGrabbing && !rightGrabData.bState) {
+            Postman.PostMessage({
+                address: { fm: state.id, to: state.overlayActor },
+                type: "OVERLAY_GRAB_END",
+                payload: {
+                    controller: "right"
+                }
+            });
+        }
+
         // Calculate forward vectors and test intersections only when grab is pressed
         let leftIntersection = null;
         let rightIntersection = null;
@@ -141,7 +165,6 @@ const functions = {
                 intersectionParamsPointerL,
                 intersectionResultsPointerL
             );
-            //console.log(result)
 
             if (result) {
                 console.log("left intersection")
@@ -159,8 +182,8 @@ const functions = {
                         }
                     });
                 }
-            } else if (state.leftWasIntersecting) {
-                // If we were intersecting but aren't anymore, send release event
+            } else if (state.leftWasIntersecting && !leftGrabData.bState) {
+                // If we were intersecting but aren't anymore and grab is released, send release event
                 Postman.PostMessage({
                     address: { fm: state.id, to: state.overlayActor || "" },
                     type: "OVERLAY_GRAB_END",
@@ -170,6 +193,8 @@ const functions = {
                 });
             }
             state.leftWasIntersecting = !!result;
+        } else {
+            state.leftWasIntersecting = false;
         }
 
         if (rightPoseData && rightGrabData.bState) {
@@ -208,7 +233,7 @@ const functions = {
                 // If this is the first frame of intersection during grab, send grab event
                 if (!state.rightWasIntersecting) {
                     Postman.PostMessage({
-                        address: { fm: state.id, to: state.overlayActor || "" },
+                        address: { fm: state.id, to: state.overlayActor },
                         type: "OVERLAY_GRAB_START",
                         payload: {
                             controller: "right",
@@ -217,8 +242,8 @@ const functions = {
                         }
                     });
                 }
-            } else if (state.rightWasIntersecting) {
-                // If we were intersecting but aren't anymore, send release event
+            } else if (state.rightWasIntersecting && !rightGrabData.bState) {
+                // If we were intersecting but aren't anymore and grab is released, send release event
                 Postman.PostMessage({
                     address: { fm: state.id, to: state.overlayActor || "" },
                     type: "OVERLAY_GRAB_END",
@@ -228,6 +253,8 @@ const functions = {
                 });
             }
             state.rightWasIntersecting = !!result;
+        } else {
+            state.rightWasIntersecting = false;
         }
 
         //#region button
@@ -248,13 +275,9 @@ const functions = {
         const rightTriggerData = OpenVR.InputDigitalActionDataStruct.read(triggerDataViewR);
         //#endregion
 
-        // Render lasers if grab is pressed
-/*         if (leftGrabData.bState && leftPoseData) {
-            vrOverlay.ShowLaser(true);
-        }
-        if (rightGrabData.bState && rightPoseData) {
-            vrOverlay.ShowLaser(true);
-        } */
+        // Update grab states
+        state.leftWasGrabbing = leftGrabData.bState as unknown as boolean;
+        state.rightWasGrabbing = rightGrabData.bState as unknown as boolean;
 
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },

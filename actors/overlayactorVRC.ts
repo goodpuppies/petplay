@@ -147,6 +147,7 @@ const functions = {
     },
     
     OVERLAY_GRAB_END: (payload: { controller: "left" | "right" }) => {
+        console.log("ungrab")
         if (state.grabbedController !== payload.controller) return;
         
         state.grabbedController = null;
@@ -350,7 +351,8 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
 async function updateLoop() {
     while (state.isRunning) {
         try {
-            if (state.vrcOriginActor) {
+            // Only update VRC origin if we're not being grabbed
+            if (state.vrcOriginActor && !state.grabbedController) {
                 const newVrcOrigin = await Postman.PostMessage({
                     address: { fm: state.id, to: state.vrcOriginActor },
                     type: "GETVRCORIGIN",
@@ -370,14 +372,11 @@ async function updateLoop() {
                             setOverlayTransformAbsolute(smoothedAbsolutePosition);
                         }
                     }
-                } else {
-                    //CustomLogger.warn("updateLoop", "Received invalid VRC origin");
                 }
             }
 
             // Always get controller data when we have an input actor
             if (state.inputActor) {
-                //console.log("has in actor")
                 const controllerData = await Postman.PostMessage({
                     address: { fm: state.id, to: state.inputActor },
                     type: "GETCONTROLLERDATA",
@@ -394,6 +393,11 @@ async function updateLoop() {
                             // Calculate new overlay position based on controller position and stored offset
                             const newTransform = multiplyMatrix(controllerPose.pose.mDeviceToAbsoluteTracking, state.grabOffset);
                             setOverlayTransformAbsolute(newTransform);
+
+                            // Update relative position to match current grab position
+                            if (state.smoothedVrcOrigin) {
+                                state.relativePosition = multiplyMatrix(invertMatrix(state.smoothedVrcOrigin), newTransform);
+                            }
                         }
                     }
                 }

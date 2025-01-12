@@ -15,6 +15,14 @@
       {
         "name": "/actions/main/in/TriggerRight",
         "type": "boolean"
+      },
+      {
+        "name": "/actions/main/in/GrabLeft",
+        "type": "boolean"
+      },
+      {
+        "name": "/actions/main/in/GrabRight",
+        "type": "boolean"
       }
     ],
     "action_sets": [
@@ -29,4 +37,4 @@
         "binding_url": "bindings_oculus_touch.json"
       }
     ]
-  }
+}
