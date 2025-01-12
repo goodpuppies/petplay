@@ -106,7 +106,7 @@ export type Message = {
   [K in MessageType]: {
     address: {
       fm: string;
-      to: string | ToAddress | null;
+      to: string | ToAddress | ToAddress[] | null;
     };
     type: ValidateMessageType<K> | CallbackType<ValidateMessageType<K>>;
     payload: Parameters<TypedActorFunctions[K]>[0];

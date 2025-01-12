@@ -34,7 +34,7 @@ type State = {
     screenCapturer: ScreenCapturer | null;
     currentTexture: number | null;
     glWindow: any | null;
-    texture: Uint32Array
+    texture: Uint32Array | null;
     [key: string]: unknown;
 };
 
@@ -144,6 +144,7 @@ function INITGL() {
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
     const flippedPixels = flipVertical(pixels, width, height);
+    if (state.texture === null) { throw new Error("state.texture is null"); }
 
     gl.BindTexture(gl.TEXTURE_2D, state.texture[0]);
     gl.TexImage2D(
@@ -186,25 +187,25 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
 //#endregion
 
 const functions = {
-    CUSTOMINIT: (_payload) => {
+    CUSTOMINIT: (_payload: void) => {
         //Postman.functions?.HYPERSWARM?.(null, state.id);
         //startDesktopCapture(30).catch(error => console.log(`Desktop capture error: ${error}`));
     },
-    LOG: (_payload) => {
+    LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload, address) => {
-        const addr = address as MessageAddressReal;
+    GETID: (_payload: void, address: MessageAddressReal) => {
+        const addr = address;
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },
             type: "CB:GETID",
             payload: state.id,
         }, false);
     },
-    STARTOVERLAY: (payload, _address) => {
+    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }, _address: MessageAddressReal) => {
         mainX(payload.name, payload.texture, payload.sync);
     },
-    GETOVERLAYLOCATION: (_payload, address) => {
+    GETOVERLAYLOCATION: (_payload: void, address: MessageAddressReal) => {
         const addr = address as MessageAddressReal;
         const m34 = GetOverlayTransformAbsolute();
         Postman.PostMessage({
@@ -213,8 +214,8 @@ const functions = {
             payload: m34,
         });
     },
-    SETOVERLAYLOCATION: (payload, address) => {
-        const transform = payload as OpenVR.HmdMatrix34;
+    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34, address: MessageAddressReal) => {
+        const transform = payload;
         if (!isValidMatrix(transform)) {
             //CustomLogger.warn("SETOVERLAYLOCATION", "Received invalid transform");
             return;
@@ -232,18 +233,18 @@ const functions = {
             }
         }
     },
-    INITOPENVR: (payload) => {
+    INITOPENVR: (payload: bigint) => {
         const ptrn = payload;
         const systemPtr = Deno.UnsafePointer.create(ptrn);
         state.vrSystem = new OpenVR.IVRSystem(systemPtr);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
         CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
-    ASSIGNVRCORIGIN: (payload, _address) => {
-        state.vrcOriginActor = payload as string;
+    ASSIGNVRCORIGIN: (payload: string, _address: MessageAddressReal) => {
+        state.vrcOriginActor = payload;
         CustomLogger.log("actor", `VRC Origin Actor assigned: ${state.vrcOriginActor}`);
     },
-    STOP: async (_payload) => {
+    STOP: async (_payload: void) => {
         state.isRunning = false;
         if (state.screenCapturer) {
             await state.screenCapturer.dispose();
@@ -448,6 +449,8 @@ async function mainX(overlayname: string, overlaytexture: string, sync: boolean)
         CustomLogger.log("overlay", "Screen capture initialized");
 
         // Setup OpenVR texture struct
+        if (state.texture === null) { throw new Error("state.texture is null"); }
+
         const textureData = {
             handle: BigInt(state.texture[0]),
             eType: OpenVR.TextureType.TextureType_OpenGL,

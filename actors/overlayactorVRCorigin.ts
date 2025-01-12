@@ -36,35 +36,35 @@ const state: State & BaseState = {
     originChangeCount: 0,
 };
 
-const functions: TypedActorFunctions = {
-    CUSTOMINIT: (_payload) => {
-        Postman.functions?.HYPERSWARM?.(null, state.id);
+const functions = {
+    CUSTOMINIT: (_payload: void) => {
+        
     },
-    LOG: (_payload) => {
+    LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload, address) => {
-        const addr = address as MessageAddressReal;
+    GETID: (_payload: void, address: MessageAddressReal) => {
+        const addr = address;
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },
             type: "CB:GETID",
             payload: state.id,
         }, false);
     },
-    ASSIGNVRC: (payload) => {
+    ASSIGNVRC: (payload: string) => {
         state.vrc = payload;
     },
-    ASSIGNHMD: (payload) => {
+    ASSIGNHMD: (payload: string) => {
         state.hmd = payload;
     },
-    STARTOVERLAY: (payload, _address) => {
+    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }, _address: MessageAddressReal) => {
         mainX(payload.name, payload.texture, payload.sync);
     },
-    ADDADDRESS: (payload, _address) => {
+    ADDADDRESS: (payload: string, _address: MessageAddressReal) => {
         state.addressBook.add(payload);
     },
-    GETOVERLAYLOCATION: (_payload, address) => {
-        const addr = address as MessageAddressReal;
+    GETOVERLAYLOCATION: (_payload: void, address: MessageAddressReal) => {
+        const addr = address;
         const m34 = GetOverlayTransformAbsolute();
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },
@@ -72,21 +72,21 @@ const functions: TypedActorFunctions = {
             payload: m34,
         });
     },
-    SETOVERLAYLOCATION: (payload, _address) => {
-        const transform = payload as OpenVR.HmdMatrix34;
+    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34, _address: MessageAddressReal) => {
+        const transform = payload;
         if (state.sync == false) {
             CustomLogger.log("syncloop", "set transform ");
         }
         setOverlayTransformAbsolute(transform);
     },
-    INITOPENVR: (payload) => {
+    INITOPENVR: (payload: bigint) => {
         const ptrn = payload;
         const systemPtr = Deno.UnsafePointer.create(ptrn);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
         CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
-    GETVRCORIGIN: (_payload, address) => {
-        const addr = address as MessageAddressReal;
+    GETVRCORIGIN: (_payload: void, address: MessageAddressReal) => {
+        const addr = address;
         //state.origin is OpenVR.HmdMatrix34
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },
@@ -286,7 +286,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
         }
         const currentTime = Date.now();
         if (currentTime - lastLogTime >= 1000) {
-            console.log(`Origin changed ${state.originChangeCount} times in the last second`);
+            CustomLogger.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
             state.originChangeCount = 0;
             lastLogTime = currentTime;
         }
