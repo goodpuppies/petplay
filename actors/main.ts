@@ -121,7 +121,14 @@ async function main(_payload: Payload["MAIN"]) {
       name: "overlay1",
       texture: "./resources/P1.png",
       sync: true,
+      inputActor: inputactor
     },
+  });
+
+  Postman.PostMessage({
+    address: { fm: state.id, to: inputactor },
+    type: "SETOVERLAYACTOR",
+    payload: overlayactorVRC,
   });
 
 

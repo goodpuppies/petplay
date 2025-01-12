@@ -1,4 +1,3 @@
-
 import {
     TypedActorFunctions,
     BaseState,
@@ -16,6 +15,10 @@ import { CustomLogger } from "../classes/customlogger.ts";
 type State = {
     id: string;
     db: Record<string, unknown>;
+    targetOverlayHandle: bigint;
+    leftWasIntersecting: boolean;
+    rightWasIntersecting: boolean;
+    overlayActor: string;
     [key: string]: unknown;
 };
 
@@ -27,17 +30,21 @@ const state: State & BaseState = {
     inputerror: OpenVR.InputError.VRInputError_None,
     socket: null,
     addressBook: new Set(),
+    targetOverlayHandle: 0n,
+    leftWasIntersecting: false,
+    rightWasIntersecting: false,
+    overlayActor: ""
 };
 
-const functions: TypedActorFunctions = {
-    CUSTOMINIT: (_payload) => {
+const functions = {
+    CUSTOMINIT: (_payload:void) => {
         //Postman.functions?.HYPERSWARM?.(null, state.id);
         main()
     },
-    LOG: (_payload) => {
+    LOG: (_payload:void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload, address) => {
+    GETID: (_payload:void, address: MessageAddressReal) => {
         // use a check here
         const addr = address as MessageAddressReal;
         Postman.PostMessage({
@@ -46,8 +53,15 @@ const functions: TypedActorFunctions = {
             payload: state.id,
         }, false);
     },
-    GETCONTROLLERDATA: (_payload, address) => {
-        const addr = address as MessageAddressReal;
+    SETOVERLAYHANDLE: (payload: bigint) => {
+        state.targetOverlayHandle = payload;
+    },
+    SETOVERLAYACTOR: (payload: string) => {
+        state.overlayActor = payload;
+    },
+    GETCONTROLLERDATA: (_payload: void, address: MessageAddressReal) => {
+        //console.log("GETCONTROLLERDATA")
+        const addr = address;
         updateActionState();
 
         //#region pose
@@ -75,8 +89,146 @@ const functions: TypedActorFunctions = {
         if (error === OpenVR.InputError.VRInputError_None) {
             rightPoseData = OpenVR.InputPoseActionDataStruct.read(poseDataViewR);
         }
-        //#endregion
 
+        // Get grab button states
+        error = vrInput.GetDigitalActionData(
+            grabLeftHandle,
+            grabLeftPointer,
+            OpenVR.InputDigitalActionDataStruct.byteSize,
+            OpenVR.k_ulInvalidInputValueHandle
+        );
+        const leftGrabData = OpenVR.InputDigitalActionDataStruct.read(grabDataViewL);
+        //console.log(leftGrabData)
+
+        error = vrInput.GetDigitalActionData(
+            grabRightHandle,
+            grabRightPointer,
+            OpenVR.InputDigitalActionDataStruct.byteSize,
+            OpenVR.k_ulInvalidInputValueHandle
+        );
+        const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(grabDataViewR);
+
+        // Calculate forward vectors and test intersections only when grab is pressed
+        let leftIntersection = null;
+        let rightIntersection = null;
+        
+        if (leftPoseData && leftGrabData.bState) {
+            const m = leftPoseData.pose.mDeviceToAbsoluteTracking.m;
+            const leftForward = {
+                v: [
+                    -m[2][0],
+                    -m[2][1],
+                    -m[2][2]
+                ]
+            };
+
+            // Set up intersection parameters
+            OpenVR.OverlayIntersectionParamsStruct.write({
+                vSource: {
+                    v: [
+                        leftPoseData.pose.mDeviceToAbsoluteTracking.m[0][3],
+                        leftPoseData.pose.mDeviceToAbsoluteTracking.m[1][3],
+                        leftPoseData.pose.mDeviceToAbsoluteTracking.m[2][3]
+                    ]
+                },
+                vDirection: leftForward,
+                eOrigin: OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding
+            }, intersectionParamsViewL);
+
+            // Test intersection
+            const result = vrOverlay.ComputeOverlayIntersection(
+                state.targetOverlayHandle,
+                intersectionParamsPointerL,
+                intersectionResultsPointerL
+            );
+            //console.log(result)
+
+            if (result) {
+                console.log("left intersection")
+                leftIntersection = OpenVR.OverlayIntersectionResultsStruct.read(intersectionResultsViewL);
+                
+                // If this is the first frame of intersection during grab, send grab event
+                if (!state.leftWasIntersecting) {
+                    Postman.PostMessage({
+                        address: { fm: state.id, to: state.overlayActor },
+                        type: "OVERLAY_GRAB_START",
+                        payload: {
+                            controller: "left",
+                            intersection: leftIntersection,
+                            controllerPose: leftPoseData
+                        }
+                    });
+                }
+            } else if (state.leftWasIntersecting) {
+                // If we were intersecting but aren't anymore, send release event
+                Postman.PostMessage({
+                    address: { fm: state.id, to: state.overlayActor || "" },
+                    type: "OVERLAY_GRAB_END",
+                    payload: {
+                        controller: "left"
+                    }
+                });
+            }
+            state.leftWasIntersecting = !!result;
+        }
+
+        if (rightPoseData && rightGrabData.bState) {
+            const m = rightPoseData.pose.mDeviceToAbsoluteTracking.m;
+            const rightForward = {
+                v: [
+                    -m[2][0],
+                    -m[2][1],
+                    -m[2][2]
+                ]
+            };
+
+            // Set up intersection parameters
+            OpenVR.OverlayIntersectionParamsStruct.write({
+                vSource: {
+                    v: [
+                        rightPoseData.pose.mDeviceToAbsoluteTracking.m[0][3],
+                        rightPoseData.pose.mDeviceToAbsoluteTracking.m[1][3],
+                        rightPoseData.pose.mDeviceToAbsoluteTracking.m[2][3]
+                    ]
+                },
+                vDirection: rightForward,
+                eOrigin: OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding
+            }, intersectionParamsViewR);
+
+            // Test intersection
+            const result = vrOverlay.ComputeOverlayIntersection(
+                state.targetOverlayHandle,
+                intersectionParamsPointerR,
+                intersectionResultsPointerR
+            );
+
+            if (result) {
+                rightIntersection = OpenVR.OverlayIntersectionResultsStruct.read(intersectionResultsViewR);
+                
+                // If this is the first frame of intersection during grab, send grab event
+                if (!state.rightWasIntersecting) {
+                    Postman.PostMessage({
+                        address: { fm: state.id, to: state.overlayActor || "" },
+                        type: "OVERLAY_GRAB_START",
+                        payload: {
+                            controller: "right",
+                            intersection: rightIntersection,
+                            controllerPose: rightPoseData
+                        }
+                    });
+                }
+            } else if (state.rightWasIntersecting) {
+                // If we were intersecting but aren't anymore, send release event
+                Postman.PostMessage({
+                    address: { fm: state.id, to: state.overlayActor || "" },
+                    type: "OVERLAY_GRAB_END",
+                    payload: {
+                        controller: "right"
+                    }
+                });
+            }
+            state.rightWasIntersecting = !!result;
+        }
 
         //#region button
         error = vrInput.GetDigitalActionData(
@@ -96,10 +248,27 @@ const functions: TypedActorFunctions = {
         const rightTriggerData = OpenVR.InputDigitalActionDataStruct.read(triggerDataViewR);
         //#endregion
 
+        // Render lasers if grab is pressed
+/*         if (leftGrabData.bState && leftPoseData) {
+            vrOverlay.ShowLaser(true);
+        }
+        if (rightGrabData.bState && rightPoseData) {
+            vrOverlay.ShowLaser(true);
+        } */
+
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },
             type: "CB:GETCONTROLLERDATA",
-            payload: [leftPoseData, rightPoseData, leftTriggerData, rightTriggerData]
+            payload: [
+                leftPoseData, 
+                rightPoseData, 
+                leftTriggerData, 
+                rightTriggerData,
+                leftIntersection,
+                rightIntersection,
+                leftGrabData,
+                rightGrabData
+            ]
         });
     }
 };
@@ -148,24 +317,10 @@ let triggerRightHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
 const triggerLeftHandlePTR = P.BigUint64P<OpenVR.ActionHandle>();
 const triggerRightHandlePTR = P.BigUint64P<OpenVR.ActionHandle>();
 
-error = vrInput.GetActionHandle("/actions/main/in/TriggerLeft", triggerLeftHandlePTR);
-if (error !== OpenVR.InputError.VRInputError_None) {
-    CustomLogger.error("actorerr", `Failed to get left trigger action handle: ${OpenVR.InputError[error]}`);
-    throw new Error("Failed to get left trigger action handle");
-}
-if (triggerLeftHandlePTR === null) throw new Error("Invalid pointer");
-triggerLeftHandle = new Deno.UnsafePointerView(triggerLeftHandlePTR).getBigUint64();
-
-error = vrInput.GetActionHandle("/actions/main/in/TriggerRight", triggerRightHandlePTR);
-if (error !== OpenVR.InputError.VRInputError_None) {
-    CustomLogger.error("actorerr", `Failed to get left trigger action handle: ${OpenVR.InputError[error]}`);
-    throw new Error("Failed to get left trigger action handle");
-}
-if (triggerRightHandlePTR === null) throw new Error("Invalid pointer");
-triggerRightHandle = new Deno.UnsafePointerView(triggerRightHandlePTR).getBigUint64();
-
-
-
+let grabLeftHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+let grabRightHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+const grabLeftHandlePTR = P.BigUint64P<OpenVR.ActionHandle>();
+const grabRightHandlePTR = P.BigUint64P<OpenVR.ActionHandle>();
 
 const triggerDataSize = OpenVR.InputDigitalActionDataStruct.byteSize;
 const triggerDataBufferL = new ArrayBuffer(triggerDataSize);
@@ -175,7 +330,34 @@ const triggerDataViewR = new DataView(triggerDataBufferR);
 const triggerLeftPointer = Deno.UnsafePointer.of<OpenVR.InputDigitalActionData>(triggerDataBufferL)!;
 const triggerRightPointer = Deno.UnsafePointer.of<OpenVR.InputDigitalActionData>(triggerDataBufferR)!;
 
+const grabDataBufferL = new ArrayBuffer(OpenVR.InputDigitalActionDataStruct.byteSize);
+const grabDataBufferR = new ArrayBuffer(OpenVR.InputDigitalActionDataStruct.byteSize);
+const grabDataViewL = new DataView(grabDataBufferL);
+const grabDataViewR = new DataView(grabDataBufferR);
+const grabLeftPointer = Deno.UnsafePointer.of<OpenVR.InputDigitalActionData>(grabDataBufferL)!;
+const grabRightPointer = Deno.UnsafePointer.of<OpenVR.InputDigitalActionData>(grabDataBufferR)!;
 
+//#endregion
+
+//#region intersection testing
+const intersectionParamsBufferL = new ArrayBuffer(OpenVR.OverlayIntersectionParamsStruct.byteSize);
+const intersectionParamsBufferR = new ArrayBuffer(OpenVR.OverlayIntersectionParamsStruct.byteSize);
+const intersectionResultsBufferL = new ArrayBuffer(OpenVR.OverlayIntersectionResultsStruct.byteSize);
+const intersectionResultsBufferR = new ArrayBuffer(OpenVR.OverlayIntersectionResultsStruct.byteSize);
+
+const intersectionParamsViewL = new DataView(intersectionParamsBufferL);
+const intersectionParamsViewR = new DataView(intersectionParamsBufferR);
+const intersectionResultsViewL = new DataView(intersectionResultsBufferL);
+const intersectionResultsViewR = new DataView(intersectionResultsBufferR);
+
+const intersectionParamsPointerL = Deno.UnsafePointer.of<OpenVR.OverlayIntersectionParams>(intersectionParamsBufferL)!;
+const intersectionParamsPointerR = Deno.UnsafePointer.of<OpenVR.OverlayIntersectionParams>(intersectionParamsBufferR)!;
+const intersectionResultsPointerL = Deno.UnsafePointer.of<OpenVR.OverlayIntersectionResults>(intersectionResultsBufferL)!;
+const intersectionResultsPointerR = Deno.UnsafePointer.of<OpenVR.OverlayIntersectionResults>(intersectionResultsBufferR)!;
+
+// Get IVROverlay interface
+const IVROverlayPtr = OpenVR.VR_GetGenericInterface(stringToPointer(OpenVR.IVROverlay_Version), TypeSafeINITERRPTR);
+const vrOverlay = new OpenVR.IVROverlay(IVROverlayPtr);
 //#endregion
 
 //#endregion
@@ -200,7 +382,7 @@ function main() {
         throw new Error("Failed to get action handle");
     }
     if (handPoseLeftHandlePTR === null) throw new Error("Invalid pointer");
-    handPoseLeftHandle = new Deno.UnsafePointerView(handPoseLeftHandlePTR).getBigUint64();
+    handPoseLeftHandle = new Deno.UnsafePointerView(handPoseLeftHandlePTR).getBigUint64()
 
 
     error = vrInput.GetActionHandle("/actions/main/in/HandPoseRight", handPoseRightHandlePTR);
@@ -209,8 +391,40 @@ function main() {
         throw new Error("Failed to get action handle");
     }
     if (handPoseRightHandlePTR === null) throw new Error("Invalid pointer");
-    handPoseRightHandle = new Deno.UnsafePointerView(handPoseRightHandlePTR).getBigUint64();
+    handPoseRightHandle = new Deno.UnsafePointerView(handPoseRightHandlePTR).getBigUint64()
 
+
+    error = vrInput.GetActionHandle("/actions/main/in/GrabLeft", grabLeftHandlePTR);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+        CustomLogger.error("actorerr", `Failed to get left grab action handle: ${OpenVR.InputError[error]}`);
+        throw new Error("Failed to get left grab action handle");
+    }
+    if (grabLeftHandlePTR === null) throw new Error("Invalid pointer");
+    grabLeftHandle = new Deno.UnsafePointerView(grabLeftHandlePTR).getBigUint64();
+
+    error = vrInput.GetActionHandle("/actions/main/in/GrabRight", grabRightHandlePTR);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+        CustomLogger.error("actorerr", `Failed to get right grab action handle: ${OpenVR.InputError[error]}`);
+        throw new Error("Failed to get right grab action handle");
+    }
+    if (grabRightHandlePTR === null) throw new Error("Invalid pointer");
+    grabRightHandle = new Deno.UnsafePointerView(grabRightHandlePTR).getBigUint64();
+
+    error = vrInput.GetActionHandle("/actions/main/in/TriggerLeft", triggerLeftHandlePTR);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+        CustomLogger.error("actorerr", `Failed to get left trigger action handle: ${OpenVR.InputError[error]}`);
+        throw new Error("Failed to get left trigger action handle");
+    }
+    if (triggerLeftHandlePTR === null) throw new Error("Invalid pointer");
+    triggerLeftHandle = new Deno.UnsafePointerView(triggerLeftHandlePTR).getBigUint64();
+
+    error = vrInput.GetActionHandle("/actions/main/in/TriggerRight", triggerRightHandlePTR);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+        CustomLogger.error("actorerr", `Failed to get left trigger action handle: ${OpenVR.InputError[error]}`);
+        throw new Error("Failed to get left trigger action handle");
+    }
+    if (triggerRightHandlePTR === null) throw new Error("Invalid pointer");
+    triggerRightHandle = new Deno.UnsafePointerView(triggerRightHandlePTR).getBigUint64();
 
     //#endregion
 

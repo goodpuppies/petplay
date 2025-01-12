@@ -31,6 +31,9 @@ type State = {
     isRunning: boolean;
     screenCapturer: ScreenCapturer | null;
     glManager: OpenGLManager | null;
+    grabbedController: "left" | "right" | null;
+    grabOffset: OpenVR.HmdMatrix34 | null;
+    inputActor: string;
     [key: string]: unknown;
 };
 
@@ -59,6 +62,9 @@ const state: State & BaseState = {
     isRunning: false,
     screenCapturer: null,
     glManager: null,
+    grabbedController: null,
+    grabOffset: null,
+    inputActor: "",
 };
 //#endregion
 
@@ -78,7 +84,10 @@ const functions = {
             payload: state.id,
         }, false);
     },
-    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }, _address: MessageAddressReal) => {
+    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, inputActor?: string }, _address: MessageAddressReal) => {
+        if (payload.inputActor) {
+            state.inputActor = payload.inputActor;
+        }
         main(payload.name, payload.texture, payload.sync);
     },
     GETOVERLAYLOCATION: (_payload: void, address: MessageAddressReal) => {
@@ -121,6 +130,27 @@ const functions = {
             await state.screenCapturer.dispose();
             state.screenCapturer = null;
         }
+    },
+    OVERLAY_GRAB_START: (payload: { controller: "left" | "right", intersection: OpenVR.OverlayIntersectionResults, controllerPose: OpenVR.InputPoseActionData }) => {
+        console.log("grab")
+        
+        if (state.grabbedController) return; // Already being grabbed
+        
+        state.grabbedController = payload.controller;
+        
+        // Calculate and store the offset between controller and overlay
+        const overlayTransform = GetOverlayTransformAbsolute();
+        const controllerTransform = payload.controllerPose.pose.mDeviceToAbsoluteTracking;
+        
+        // The offset is the inverse of controller transform multiplied by overlay transform
+        state.grabOffset = multiplyMatrix(invertMatrix(controllerTransform), overlayTransform);
+    },
+    
+    OVERLAY_GRAB_END: (payload: { controller: "left" | "right" }) => {
+        if (state.grabbedController !== payload.controller) return;
+        
+        state.grabbedController = null;
+        state.grabOffset = null;
     },
 };
 
@@ -245,11 +275,20 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
         if (error !== OpenVR.OverlayError.VROverlayError_None) {
             throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
         }
-
+        if (overlayHandlePTR === null) throw new Error("Invalid pointer");
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
         state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
         CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
+
+        // Send overlay handle to input actor if specified
+        if (state.inputActor) {
+            Postman.PostMessage({
+                address: { fm: state.id, to: state.inputActor },
+                type: "SETOVERLAYHANDLE",
+                payload: overlayHandle
+            });
+        }
 
         // Set size to 1.6 meters wide (16:9 ratio will make it 0.9 meters tall)
         overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
@@ -335,11 +374,35 @@ async function updateLoop() {
                     //CustomLogger.warn("updateLoop", "Received invalid VRC origin");
                 }
             }
-        } catch (error) {
-            //CustomLogger.error("updateLoop", `Error in update loop: ${error.message}`);
-        }
 
-        await wait(1); // Update at 20Hz, adjust as needed
+            // Always get controller data when we have an input actor
+            if (state.inputActor) {
+                //console.log("has in actor")
+                const controllerData = await Postman.PostMessage({
+                    address: { fm: state.id, to: state.inputActor },
+                    type: "GETCONTROLLERDATA",
+                    payload: null
+                }, true);
+
+                if (controllerData) {
+                    // If we're grabbed, update position
+                    if (state.grabbedController && state.grabOffset) {
+                        const [leftPose, rightPose] = controllerData;
+                        const controllerPose = state.grabbedController === "left" ? leftPose : rightPose;
+                        
+                        if (controllerPose) {
+                            // Calculate new overlay position based on controller position and stored offset
+                            const newTransform = multiplyMatrix(controllerPose.pose.mDeviceToAbsoluteTracking, state.grabOffset);
+                            setOverlayTransformAbsolute(newTransform);
+                        }
+                    }
+                }
+            }
+
+            await wait(1000/90); // 90hz update rate
+        } catch (error) {
+            CustomLogger.error("updateLoop", `Error in update loop: ${error.message}`);
+        }
     }
 }
 
