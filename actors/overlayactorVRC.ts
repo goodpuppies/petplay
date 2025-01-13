@@ -352,7 +352,7 @@ async function updateLoop() {
     while (state.isRunning) {
         try {
             // Only update VRC origin if we're not being grabbed
-            if (state.vrcOriginActor && !state.grabbedController) {
+            /* if (state.vrcOriginActor && !state.grabbedController) {
                 const newVrcOrigin = await Postman.PostMessage({
                     address: { fm: state.id, to: state.vrcOriginActor },
                     type: "GETVRCORIGIN",
@@ -373,7 +373,7 @@ async function updateLoop() {
                         }
                     }
                 }
-            }
+            } */
 
             // Always get controller data when we have an input actor
             if (state.inputActor) {
@@ -405,7 +405,7 @@ async function updateLoop() {
 
             await wait(1000/90); // 90hz update rate
         } catch (error) {
-            CustomLogger.error("updateLoop", `Error in update loop: ${error.message}`);
+            CustomLogger.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
         }
     }
 }

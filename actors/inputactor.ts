@@ -11,7 +11,7 @@ import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 //steamvr input handling
-
+//#region
 type State = {
     id: string;
     db: Record<string, unknown>;
@@ -21,6 +21,7 @@ type State = {
     leftWasGrabbing: boolean;
     rightWasGrabbing: boolean;
     overlayActor: string;
+    laser: string;
     [key: string]: unknown;
 };
 
@@ -37,8 +38,10 @@ const state: State & BaseState = {
     rightWasIntersecting: false,
     leftWasGrabbing: false,
     rightWasGrabbing: false,
-    overlayActor: ""
+    overlayActor: "",
+    laser: ""
 };
+//#endregion
 
 const functions = {
     CUSTOMINIT: (_payload:void) => {
@@ -62,6 +65,9 @@ const functions = {
     },
     SETOVERLAYACTOR: (payload: string) => {
         state.overlayActor = payload;
+    },
+    SETLASER: (payload: string) => {
+        state.laser = payload;
     },
     GETCONTROLLERDATA: (_payload: void, address: MessageAddressReal) => {
         //console.log("GETCONTROLLERDATA")
@@ -140,8 +146,8 @@ const functions = {
             const m = leftPoseData.pose.mDeviceToAbsoluteTracking.m;
             const leftForward = {
                 v: [
-                    -m[2][0],
-                    -m[2][1],
+                    m[2][0],
+                    m[2][1],
                     -m[2][2]
                 ]
             };
@@ -182,6 +188,13 @@ const functions = {
                         }
                     });
                 }
+                Postman.PostMessage({
+                    address: { fm: state.id, to: state.laser },
+                    type: "INTERSECTION",
+                    payload: {
+                        intersection: leftIntersection,
+                    }
+                });
             } else if (state.leftWasIntersecting && !leftGrabData.bState) {
                 // If we were intersecting but aren't anymore and grab is released, send release event
                 Postman.PostMessage({
@@ -201,8 +214,8 @@ const functions = {
             const m = rightPoseData.pose.mDeviceToAbsoluteTracking.m;
             const rightForward = {
                 v: [
-                    -m[2][0],
-                    -m[2][1],
+                    m[2][0],
+                    m[2][1],
                     -m[2][2]
                 ]
             };
@@ -242,6 +255,13 @@ const functions = {
                         }
                     });
                 }
+                Postman.PostMessage({
+                    address: { fm: state.id, to: state.laser },
+                    type: "INTERSECTION",
+                    payload: {
+                        intersection: rightIntersection,
+                    }
+                });
             } else if (state.rightWasIntersecting && !rightGrabData.bState) {
                 // If we were intersecting but aren't anymore and grab is released, send release event
                 Postman.PostMessage({

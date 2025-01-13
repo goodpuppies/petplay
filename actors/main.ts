@@ -7,6 +7,7 @@ import { CustomLogger } from "../classes/customlogger.ts";
 
 //main process
 
+//#region state
 type State = {
   id: string;
   db: Record<string, unknown>;
@@ -21,6 +22,7 @@ const state: State & BaseState = {
   numbah: 0,
   addressBook: new Set()
 };
+//#endregion
 
 export const functions = {
   MAIN: (payload: string) => {
@@ -50,7 +52,7 @@ async function main(_payload: Payload["MAIN"]) {
   }, true)
 
 
-  const overlayactor = await Postman.create("overlayactor.ts");
+  //const overlayactor = await Postman.create("overlayactor.ts");
 
 
 
@@ -64,7 +66,7 @@ async function main(_payload: Payload["MAIN"]) {
   const laser = await Postman.create("laserPointerActor.ts");
 
 
-  await wait(1000)
+  //await wait(1000)
 
   Postman.PostMessage({
     address: { fm: state.id, to: hmd },
@@ -98,9 +100,14 @@ async function main(_payload: Payload["MAIN"]) {
     type: "SETINPUTACTOR",
     payload: inputactor,
   });
+  Postman.PostMessage({
+    address: { fm: state.id, to: inputactor },
+    type: "SETLASER",
+    payload: laser,
+  });
 
 
-  await wait(2000)
+  //await wait(2000)
 
   Postman.PostMessage({
     address: { fm: state.id, to: vrcorigin },
@@ -146,7 +153,7 @@ async function main(_payload: Payload["MAIN"]) {
 
 
 
-  await wait(5000);
+  //await wait(5000);
 
   inputloop(inputactor, overlayactorVRC);
 }
