@@ -65,7 +65,7 @@ const functions = {
         state.isRunning = false;
         destroyLaserOverlays();
     },
-    INTERSECTION: (payload: OpenVR.OverlayIntersectionResults) => {
+    INTERSECTION: (payload: { intersection: OpenVR.OverlayIntersectionResults }) => {
 
         if (!state.intersectionOverlayHandle) {
             state.intersectionOverlayHandle = createIntersectionOverlay();
@@ -114,32 +114,22 @@ function createLaserOverlays() {
 
 function createIntersectionOverlay():bigint {
     if (!state.overlayClass) {
-        CustomLogger.error("actor", "Overlay class not initialized");
         throw new Error ("Overlay class not initialized");
     }
-
-    // Create a simple 2x2 red texture for the intersection point
-
 
     // Create the intersection overlay
     const intersectionHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     const error = state.overlayClass.CreateOverlay("intersection.point", "Intersection Point", intersectionHandlePTR);
     const intersectionHandle = new Deno.UnsafePointerView(intersectionHandlePTR).getBigUint64();
-
     if (error !== OpenVR.OverlayError.VROverlayError_None) {
-        CustomLogger.error("actor", `Failed to create intersection overlay: ${OpenVR.OverlayError[error]}`);
-        throw new Error("Overlay class not initialized");
+        throw new Error("failed to create intersection overlay");
     }
 
     const pixels = new Uint32Array([0xFF0000FF, 0xFF0000FF, 0xFF0000FF, 0xFF0000FF]);
     const pixelBuffer = pixels.buffer;
-
     state.overlayClass.SetOverlayRaw(intersectionHandle, Deno.UnsafePointer.of(pixelBuffer)!, 2, 2, 4);
-    state.overlayClass.SetOverlayWidthInMeters(intersectionHandle, 0.05); // 1cm diameter
-    state.overlayClass.SetOverlayColor(intersectionHandle, 1.0, 0.0, 0.0); // Red color
-
+    state.overlayClass.SetOverlayWidthInMeters(intersectionHandle, 0.05); 
     state.overlayClass.SetOverlayFlag(intersectionHandle, OpenVR.OverlayFlags.VROverlayFlags_SortWithNonSceneOverlays, true);
-
 
     state.intersectionOverlayHandle = intersectionHandle
 
@@ -159,7 +149,7 @@ function updateIntersectionOverlay(intersectionWrapper: { intersection: OpenVR.O
         v: [
             point.v[0],
             point.v[1],
-            point.v[2] + offsetDistance // Move closer along the Z-axis
+            point.v[2] //+ offsetDistance // Move closer along the Z-axis
         ]
     };
 
@@ -216,7 +206,7 @@ async function updateLoop() {
                 address: { fm: state.id, to: state.inputActor },
                 type: "GETCONTROLLERDATA",
                 payload: null
-            }, true);
+            }, true) as [OpenVR.InputPoseActionData, OpenVR.InputPoseActionData];
 
             if (controllerData) {
                 const [leftPose, rightPose] = controllerData;

@@ -15,7 +15,6 @@ import {
 } from "../actorsystem/types.ts";
 import { ActorWorker } from "../actorsystem/ActorWorker.ts";
 import { wait } from "../actorsystem/utils.ts";
-import { HyperswarmInterface } from "./hyperswarmInterface.ts";
 import { getAvailablePort } from "jsr:@std/net";
 import * as JSON from "../classes/JSON.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
@@ -164,7 +163,7 @@ export class Postman {
         }`,
       ); */
 
-      if (message.type.startsWith("CB:") && !Postman.customCB) {
+      if (message.type === "string" && message.type.startsWith("CB:") && !Postman.customCB) {
         throw new Error(`Callback received without a receiver: ${message.type}`);
       }
       //@ts-ignore: uhh
@@ -214,10 +213,10 @@ export class Postman {
     await Promise.all(addresses.map(async (address: ToAddress) => {
       message.address.to = address!;
       //console.log("addressbook of",this.state.name, Postman.addressBook)
-      this.worker.postMessage(message);
+      //this.worker.postMessage(message);
 
-      /* if (Postman.portal && Postman.addressBook.has(message.address.to)) {
-        console.log("Trying portal route for", message.address.to);
+      if (Postman.portal && Postman.addressBook.has(message.address.to)) {
+        console.log("Trying portal route for", message.address.fm, "->",message.address.to);
         try {
           const sent = await Postman.PostMessage({
             address: { fm: Postman.state.id, to: Postman.portal },
@@ -238,39 +237,17 @@ export class Postman {
 
 
       else {
-        //console.log("send", message)
+       //console.log(Postman.portal)
+       //console.log("local send", message)
+       //console.log(Postman.addressBook)
         this.worker.postMessage(message);
-      } */
 
-      //#region stuff
-      /* else if (Postman.hyperswarmInterface) {
-        //check portal
-        CustomLogger.log("syncloop", "portal check? ");
+/*         if (message.address.to === "SYSTEM") { 
+          
+        } */
 
-        throw new Error("not implemented");
 
-        Postman.portalCheckSignal = new Signal<boolean>();
-        CustomLogger.log("class", "trying to query dataPeers")
-        CustomLogger.log("class", Postman.state.id)
-        CustomLogger.log("class", message.address.to)
-        Postman.hyperswarmInterface.sendToNodeProcess({
-          type: "query_dataPeers",
-          from: Postman.state.id,
-          targetPeerId: message.address.to,
-        });
-        const result: boolean = await Postman.portalCheckSignal.wait();
-        if (result) {
-          Postman.hyperswarmInterface.sendToNodeProcess({
-            type: "send_message",
-            targetPeerId: message.address.to,
-            payload: message,
-          });
-        } else {
-          CustomLogger.error("classerr", "trough rtc failed, trying locally");
-          this.worker.postMessage(message);
-        }
-      } */
-      //#endregion
+      }
 
     }));
   }
@@ -303,35 +280,4 @@ export class Postman {
       CustomLogger.log("class", `Current peers: ${Array.from(Postman.addressBook).join(", ")}`);
     }
   }
-
-  /* static async inithyperswarmInterface() {
-    const port = await getAvailablePort();
-    if (!port) {
-      throw new Error("No port available");
-    }
-    Postman.hyperswarmInterface = new HyperswarmInterface(Postman.state.id, port);
-    //await Postman.hyperswarmInterface.start();
-
-    Postman.hyperswarmInterface.onMessage((data: any) => {
-
-      CustomLogger.log("class", "Received message from Hyperswarm interface:", data);
-      if (data.type === "peer_available") {
-        console.log("Peer available adding to addressbook:", data.peerId);
-        Postman.addPeerToAddressBook(data.peerId);
-      } else if (data.type === "petplay_message") {
-        const message = JSON.parse(data.payload) as Message;
-        if (message.address.to === Postman.state.id) {
-          Postman.runFunctions(message);
-        } else {
-          throw new Error("Message not to self");
-        }
-      } else if (data.type === "topic_connected") {
-        Postman.PostMessage({
-          address: { fm: Postman.state.id, to: Postman.hmm },
-          type: "CB:SET_TOPIC",
-          payload: data.topicId,
-        });
-      }
-    });
-  } */
 }

@@ -26,6 +26,7 @@ const state: State & BaseState = {
 
 export const functions = {
   MAIN: (payload: string) => {
+    Postman.functions.OPENPORTAL("muffin")
     main(payload);
   },
   LOG: (_payload: null) => {
@@ -50,6 +51,7 @@ async function main(_payload: Payload["MAIN"]) {
     type: "GETOVERLAYPTR",
     payload: null
   }, true)
+  console.log("xd", ivroverlay)
 
 
   //const overlayactor = await Postman.create("overlayactor.ts");
@@ -66,13 +68,14 @@ async function main(_payload: Payload["MAIN"]) {
   const laser = await Postman.create("laserPointerActor.ts");
 
 
-  //await wait(1000)
+  await wait(9000)
 
   Postman.PostMessage({
     address: { fm: state.id, to: hmd },
     type: "INITOPENVR",
     payload: ivrsystem
   })
+
   Postman.PostMessage({
     address: { fm: state.id, to: [overlayactorVRC, vrcorigin, laser] },
     type: "INITOPENVR",
@@ -161,16 +164,17 @@ async function main(_payload: Payload["MAIN"]) {
 async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
   CustomLogger.log("default", "inputloop started");
   while (true) {
+    
     const inputstate = await Postman.PostMessage({
       address: { fm: state.id, to: inputactor },
       type: "GETCONTROLLERDATA",
       payload: null,
     }, true) as [
-        OpenVR.InputPoseActionData,
-        OpenVR.InputPoseActionData,
-        OpenVR.InputDigitalActionData,
-        OpenVR.InputDigitalActionData,
-      ];
+      OpenVR.InputPoseActionData,
+      OpenVR.InputPoseActionData,
+      OpenVR.InputDigitalActionData,
+      OpenVR.InputDigitalActionData,
+    ];
 
     if (inputstate[2].bState == 1) {
       Postman.PostMessage({

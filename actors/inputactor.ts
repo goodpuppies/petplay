@@ -45,7 +45,7 @@ const state: State & BaseState = {
 
 const functions = {
     CUSTOMINIT: (_payload:void) => {
-        //Postman.functions?.HYPERSWARM?.(null, state.id);
+        Postman.functions.OPENPORTAL("muffin")
         main()
     },
     LOG: (_payload:void) => {

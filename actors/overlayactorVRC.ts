@@ -70,8 +70,8 @@ const state: State & BaseState = {
 
 const functions = {
     CUSTOMINIT: (_payload: void) => {
-        //Postman.functions?.HYPERSWARM?.(null, state.id);
-        //startDesktopCapture(30).catch(error => console.log(`Desktop capture error: ${error}`));
+        Postman.functions.OPENPORTAL("muffin")
+        
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
@@ -132,7 +132,8 @@ const functions = {
         }
     },
     OVERLAY_GRAB_START: (payload: { controller: "left" | "right", intersection: OpenVR.OverlayIntersectionResults, controllerPose: OpenVR.InputPoseActionData }) => {
-        console.log("grab")
+        CustomLogger.log("input","grab")
+
         
         if (state.grabbedController) return; // Already being grabbed
         
@@ -147,7 +148,7 @@ const functions = {
     },
     
     OVERLAY_GRAB_END: (payload: { controller: "left" | "right" }) => {
-        console.log("ungrab")
+        CustomLogger.log("input","ungrab")
         if (state.grabbedController !== payload.controller) return;
         
         state.grabbedController = null;
@@ -376,12 +377,12 @@ async function updateLoop() {
             } */
 
             // Always get controller data when we have an input actor
-            if (state.inputActor) {
+            if (!state.inputActor) {
                 const controllerData = await Postman.PostMessage({
                     address: { fm: state.id, to: state.inputActor },
                     type: "GETCONTROLLERDATA",
                     payload: null
-                }, true);
+                }, true) as [OpenVR.InputPoseActionData, OpenVR.InputPoseActionData];
 
                 if (controllerData) {
                     // If we're grabbed, update position

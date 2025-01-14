@@ -77,6 +77,7 @@ const functions: TypedActorFunctions = {
         const overlay = state.overlayPTR
 
         const overlayPtrNumeric = Deno.UnsafePointer.value(overlay);
+        console.log("xd2", overlayPtrNumeric)
 
         Postman.PostMessage({
             address: { fm: state.id, to: addr.fm },

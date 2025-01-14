@@ -7,7 +7,7 @@ import { Buffer } from "node:buffer";
 
 // For testing, we'll create a shared map of iroh nodes
 const TEST_MODE = true;
-
+//#region state
 type State = {
     irohNodes: Map<string, any>; // actorId -> irohNode
     topic?: string;
@@ -34,9 +34,10 @@ const state: State & BaseState = {
     IDTopics: new Map(),
     actordocs: new Map(),
     idtodoc: new Map(),
-    pendingTopicSets: new Map<string, Topic>(), 
+    pendingTopicSets: new Map<string, Topic>(),
     petplayServer: null
 };
+//#endregion
 
 const PROTOCOL_STR = "actor-mesh/0";
 const PROTOCOL = Buffer.from(PROTOCOL_STR);
@@ -99,7 +100,7 @@ export const functions = {
                 CustomLogger.log("iroh", "WebSocket opened for", address.fm);
                 const nodeAddr = await irohNode.net.nodeAddr();
 
-                CustomLogger.log("iroh", "Got node address:", nodeAddr.nodeId);
+                //CustomLogger.log("iroh", "Got node address:", nodeAddr.nodeId);
 
                 const announcement = {
                     irohId: nodeAddr.nodeId,
@@ -152,7 +153,7 @@ export const functions = {
 
     },
     SEND: async (payload: GenericMessage | boolean, address: PairAddress) => {
-        if (typeof payload === 'boolean') return false;
+        //if (typeof payload === 'boolean') return false;
 
         const message = payload as GenericMessage;
         const sourceActor = address.fm;
@@ -162,8 +163,13 @@ export const functions = {
         // Get the Iroh node for the sending actor
         const irohNode = state.irohNodes.get(sourceActor);
         if (!irohNode) {
-            CustomLogger.log("iroh", "No Iroh node for actor", sourceActor);
-            return false;
+            CustomLogger.log("iroh", "current actor has no iroh node", sourceActor);
+            Postman.PostMessage({
+                address: { fm: state.id, to: address.fm },
+                type: "CB:SEND",
+                payload: false
+            })
+            return
         }
 
         let conn = state.connections.get(connectionKey);
@@ -172,18 +178,33 @@ export const functions = {
             const targetAddr = state.IDNoderaddrs.get(targetId);
             if (!targetAddr) {
                 CustomLogger.log("iroh", `No node address found for target ${targetId}`);
-                return false;
+                Postman.PostMessage({
+                    address: { fm: state.id, to: address.fm },
+                    type: "CB:SEND",
+                    payload: false
+                })
+                return
             }
-            
+
             try {
-                conn = await connectToPeer(targetAddr, irohNode, sourceActor, targetId);
+                conn = await connectToPeer(targetAddr, irohNode, sourceActor, targetId as ToAddress);
                 if (!conn) {
                     CustomLogger.log("iroh", `Failed to establish connection to ${targetId}`);
-                    return false;
+                    Postman.PostMessage({
+                        address: { fm: state.id, to: address.fm },
+                        type: "CB:SEND",
+                        payload: false
+                    })
+                    return
                 }
             } catch (err) {
                 CustomLogger.log("iroh", "Failed to establish connection:", err);
-                return false;
+                Postman.PostMessage({
+                    address: { fm: state.id, to: address.fm },
+                    type: "CB:SEND",
+                    payload: false
+                })
+                return
             }
         }
 
@@ -207,15 +228,23 @@ export const functions = {
             // Close only the bi-directional stream, keep the base connection
             await bi.send.stopped();
 
-            return true;
-        } catch (err) {
-            CustomLogger.log("iroh", "Failed to send:", err);
+            Postman.PostMessage({
+                address: { fm: state.id, to: address.fm },
+                type: "CB:SEND",
+                payload: true
+            })
+        } catch (e) {
+            CustomLogger.log("iroh", "Failed to send:", e);
             // If the base connection is dead, remove it and try to reconnect next time
-            if (err.message?.includes("connection lost")) {
+            if ((e as Error).message?.includes("connection lost")) {
                 CustomLogger.log("iroh", "Connection lost, removing from state");
                 state.connections.delete(connectionKey);
             }
-            return false;
+            Postman.PostMessage({
+                address: { fm: state.id, to: address.fm },
+                type: "CB:SEND",
+                payload: false
+            })
         }
     },
     CREATEDOC: async (payload: null, address: PairAddress) => {
@@ -232,14 +261,14 @@ export const functions = {
             addr: nodeAddr,
             actorId: address.fm
         };
-        
+
         state.petplayServer.send(JSON.stringify(announcement));
         console.log("doc announced!", announcement)
         state.actordocs.set(address.fm, doc.id())
         state.idtodoc.set(doc.id(), doc)
 
         Postman.PostMessage({
-            address: {fm: state.id, to: address.fm},
+            address: { fm: state.id, to: address.fm },
             type: "CB:CREATEDOC",
             payload: doc.id(),
         })
@@ -273,9 +302,9 @@ async function initIroh() {
                         const bi = await conn.acceptBi();
                         const bytes = await bi.recv.readToEnd(1024 * 1024);
                         const message = JSON.parse(bytes.toString());
-                        
+
                         CustomLogger.log("iroh", `Node ${nodeId} (owned by actor ${ownerActorId}) sending message to actorsystem ${message}`);
-                        
+
                         // Enhanced logging with node identity
                         CustomLogger.log("iroh", "Message received:", {
                             receivingNode: nodeId,
@@ -297,7 +326,7 @@ async function initIroh() {
                         Postman.PostMessage(message);
                         Postman.runFunctions(message);
                     } catch (e) {
-                        if (e.message?.includes('connection lost')) {
+                        if ((e as Error).message?.includes('connection lost')) {
                             CustomLogger.log("iroh", `Connection lost with ${remote} for node ${nodeId} (actor ${ownerActorId})`);
                             break;
                         }
@@ -310,13 +339,15 @@ async function initIroh() {
 
     const node = await Iroh.memory({ protocols, enableDocs: true });
     const nodeId = await node.net.nodeId();
-    CustomLogger.log("iroh", `New Iroh node started with ID ${nodeId}`);
+    //CustomLogger.log("iroh", `New Iroh node started with ID ${nodeId}`);
     return node;
 }
 
 
 async function connectToPeer(peerAddr: any, irohNode: any, actorId: string, remote: ToAddress) {
     try {
+
+        console.log("Connecting to peer:", peerAddr,"Iroh node:", irohNode, "Actor ID:", actorId, "Remote:", remote);
         const endpoint = irohNode.node.endpoint();
         const conn = await endpoint.connect(peerAddr, PROTOCOL);
         const _remote = await conn.getRemoteNodeId();
