@@ -29,6 +29,24 @@
       "attachSimplePort": 9229
     },
     {
+      "request": "launch",
+      "name": "test",
+      "type": "node",
+      "program": "${workspaceFolder}/tests/w.ts",
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "outputCapture": "std",
+      "autoAttachChildProcesses": true,
+      "env": {},
+      "runtimeExecutable": "Deno",
+      "runtimeArgs": [
+        "run",
+        "--inspect-wait",
+        "-A",
+      ],
+      "attachSimplePort": 9229
+    },
+    {
       "name": "Attach Worker 1",
       "type": "node",
       "request": "attach",

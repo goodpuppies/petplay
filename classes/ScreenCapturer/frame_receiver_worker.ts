@@ -89,7 +89,7 @@ worker.onmessage = async (e: MessageEvent) => {
       worker.postMessage({ type: 'listening', port });
 
       // Wait for client connection
-      console.log("Waiting for client connection...");
+      //console.log("Waiting for client connection...");
       conn = await listener.accept();
       isConnected = true;
       worker.postMessage({ type: 'connected' });

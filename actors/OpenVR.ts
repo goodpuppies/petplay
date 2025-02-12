@@ -1,54 +1,37 @@
 import {
-    TypedActorFunctions,
     BaseState,
     worker,
     MessageAddressReal,
-} from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
+} from "../stageforge/src/lib/types.ts";
+import { PostMan } from "../stageforge/mod.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { stringToPointer } from "../OpenVR_TS_Bindings_Deno/utils.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
-// HMD Position actor module
-type State = {
-    id: string;
-    db: Record<string, unknown>;
-    vrSystemPTR: Deno.PointerValue | null;
-    overlayPTR: Deno.PointerValue | null;
-    [key: string]: unknown;
-};
-
-const state: State & BaseState = {
+const state = {
     id: "",
     db: {},
     name: "hmd_position_actor",
     socket: null,
     sync: false,
-    vrSystemPTR: null,
-    overlayPTR: null,
+    vrSystemPTR: null as Deno.PointerValue | null,
+    overlayPTR: null as Deno.PointerValue | null,
     addressBook: new Set(),
 };
 
-const functions: TypedActorFunctions = {
+new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
-        Postman.functions?.HYPERSWARM?.(null, state.id);
+        //PostMan.functions?.HYPERSWARM?.(null, state.id);
         initializeOpenVR();
     },
     LOG: (_payload) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload, address) => {
-        const addr = address as MessageAddressReal;
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETID",
-            payload: state.id,
-        }, false);
+    GETID: (_payload) => {
+        return state.id
     },
-    GETOPENVRPTR: (_payload, address) => {
-        const addr = address as MessageAddressReal;
-
+    GETOPENVRPTR: (_payload) => {
         if (!state.vrSystemPTR) {
             CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
             return;
@@ -58,36 +41,20 @@ const functions: TypedActorFunctions = {
 
         const systemPtrNumeric = Deno.UnsafePointer.value(ivrsystem);
 
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETOPENVRPTR",
-            payload: systemPtrNumeric,
-        }, false);
-
-        CustomLogger.log("actor", `Sent OpenVR pointer: ${systemPtrNumeric}`);
+        return systemPtrNumeric
     },
-    GETOVERLAYPTR: (_payload, address) => {
-        const addr = address as MessageAddressReal;
-
+    GETOVERLAYPTR: (_payload) => {
         if (!state.overlayPTR) {
             CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
             return;
         }
-
         const overlay = state.overlayPTR
 
         const overlayPtrNumeric = Deno.UnsafePointer.value(overlay);
-        console.log("xd2", overlayPtrNumeric)
 
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETOPENVRPTR",
-            payload: overlayPtrNumeric,
-        }, false);
-
-        CustomLogger.log("actor", `Sent OpenVR pointer: ${overlayPtrNumeric}`);
+        return overlayPtrNumeric
     }
-};
+}as const)
 
 function initializeOpenVR() {
     const initErrorPtr = P.Int32P<OpenVR.InitError>();
@@ -124,9 +91,3 @@ function initializeOpenVR() {
     CustomLogger.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
 }
 
-
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-    Postman.runFunctions(message);
-});

@@ -1,31 +1,13 @@
-import {
-    TypedActorFunctions,
-    BaseState,
-    worker,
-    MessageAddressReal,
-} from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
+
+import { PostMan } from "../stageforge/mod.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { fillBuffer, readBufferStructured, stringToPointer } from "../OpenVR_TS_Bindings_Deno/utils.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 //steamvr input handling
-//#region
-type State = {
-    id: string;
-    db: Record<string, unknown>;
-    targetOverlayHandle: bigint;
-    leftWasIntersecting: boolean;
-    rightWasIntersecting: boolean;
-    leftWasGrabbing: boolean;
-    rightWasGrabbing: boolean;
-    overlayActor: string;
-    laser: string;
-    [key: string]: unknown;
-};
 
-const state: State & BaseState = {
+const state = {
     id: "",
     db: {},
     TrackingUniverseOriginPTR: null,
@@ -41,24 +23,18 @@ const state: State & BaseState = {
     overlayActor: "",
     laser: ""
 };
-//#endregion
 
-const functions = {
+
+new PostMan(state.name, {
     CUSTOMINIT: (_payload:void) => {
-        Postman.functions.OPENPORTAL("muffin")
+        //Postman.functions.OPENPORTAL("muffin")
         main()
     },
     LOG: (_payload:void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload:void, address: MessageAddressReal) => {
-        // use a check here
-        const addr = address as MessageAddressReal;
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETID",
-            payload: state.id,
-        }, false);
+    GETID: (_payload:void) => {
+        return state.id
     },
     SETOVERLAYHANDLE: (payload: bigint) => {
         state.targetOverlayHandle = payload;
@@ -69,9 +45,9 @@ const functions = {
     SETLASER: (payload: string) => {
         state.laser = payload;
     },
-    GETCONTROLLERDATA: (_payload: void, address: MessageAddressReal) => {
+    GETCONTROLLERDATA: (_payload: void) => {
         //console.log("GETCONTROLLERDATA")
-        const addr = address;
+        //const addr = address;
         updateActionState();
 
         //#region pose
@@ -120,8 +96,8 @@ const functions = {
 
         // Check for grab release
         if (state.leftWasGrabbing && !leftGrabData.bState) {
-            Postman.PostMessage({
-                address: { fm: state.id, to: state.overlayActor },
+            PostMan.PostMessage({
+                target:state.overlayActor,
                 type: "OVERLAY_GRAB_END",
                 payload: {
                     controller: "left"
@@ -129,8 +105,8 @@ const functions = {
             });
         }
         if (state.rightWasGrabbing && !rightGrabData.bState) {
-            Postman.PostMessage({
-                address: { fm: state.id, to: state.overlayActor },
+            PostMan.PostMessage({
+                target: state.overlayActor,
                 type: "OVERLAY_GRAB_END",
                 payload: {
                     controller: "right"
@@ -178,8 +154,8 @@ const functions = {
                 
                 // If this is the first frame of intersection during grab, send grab event
                 if (!state.leftWasIntersecting) {
-                    Postman.PostMessage({
-                        address: { fm: state.id, to: state.overlayActor },
+                    PostMan.PostMessage({
+                        target: state.overlayActor,
                         type: "OVERLAY_GRAB_START",
                         payload: {
                             controller: "left",
@@ -188,8 +164,8 @@ const functions = {
                         }
                     });
                 }
-                Postman.PostMessage({
-                    address: { fm: state.id, to: state.laser },
+                PostMan.PostMessage({
+                    target: state.laser,
                     type: "INTERSECTION",
                     payload: {
                         intersection: leftIntersection,
@@ -197,8 +173,8 @@ const functions = {
                 });
             } else if (state.leftWasIntersecting && !leftGrabData.bState) {
                 // If we were intersecting but aren't anymore and grab is released, send release event
-                Postman.PostMessage({
-                    address: { fm: state.id, to: state.overlayActor || "" },
+                PostMan.PostMessage({
+                    target: state.overlayActor || "",
                     type: "OVERLAY_GRAB_END",
                     payload: {
                         controller: "left"
@@ -245,8 +221,8 @@ const functions = {
                 
                 // If this is the first frame of intersection during grab, send grab event
                 if (!state.rightWasIntersecting) {
-                    Postman.PostMessage({
-                        address: { fm: state.id, to: state.overlayActor },
+                    PostMan.PostMessage({
+                        target: state.overlayActor,
                         type: "OVERLAY_GRAB_START",
                         payload: {
                             controller: "right",
@@ -255,8 +231,8 @@ const functions = {
                         }
                     });
                 }
-                Postman.PostMessage({
-                    address: { fm: state.id, to: state.laser },
+                PostMan.PostMessage({
+                    target: state.laser,
                     type: "INTERSECTION",
                     payload: {
                         intersection: rightIntersection,
@@ -264,8 +240,8 @@ const functions = {
                 });
             } else if (state.rightWasIntersecting && !rightGrabData.bState) {
                 // If we were intersecting but aren't anymore and grab is released, send release event
-                Postman.PostMessage({
-                    address: { fm: state.id, to: state.overlayActor || "" },
+                PostMan.PostMessage({
+                    target: state.overlayActor || "",
                     type: "OVERLAY_GRAB_END",
                     payload: {
                         controller: "right"
@@ -276,6 +252,7 @@ const functions = {
         } else {
             state.rightWasIntersecting = false;
         }
+        //#endregion
 
         //#region button
         error = vrInput.GetDigitalActionData(
@@ -299,22 +276,20 @@ const functions = {
         state.leftWasGrabbing = leftGrabData.bState as unknown as boolean;
         state.rightWasGrabbing = rightGrabData.bState as unknown as boolean;
 
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETCONTROLLERDATA",
-            payload: [
-                leftPoseData, 
-                rightPoseData, 
-                leftTriggerData, 
-                rightTriggerData,
-                leftIntersection,
-                rightIntersection,
-                leftGrabData,
-                rightGrabData
-            ]
-        });
+        const payload = [
+            leftPoseData,
+            rightPoseData,
+            leftTriggerData,
+            rightTriggerData,
+            leftIntersection,
+            rightIntersection,
+            leftGrabData,
+            rightGrabData
+        ]
+        return payload
+        //#endregion
     }
-};
+} as const);
 
 //#region openvr boilerplate 
 
@@ -496,9 +471,3 @@ function updateActionState() {
     }
 }
 
-
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-    Postman.runFunctions(message);
-});

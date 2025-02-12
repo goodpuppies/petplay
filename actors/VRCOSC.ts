@@ -1,10 +1,4 @@
-import {
-    TypedActorFunctions,
-    BaseState,
-    worker,
-    MessageAddressReal,
-} from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
+import { PostMan } from "../stageforge/mod.ts";
 import { OscSubscriber } from "../classes/getvrcpos.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
@@ -14,43 +8,31 @@ interface coord {
     [key: string]: number;
 }
 
-type State = {
-    oscSubscriber: OscSubscriber | null
-    coordinate: coord
-    [key: string]: unknown;
-};
-
-const state: State & BaseState = {
+const state = {
     id: "",
     name: "vrccoordinate",
     socket: null,
-    coordinate: {},
-    oscSubscriber: null,
+    coordinate: {} as coord,
+    oscSubscriber: null as OscSubscriber | null,
     addressBook: new Array<string>(),
 };
 
-const functions: TypedActorFunctions = {
+new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
         main();
     },
-    LOG: (_payload) => {
-        CustomLogger.log("actor", state.id);
-    },
-    GETCOORDINATE: (_payload, address) => {
-        const addr = address as MessageAddressReal;
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETCOORDINATE",
-            payload: state.coordinate
-        });
+    GETCOORDINATE: (_payloa) => {
+        return state.coordinate
     }
-};
+} as const);
 
 function handleOscMessage(address: string, value: number) {
     state.coordinate[address] = value;
 }
 
 function main() {
+    
+    //#region consts
     const PositionX: string = "/avatar/parameters/CustomObjectSync/PositionX";
     const PositionXNeg: string = "/avatar/parameters/CustomObjectSync/PositionXNeg";
     const PositionXPos: string = "/avatar/parameters/CustomObjectSync/PositionXPos";
@@ -71,9 +53,7 @@ function main() {
     const RotationZ: string = "/avatar/parameters/CustomObjectSync/RotationZ";
     const AngleMagZ_Angle = "/avatar/parameters/CustomObjectSync/AngleMagZ_Angle";
     const AngleSignZ_Angle = "/avatar/parameters/CustomObjectSync/AngleSignZ_Angle"
-
-
-
+    //#endregion
 
     state.oscSubscriber = new OscSubscriber([
         PositionX, PositionY, PositionZ,
@@ -91,9 +71,3 @@ function main() {
     }
 
 }
-
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-    Postman.runFunctions(message);
-});

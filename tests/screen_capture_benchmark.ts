@@ -1,4 +1,4 @@
-import { python } from "https://deno.land/x/python/mod.ts";
+//import { python } from "https://deno.land/x/python/mod.ts";
 
 async function testScreenCapture() {
     console.log("Starting screen capture benchmark...");

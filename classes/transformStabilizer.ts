@@ -1,5 +1,5 @@
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { CustomLogger } from "./customlogger.ts";
 
 export interface Position {
     x: number;

@@ -1,45 +1,33 @@
 import {
-    TypedActorFunctions,
     BaseState,
     worker,
     MessageAddressReal,
-} from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
+} from "../stageforge/src/lib/types.ts";
+import { PostMan } from "../stageforge/mod.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 const LASER_POINTER_WIDTH = 0.002; // 2mm wide
 const LASER_POINTER_LENGTH = 0.2; // 20cm long
-//#region state
-type State = {
-    id: string;
-    overlayClass: OpenVR.IVROverlay | null;
-    vrSystem: OpenVR.IVRSystem | null;
-    leftLaserHandle: OpenVR.OverlayHandle;
-    rightLaserHandle: OpenVR.OverlayHandle;
-    intersectionOverlayHandle: bigint | null;
-    inputActor: string | null; // To get controller poses
-    isRunning: boolean;
-    [key: string]: unknown;
-};
 
-const state: State & BaseState = {
+
+const state = {
     id: "",
     name: "laserpointer",
     socket: null,
-    overlayClass: null,
-    intersectionOverlayHandle: null,
-    vrSystem: null,
-    leftLaserHandle: 0n,
-    rightLaserHandle: 0n,
-    inputActor: null,
+    overlayClass: null as OpenVR.IVROverlay | null,
+    intersectionOverlayHandle: null as bigint | null,
+    vrSystem: null as OpenVR.IVRSystem | null,
+    leftLaserHandle: 0n as OpenVR.OverlayHandle,
+    rightLaserHandle: 0n as OpenVR.OverlayHandle,
+    inputActor: null as string | null,
     isRunning: false,
     addressBook: new Set(),
 };
-//#endregion
 
-const functions = {
+
+new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
     },
 
@@ -73,7 +61,7 @@ const functions = {
         updateIntersectionOverlay(payload);
 
     },
-};
+} as const);
 
 function createLaserOverlays() {
     if (!state.overlayClass) {
@@ -202,8 +190,8 @@ async function updateLoop() {
             }
 
             // Get controller poses from input actor
-            const controllerData = await Postman.PostMessage({
-                address: { fm: state.id, to: state.inputActor },
+            const controllerData = await PostMan.PostMessage({
+                target: state.inputActor ,
                 type: "GETCONTROLLERDATA",
                 payload: null
             }, true) as [OpenVR.InputPoseActionData, OpenVR.InputPoseActionData];
@@ -266,12 +254,3 @@ function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR
     state.overlayClass.SetOverlayTextureBounds(handle, texBoundsPtr);
     state.overlayClass.ShowOverlay(handle);
 }
-
-
-
-
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-    Postman.runFunctions(message);
-});

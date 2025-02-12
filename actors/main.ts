@@ -1,20 +1,13 @@
-import { TypedActorFunctions, BaseState, Payload, ToAddress, worker } from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
-import { wait } from "../actorsystem/utils.ts";
+import { ToAddress } from "../stageforge/src/lib/types.ts";
+import { PostMan } from "../stageforge/mod.ts";
+import { wait } from "../classes/utils.ts";
 import { OpenVRType } from "../OpenVR_TS_Bindings_Deno/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 //main process
 
-//#region state
-type State = {
-  id: string;
-  db: Record<string, unknown>;
-  [key: string]: unknown;
-};
-
-const state: State & BaseState = {
+const state = {
   name: "main",
   id: "",
   db: {},
@@ -22,12 +15,12 @@ const state: State & BaseState = {
   numbah: 0,
   addressBook: new Set()
 };
-//#endregion
 
-export const functions = {
-  MAIN: (payload: string) => {
-    Postman.functions.OPENPORTAL("muffin")
-    main(payload);
+
+new PostMan(state.name, {
+  MAIN: (_payload: string) => {
+    //PostMan.functions.OPENPORTAL("muffin")
+    main();
   },
   LOG: (_payload: null) => {
     CustomLogger.log("actor", state.id);
@@ -35,76 +28,75 @@ export const functions = {
   STDIN: (payload: string) => {
     CustomLogger.log("actor", "stdin:", payload);
   },
-};
+} as const);
 
-async function main(_payload: Payload["MAIN"]) {
+async function main() {
   CustomLogger.log("default", "main actor started");
 
-  const ivr = await Postman.create("InitOpenVR.ts")
-  const ivrsystem = await Postman.PostMessage({
-    address: { fm: state.id, to: ivr },
+  const ivr = await PostMan.create("./actors/OpenVR.ts")
+  const ivrsystem = await PostMan.PostMessage({
+    target: ivr,
     type: "GETOPENVRPTR",
     payload: null
   }, true)
-  const ivroverlay = await Postman.PostMessage({
-    address: { fm: state.id, to: ivr },
+  const ivroverlay = await PostMan.PostMessage({
+    target: ivr,
     type: "GETOVERLAYPTR",
     payload: null
   }, true)
-  console.log("xd", ivroverlay)
 
 
-  //const overlayactor = await Postman.create("overlayactor.ts");
+  //const overlayactor = await PostMan.create("overlayactor.ts");
 
 
 
-  const hmd = await Postman.create("hmdactor.ts");
-  const inputactor = await Postman.create("inputactor.ts");
+  const hmd = await PostMan.create("./actors/hmd.ts");
+  const inputactor = await PostMan.create("./actors/controllers.ts");
 
-  const overlayactorVRC = await Postman.create("overlayactorVRC.ts");
+  const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
 
-  const vrcorigin = await Postman.create("overlayactorVRCorigin.ts");
+  const vrcorigin = await PostMan.create("./actors/VRCOrigin.ts");
 
-  const laser = await Postman.create("laserPointerActor.ts");
+  const laser = await PostMan.create("./actors/laser.ts");
 
 
-  await wait(9000)
+  await wait(2000)
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: hmd },
+  PostMan.PostMessage({
+    target: hmd,
     type: "INITOPENVR",
     payload: ivrsystem
   })
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: [overlayactorVRC, vrcorigin, laser] },
+  PostMan.PostMessage({
+    target: [overlayactorVRC, vrcorigin, laser],
     type: "INITOPENVR",
     payload: ivroverlay
   })
 
 
-  const vrc = await Postman.create("vrccoordinate.ts");
+  const vrc = await PostMan.create("./actors/VRCOSC.ts");
 
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: vrcorigin },
+  PostMan.PostMessage({
+    target: vrcorigin,
     type: "ASSIGNVRC",
     payload: vrc,
   });
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: vrcorigin },
+  PostMan.PostMessage({
+    target: vrcorigin,
     type: "ASSIGNHMD",
     payload: hmd,
   });
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: laser },
+  PostMan.PostMessage({
+    target: laser,
     type: "SETINPUTACTOR",
     payload: inputactor,
   });
-  Postman.PostMessage({
-    address: { fm: state.id, to: inputactor },
+  PostMan.PostMessage({
+    target: inputactor,
     type: "SETLASER",
     payload: laser,
   });
@@ -112,8 +104,8 @@ async function main(_payload: Payload["MAIN"]) {
 
   //await wait(2000)
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: vrcorigin },
+  PostMan.PostMessage({
+    target: vrcorigin,
     type: "STARTOVERLAY",
     payload: {
       name: "overlayXX",
@@ -122,14 +114,14 @@ async function main(_payload: Payload["MAIN"]) {
     },
   });
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: overlayactorVRC },
+  PostMan.PostMessage({
+    target: overlayactorVRC,
     type: "ASSIGNVRCORIGIN",
     payload: vrcorigin,
   });
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: laser },
+  PostMan.PostMessage({
+    target: laser,
     type: "STARTLASERS",
     payload: null,
   });
@@ -137,8 +129,8 @@ async function main(_payload: Payload["MAIN"]) {
 
 
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: overlayactorVRC },
+  PostMan.PostMessage({
+    target: overlayactorVRC,
     type: "STARTOVERLAY",
     payload: {
       name: "overlay1",
@@ -148,8 +140,8 @@ async function main(_payload: Payload["MAIN"]) {
     },
   });
 
-  Postman.PostMessage({
-    address: { fm: state.id, to: inputactor },
+  PostMan.PostMessage({
+    target: inputactor,
     type: "SETOVERLAYACTOR",
     payload: overlayactorVRC,
   });
@@ -165,8 +157,8 @@ async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
   CustomLogger.log("default", "inputloop started");
   while (true) {
     
-    const inputstate = await Postman.PostMessage({
-      address: { fm: state.id, to: inputactor },
+    const inputstate = await PostMan.PostMessage({
+      target: inputactor,
       type: "GETCONTROLLERDATA",
       payload: null,
     }, true) as [
@@ -177,14 +169,14 @@ async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
     ];
 
     if (inputstate[2].bState == 1) {
-      Postman.PostMessage({
-        address: { fm: state.id, to: overlayactor },
+      PostMan.PostMessage({
+        target: overlayactor,
         type: "SETOVERLAYLOCATION",
         payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
       });
     } else if (inputstate[3].bState == 1) {
-      Postman.PostMessage({
-        address: { fm: state.id, to: overlayactor },
+      PostMan.PostMessage({
+        target: overlayactor,
         type: "SETOVERLAYLOCATION",
         payload: inputstate[1].pose.mDeviceToAbsoluteTracking,
       });
@@ -194,8 +186,3 @@ async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
   }
 }
 
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-  Postman.runFunctions(message);
-});

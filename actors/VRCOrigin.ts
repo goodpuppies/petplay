@@ -1,62 +1,36 @@
-// deno-lint-ignore-file no-inner-declarations
-import {
-    TypedActorFunctions,
-    BaseState,
-    worker,
-    MessageAddressReal,
-} from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
-import { wait } from "../actorsystem/utils.ts";
+import { PostMan } from "../stageforge/mod.ts";
+import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
-import { OpenVRTransform } from "./openvrTransform.ts";
-import { TransformStabilizer } from "./transformStabilizer.ts";
+import { OpenVRTransform } from "../classes/openvrTransform.ts";
+import { TransformStabilizer } from "../classes/transformStabilizer.ts";
 
-type State = {
-    id: string;
-    vrc: string;
-    hmd: string;
-    overlayClass: OpenVR.IVROverlay | null;
-    overlayHandle: OpenVR.OverlayHandle;
-    overlayerror: OpenVR.OverlayError;
-    origin: OpenVR.HmdMatrix34 | null
-    sync: boolean;
-    overlayTransform: OpenVRTransform | null;
-    originChangeCount: number;
-    transformStabilizer: TransformStabilizer | null;
-};
-
-const state: State & BaseState = {
+const state = {
     id: "",
-    origin: null,
+    origin: null as OpenVR.HmdMatrix34 | null,
     name: "origin",
     vrc: "",
     hmd: "",
-    overlayClass: null,
-    overlayHandle: 0n,
+    overlayClass: null as OpenVR.IVROverlay | null,
+    overlayHandle: 0n as OpenVR.OverlayHandle,
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
     sync: false,
     addressBook: new Set(),
-    overlayTransform: null,
+    overlayTransform: null as OpenVRTransform | null,
     originChangeCount: 0,
-    transformStabilizer: null,
+    transformStabilizer: null as TransformStabilizer | null,
 };
 
-const functions = {
+new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
         
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload: void, address: MessageAddressReal) => {
-        const addr = address;
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETID",
-            payload: state.id,
-        }, false);
+    GETID: (_payload: void) => {
+        return state.id
     },
     ASSIGNVRC: (payload: string) => {
         state.vrc = payload;
@@ -64,22 +38,17 @@ const functions = {
     ASSIGNHMD: (payload: string) => {
         state.hmd = payload;
     },
-    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }, _address: MessageAddressReal) => {
+    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }) => {
         mainX(payload.name, payload.texture, payload.sync);
     },
-    ADDADDRESS: (payload: string, _address: MessageAddressReal) => {
+    ADDADDRESS: (payload: string) => {
         state.addressBook.add(payload);
     },
-    GETOVERLAYLOCATION: (_payload: void, address: MessageAddressReal) => {
-        const addr = address;
+    GETOVERLAYLOCATION: (_payload: void) => {
         const m34 = GetOverlayTransformAbsolute();
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETOVERLAYLOCATION",
-            payload: m34,
-        });
+        return m34
     },
-    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34, _address: MessageAddressReal) => {
+    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
         const transform = payload;
         if (state.sync == false) {
             CustomLogger.log("syncloop", "set transform ");
@@ -92,16 +61,12 @@ const functions = {
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
         CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
-    GETVRCORIGIN: (_payload: void, address: MessageAddressReal) => {
-        const addr = address;
-        //state.origin is OpenVR.HmdMatrix34
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETVRCORIGIN",
-            payload: state.origin,
-        })
+    GETVRCORIGIN: (_payload: void) => {
+        return state.origin
     }
-};
+} as const);
+
+//#region out of scope
 
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
     if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
@@ -131,6 +96,8 @@ interface LastKnownRotation {
     y: number;
 }
 
+//#endregion
+
 async function mainX(overlaymame: string, overlaytexture: string, sync: boolean) {
     try {
         state.sync = sync;
@@ -158,13 +125,13 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
         const initialTransformBuf = new ArrayBuffer(initialTransformSize);
         const initialTransformView = new DataView(initialTransformBuf);
 
-        const initialTransform: OpenVR.HmdMatrix34 = {
-            m: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0, -2.0]
-            ]
-        };
+                const initialTransform: OpenVR.HmdMatrix34 = {
+                    m: [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 1.0],
+                        [0.0, 0.0, 1.0, -2.0]
+                    ]
+                };
         OpenVR.HmdMatrix34Struct.write(initialTransform, initialTransformView);
         setOverlayTransformAbsolute(initialTransform);
 
@@ -199,8 +166,8 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                     [key: string]: number;
                 }
 
-                const hmdPose = await Postman.PostMessage({
-                    address: { fm: state.id, to: state.hmd },
+                const hmdPose = await PostMan.PostMessage({
+                    target: state.hmd ,
                     type: "GETHMDPOSITION",
                     payload: null,
                 }, true) as OpenVR.TrackedDevicePose;
@@ -208,8 +175,8 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                 const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m;
                 const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[0][0]);
 
-                const coordinate = await Postman.PostMessage({
-                    address: { fm: state.id, to: state.vrc },
+                const coordinate = await PostMan.PostMessage({
+                    target: state.vrc ,
                     type: "GETCOORDINATE",
                     payload: null,
                 }, true) as coord;
@@ -310,9 +277,3 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
         CustomLogger.error("overlay", `Error in mainX: ${(e as Error).message}`);
     }
 }
-
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-    Postman.runFunctions(message);
-});

@@ -1,32 +1,25 @@
-import { PostalService } from "./actorsystem/PostalService.ts";
+import { PostalService } from "./stageforge/mod.ts"
 import "./actors/main.ts";
-import "./actorsOther/exampleActor.ts";
-import "./actorsOther/signalingDenoServer.ts";
-import type { Message } from "./actorsystem/types.ts";
-import { wait } from "./actorsystem/utils.ts";
+/* import "./actorsOther/exampleActor.x";
+import "./actorsOther/signalingDenoServer.x"; */
+
+import { wait } from "./classes/utils.ts";
 
 const postalservice = new PostalService();
 
-const mainAddress = await postalservice.add("main.ts");
-const portal = await postalservice.add("IrohActor.ts")
+const mainAddress = await postalservice.add("./actors/main.ts");
 
-postalservice.portal = portal
 
 console.log("mainAddress", mainAddress);
 
-postalservice.Post({
-  address: { fm: "system", to: portal },
-  type: "INITNETWORK",
-  payload: null,
-});
 
 await wait(1000)
 
-postalservice.Post({
+postalservice.PostMessage({
   address: { fm: "system", to: mainAddress },
   type: "MAIN",
   payload: null,
-} satisfies Message );
+});
 
 
 
@@ -44,7 +37,7 @@ if (import.meta.main) {
   while (true) {
     const msgD = await asyncPrompt() ?? "";
     const msg = msgD.replace(/\r/g, "");
-    postalservice.Post({
+    postalservice.PostMessage({
       address: { fm: "system", to: mainAddress },
       type: "STDIN",
       payload: msg,

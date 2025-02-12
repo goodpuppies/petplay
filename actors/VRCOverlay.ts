@@ -1,105 +1,72 @@
 import {
-    TypedActorFunctions,
     BaseState,
     worker,
     ToAddress,
     MessageAddressReal,
-} from "../actorsystem/types.ts";
-import { OnMessage, Postman } from "../classes/PostMan.ts";
-import { wait } from "../actorsystem/utils.ts";
+} from "../stageforge/src/lib/types.ts";
+import { PostMan } from "../stageforge/mod.ts";
+import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
-import { OpenGLManager } from "./openglManager.ts";
-import { OpenVRTransform } from "./openvrTransform.ts";
-import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "./matrixutils.ts";
+import { OpenGLManager } from "../classes/openglManager.ts";
+import { OpenVRTransform } from "../classes/openvrTransform.ts";
+import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "../classes/matrixutils.ts";
 
-//#region state
-type State = {
-    id: string;
-    db: Record<string, unknown>;
-    overlayClass: OpenVR.IVROverlay | null;
-    overlayHandle: OpenVR.OverlayHandle;
-    overlayerror: OpenVR.OverlayError;
-    overlayTransform: OpenVRTransform | null;
-    vrSystem: OpenVR.IVRSystem | null;
-    vrcOriginActor: string | null;
-    vrcOrigin: OpenVR.HmdMatrix34 | null;
-    smoothedVrcOrigin: OpenVR.HmdMatrix34 | null;
-    relativePosition: OpenVR.HmdMatrix34;
-    isRunning: boolean;
-    screenCapturer: ScreenCapturer | null;
-    glManager: OpenGLManager | null;
-    grabbedController: "left" | "right" | null;
-    grabOffset: OpenVR.HmdMatrix34 | null;
-    inputActor: string;
-    [key: string]: unknown;
-};
-
-const state: State & BaseState = {
+const state = {
     id: "",
     db: {},
     name: "overlay1",
     sync: false,
-    overlayClass: null,
-    overlayTransform: null,
-    addressBook: new Set(),
-    overlayHandle: 0n,
-    TrackingUniverseOriginPTR: null,
+    overlayClass: null as OpenVR.IVROverlay | null,
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
-    vrSystem: null,
-    vrcOriginActor: null,
-    vrcOrigin: null,
-    smoothedVrcOrigin: null,
+    overlayHandle: 0n,
+    overlayTransform: null as OpenVRTransform | null,
+    addressBook: new Set(),
+    TrackingUniverseOriginPTR: null,
+    vrSystem: null as OpenVR.IVRSystem | null,
+    vrcOriginActor: null as string | null,
+    vrcOrigin: null as OpenVR.HmdMatrix34 | null,
+    smoothedVrcOrigin: null as OpenVR.HmdMatrix34 | null,
     relativePosition: {
         m: [
             [1, 0, 0, 0],
             [0, 1, 0, 0],
             [0, 0, 1, 0]
         ]
-    },
+    } as OpenVR.HmdMatrix34,
     isRunning: false,
-    screenCapturer: null,
-    glManager: null,
-    grabbedController: null,
-    grabOffset: null,
+    screenCapturer: null as ScreenCapturer | null,
+    glManager: null as OpenGLManager | null,
+    grabbedController: null as "left" | "right" | null,
+    grabOffset: null as OpenVR.HmdMatrix34 | null,
     inputActor: "",
 };
-//#endregion
 
-const functions = {
+
+new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
-        Postman.functions.OPENPORTAL("muffin")
+        //Postman.functions.OPENPORTAL("muffin")
         
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload: void, address: MessageAddressReal) => {
-        const addr = address;
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETID",
-            payload: state.id,
-        }, false);
+    GETID: (_payload: void) => {
+        return state.id
     },
-    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, inputActor?: string }, _address: MessageAddressReal) => {
+    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, inputActor?: string }) => {
         if (payload.inputActor) {
             state.inputActor = payload.inputActor;
         }
         main(payload.name, payload.texture, payload.sync);
     },
-    GETOVERLAYLOCATION: (_payload: void, address: MessageAddressReal) => {
-        const addr = address as MessageAddressReal;
+    GETOVERLAYLOCATION: (_payload: void) => {
         const m34 = GetOverlayTransformAbsolute();
-        Postman.PostMessage({
-            address: { fm: state.id, to: addr.fm },
-            type: "CB:GETOVERLAYLOCATION",
-            payload: m34,
-        });
+        return m34
     },
-    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34, address: MessageAddressReal) => {
+    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
         const transform = payload;
         if (!isValidMatrix(transform)) { throw new Error("Received invalid transform"); }
 
@@ -120,7 +87,7 @@ const functions = {
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
         CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
-    ASSIGNVRCORIGIN: (payload: string, _address: MessageAddressReal) => {
+    ASSIGNVRCORIGIN: (payload: string) => {
         state.vrcOriginActor = payload;
         CustomLogger.log("actor", `VRC Origin Actor assigned: ${state.vrcOriginActor}`);
     },
@@ -154,7 +121,7 @@ const functions = {
         state.grabbedController = null;
         state.grabOffset = null;
     },
-};
+} as const);
 
 //#region init 
 
@@ -285,7 +252,7 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
 
         // Send overlay handle to input actor if specified
         if (state.inputActor) {
-            Postman.PostMessage({
+            PostMan.PostMessage({
                 address: { fm: state.id, to: state.inputActor },
                 type: "SETOVERLAYHANDLE",
                 payload: overlayHandle
@@ -354,7 +321,7 @@ async function updateLoop() {
         try {
             // Only update VRC origin if we're not being grabbed
             /* if (state.vrcOriginActor && !state.grabbedController) {
-                const newVrcOrigin = await Postman.PostMessage({
+                const newVrcOrigin = await PostMan.PostMessage({
                     address: { fm: state.id, to: state.vrcOriginActor },
                     type: "GETVRCORIGIN",
                     payload: null,
@@ -378,8 +345,8 @@ async function updateLoop() {
 
             // Always get controller data when we have an input actor
             if (!state.inputActor) {
-                const controllerData = await Postman.PostMessage({
-                    address: { fm: state.id, to: state.inputActor },
+                const controllerData = await PostMan.PostMessage({
+                    target: state.inputActor ,
                     type: "GETCONTROLLERDATA",
                     payload: null
                 }, true) as [OpenVR.InputPoseActionData, OpenVR.InputPoseActionData];
@@ -422,8 +389,3 @@ async function cleanup() {
 // Handle cleanup on exit
 globalThis.addEventListener("unload", cleanup);
 
-new Postman(worker, functions, state);
-
-OnMessage((message) => {
-    Postman.runFunctions(message);
-});

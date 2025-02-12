@@ -7,8 +7,9 @@
     "**/CVS": true,
     "**/.DS_Store": true,
     "**/Thumbs.db": true,
-    "**/deno.lock": true,
-    "stuff": false
+    "**/deno.lock": false,
+    "stuff": true,
+    "stuff2": true
   },
   "explorerExclude.backup": {},
 }
