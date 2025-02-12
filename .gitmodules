@@ -2,3 +2,7 @@
 	path = OpenVR_TS_Bindings_Deno
 	url = https://github.com/mommysgoodpuppy/OpenVR_TS_Bindings_Deno.git
 	branch = main
+[submodule "stageforge"]
+	path = stageforge
+	url = https://github.com/goodpuppies/stageforge.git
+	branch = main
