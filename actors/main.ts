@@ -19,7 +19,7 @@ const state = {
 
 new PostMan(state.name, {
   MAIN: (_payload: string) => {
-    //PostMan.functions.OPENPORTAL("muffin")
+    PostMan.setTopic("muffin")
     main();
   },
   LOG: (_payload: null) => {

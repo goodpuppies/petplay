@@ -320,9 +320,9 @@ async function updateLoop() {
     while (state.isRunning) {
         try {
             // Only update VRC origin if we're not being grabbed
-            /* if (state.vrcOriginActor && !state.grabbedController) {
+            if (state.vrcOriginActor && !state.grabbedController) {
                 const newVrcOrigin = await PostMan.PostMessage({
-                    address: { fm: state.id, to: state.vrcOriginActor },
+                    target: state.vrcOriginActor ,
                     type: "GETVRCORIGIN",
                     payload: null,
                 }, true) as OpenVR.HmdMatrix34;
@@ -341,7 +341,7 @@ async function updateLoop() {
                         }
                     }
                 }
-            } */
+            }
 
             // Always get controller data when we have an input actor
             if (!state.inputActor) {

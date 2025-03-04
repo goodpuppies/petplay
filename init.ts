@@ -1,13 +1,14 @@
 import { PostalService } from "./stageforge/mod.ts"
 import "./actors/main.ts";
-/* import "./actorsOther/exampleActor.x";
-import "./actorsOther/signalingDenoServer.x"; */
+import { IrohWebWorker, setupIrohDebugMode } from "../IrohWorker/IrohWorker.ts"
+
 
 import { wait } from "./classes/utils.ts";
+setupIrohDebugMode(true);
+const postalservice = new PostalService(IrohWebWorker);
+postalservice.initSignalingClient("ws://localhost:8080");
 
-const postalservice = new PostalService();
-
-const mainAddress = await postalservice.add("./actors/main.ts");
+const mainAddress = await postalservice.add("./netTest/actor.ts");
 
 
 console.log("mainAddress", mainAddress);

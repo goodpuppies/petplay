@@ -1,5 +1,5 @@
 // deno_server.ts
-import { CustomLogger } from "../classes/customlogger.ts";
+
 
 export class SignalingServer {
   private clients = new Map();
@@ -16,48 +16,67 @@ export class SignalingServer {
         return new Response(null, { status: 501 });
       }
 
+      console.log("Upgrading connection to WebSocket...");
       const { socket, response } = Deno.upgradeWebSocket(req);
+      
+      // Add a unique ID to each client for better logging
+      const clientId = crypto.randomUUID().substring(0, 8);
+      console.log(`New WebSocket connection (${clientId}) - waiting for open event`);
 
       socket.addEventListener("open", () => {
-        CustomLogger.log("class", "Signaling client connected!");
-        this.clients.set(socket, {});
+        console.log(`WebSocket (${clientId}) opened`);
+        this.clients.set(socket, { id: clientId });
+        console.log(`Total connected clients: ${this.clients.size}`);
       });
 
-      socket.addEventListener("close", () => {
-        CustomLogger.log("class", "WebSocket connection closed");
+      socket.addEventListener("close", (event) => {
+        console.log(`WebSocket (${clientId}) closed with code ${event.code}, reason: ${event.reason}`);
         this.clients.delete(socket);
+        console.log(`Total connected clients: ${this.clients.size}`);
       });
 
       socket.addEventListener("message", (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type !== "candidate") {
-          CustomLogger.log("class", "Signaling server received data:", data.type);
+        try {
+          const data = JSON.parse(event.data);
+          console.log(`WebSocket (${clientId}) received message:`, data);
+          
+          this.handleWebSocketMessage(socket, data);
+        } catch (error) {
+          console.error(`WebSocket (${clientId}) error parsing message:`, error);
         }
-
-        this.handleWebSocketMessage(socket, data);
       });
 
-      socket.addEventListener("close", () => {
-        CustomLogger.log("class", "Signaling client disconnected");
+      socket.addEventListener("error", (event) => {
+        console.error(`WebSocket (${clientId}) error:`, event);
       });
 
       return response;
     });
-    CustomLogger.log("class",
-      `Signaling server is running on ws://localhost:${this.port}`,
-    );
+    console.log(`Signaling server is running on ws://localhost:${this.port}`);
   }
 
   private handleWebSocketMessage = (socket: WebSocket, message: unknown) => {
+    console.log(`Broadcasting message to all clients (${this.clients.size} total)`);
     this.broadcastMessage(socket, message);
   };
 
   private broadcastMessage = (senderSocket: WebSocket, message: unknown) => {
-    this.clients.forEach((_, socket) => {
-      if (socket !== senderSocket && socket.readyState === WebSocket.OPEN) {
-        //throw new Error(`${JSON.stringify(message)}`);
-        socket.send(JSON.stringify(message));
+    let sentCount = 0;
+    
+    this.clients.forEach((client, socket) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify(message));
+          sentCount++;
+          console.log(`Message sent to client ${client.id}`);
+        } catch (error) {
+          console.error(`Error sending message to client ${client.id}:`, error);
+        }
+      } else {
+        console.log(`Client ${client.id} not ready (state: ${socket.readyState})`);
       }
     });
+    
+    console.log(`Message broadcast complete. Sent to ${sentCount}/${this.clients.size} clients`);
   };
 }
