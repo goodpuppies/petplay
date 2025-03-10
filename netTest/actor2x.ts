@@ -11,7 +11,7 @@ new PostMan(state.name, {
     main(payload);
   },
   HELLO: (_payload: null) => {
-    console.log("hi")
+    console.log("hi2")
   },
   LOG: (_payload: null) => {
     console.log("actor2", PostMan.state.id);
@@ -19,15 +19,17 @@ new PostMan(state.name, {
 } as const);
 
 async function main(_payload: string) {
-  while (true) {
-    await wait(5000)
-    console.log("main2", PostMan.state.addressBook)
-    PostMan.state.addressBook.forEach((element) => {
-      PostMan.PostMessage({
-        target: element,
-        type: "LOG",
-        payload: null,
-      })
-    })
-  }
+  console.log("main2", PostMan.state.id);
+  console.log("main2", PostMan.state.addressBook)
+  await wait(20000)
+  console.log("main2", PostMan.state.addressBook)
+
+  await wait(12000)
+
+  PostMan.PostMessage({
+    target: Array.from(PostMan.state.addressBook),
+    type: "LOG",
+    payload: null,
+  })
+
 }

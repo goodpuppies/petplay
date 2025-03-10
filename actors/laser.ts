@@ -29,6 +29,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
+        PostMan.setTopic("muffin")
     },
 
     INITOPENVR: (payload: bigint) => {

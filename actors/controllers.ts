@@ -27,7 +27,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload:void) => {
-        //Postman.functions.OPENPORTAL("muffin")
+        PostMan.setTopic("muffin")
         main()
     },
     LOG: (_payload:void) => {

@@ -19,6 +19,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
+        PostMan.setTopic("muffin")
         main();
     },
     GETCOORDINATE: (_payloa) => {

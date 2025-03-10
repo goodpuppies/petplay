@@ -24,7 +24,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
-        
+        PostMan.setTopic("muffin")
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);

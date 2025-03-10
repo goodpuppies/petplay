@@ -35,7 +35,7 @@ const smoothingWindowSize = 10;
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
-        //PostMan.functions?.HYPERSWARM?.(null, state.id);
+        PostMan.setTopic("muffin")
     },
     LOG: (_payload) => {
         CustomLogger.log("actor", state.id);
