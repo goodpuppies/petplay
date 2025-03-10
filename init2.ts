@@ -1,6 +1,6 @@
 import { PostalService } from "./stageforge/mod.ts"
 import "./actors/main.ts";
-import { IrohWebWorker, setupIrohDebugMode } from "../IrohWorker/IrohWorker.ts"
+import { IrohWebWorker, setupIrohDebugMode } from https://raw.githubusercontent.com/mommysgoodpuppy/IrohWorker/refs/heads/main/IrohWorker.ts
 
 
 import { wait } from "./classes/utils.ts";
