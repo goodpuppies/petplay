@@ -8,7 +8,7 @@ setupIrohDebugMode(false);
 const postalservice = new PostalService(IrohWebWorker);
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
-const mainAddress = await postalservice.add("./netTest/actor1.ts");
+const mainAddress = await postalservice.add("./dogdemo/main.ts");
 
 
 console.log("mainAddress", mainAddress);
