@@ -1,14 +1,14 @@
 import { PostalService } from "./stageforge/mod.ts"
 import "./actors/main.ts";
-//import { IrohWebWorker, setupIrohDebugMode } from "https://raw.githubusercontent.com/mommysgoodpuppy/IrohWorker/refs/heads/main/IrohWorker.ts"
-import { IrohWebWorker, setupIrohDebugMode } from "../IrohWorker/IrohWorker.ts"
+import { IrohWebWorker, setupIrohDebugMode } from "https://raw.githubusercontent.com/mommysgoodpuppy/IrohWorker/refs/heads/main/IrohWorker.ts"
+//import { IrohWebWorker, setupIrohDebugMode } from "../IrohWorker/IrohWorker.ts"
 
 import { wait } from "./classes/utils.ts";
 // Enable debug mode for Iroh WebWorker
-setupIrohDebugMode(true);
+setupIrohDebugMode(false);
 const postalservice = new PostalService(IrohWebWorker);
 // Enable debug mode for PostalService
-PostalService.debugMode = true;
+PostalService.debugMode = false;
 // Only force proxy creation in debug mode
 PostalService.testMode.forceProxyCreation = PostalService.debugMode;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");

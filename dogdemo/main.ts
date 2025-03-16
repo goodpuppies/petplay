@@ -50,7 +50,7 @@ async function main() {
   //const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
   const vrcorigin = await PostMan.create("./dogdemo/VRCOrigin.ts");
   const genericoverlay = await PostMan.create("./dogdemo/dogoverlay.ts");
-  const genericoverlay2 = await PostMan.create("./dogdemo/dogoverlay.ts");
+  //const genericoverlay2 = await PostMan.create("./dogdemo/dogoverlay.ts");
   const vrcosc = await PostMan.create("./dogdemo/VRCOSC.ts");
 
   await wait(2000)
@@ -64,7 +64,7 @@ async function main() {
 
   //init all overlays
   PostMan.PostMessage({
-    target: [vrcorigin, genericoverlay, genericoverlay2],
+    target: [vrcorigin, genericoverlay],
     type: "INITOPENVR",
     payload: ivroverlay
   })
@@ -95,7 +95,7 @@ async function main() {
 
   // Expose VRC origin address to the dog overlay
   PostMan.PostMessage({
-    target: [genericoverlay, genericoverlay2],
+    target: [genericoverlay],
     type: "ASSIGNVRCORIGIN",
     payload: vrcorigin,
   });
@@ -106,15 +106,7 @@ async function main() {
   //#region initialize generic overlay
 
   
-  PostMan.PostMessage({
-    target: genericoverlay2,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "pet2",
-      texture: "./resources/P2.png",
-      sync: false,
-    },
-  });
+
   await wait(5000)
   PostMan.PostMessage({
     target: genericoverlay,
