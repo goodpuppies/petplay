@@ -26,7 +26,8 @@
         "recommended"
       ],
       "exclude": [
-        "no-unused-vars"
+        "no-unused-vars",
+        "no-inner-declarations"
       ]
     }
   }

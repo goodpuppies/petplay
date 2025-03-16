@@ -24,7 +24,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
-        PostMan.setTopic("muffin")
+        ////PostMan.setTopic("muffin")
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
@@ -125,13 +125,13 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
         const initialTransformBuf = new ArrayBuffer(initialTransformSize);
         const initialTransformView = new DataView(initialTransformBuf);
 
-                const initialTransform: OpenVR.HmdMatrix34 = {
-                    m: [
-                        [1.0, 0.0, 0.0, 0.0],
-                        [0.0, 1.0, 0.0, 1.0],
-                        [0.0, 0.0, 1.0, -2.0]
-                    ]
-                };
+        const initialTransform: OpenVR.HmdMatrix34 = {
+            m: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, -2.0]
+            ]
+        };
         OpenVR.HmdMatrix34Struct.write(initialTransform, initialTransformView);
         setOverlayTransformAbsolute(initialTransform);
 
@@ -167,7 +167,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                 }
 
                 const hmdPose = await PostMan.PostMessage({
-                    target: state.hmd ,
+                    target: state.hmd,
                     type: "GETHMDPOSITION",
                     payload: null,
                 }, true) as OpenVR.TrackedDevicePose;
@@ -176,7 +176,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                 const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[0][0]);
 
                 const coordinate = await PostMan.PostMessage({
-                    target: state.vrc ,
+                    target: state.vrc,
                     type: "GETCOORDINATE",
                     payload: null,
                 }, true) as coord;
@@ -245,7 +245,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                         finalMatrix
                     );
                     setOverlayTransformAbsolute(finalMatrix);
-                    
+
                     // Use stabilized matrix for origin updates too
                     if (isOriginChanged(stabilizedMatrix)) {
                         state.origin = stabilizedMatrix;
@@ -254,7 +254,7 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                     }
                 } else {
                     setOverlayTransformAbsolute(finalMatrix);
-                    
+
                     if (isOriginChanged(pureMatrix)) {
                         state.origin = pureMatrix;
                         state.originChangeCount++;

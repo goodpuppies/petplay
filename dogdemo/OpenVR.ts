@@ -22,7 +22,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
-        PostMan.setTopic("muffin")
+        ////PostMan.setTopic("muffin")
         initializeOpenVR();
     },
     LOG: (_payload) => {
@@ -54,7 +54,7 @@ new PostMan(state.name, {
 
         return overlayPtrNumeric
     }
-}as const)
+} as const)
 
 function initializeOpenVR() {
     const initErrorPtr = P.Int32P<OpenVR.InitError>();

@@ -1,9 +1,3 @@
-import {
-    BaseState,
-    worker,
-    ToAddress,
-    MessageAddressReal,
-} from "../stageforge/src/lib/types.ts";
 import { PostMan } from "../stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
@@ -47,7 +41,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
-        PostMan.setTopic("muffin")
+        ////PostMan.setTopic("muffin")
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
@@ -98,25 +92,25 @@ new PostMan(state.name, {
         }
     },
     OVERLAY_GRAB_START: (payload: { controller: "left" | "right", intersection: OpenVR.OverlayIntersectionResults, controllerPose: OpenVR.InputPoseActionData }) => {
-        CustomLogger.log("input","grab")
+        CustomLogger.log("input", "grab")
 
-        
+
         if (state.grabbedController) return; // Already being grabbed
-        
+
         state.grabbedController = payload.controller;
-        
+
         // Calculate and store the offset between controller and overlay
         const overlayTransform = GetOverlayTransformAbsolute();
         const controllerTransform = payload.controllerPose.pose.mDeviceToAbsoluteTracking;
-        
+
         // The offset is the inverse of controller transform multiplied by overlay transform
         state.grabOffset = multiplyMatrix(invertMatrix(controllerTransform), overlayTransform);
     },
-    
+
     OVERLAY_GRAB_END: (payload: { controller: "left" | "right" }) => {
-        CustomLogger.log("input","ungrab")
+        CustomLogger.log("input", "ungrab")
         if (state.grabbedController !== payload.controller) return;
-        
+
         state.grabbedController = null;
         state.grabOffset = null;
     },
@@ -321,7 +315,7 @@ async function updateLoop() {
             // Only update VRC origin if we're not being grabbed
             if (state.vrcOriginActor && !state.grabbedController) {
                 const newVrcOrigin = await PostMan.PostMessage({
-                    target: state.vrcOriginActor ,
+                    target: state.vrcOriginActor,
                     type: "GETVRCORIGIN",
                     payload: null,
                 }, true) as OpenVR.HmdMatrix34;
@@ -370,7 +364,7 @@ async function updateLoop() {
                 }
             } */
 
-            await wait(1000/90); // 90hz update rate
+            await wait(1000 / 90); // 90hz update rate
         } catch (error) {
             CustomLogger.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
         }

@@ -18,7 +18,7 @@ const state = {
 
 new PostMan(state.name, {
   MAIN: (_payload: string) => {
-    PostMan.setTopic("muffin")
+    ////PostMan.setTopic("muffin")
     main();
   },
   LOG: (_payload: null) => {
@@ -45,12 +45,13 @@ async function main() {
   }, true)
 
 
-  const hmd = await PostMan.create("./actors/hmd.ts");
-  const inputactor = await PostMan.create("./actors/controllers.ts");
+  const hmd = await PostMan.create("./dogdemo/hmd.ts");
+  const inputactor = await PostMan.create("./dogdemo/controllers.ts");
   //const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
-  const vrcorigin = await PostMan.create("./actors/VRCOrigin.ts");
+  const vrcorigin = await PostMan.create("./dogdemo/VRCOrigin.ts");
   const genericoverlay = await PostMan.create("./dogdemo/dogoverlay.ts");
-  const vrcosc = await PostMan.create("./actors/VRCOSC.ts");
+  const genericoverlay2 = await PostMan.create("./dogdemo/dogoverlay.ts");
+  const vrcosc = await PostMan.create("./dogdemo/VRCOSC.ts");
 
   await wait(2000)
 
@@ -63,7 +64,7 @@ async function main() {
 
   //init all overlays
   PostMan.PostMessage({
-    target: [vrcorigin, genericoverlay],
+    target: [vrcorigin, genericoverlay, genericoverlay2],
     type: "INITOPENVR",
     payload: ivroverlay
   })
@@ -91,19 +92,37 @@ async function main() {
       sync: false,
     },
   });
+
+  // Expose VRC origin address to the dog overlay
+  PostMan.PostMessage({
+    target: [genericoverlay, genericoverlay2],
+    type: "ASSIGNVRCORIGIN",
+    payload: vrcorigin,
+  });
   //#endregion 
 
-  await wait(2000)
+  await wait(10000)
 
   //#region initialize generic overlay
 
+  
+  PostMan.PostMessage({
+    target: genericoverlay2,
+    type: "STARTOVERLAY",
+    payload: {
+      name: "pet2",
+      texture: "./resources/P2.png",
+      sync: false,
+    },
+  });
+  await wait(5000)
   PostMan.PostMessage({
     target: genericoverlay,
     type: "STARTOVERLAY",
     payload: {
-      name: "overlayXxX",
-      texture: "./resources/PetPlay.png",
-      sync: false,
+      name: "pet1",
+      texture: "./resources/P1.png",
+      sync: true,
     },
   });
 
@@ -121,17 +140,17 @@ async function main() {
 async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
   CustomLogger.log("default", "inputloop started");
   while (true) {
-    
+
     const inputstate = await PostMan.PostMessage({
       target: inputactor,
       type: "GETCONTROLLERDATA",
       payload: null,
     }, true) as [
-      OpenVR.InputPoseActionData,
-      OpenVR.InputPoseActionData,
-      OpenVR.InputDigitalActionData,
-      OpenVR.InputDigitalActionData,
-    ];
+        OpenVR.InputPoseActionData,
+        OpenVR.InputPoseActionData,
+        OpenVR.InputDigitalActionData,
+        OpenVR.InputDigitalActionData,
+      ];
 
     if (inputstate[2].bState == 1) {
       PostMan.PostMessage({
@@ -150,4 +169,3 @@ async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
     await wait(10);
   }
 }
-
