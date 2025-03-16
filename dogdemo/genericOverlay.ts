@@ -16,7 +16,7 @@ import { HmdMatrix34Struct } from "../OpenVR_TS_Bindings_Deno/test/openvr_bindin
 const state = {
     id: "",
     db: {},
-    name: "overlay1",
+    name: "generic",
     socket: null,
     sync: false,
     overlayClass: null as OpenVR.IVROverlay | null,

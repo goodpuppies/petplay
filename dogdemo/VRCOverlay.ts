@@ -17,7 +17,7 @@ import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "../cl
 const state = {
     id: "",
     db: {},
-    name: "overlay1",
+    name: "vrcoverlay",
     sync: false,
     overlayClass: null as OpenVR.IVROverlay | null,
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
@@ -343,7 +343,7 @@ async function updateLoop() {
             }
 
             // Always get controller data when we have an input actor
-            if (!state.inputActor) {
+            /* if (!state.inputActor) {
                 const controllerData = await PostMan.PostMessage({
                     target: state.inputActor ,
                     type: "GETCONTROLLERDATA",
@@ -368,7 +368,7 @@ async function updateLoop() {
                         }
                     }
                 }
-            }
+            } */
 
             await wait(1000/90); // 90hz update rate
         } catch (error) {
