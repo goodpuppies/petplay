@@ -139,8 +139,9 @@ new PostMan(state.name, {
 //#region openvr funcs
 
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
-  if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
-  state.overlayTransform.setTransformAbsolute(transform);
+  if (state.overlayTransform) {
+    state.overlayTransform.setTransformAbsolute(transform);
+  }
 }
 
 function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
@@ -310,8 +311,8 @@ async function updateLoop() {
             (!lastSyncedRelativePosition || !matrixEquals(lastSyncedRelativePosition, state.relativePosition))
           ) {
             //await wait(500)
-            console.log(PostMan.state.id,  PostMan.state.addressBook)
-            CustomLogger.log("overlay", "sync");
+            //console.log(PostMan.state.id,  PostMan.state.addressBook)
+            //CustomLogger.log("overlay", "sync");
 
             // Find all dogoverlay actors in addressbook (excluding self)
             const dogOverlayActors = Array.from(PostMan.state.addressBook)

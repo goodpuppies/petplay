@@ -12,7 +12,7 @@ import { CustomLogger } from "../classes/customlogger.ts";
 const state = {
     id: "",
     db: {},
-    name: "hmd_position_actor",
+    name: "openvr",
     socket: null,
     sync: false,
     vrSystemPTR: null as Deno.PointerValue | null,
