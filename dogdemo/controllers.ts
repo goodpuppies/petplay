@@ -95,23 +95,25 @@ new PostMan(state.name, {
         const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(grabDataViewR);
 
         // Check for grab release
-        if (state.leftWasGrabbing && !leftGrabData.bState) {
-            PostMan.PostMessage({
-                target: state.overlayActor,
-                type: "OVERLAY_GRAB_END",
-                payload: {
-                    controller: "left"
-                }
-            });
-        }
-        if (state.rightWasGrabbing && !rightGrabData.bState) {
-            PostMan.PostMessage({
-                target: state.overlayActor,
-                type: "OVERLAY_GRAB_END",
-                payload: {
-                    controller: "right"
-                }
-            });
+        if (state.overlayActor) {
+            if (state.leftWasGrabbing && !leftGrabData.bState) {
+                PostMan.PostMessage({
+                    target: state.overlayActor,
+                    type: "OVERLAY_GRAB_END",
+                    payload: {
+                        controller: "left"
+                    }
+                });
+            }
+            if (state.rightWasGrabbing && !rightGrabData.bState) {
+                PostMan.PostMessage({
+                    target: state.overlayActor,
+                    type: "OVERLAY_GRAB_END",
+                    payload: {
+                        controller: "right"
+                    }
+                });
+            }
         }
 
         // Calculate forward vectors and test intersections only when grab is pressed
@@ -153,33 +155,37 @@ new PostMan(state.name, {
                 leftIntersection = OpenVR.OverlayIntersectionResultsStruct.read(intersectionResultsViewL);
 
                 // If this is the first frame of intersection during grab, send grab event
-                if (!state.leftWasIntersecting) {
+                if (state.overlayActor && state.laser) { 
+                    if (!state.leftWasIntersecting) {
+                        PostMan.PostMessage({
+                            target: state.overlayActor,
+                            type: "OVERLAY_GRAB_START",
+                            payload: {
+                                controller: "left",
+                                intersection: leftIntersection,
+                                controllerPose: leftPoseData
+                            }
+                        });
+                    }
                     PostMan.PostMessage({
-                        target: state.overlayActor,
-                        type: "OVERLAY_GRAB_START",
+                        target: state.laser,
+                        type: "INTERSECTION",
                         payload: {
-                            controller: "left",
                             intersection: leftIntersection,
-                            controllerPose: leftPoseData
                         }
                     });
                 }
-                PostMan.PostMessage({
-                    target: state.laser,
-                    type: "INTERSECTION",
-                    payload: {
-                        intersection: leftIntersection,
-                    }
-                });
             } else if (state.leftWasIntersecting && !leftGrabData.bState) {
                 // If we were intersecting but aren't anymore and grab is released, send release event
-                PostMan.PostMessage({
-                    target: state.overlayActor || "",
-                    type: "OVERLAY_GRAB_END",
-                    payload: {
-                        controller: "left"
-                    }
-                });
+                if (state.overlayActor) {
+                    PostMan.PostMessage({
+                        target: state.overlayActor || "",
+                        type: "OVERLAY_GRAB_END",
+                        payload: {
+                            controller: "left"
+                        }
+                    });
+                }
             }
             state.leftWasIntersecting = !!result;
         } else {
@@ -220,33 +226,37 @@ new PostMan(state.name, {
                 rightIntersection = OpenVR.OverlayIntersectionResultsStruct.read(intersectionResultsViewR);
 
                 // If this is the first frame of intersection during grab, send grab event
-                if (!state.rightWasIntersecting) {
+                if (state.overlayActor && state.laser) {
+                    if (!state.rightWasIntersecting) {
+                        PostMan.PostMessage({
+                            target: state.overlayActor,
+                            type: "OVERLAY_GRAB_START",
+                            payload: {
+                                controller: "right",
+                                intersection: rightIntersection,
+                                controllerPose: rightPoseData
+                            }
+                        });
+                    }
                     PostMan.PostMessage({
-                        target: state.overlayActor,
-                        type: "OVERLAY_GRAB_START",
+                        target: state.laser,
+                        type: "INTERSECTION",
                         payload: {
-                            controller: "right",
                             intersection: rightIntersection,
-                            controllerPose: rightPoseData
                         }
                     });
                 }
-                PostMan.PostMessage({
-                    target: state.laser,
-                    type: "INTERSECTION",
-                    payload: {
-                        intersection: rightIntersection,
-                    }
-                });
             } else if (state.rightWasIntersecting && !rightGrabData.bState) {
                 // If we were intersecting but aren't anymore and grab is released, send release event
-                PostMan.PostMessage({
-                    target: state.overlayActor || "",
-                    type: "OVERLAY_GRAB_END",
-                    payload: {
-                        controller: "right"
-                    }
-                });
+                if (state.overlayActor) {
+                    PostMan.PostMessage({
+                        target: state.overlayActor || "",
+                        type: "OVERLAY_GRAB_END",
+                        payload: {
+                            controller: "right"
+                        }
+                    });
+                }
             }
             state.rightWasIntersecting = !!result;
         } else {
