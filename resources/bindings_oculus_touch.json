@@ -31,6 +31,24 @@
           },
           "mode": "button",
           "path": "/user/hand/right/input/trigger"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/GrabLeft"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/grip"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/main/in/GrabRight"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/grip"
         }
       ]
     }

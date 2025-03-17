@@ -11,7 +11,7 @@ const postalservice = new PostalService(IrohWebWorker);
 PostalService.debugMode = false;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
-const mainAddress = await postalservice.add("./dogdemo/main.ts");
+const mainAddress = await postalservice.add("./dogdemo2/main.ts");
 //const mainAddress = await postalservice.add("./netTest/actor1.ts");
 
 await wait(2000)

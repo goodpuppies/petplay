@@ -1,7 +1,6 @@
 import { ToAddress } from "../stageforge/src/lib/types.ts";
 import { PostMan } from "../stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
-import { OpenVRType } from "../OpenVR_TS_Bindings_Deno/utils.ts";
 import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
@@ -17,9 +16,9 @@ const state = {
 };
 
 
-new PostMan(state.name, {
+new PostMan(state, {
   MAIN: (_payload: string) => {
-    //PostMan.setTopic("muffin")
+    ////PostMan.setTopic("muffin")
     main();
   },
   LOG: (_payload: null) => {
@@ -46,64 +45,44 @@ async function main() {
   }, true)
 
 
-  //const overlayactor = await PostMan.create("overlayactor.ts");
-
-
-
-  const hmd = await PostMan.create("./actors/hmd.ts");
-  const inputactor = await PostMan.create("./actors/controllers.ts");
-
-  const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
-
-  const vrcorigin = await PostMan.create("./actors/VRCOrigin.ts");
-
-  const laser = await PostMan.create("./actors/laser.ts");
-
+  const hmd = await PostMan.create("./dogdemo/hmd.ts");
+  const inputactor = await PostMan.create("./dogdemo/controllers.ts");
+  //const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
+  const vrcorigin = await PostMan.create("./dogdemo/VRCOrigin.ts");
+  const genericoverlay = await PostMan.create("./dogdemo/dogoverlay.ts");
+  const vrcosc = await PostMan.create("./dogdemo/VRCOSC.ts");
 
   await wait(2000)
 
+  //init vr systems
   PostMan.PostMessage({
     target: hmd,
     type: "INITOPENVR",
     payload: ivrsystem
   })
 
+  //init all overlays
   PostMan.PostMessage({
-    target: [overlayactorVRC, vrcorigin, laser],
+    target: [vrcorigin, genericoverlay],
     type: "INITOPENVR",
     payload: ivroverlay
   })
+  await wait(5000)
 
-
-  const vrc = await PostMan.create("./actors/VRCOSC.ts");
-
-
+  //#region initialize origin
+  //expose osc to origin point
   PostMan.PostMessage({
     target: vrcorigin,
     type: "ASSIGNVRC",
-    payload: vrc,
+    payload: vrcosc,
   });
-
+  //expose hmd to origin point
   PostMan.PostMessage({
     target: vrcorigin,
     type: "ASSIGNHMD",
     payload: hmd,
   });
-
-  PostMan.PostMessage({
-    target: laser,
-    type: "SETINPUTACTOR",
-    payload: inputactor,
-  });
-  PostMan.PostMessage({
-    target: inputactor,
-    type: "SETLASER",
-    payload: laser,
-  });
-
-
-  //await wait(2000)
-
+  //render origin
   PostMan.PostMessage({
     target: vrcorigin,
     type: "STARTOVERLAY",
@@ -114,43 +93,41 @@ async function main() {
     },
   });
 
+  // Expose VRC origin address to the dog overlay
   PostMan.PostMessage({
-    target: overlayactorVRC,
+    target: [genericoverlay],
     type: "ASSIGNVRCORIGIN",
     payload: vrcorigin,
   });
+  //#endregion 
 
+
+
+  //#region initialize generic overlay
+
+  
+
+  await wait(1000)
   PostMan.PostMessage({
-    target: laser,
-    type: "STARTLASERS",
-    payload: null,
-  });
-
-
-
-
-  PostMan.PostMessage({
-    target: overlayactorVRC,
+    target: genericoverlay,
     type: "STARTOVERLAY",
     payload: {
-      name: "overlay1",
+      name: "pet1",
       texture: "./resources/P1.png",
       sync: true,
-      inputActor: inputactor
     },
   });
 
-  PostMan.PostMessage({
-    target: inputactor,
-    type: "SETOVERLAYACTOR",
-    payload: overlayactorVRC,
-  });
+
+
+  //#endregion
+
 
 
 
   //await wait(5000);
 
-  inputloop(inputactor, overlayactorVRC);
+  inputloop(inputactor, genericoverlay);
 }
 
 async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
@@ -185,4 +162,3 @@ async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
     await wait(10);
   }
 }
-

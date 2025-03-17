@@ -1,10 +1,8 @@
 {
   "imports": {
-    "@number0/iroh": "npm:@number0/iroh@^0.25.0",
-    "@quentinadam/zip": "jsr:@quentinadam/zip@^0.1.0",
-    "arktype": "https://esm.sh/arktype@2.0.0-dev.25"
+    "@number0/iroh": "npm:@number0/iroh@^0.27.0",
+    "@quentinadam/zip": "jsr:@quentinadam/zip@^0.1.0"
   },
-  "nodeModulesDir": "auto",
   "tasks": {
     "compile": "deno run -A compile.ts",
     "release": "deno run -A release.ts"
@@ -28,7 +26,8 @@
         "recommended"
       ],
       "exclude": [
-        "no-unused-vars"
+        "no-unused-vars",
+        "no-inner-declarations"
       ]
     }
   }

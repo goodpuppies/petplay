@@ -1,0 +1,59 @@
+
+
+actor( actor < def < message(address, data) ) < {
+
+
+  variable( actor < def < message(string) ) < {
+    ["hello world"] 
+  }
+
+  variable2( actor < string ) < "hello world"//immutable
+
+  public[
+    fun1( actor < def < message(str(string)) )<{
+      print<message
+    }//message.data is implict here
+
+    setvar( actor < def < message(data(string), cb(callback)) )<{
+      variable<message.data
+      message.cb<True
+
+    }
+  ]
+  private[
+
+
+  ]
+
+
+}(def) < Message.address < Message.data
+
+actor<[
+  fun1,
+  "hello world"
+](address, data)
+
+
+actor<[
+  setvar, 
+  ["hello world", callback]([string, callback])
+](message)
+
+callback(actor < def < data ) < { print<data }< data
+
+
+actor<<{
+  variable1<<{} //empty actor
+  variable1<<{"hello world"}
+
+  variable2<<{"hello world"}
+
+  {
+    function1<<{
+      print<text
+    }<(text)
+  }<(message)
+
+}<(message)
+
+actor<function1<"hello world"
