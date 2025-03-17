@@ -17,7 +17,7 @@ import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "../cl
 const state = {
     id: "",
     db: {},
-    name: "overlay1",
+    name: "vrcoverlay",
     sync: false,
     overlayClass: null as OpenVR.IVROverlay | null,
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
@@ -47,7 +47,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
-        PostMan.setTopic("muffin")
+        //PostMan.setTopic("muffin")
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
@@ -98,25 +98,25 @@ new PostMan(state.name, {
         }
     },
     OVERLAY_GRAB_START: (payload: { controller: "left" | "right", intersection: OpenVR.OverlayIntersectionResults, controllerPose: OpenVR.InputPoseActionData }) => {
-        CustomLogger.log("input","grab")
+        CustomLogger.log("input", "grab")
 
-        
+
         if (state.grabbedController) return; // Already being grabbed
-        
+
         state.grabbedController = payload.controller;
-        
+
         // Calculate and store the offset between controller and overlay
         const overlayTransform = GetOverlayTransformAbsolute();
         const controllerTransform = payload.controllerPose.pose.mDeviceToAbsoluteTracking;
-        
+
         // The offset is the inverse of controller transform multiplied by overlay transform
         state.grabOffset = multiplyMatrix(invertMatrix(controllerTransform), overlayTransform);
     },
-    
+
     OVERLAY_GRAB_END: (payload: { controller: "left" | "right" }) => {
-        CustomLogger.log("input","ungrab")
+        CustomLogger.log("input", "ungrab")
         if (state.grabbedController !== payload.controller) return;
-        
+
         state.grabbedController = null;
         state.grabOffset = null;
     },
@@ -321,7 +321,7 @@ async function updateLoop() {
             // Only update VRC origin if we're not being grabbed
             if (state.vrcOriginActor && !state.grabbedController) {
                 const newVrcOrigin = await PostMan.PostMessage({
-                    target: state.vrcOriginActor ,
+                    target: state.vrcOriginActor,
                     type: "GETVRCORIGIN",
                     payload: null,
                 }, true) as OpenVR.HmdMatrix34;
@@ -345,7 +345,7 @@ async function updateLoop() {
             // Always get controller data when we have an input actor
             if (!state.inputActor) {
                 const controllerData = await PostMan.PostMessage({
-                    target: state.inputActor ,
+                    target: state.inputActor,
                     type: "GETCONTROLLERDATA",
                     payload: null
                 }, true) as [OpenVR.InputPoseActionData, OpenVR.InputPoseActionData];
@@ -355,7 +355,7 @@ async function updateLoop() {
                     if (state.grabbedController && state.grabOffset) {
                         const [leftPose, rightPose] = controllerData;
                         const controllerPose = state.grabbedController === "left" ? leftPose : rightPose;
-                        
+
                         if (controllerPose) {
                             // Calculate new overlay position based on controller position and stored offset
                             const newTransform = multiplyMatrix(controllerPose.pose.mDeviceToAbsoluteTracking, state.grabOffset);
@@ -370,7 +370,7 @@ async function updateLoop() {
                 }
             }
 
-            await wait(1000/90); // 90hz update rate
+            await wait(1000 / 90); // 90hz update rate
         } catch (error) {
             CustomLogger.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
         }

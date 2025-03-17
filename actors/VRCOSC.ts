@@ -19,7 +19,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
-        PostMan.setTopic("muffin")
+        //PostMan.setTopic("muffin")
         main();
     },
     GETCOORDINATE: (_payloa) => {
@@ -32,7 +32,7 @@ function handleOscMessage(address: string, value: number) {
 }
 
 function main() {
-    
+
     //#region consts
     const PositionX: string = "/avatar/parameters/CustomObjectSync/PositionX";
     const PositionXNeg: string = "/avatar/parameters/CustomObjectSync/PositionXNeg";

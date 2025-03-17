@@ -16,7 +16,7 @@ import { HmdMatrix34Struct } from "../OpenVR_TS_Bindings_Deno/test/openvr_bindin
 const state = {
     id: "",
     db: {},
-    name: "overlay1",
+    name: "genericoutdatedoverlay",
     socket: null,
     sync: false,
     overlayClass: null as OpenVR.IVROverlay | null,
@@ -35,7 +35,7 @@ const smoothingWindowSize = 10;
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload) => {
-        PostMan.setTopic("muffin")
+        //PostMan.setTopic("muffin")
     },
     LOG: (_payload) => {
         CustomLogger.log("actor", state.id);

@@ -1,29 +1,29 @@
-import { PostMan } from "../stageforge/mod.ts";
 import { wait } from "../stageforge/src/lib/utils.ts";
+import { PostMan } from "../stageforge/mod.ts";
 
 const state = {
-  name: "sub",
+  name: "main",
 };
 
 new PostMan(state.name, {
   CUSTOMINIT: (payload: string) => {
-    main()
+    PostMan.setTopic("muffin")
+    main(payload);
   },
   HELLO: (_payload: null) => {
-    return "hi"
+    console.log("hi")
   },
   LOG: (_payload: null) => {
-    console.log("hello from", PostMan.state.id);
-  },
-  GETSTRING: (_payload: null) => {
-    return "Hello from sub actor!";
+    console.log("LOG", "actor1", PostMan.state.id);
   }
 } as const);
 
-async function main() {
+async function main(_payload: string) {
+  const sub = await PostMan.create("./netTest2/sub.ts");
+  const sub2 = await PostMan.create("./netTest2/actor2.ts");
   while (true) {
     await wait(5000)
-    console.log("sub", PostMan.state.addressBook)
+    console.log("main1", PostMan.state.addressBook)
     PostMan.state.addressBook.forEach((element) => {
       PostMan.PostMessage({
         target: element,

@@ -64,7 +64,7 @@ new PostMan(state.name, {
     return m34
   },
   SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    console.log("SETOVERLAYLOCATION", PostMan.state.id);
+    //console.log("SETOVERLAYLOCATION", PostMan.state.id);
     const transform = payload;
     if (!isValidMatrix(transform)) { throw new Error("Received invalid transform"); }
 
@@ -79,7 +79,7 @@ new PostMan(state.name, {
     }
   },
   SYNCOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    console.log("SYNCOVERLAYLOCATION", PostMan.state.id);
+    //console.log("SYNCOVERLAYLOCATION", PostMan.state.id);
     const transform = payload;
     if (!isValidMatrix(transform)) { throw new Error("Received invalid transform"); }
 
@@ -96,11 +96,11 @@ new PostMan(state.name, {
       // This ensures synced overlays appear in exactly the same position
       setOverlayTransformAbsolute(newAbsolutePosition);
       
-      CustomLogger.log("overlay", `Applied synced position from remote overlay with VRC origin`);
+      //CustomLogger.log("overlay", `Applied synced position from remote overlay with VRC origin`);
     } else {
       // If no valid VRC origin, set absolute position directly without smoothing
       setOverlayTransformAbsolute(transform);
-      CustomLogger.log("overlay", `Applied synced position from remote overlay without VRC origin`);
+      //CustomLogger.log("overlay", `Applied synced position from remote overlay without VRC origin`);
     }
   },
   INITOPENVR: (payload: bigint | SerializedBigInt) => {
@@ -117,7 +117,7 @@ new PostMan(state.name, {
     const systemPtr = Deno.UnsafePointer.create(ptrn);
     state.vrSystem = new OpenVR.IVRSystem(systemPtr);
     state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-    CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
+    CustomLogger.log("overlay", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
   },
   ASSIGNVRCORIGIN: (payload: string) => {
     state.vrcOriginActor = payload;
@@ -154,65 +154,56 @@ function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
 async function main(overlayname: string, overlaytexture: string, sync: boolean) {
   state.sync = sync;
 
-  try {
+  //#region create overlay
+  CustomLogger.log("overlay", "Creating overlay...");
+  const overlay = state.overlayClass as OpenVR.IVROverlay;
+  const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
+  if (!overlay) throw new Error("openvr not ready")
+  const error = overlay.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
 
-
-
-    //#region create overlay
-    CustomLogger.log("overlay", "Creating overlay...");
-    const overlay = state.overlayClass as OpenVR.IVROverlay;
-    const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-    const error = overlay.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
-
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-      throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
-    }
-    if (overlayHandlePTR === null) throw new Error("Invalid pointer");
-    const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
-    state.overlayHandle = overlayHandle;
-    state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
-    CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
-
-    // Send overlay handle to input actor if specified
-    if (state.inputActor) {
-      PostMan.PostMessage({
-        address: { fm: state.id, to: state.inputActor },
-        type: "SETOVERLAYHANDLE",
-        payload: overlayHandle
-      });
-    }
-
-
-    const imgpath = Deno.realPathSync(overlaytexture);
-    overlay.SetOverlayFromFile(overlayHandle, imgpath);
-    overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
-
-    overlay.ShowOverlay(overlayHandle);
-
-
-    CustomLogger.log("overlay", "Overlay initialized and shown");
-    //#endregion
-
-    // Initialize screen capture
-
-
-
-
-
-    state.isRunning = true;
-
-    // Start the desktop capture loop
-
-
-
-    updateLoop();
-  } catch (error) {
-    console.error("err", error)
-    CustomLogger.error("overlay", "Error in main:", error);
-    if (error instanceof Error) {
-      CustomLogger.error("overlay", "Stack:", error.stack);
-    }
+  if (error !== OpenVR.OverlayError.VROverlayError_None) {
+    throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
   }
+  if (overlayHandlePTR === null) throw new Error("Invalid pointer");
+  const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
+  state.overlayHandle = overlayHandle;
+  state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
+  CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
+
+  // Send overlay handle to input actor if specified
+  if (state.inputActor) {
+    PostMan.PostMessage({
+      address: { fm: state.id, to: state.inputActor },
+      type: "SETOVERLAYHANDLE",
+      payload: overlayHandle
+    });
+  }
+
+
+  const imgpath = Deno.realPathSync(overlaytexture);
+  overlay.SetOverlayFromFile(overlayHandle, imgpath);
+  overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
+
+  overlay.ShowOverlay(overlayHandle);
+
+
+  CustomLogger.log("overlay", "Overlay initialized and shown");
+  //#endregion
+
+  // Initialize screen capture
+
+
+
+
+
+  state.isRunning = true;
+
+  // Start the desktop capture loop
+
+
+
+  updateLoop();
+  
 }
 
 function addToSmoothingWindow(window: OpenVR.HmdMatrix34[], transform: OpenVR.HmdMatrix34) {
@@ -260,7 +251,7 @@ async function updateLoop() {
   // Track the last synced position to avoid unnecessary updates
   let lastSyncedRelativePosition: OpenVR.HmdMatrix34 | null = null;
   let lastSyncTime = 0;
-  const syncInterval = 100; // Sync at most every 200ms to limit network traffic
+  const syncInterval = 1000; // Sync at most every 200ms to limit network traffic
 
   while (state.isRunning) {
 
@@ -319,7 +310,7 @@ async function updateLoop() {
               .filter((addr): addr is string => typeof addr === 'string' && addr.startsWith('dogoverlay@') && addr !== state.id);
 
             if (dogOverlayActors.length > 0) {
-              CustomLogger.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
+              //CustomLogger.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
 
               // Send our position to all other dogoverlay actors
               if (state.sync) {

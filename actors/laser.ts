@@ -29,7 +29,7 @@ const state = {
 
 new PostMan(state.name, {
     CUSTOMINIT: (_payload: void) => {
-        PostMan.setTopic("muffin")
+        //PostMan.setTopic("muffin")
     },
 
     INITOPENVR: (payload: bigint) => {
@@ -78,7 +78,7 @@ function createLaserOverlays() {
     const leftHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     let error = state.overlayClass.CreateOverlay("laser.left", "Left Laser Pointer", leftHandlePTR);
     state.leftLaserHandle = new Deno.UnsafePointerView(leftHandlePTR).getBigUint64();
-    
+
     if (error !== OpenVR.OverlayError.VROverlayError_None) {
         CustomLogger.error("actor", `Failed to create left laser overlay: ${OpenVR.OverlayError[error]}`);
         return;
@@ -91,7 +91,7 @@ function createLaserOverlays() {
     const rightHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     error = state.overlayClass.CreateOverlay("laser.right", "Right Laser Pointer", rightHandlePTR);
     state.rightLaserHandle = new Deno.UnsafePointerView(rightHandlePTR).getBigUint64();
-    
+
     if (error !== OpenVR.OverlayError.VROverlayError_None) {
         CustomLogger.error("actor", `Failed to create right laser overlay: ${OpenVR.OverlayError[error]}`);
         return;
@@ -101,9 +101,9 @@ function createLaserOverlays() {
     state.overlayClass.SetOverlayWidthInMeters(state.rightLaserHandle, LASER_POINTER_WIDTH);
 }
 
-function createIntersectionOverlay():bigint {
+function createIntersectionOverlay(): bigint {
     if (!state.overlayClass) {
-        throw new Error ("Overlay class not initialized");
+        throw new Error("Overlay class not initialized");
     }
 
     // Create the intersection overlay
@@ -117,7 +117,7 @@ function createIntersectionOverlay():bigint {
     const pixels = new Uint32Array([0xFF0000FF, 0xFF0000FF, 0xFF0000FF, 0xFF0000FF]);
     const pixelBuffer = pixels.buffer;
     state.overlayClass.SetOverlayRaw(intersectionHandle, Deno.UnsafePointer.of(pixelBuffer)!, 2, 2, 4);
-    state.overlayClass.SetOverlayWidthInMeters(intersectionHandle, 0.05); 
+    state.overlayClass.SetOverlayWidthInMeters(intersectionHandle, 0.05);
     state.overlayClass.SetOverlayFlag(intersectionHandle, OpenVR.OverlayFlags.VROverlayFlags_SortWithNonSceneOverlays, true);
 
     state.intersectionOverlayHandle = intersectionHandle
@@ -192,7 +192,7 @@ async function updateLoop() {
 
             // Get controller poses from input actor
             const controllerData = await PostMan.PostMessage({
-                target: state.inputActor ,
+                target: state.inputActor,
                 type: "GETCONTROLLERDATA",
                 payload: null
             }, true) as [OpenVR.InputPoseActionData, OpenVR.InputPoseActionData];
@@ -208,7 +208,7 @@ async function updateLoop() {
                 }
             }
 
-            await new Promise(resolve => setTimeout(resolve, 1000/90)); // 90hz update rate
+            await new Promise(resolve => setTimeout(resolve, 1000 / 90)); // 90hz update rate
         } catch (error) {
             CustomLogger.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
         }

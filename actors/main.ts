@@ -19,7 +19,7 @@ const state = {
 
 new PostMan(state.name, {
   MAIN: (_payload: string) => {
-    PostMan.setTopic("muffin")
+    //PostMan.setTopic("muffin")
     main();
   },
   LOG: (_payload: null) => {
@@ -156,17 +156,17 @@ async function main() {
 async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
   CustomLogger.log("default", "inputloop started");
   while (true) {
-    
+
     const inputstate = await PostMan.PostMessage({
       target: inputactor,
       type: "GETCONTROLLERDATA",
       payload: null,
     }, true) as [
-      OpenVR.InputPoseActionData,
-      OpenVR.InputPoseActionData,
-      OpenVR.InputDigitalActionData,
-      OpenVR.InputDigitalActionData,
-    ];
+        OpenVR.InputPoseActionData,
+        OpenVR.InputPoseActionData,
+        OpenVR.InputDigitalActionData,
+        OpenVR.InputDigitalActionData,
+      ];
 
     if (inputstate[2].bState == 1) {
       PostMan.PostMessage({

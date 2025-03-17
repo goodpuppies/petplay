@@ -14,11 +14,12 @@ new PostMan(state.name, {
     console.log("hi")
   },
   LOG: (_payload: null) => {
-    console.log("actor1", PostMan.state.id);
+    console.log("LOG", "actor1", PostMan.state.id);
   }
 } as const);
 
 async function main(_payload: string) {
+  //const sub = await PostMan.create("./netTest/sub.ts");
   while (true) {
     await wait(5000)
     console.log("main1", PostMan.state.addressBook)

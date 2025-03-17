@@ -26,14 +26,14 @@ const state = {
 
 
 new PostMan(state.name, {
-    CUSTOMINIT: (_payload:void) => {
-        PostMan.setTopic("muffin")
+    CUSTOMINIT: (_payload: void) => {
+        //PostMan.setTopic("muffin")
         main()
     },
-    LOG: (_payload:void) => {
+    LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);
     },
-    GETID: (_payload:void) => {
+    GETID: (_payload: void) => {
         return state.id
     },
     SETOVERLAYHANDLE: (payload: bigint) => {
@@ -97,7 +97,7 @@ new PostMan(state.name, {
         // Check for grab release
         if (state.leftWasGrabbing && !leftGrabData.bState) {
             PostMan.PostMessage({
-                target:state.overlayActor,
+                target: state.overlayActor,
                 type: "OVERLAY_GRAB_END",
                 payload: {
                     controller: "left"
@@ -117,7 +117,7 @@ new PostMan(state.name, {
         // Calculate forward vectors and test intersections only when grab is pressed
         let leftIntersection = null;
         let rightIntersection = null;
-        
+
         if (leftPoseData && leftGrabData.bState) {
             const m = leftPoseData.pose.mDeviceToAbsoluteTracking.m;
             const leftForward = {
@@ -151,7 +151,7 @@ new PostMan(state.name, {
             if (result) {
                 console.log("left intersection")
                 leftIntersection = OpenVR.OverlayIntersectionResultsStruct.read(intersectionResultsViewL);
-                
+
                 // If this is the first frame of intersection during grab, send grab event
                 if (!state.leftWasIntersecting) {
                     PostMan.PostMessage({
@@ -218,7 +218,7 @@ new PostMan(state.name, {
 
             if (result) {
                 rightIntersection = OpenVR.OverlayIntersectionResultsStruct.read(intersectionResultsViewR);
-                
+
                 // If this is the first frame of intersection during grab, send grab event
                 if (!state.rightWasIntersecting) {
                     PostMan.PostMessage({
