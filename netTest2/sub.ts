@@ -7,6 +7,7 @@ const state = {
 
 new PostMan(state.name, {
   CUSTOMINIT: (payload: string) => {
+    PostMan.setTopic("muffin2")
     main()
   },
   HELLO: (_payload: null) => {

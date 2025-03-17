@@ -18,7 +18,6 @@ const state = {
 
 new PostMan(state, {
   MAIN: (_payload: string) => {
-    ////PostMan.setTopic("muffin")
     main();
   },
   LOG: (_payload: null) => {
@@ -32,7 +31,7 @@ new PostMan(state, {
 async function main() {
   CustomLogger.log("default", "main actor started");
 
-  const ivr = await PostMan.create("./actors/OpenVR.ts")
+  const ivr = await PostMan.create("./videotest/OpenVR.ts")
   const ivrsystem = await PostMan.PostMessage({
     target: ivr,
     type: "GETOPENVRPTR",
@@ -45,61 +44,23 @@ async function main() {
   }, true)
 
 
-  const hmd = await PostMan.create("./dogdemo/hmd.ts");
-  const inputactor = await PostMan.create("./dogdemo/controllers.ts");
   //const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
-  const vrcorigin = await PostMan.create("./dogdemo/VRCOrigin.ts");
-  const genericoverlay = await PostMan.create("./dogdemo/dogoverlay.ts");
-  const vrcosc = await PostMan.create("./dogdemo/VRCOSC.ts");
-
+  const genericoverlay = await PostMan.create("./videotest/videoOverlay.ts");
+  const genericoverlay2 = await PostMan.create("./videotest/videoOverlay.ts");
+ 
   await wait(2000)
 
   //init vr systems
-  PostMan.PostMessage({
-    target: hmd,
-    type: "INITOPENVR",
-    payload: ivrsystem
-  })
+
 
   //init all overlays
   PostMan.PostMessage({
-    target: [vrcorigin, genericoverlay],
+    target: [genericoverlay, genericoverlay2],
     type: "INITOPENVR",
     payload: ivroverlay
   })
   await wait(5000)
 
-  //#region initialize origin
-  //expose osc to origin point
-  PostMan.PostMessage({
-    target: vrcorigin,
-    type: "ASSIGNVRC",
-    payload: vrcosc,
-  });
-  //expose hmd to origin point
-  PostMan.PostMessage({
-    target: vrcorigin,
-    type: "ASSIGNHMD",
-    payload: hmd,
-  });
-  //render origin
-  PostMan.PostMessage({
-    target: vrcorigin,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "overlayXX",
-      texture: "./resources/P1.png",
-      sync: false,
-    },
-  });
-
-  // Expose VRC origin address to the dog overlay
-  PostMan.PostMessage({
-    target: [genericoverlay],
-    type: "ASSIGNVRCORIGIN",
-    payload: vrcorigin,
-  });
-  //#endregion 
 
 
 
@@ -117,7 +78,16 @@ async function main() {
       sync: true,
     },
   });
-
+  await wait(2000)
+  PostMan.PostMessage({
+    target: genericoverlay2,
+    type: "STARTOVERLAY",
+    payload: {
+      name: "pet2",
+      texture: "./resources/P2.png",
+      sync: false,
+    },
+  });
 
 
   //#endregion
@@ -125,9 +95,7 @@ async function main() {
 
 
 
-  //await wait(5000);
 
-  inputloop(inputactor, genericoverlay);
 }
 
 async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {

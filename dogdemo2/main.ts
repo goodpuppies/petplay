@@ -12,13 +12,14 @@ const state = {
   db: {},
   socket: null,
   numbah: 0,
-  addressBook: new Set()
+  addressBook: new Set(),
+  vrcosc: undefined as undefined | string
 };
 
 
 new PostMan(state, {
   MAIN: (_payload: string) => {
-    ////PostMan.setTopic("muffin")
+    PostMan.setTopic("vrcosc")
     main();
   },
   LOG: (_payload: null) => {
@@ -45,12 +46,30 @@ async function main() {
   }, true)
 
 
-  const hmd = await PostMan.create("./dogdemo/hmd.ts");
-  const inputactor = await PostMan.create("./dogdemo/controllers.ts");
+  const hmd = await PostMan.create("./dogdemo2/hmd.ts");
+  const inputactor = await PostMan.create("./dogdemo2/controllers.ts");
   //const overlayactorVRC = await PostMan.create("./actors/VRCOverlay.ts");
-  const vrcorigin = await PostMan.create("./dogdemo/VRCOrigin.ts");
-  const genericoverlay = await PostMan.create("./dogdemo/dogoverlay.ts");
-  const vrcosc = await PostMan.create("./dogdemo/VRCOSC.ts");
+  const vrcorigin = await PostMan.create("./dogdemo2/VRCOrigin.ts");
+  const genericoverlay = await PostMan.create("./dogdemo2/dogoverlay.ts");
+  //const vrcosc = await PostMan.create("./dogdemo2/VRCOSC.ts");
+
+  //find common vrcosc
+  console.log("startfinding osc")
+  console.log("book is ", )
+  while (!state.vrcosc) {
+    // Check if addressBook has any entry starting with "vrccoordinate"
+    for (const address of PostMan.state.addressBook) {
+      if (typeof address === 'string' && address.startsWith('vrccoordinate')) {
+        state.vrcosc = address;
+        CustomLogger.log("default", `Found VRC OSC: ${address}`);
+        break;
+      } 
+    }
+    // If not found, wait briefly before checking again
+    if (!state.vrcosc) {
+      await wait(500);
+    }
+  }
 
   await wait(2000)
 
@@ -74,7 +93,7 @@ async function main() {
   PostMan.PostMessage({
     target: vrcorigin,
     type: "ASSIGNVRC",
-    payload: vrcosc,
+    payload: state.vrcosc,
   });
   //expose hmd to origin point
   PostMan.PostMessage({
@@ -87,8 +106,8 @@ async function main() {
     target: vrcorigin,
     type: "STARTOVERLAY",
     payload: {
-      name: "overlayXX",
-      texture: "./resources/P1.png",
+      name: "overlayXXX",
+      texture: "./resources/P2.png",
       sync: false,
     },
   });
@@ -112,11 +131,12 @@ async function main() {
     target: genericoverlay,
     type: "STARTOVERLAY",
     payload: {
-      name: "pet1",
-      texture: "./resources/P1.png",
+      name: "pet2",
+      texture: "./resources/P2.png",
       sync: true,
     },
   });
+
 
 
 
@@ -127,7 +147,7 @@ async function main() {
 
   //await wait(5000);
 
-  inputloop(inputactor, genericoverlay);
+  //inputloop(inputactor, genericoverlay);
 }
 
 async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {

@@ -1,7 +1,7 @@
 import { PostalService } from "./stageforge/mod.ts"
 import "./actors/main.ts";
-//import { IrohWebWorker, setupIrohDebugMode } from "https://raw.githubusercontent.com/mommysgoodpuppy/IrohWorker/refs/heads/main/IrohWorker.ts"
-import { IrohWebWorker, setupIrohDebugMode } from "../IrohWorker/IrohWorker.ts"
+import { IrohWebWorker, setupIrohDebugMode } from "https://raw.githubusercontent.com/mommysgoodpuppy/IrohWorker/refs/heads/main/IrohWorker.ts"
+//import { IrohWebWorker, setupIrohDebugMode } from "../IrohWorker/IrohWorker.ts"
 
 import { wait } from "./classes/utils.ts";
 // Enable debug mode for Iroh WebWorker
@@ -11,8 +11,8 @@ const postalservice = new PostalService(IrohWebWorker);
 PostalService.debugMode = false;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
-const mainAddress = await postalservice.add("./netTest/actor1.ts");
-const mainAddrexss = await postalservice.add("./netTest/actor2.ts");
+const mainAddress = await postalservice.add("./dogdemo2/main.ts");
+//const mainAddress = await postalservice.add("./netTest/actor1.ts");
 
 await wait(2000)
 
@@ -23,7 +23,11 @@ console.log("mainAddress", mainAddress);
 
 await wait(1000)
 
-
+postalservice.PostMessage({
+  address: { fm: "system", to: mainAddress },
+  type: "MAIN",
+  payload: null,
+});
 
 
 

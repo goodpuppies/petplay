@@ -12,7 +12,6 @@ PostalService.debugMode = false;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
 const mainAddress = await postalservice.add("./netTest/actor1.ts");
-const mainAddrexss = await postalservice.add("./netTest/actor2.ts");
 
 await wait(2000)
 
@@ -22,7 +21,6 @@ console.log("mainAddress", mainAddress);
 
 
 await wait(1000)
-
 
 
 

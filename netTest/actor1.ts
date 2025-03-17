@@ -2,7 +2,7 @@ import { wait } from "../stageforge/src/lib/utils.ts";
 import { PostMan } from "../stageforge/mod.ts";
 
 const state = {
-  name: "main",
+  name: "main1",
 };
 
 new PostMan(state.name, {
@@ -24,6 +24,7 @@ async function main(_payload: string) {
     await wait(5000)
     console.log("main1", PostMan.state.addressBook)
     PostMan.state.addressBook.forEach((element) => {
+      //console.log("sending to", element)
       PostMan.PostMessage({
         target: element,
         type: "LOG",

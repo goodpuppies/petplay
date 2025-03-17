@@ -1,9 +1,16 @@
 import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
-import { createWindow, getProcAddress } from "https://deno.land/x/dwm@0.3.4/mod.ts";
+import { createWindow, DwmWindow, getProcAddress } from "https://deno.land/x/dwm@0.3.4/mod.ts";
 import { flipVertical } from "./screenutils.ts";
 
 export class OpenGLManager {
     private texture: Uint32Array | null = null;
+    private window: DwmWindow | null = null;
+    private uniqueId: string;
+
+    constructor() {
+        // Generate a crypto UUID for unique window identification
+        this.uniqueId = crypto.randomUUID();
+    }
 
     checkGLError(message: string) {
         const error = gl.GetError();
@@ -20,29 +27,36 @@ export class OpenGLManager {
         }
     }
 
-    initialize() {
-        // Create window and initialize GL
-        const window = createWindow({
-            title: "Texture Overlay",
-            width: 1,
-            height: 1,
-            resizable: false,
-            visible: false,
-            glVersion: [3, 2],
-            gles: false,
-        });
+    initialize(name?: string) {
+        // Create window and initialize GL with unique title
+        try {
+            const windowTitle = `${name || "Texture Overlay"}_${this.uniqueId.slice(0, 8)}`;
 
-        gl.load(getProcAddress);
-        this.checkGLError("gl.load");
+            this.window = createWindow({
+                title: windowTitle,
+                width: 1,
+                height: 1,
+                resizable: false,
+                visible: false,
+                glVersion: [3, 2],
+                gles: false,
+            });
 
-        this.texture = new Uint32Array(1);
-        gl.GenTextures(1, this.texture);
-        gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
-        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        this.checkGLError("texture creation");
+            gl.load(getProcAddress);
+            this.checkGLError("gl.load");
+
+            this.texture = new Uint32Array(1);
+            gl.GenTextures(1, this.texture);
+            gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            this.checkGLError("texture creation");
+        } catch (error) {
+            console.error(`Failed to create window: ${error.message}`);
+            throw error;
+        }
     }
 
     createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
@@ -67,5 +81,19 @@ export class OpenGLManager {
 
     getTexture(): Uint32Array | null {
         return this.texture;
+    }
+
+    cleanup() {
+        if (this.texture) {
+            const textureToDelete = new Uint32Array(1);
+            textureToDelete[0] = this.texture[0];
+            gl.DeleteTextures(1, textureToDelete);
+            this.texture = null;
+        }
+
+        if (this.window) {
+            this.window.close();
+            this.window = null;
+        }
     }
 }

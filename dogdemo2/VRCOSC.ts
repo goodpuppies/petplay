@@ -14,12 +14,12 @@ const state = {
     socket: null,
     coordinate: {} as coord,
     oscSubscriber: null as OscSubscriber | null,
-    addressBook: new Set(),
+    addressBook: new Array<string>(),
 };
 
 new PostMan(state, {
     CUSTOMINIT: (_payload) => {
-        PostMan.setTopic("vrcosc")
+        ////PostMan.setTopic("muffin")
         main();
     },
     GETCOORDINATE: (_payloa) => {

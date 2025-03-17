@@ -22,7 +22,7 @@ const state = {
 
 new PostMan(state, {
     CUSTOMINIT: (_payload) => {
-        ////PostMan.setTopic("muffin")
+        //PostMan.setTopic("muffin")
         initializeOpenVR();
     },
     LOG: (_payload) => {

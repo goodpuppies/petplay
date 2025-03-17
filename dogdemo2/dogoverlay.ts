@@ -251,7 +251,7 @@ async function updateLoop() {
   // Track the last synced position to avoid unnecessary updates
   let lastSyncedRelativePosition: OpenVR.HmdMatrix34 | null = null;
   let lastSyncTime = 0;
-  const syncInterval = 50; // Sync at most every 200ms to limit network traffic
+  const syncInterval = 1000; // Sync at most every 200ms to limit network traffic
 
   while (state.isRunning) {
 
