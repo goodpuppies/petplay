@@ -310,7 +310,7 @@ async function updateLoop() {
               .filter((addr): addr is string => typeof addr === 'string' && addr.startsWith('dogoverlay@') && addr !== state.id);
 
             if (dogOverlayActors.length > 0) {
-              //CustomLogger.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
+              CustomLogger.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
 
               // Send our position to all other dogoverlay actors
               if (state.sync) {
