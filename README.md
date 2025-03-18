@@ -1,7 +1,7 @@
 # AR in VR for VRChat and other platforms
 
 - [x] preliminary VRC integration
-- [X] iroh-net P2P
+- [x] iroh-net P2P
 - [ ] [WIP] desktop capture
 - [ ] advanced vrc api integration ( instance, friends, etc api )
 
@@ -12,4 +12,4 @@
 Reqs: Deno, SteamVR, probably windows, optionally vscode
 
 Usage: 
-1. use the "Main thread only" debug conf/F5 or `deno run --allow-read --allow-net --allow-ffi init.ts`
+1. `deno run -A init.ts`
