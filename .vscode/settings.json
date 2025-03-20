@@ -4,12 +4,13 @@
     "**/.git": true,
     "**/.svn": true,
     "**/.hg": true,
-    "**/CVS": true,
     "**/.DS_Store": true,
     "**/Thumbs.db": true,
+    "**/CVS": true,
     "**/deno.lock": false,
-    "stuff": true,
-    "stuff2": true
+    "stuff": false,
+    "stuff2": false,
+    "privateTests": false
   },
   "explorerExclude.backup": {},
 }

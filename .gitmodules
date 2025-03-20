@@ -1,8 +1,12 @@
-[submodule "OpenVR_TS_Bindings_Deno"]
-	path = OpenVR_TS_Bindings_Deno
+[submodule "submodules/stageforge"]
+	path = submodules/stageforge
+	url = https://github.com/goodpuppies/stageforge
+	branch = irohstuff
+[submodule "submodules/OpenVR_TS_Bindings_Deno"]
+	path = submodules/OpenVR_TS_Bindings_Deno
 	url = https://github.com/mommysgoodpuppy/OpenVR_TS_Bindings_Deno.git
 	branch = main
-[submodule "stageforge"]
-	path = stageforge
-	url = https://github.com/goodpuppies/stageforge.git
+[submodule "submodules/irohworker"]
+	path = submodules/irohworker
+	url = https://github.com/goodpuppies/irohworker.git
 	branch = main

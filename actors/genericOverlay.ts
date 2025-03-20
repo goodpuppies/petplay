@@ -6,11 +6,11 @@ import {
 } from "../stageforge/src/lib/types.ts";
 import { PostMan } from "../stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
-import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
-import { stringToPointer } from "../OpenVR_TS_Bindings_Deno/utils.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_DenoX/pointers.ts";
+import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_DenoX/utils.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
-import { HmdMatrix34Struct } from "../OpenVR_TS_Bindings_Deno/test/openvr_bindings.ts";
+import { HmdMatrix34Struct } from "../submodules/OpenVR_TS_Bindings_DenoX/test/openvr_bindings.ts";
 
 
 const state = {

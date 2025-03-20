@@ -1,5 +1,5 @@
 import { PostMan } from "../stageforge/mod.ts";
-import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 

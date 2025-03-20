@@ -1,8 +1,8 @@
 import { ToAddress } from "../stageforge/src/lib/types.ts";
 import { PostMan } from "../stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
-import { OpenVRType } from "../OpenVR_TS_Bindings_Deno/utils.ts";
-import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { OpenVRType } from "../submodules/OpenVR_TS_Bindings_DenoX/utils.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 //main process

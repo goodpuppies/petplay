@@ -4,8 +4,8 @@ import {
     MessageAddressReal,
 } from "../stageforge/src/lib/types.ts";
 import { PostMan } from "../stageforge/mod.ts";
-import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_DenoX/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 const LASER_POINTER_WIDTH = 0.002; // 2mm wide
@@ -219,14 +219,8 @@ async function updateLoop() {
 function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR.HmdMatrix34) {
     if (!state.overlayClass) return;
 
-    // Assuming the laser points forward along the -Z axis
-    const laserTransform: OpenVR.HmdMatrix34 = {
-        m: [
-            [...controllerPose.m[0]],
-            [...controllerPose.m[1]],
-            [...controllerPose.m[2]]
-        ]
-    };
+
+
 
     // Convert transform to pointer
     const transformBuffer = new ArrayBuffer(OpenVR.HmdMatrix34Struct.byteSize);

@@ -1,8 +1,8 @@
 
 import { PostMan } from "../stageforge/mod.ts";
-import * as OpenVR from "../OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { fillBuffer, readBufferStructured, stringToPointer } from "../OpenVR_TS_Bindings_Deno/utils.ts";
-import { P } from "../OpenVR_TS_Bindings_Deno/pointers.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
+import { fillBuffer, readBufferStructured, stringToPointer } from "../submodules/OpenVR_TS_Bindings_DenoX/utils.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_DenoX/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 //steamvr input handling
