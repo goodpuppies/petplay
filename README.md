@@ -5,6 +5,7 @@
 - [ ] [WIP] desktop capture
 - [ ] advanced vrc api integration ( instance, friends, etc api )
 
+Join the discord! https://discord.gg/Ms24sS9kEa
 
 ##### YouTube demo
 [![Demo](https://img.youtube.com/vi/2hV8siAFJfI/0.jpg)](https://www.youtube.com/watch?v=2hV8siAFJfI)
