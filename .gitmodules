@@ -10,3 +10,7 @@
 	path = submodules/irohworker
 	url = https://github.com/goodpuppies/irohworker.git
 	branch = main
+[submodule "submodules/petplayserver"]
+	path = submodules/petplayserver
+	url = https://github.com/goodpuppies/petplayserver.git
+	branch = main
