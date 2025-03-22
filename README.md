@@ -4,6 +4,7 @@
 - [x] iroh-net P2P
 - [ ] [WIP] desktop capture
 - [ ] advanced vrc api integration ( instance, friends, etc api )
+
 Join the discord! https://discord.gg/Ms24sS9kEa
 
 ##### YouTube demo
