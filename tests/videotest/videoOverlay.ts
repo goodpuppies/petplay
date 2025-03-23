@@ -62,7 +62,7 @@ new PostMan(state, {
         }
     },
     SETFRAMEDATA: (payload: { pixels: string | number[], encoding?: string, width: number, height: number }) => {
-        console.log("got frame");
+        //console.log("got frame");
         if (!state.isRunning) return;
         if (!state.textureStructPtr) throw new Error("no tex struct");
         if (!state.overlayClass) throw new Error("no overlay struct");
@@ -79,7 +79,7 @@ new PostMan(state, {
                 const buffer = Buffer.from(payload.pixels as string, 'base64');
                 // Create a new Uint8Array from the Buffer data to ensure compatibility
                 pixelsArray = new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
-                console.log(`Decoded base64 data, size: ${pixelsArray.length} bytes`);
+                //console.log(`Decoded base64 data, size: ${pixelsArray.length} bytes`);
             } else {
                 // Handle regular array
                 pixelsArray = new Uint8Array(payload.pixels as number[]);
@@ -139,7 +139,7 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
     // Process frames until we've sent the requested number or indefinitely if framesToSend is 0
     while (state.isRunning && (continuousMode || frameCount < framesToSend)) {
         if (continuousMode) {
-            CustomLogger.log("overlay", `Waiting for frame in continuous mode (frame #${frameCount + 1})...`);
+            //CustomLogger.log("overlay", `Waiting for frame in continuous mode (frame #${frameCount + 1})...`);
         } else {
             CustomLogger.log("overlay", `Waiting for frame ${frameCount + 1}/${framesToSend}...`);
         }
@@ -153,21 +153,19 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
         }
 
         frameCount++;
-        CustomLogger.log("overlay", `Received frame ${frameCount}: ${frame.width}x${frame.height}, size: ${frame.data.length} bytes`);
+        //CustomLogger.log("overlay", `Received frame ${frameCount}: ${frame.width}x${frame.height}, size: ${frame.data.length} bytes`);
 
         createTextureFromScreenshot(frame.data, frame.width, frame.height);
-        CustomLogger.log("overlay", "Texture created from screenshot");
+        //CustomLogger.log("overlay", "Texture created from screenshot");
 
         // Set overlay texture
         const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
         if (error !== OpenVR.OverlayError.VROverlayError_None) {
             CustomLogger.error("overlay", `SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
-        } else {
-            CustomLogger.log("overlay", "Texture set on overlay successfully");
         }
 
         if (PostMan.state.addressBook && PostMan.state.addressBook.size > 0) {
-            CustomLogger.log("overlay", `Found ${PostMan.state.addressBook.size} actors in address book`);
+            //CustomLogger.log("overlay", `Found ${PostMan.state.addressBook.size} actors in address book`);
             let sentCount = 0;
 
             for (const actorId of PostMan.state.addressBook) {
@@ -179,7 +177,7 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
                 const scaledWidth = Math.floor(frame.width * scaleFactor);
                 const scaledHeight = Math.floor(frame.height * scaleFactor);
 
-                CustomLogger.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight} (ratio: ${DOWNSCALE_RATIO})`);
+                //CustomLogger.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight} (ratio: ${DOWNSCALE_RATIO})`);
 
                 // Skip scaling if ratio is 1.0 (full resolution)
                 let pixelsToSend: Uint8Array;
@@ -211,7 +209,7 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
 
                 const frameMsg = continuousMode ? `streaming frame #${frameCount}` : `frame ${frameCount}/${framesToSend}`;
                 const scalingInfo = scaleFactor === 1.0 ? "full resolution" : `${DOWNSCALE_RATIO * 100}% scale`;
-                CustomLogger.log("overlay", `Sending ${frameMsg} to actor ${actorId} (${scalingInfo}, base64 size: ${base64Data.length} bytes)`);
+                //CustomLogger.log("overlay", `Sending ${frameMsg} to actor ${actorId} (${scalingInfo}, base64 size: ${base64Data.length} bytes)`);
 
                 PostMan.PostMessage({
                     target: actorId,
@@ -225,13 +223,13 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
                 });
             }
 
-            CustomLogger.log("overlay", `Sent frame to ${sentCount} actors`);
+            //CustomLogger.log("overlay", `Sent frame to ${sentCount} actors`);
         } else {
             CustomLogger.log("overlay", "No actors in address book to send frames to");
         }
 
         overlay.WaitFrameSync(100);
-        CustomLogger.log("overlay", "Frame sync completed");
+        //CustomLogger.log("overlay", "Frame sync completed");
 
         // Add a small delay between frames to avoid overloading the system
         if (continuousMode || frameCount < framesToSend) {
