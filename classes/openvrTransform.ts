@@ -1,5 +1,5 @@
-import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
-import { P } from "../submodules/OpenVR_TS_Bindings_DenoX/pointers.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "./customlogger.ts";
 
 export class OpenVRTransform {

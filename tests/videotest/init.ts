@@ -1,17 +1,14 @@
-import { PostalService } from "../submodules/stageforge/mod.ts"
-import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
-import { wait } from "../classes/utils.ts";
+import { PostalService } from "../../submodules/stageforge/mod.ts"
+import { IrohWebWorker, setupIrohDebugMode } from "../../submodules/irohworker/IrohWorker.ts"
 
+import { wait } from "../../classes/utils.ts";
 // Enable debug mode for Iroh WebWorker
 setupIrohDebugMode(false);
-
-// Initialize the postal service with IrohWebWorker
 const postalservice = new PostalService(IrohWebWorker);
 // Enable debug mode for PostalService
-PostalService.debugMode = true;
+PostalService.debugMode = false;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
-// Start the main actor
 const mainAddress = await postalservice.add("./main.ts");
 
 
@@ -27,3 +24,7 @@ postalservice.PostMessage({
   type: "MAIN",
   payload: null,
 });
+
+
+
+
