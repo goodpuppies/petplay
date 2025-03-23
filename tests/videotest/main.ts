@@ -62,26 +62,29 @@ async function main() {
 
   
 
-  await wait(1000)
-  PostMan.PostMessage({
-    target: genericoverlay,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "pet1",
-      texture: "./resources/P1.png",
-      sync: true,
-    },
-  });
-  await wait(2000)
+  await wait(10000)
+
   PostMan.PostMessage({
     target: genericoverlay2,
     type: "STARTOVERLAY",
     payload: {
       name: "pet2",
-      texture: "./resources/P2.png",
       sync: false,
+      frames: 0
     },
   });
+  await wait(2000)
+  PostMan.PostMessage({
+    target: genericoverlay,
+    type: "STARTOVERLAY",
+    payload: {
+      name: "pet1",
+      sync: true,
+      frames: 0
+    },
+  });
+ 
+
 
 
   //#endregion

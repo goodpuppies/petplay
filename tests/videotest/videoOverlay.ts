@@ -6,6 +6,9 @@ import { CustomLogger } from "../../classes/customlogger.ts";
 import { ScreenCapturer } from "../../classes/ScreenCapturer/scclass.ts";
 import { OpenGLManager } from "../../classes/openglManager.ts";
 import { OpenVRTransform } from "../../classes/openvrTransform.ts";
+import { Buffer } from "node:buffer";
+
+
 
 const state = {
     id: "",
@@ -26,8 +29,8 @@ new PostMan(state, {
     CUSTOMINIT: (_payload: void) => {
         PostMan.setTopic("muffin")
     },
-    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }) => {
-        main(payload.name, payload.sync);
+    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, frames?: number }) => {
+        main(payload.name, payload.sync, payload.frames);
     },
     GETOVERLAYLOCATION: (_payload: void) => {
         if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
@@ -58,23 +61,42 @@ new PostMan(state, {
             state.screenCapturer = null;
         }
     },
-    SETFRAMEDATA: (payload: { pixels: Uint8Array, width: number, height: number }) => {
+    SETFRAMEDATA: (payload: { pixels: string | number[], encoding?: string, width: number, height: number }) => {
+        console.log("got frame");
+        if (!state.isRunning) return;
+        if (!state.textureStructPtr) throw new Error("no tex struct");
+        if (!state.overlayClass) throw new Error("no overlay struct");
 
-        if (!state.isRunning) return
-        if (!state.textureStructPtr) throw new Error("no tex struct")
-        if (!state.overlayClass) throw new Error("no overlay struct")
+        if (!payload.pixels) {
+            throw new Error("pixels undefined");
+        }
 
-        createTextureFromScreenshot(payload.pixels, payload.width, payload.height);
+        try {
+            let pixelsArray: Uint8Array;
 
-        if (state.textureStructPtr && state.overlayClass) {
+            if (payload.encoding === "base64") {
+                // Decode base64 string back to Uint8Array using Node's Buffer
+                const buffer = Buffer.from(payload.pixels as string, 'base64');
+                // Create a new Uint8Array from the Buffer data to ensure compatibility
+                pixelsArray = new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+                console.log(`Decoded base64 data, size: ${pixelsArray.length} bytes`);
+            } else {
+                // Handle regular array
+                pixelsArray = new Uint8Array(payload.pixels as number[]);
+            }
+
+            createTextureFromScreenshot(pixelsArray, payload.width, payload.height);
+
             const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, state.textureStructPtr);
             if (error !== OpenVR.OverlayError.VROverlayError_None) {
                 console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
             }
-        }
-        else {
-
-            console.log(state.overlayClass)
+        } catch (e) {
+            console.error("Error processing pixel data:", e);
+            if (e instanceof Error) {
+                console.error("Stack:", e.stack);
+            }
+            throw e;
         }
     },
 } as const);
@@ -99,46 +121,134 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
 //#endregion
 
 
-async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay, textureStructPtr: Deno.PointerValue<OpenVR.Texture>) {
-    while (state.isRunning) {
-        const frame = await capturer.getLatestFrame();
-        if (frame) {
-            createTextureFromScreenshot(frame.data, frame.width, frame.height);
-            // Set overlay texture
-            const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
-            if (error !== OpenVR.OverlayError.VROverlayError_None) {
-                console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
-            }
+// ...existing code...
 
+async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
+    textureStructPtr: Deno.PointerValue<OpenVR.Texture>, framesToSend: number = 1) {
 
-            if (PostMan.state.addressBook && PostMan.state.addressBook.size > 0) {
-                for (const actorId of PostMan.state.addressBook) {
-                    if (actorId === state.id) continue;
+    let frameCount = 0;
+    const continuousMode = framesToSend === 0;
 
-                    const totalSize = frame.data.length;
+    if (continuousMode) {
+        CustomLogger.log("overlay", "Starting DeskCapLoop in continuous streaming mode");
+    } else {
+        CustomLogger.log("overlay", `Starting DeskCapLoop, will capture ${framesToSend} frames`);
+    }
 
-
-                    // Log frame info for debugging
-                    console.log(`Sending frame: ${frame.width}x${frame.height}, ${totalSize} bytes`);
-                    // Make a copy of the frame data to avoid issues with shared references
-                    const pixelsCopy = new Uint8Array(frame.data);
-                    PostMan.PostMessage({
-                        target: actorId,
-                        type: "SETFRAMEDATA",
-                        payload: {
-                            pixels: pixelsCopy,
-                            width: frame.width,
-                            height: frame.height
-                        }
-                    });
-                }
-            }
+    // Process frames until we've sent the requested number or indefinitely if framesToSend is 0
+    while (state.isRunning && (continuousMode || frameCount < framesToSend)) {
+        if (continuousMode) {
+            CustomLogger.log("overlay", `Waiting for frame in continuous mode (frame #${frameCount + 1})...`);
+        } else {
+            CustomLogger.log("overlay", `Waiting for frame ${frameCount + 1}/${framesToSend}...`);
         }
-        // Wait frame sync
+
+        const frame = await capturer.getLatestFrame();
+
+        if (!frame) {
+            CustomLogger.log("overlay", "No frame received from capturer");
+            await wait(100);
+            continue;
+        }
+
+        frameCount++;
+        CustomLogger.log("overlay", `Received frame ${frameCount}: ${frame.width}x${frame.height}, size: ${frame.data.length} bytes`);
+
+        createTextureFromScreenshot(frame.data, frame.width, frame.height);
+        CustomLogger.log("overlay", "Texture created from screenshot");
+
+        // Set overlay texture
+        const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
+        if (error !== OpenVR.OverlayError.VROverlayError_None) {
+            CustomLogger.error("overlay", `SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
+        } else {
+            CustomLogger.log("overlay", "Texture set on overlay successfully");
+        }
+
+        if (PostMan.state.addressBook && PostMan.state.addressBook.size > 0) {
+            CustomLogger.log("overlay", `Found ${PostMan.state.addressBook.size} actors in address book`);
+            let sentCount = 0;
+
+            for (const actorId of PostMan.state.addressBook) {
+                if (actorId === state.id) continue;
+                sentCount++;
+
+                // Scale down the frame to reduce data size
+                const scaleFactor = 0.5;  // 50% of original size
+                const scaledWidth = Math.floor(frame.width * scaleFactor);
+                const scaledHeight = Math.floor(frame.height * scaleFactor);
+
+                CustomLogger.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight}`);
+
+                // Create a scaled down version to reduce data size
+                const scaledData = new Uint8Array(scaledWidth * scaledHeight * 4);
+                for (let y = 0; y < scaledHeight; y++) {
+                    for (let x = 0; x < scaledWidth; x++) {
+                        const srcX = Math.floor(x / scaleFactor);
+                        const srcY = Math.floor(y / scaleFactor);
+
+                        const srcPos = (srcY * frame.width + srcX) * 4;
+                        const destPos = (y * scaledWidth + x) * 4;
+
+                        scaledData[destPos] = frame.data[srcPos];
+                        scaledData[destPos + 1] = frame.data[srcPos + 1];
+                        scaledData[destPos + 2] = frame.data[srcPos + 2];
+                        scaledData[destPos + 3] = frame.data[srcPos + 3];
+                    }
+                }
+
+                // Convert to base64 using Node's Buffer
+                const base64Data = Buffer.from(scaledData).toString('base64');
+
+                const frameMsg = continuousMode ? `streaming frame #${frameCount}` : `frame ${frameCount}/${framesToSend}`;
+                CustomLogger.log("overlay", `Sending ${frameMsg} to actor ${actorId} (base64 size: ${base64Data.length} bytes)`);
+
+                PostMan.PostMessage({
+                    target: actorId,
+                    type: "SETFRAMEDATA",
+                    payload: {
+                        pixels: base64Data,
+                        encoding: "base64",
+                        width: scaledWidth,
+                        height: scaledHeight
+                    }
+                });
+            }
+
+            CustomLogger.log("overlay", `Sent frame to ${sentCount} actors`);
+        } else {
+            CustomLogger.log("overlay", "No actors in address book to send frames to");
+        }
+
         overlay.WaitFrameSync(100);
-        await wait(50)
+        CustomLogger.log("overlay", "Frame sync completed");
+
+        // Add a small delay between frames to avoid overloading the system
+        if (continuousMode || frameCount < framesToSend) {
+            const delayTime = continuousMode ? 50 : 100; // Shorter delay in continuous mode for smoother streaming
+            await wait(delayTime);
+        }
+    }
+
+    // Only reached if not in continuous mode or if state.isRunning becomes false
+    if (!continuousMode) {
+        // Keep the overlay active but don't continue capturing frames
+        state.isRunning = false;
+        CustomLogger.log("overlay", "Setting isRunning to false");
+
+        if (state.screenCapturer) {
+            CustomLogger.log("overlay", "Disposing screen capturer");
+            await state.screenCapturer.dispose();
+            state.screenCapturer = null;
+        }
+
+        CustomLogger.log("overlay", `DeskCapLoop complete - sent ${frameCount} frames - screen capture stopped`);
+    } else {
+        CustomLogger.log("overlay", `Continuous streaming mode ended after ${frameCount} frames`);
     }
 }
+
+
 
 function INITGL(name?: string) {
     state.glManager = new OpenGLManager();
@@ -146,9 +256,10 @@ function INITGL(name?: string) {
     if (!state.glManager) { throw new Error("glManager is null"); }
 }
 
-function main(overlayname: string, sync: boolean) {
+function main(overlayname: string, sync: boolean, frames: number = 15) {
     try {
         state.sync = sync;
+        state.isRunning = true;
 
         INITGL(overlayname);
 
@@ -208,12 +319,14 @@ function main(overlayname: string, sync: boolean) {
 
 
         if (sync) {
-
             state.screenCapturer = INITSCREENCAP();
-            CustomLogger.log("overlay", "Screen capture initialized");
+            if (frames === 0) {
+                CustomLogger.log("overlay", `Screen capture initialized, continuous streaming mode`);
+            } else {
+                CustomLogger.log("overlay", `Screen capture initialized, will send ${frames} frames`);
+            }
 
-
-            DeskCapLoop(state.screenCapturer, overlay, textureStructPtr);
+            DeskCapLoop(state.screenCapturer, overlay, textureStructPtr, frames);
         } else {
             CustomLogger.log("overlay", "Running in sub mode, waiting for frame data");
         }
