@@ -1,12 +1,7 @@
-import {
-    BaseState,
-    worker,
-    MessageAddressReal,
-} from "../stageforge/src/lib/types.ts";
-import { PostMan } from "../stageforge/mod.ts";
-import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
-import { P } from "../submodules/OpenVR_TS_Bindings_DenoX/pointers.ts";
-import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_DenoX/utils.ts";
+import { PostMan } from "../submodules/stageforge/mod.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
+import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
 const state = {
@@ -20,9 +15,8 @@ const state = {
     addressBook: new Set(),
 };
 
-new PostMan(state.name, {
+new PostMan(state, {
     CUSTOMINIT: (_payload) => {
-        //PostMan.setTopic("muffin")
         initializeOpenVR();
     },
     LOG: (_payload) => {
@@ -56,7 +50,14 @@ new PostMan(state.name, {
     }
 } as const)
 
-function initializeOpenVR() {
+async function initializeOpenVR() {
+
+    const success = await OpenVR.initializeOpenVR("../resources/openvr_api");
+    if (!success) {
+        console.error("Failed to initialize OpenVR library");
+        return;
+    }
+
     const initErrorPtr = P.Int32P<OpenVR.InitError>();
     OpenVR.VR_InitInternal(initErrorPtr, OpenVR.ApplicationType.VRApplication_Overlay);
     const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();

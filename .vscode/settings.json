@@ -8,9 +8,7 @@
     "**/Thumbs.db": true,
     "**/CVS": true,
     "**/deno.lock": false,
-    "stuff": false,
-    "stuff2": false,
-    "privateTests": false
+    "stuff": true,
   },
   "explorerExclude.backup": {},
 }

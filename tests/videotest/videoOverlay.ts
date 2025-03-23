@@ -86,8 +86,10 @@ new PostMan(state, {
             }
 
             createTextureFromScreenshot(pixelsArray, payload.width, payload.height);
+            
 
             const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, state.textureStructPtr);
+            pixelsArray = null as any
             if (error !== OpenVR.OverlayError.VROverlayError_None) {
                 console.error(`SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
             }
@@ -221,6 +223,8 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
                         height: scaledHeight
                     }
                 });
+                pixelsToSend = null as any;
+
             }
 
             //CustomLogger.log("overlay", `Sent frame to ${sentCount} actors`);

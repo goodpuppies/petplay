@@ -1,7 +1,7 @@
-import { PostMan } from "../stageforge/mod.ts";
+import { PostMan } from "../submodules/stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
-import * as OpenVR from "../submodules/OpenVR_TS_Bindings_DenoX/openvr_bindings.ts";
-import { P } from "../submodules/OpenVR_TS_Bindings_DenoX/pointers.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { OpenVRTransform } from "../classes/openvrTransform.ts";
 import { TransformStabilizer } from "../classes/transformStabilizer.ts";
@@ -22,9 +22,8 @@ const state = {
     transformStabilizer: null as TransformStabilizer | null,
 };
 
-new PostMan(state.name, {
+new PostMan(state, {
     CUSTOMINIT: (_payload: void) => {
-        //PostMan.setTopic("muffin")
     },
     LOG: (_payload: void) => {
         CustomLogger.log("actor", state.id);

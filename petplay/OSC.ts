@@ -1,4 +1,4 @@
-import { PostMan } from "../stageforge/mod.ts";
+import { PostMan } from "../submodules/stageforge/mod.ts";
 import { OscSubscriber } from "../classes/getvrcpos.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
@@ -14,12 +14,10 @@ const state = {
     socket: null,
     coordinate: {} as coord,
     oscSubscriber: null as OscSubscriber | null,
-    addressBook: new Array<string>(),
 };
 
-new PostMan(state.name, {
+new PostMan(state, {
     CUSTOMINIT: (_payload) => {
-        //PostMan.setTopic("muffin")
         main();
     },
     GETCOORDINATE: (_payloa) => {
