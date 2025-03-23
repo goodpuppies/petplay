@@ -1,6 +1,8 @@
 import { PostalService } from "../submodules/stageforge/mod.ts"
 import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
 
+import { Iroh } from "@number0/iroh";
+
 setupIrohDebugMode(false);
 const postalservice = new PostalService(IrohWebWorker);
 
