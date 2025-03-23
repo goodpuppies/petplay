@@ -5,12 +5,8 @@ import { CustomLogger } from "../classes/customlogger.ts";
 
 const state = {
     id: "",
-    db: {},
     name: "hmd_position_actor",
-    socket: null,
-    sync: false,
     vrSystem: null as OpenVR.IVRSystem | null,
-    addressBook: new Set(),
 };
 
 new PostMan(state, {
@@ -24,14 +20,13 @@ new PostMan(state, {
     },
     INITOPENVR: (payload) => {
         const ptrn = payload;
-        const systemPtr = Deno.UnsafePointer.create(ptrn);  // Recreate the pointer
-        state.vrSystem = new OpenVR.IVRSystem(systemPtr);   // Create the OpenVR instance
+        const systemPtr = Deno.UnsafePointer.create(ptrn); 
+        state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
 
         CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
     GETHMDPOSITION: (_payload) => {
-        const hmdPose = getHMDPose();
-        return hmdPose
+        return getHMDPose();
     },
 } as const);
 

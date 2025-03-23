@@ -83,11 +83,8 @@ async function initializeOpenVR() {
 
     const errorX = Deno.UnsafePointer.of(new Int32Array(1))!;
 
-
     state.vrSystemPTR = systemPtr
     state.overlayPTR = overlayPtr
-
-
 
     CustomLogger.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
 }

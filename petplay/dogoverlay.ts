@@ -40,17 +40,10 @@ const smoothingWindowSize = 10;
 const smoothingWindow: OpenVR.HmdMatrix34[] = [];
 const vrcOriginSmoothingWindow: OpenVR.HmdMatrix34[] = [];
 
-// Define a type for the serialized BigInt format
 type SerializedBigInt = { __bigint__: string };
 
 new PostMan(state, {
   CUSTOMINIT: (_payload: void) => {
-  },
-  LOG: (_payload: void) => {
-    CustomLogger.log("actor", state.id);
-  },
-  GETID: (_payload: void) => {
-    return state.id
   },
   STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, inputActor?: string }) => {
     if (payload.inputActor) {
@@ -59,60 +52,43 @@ new PostMan(state, {
     main(payload.name, payload.texture, payload.sync);
   },
   GETOVERLAYLOCATION: (_payload: void) => {
-    const m34 = GetOverlayTransformAbsolute();
-    return m34
+    return GetOverlayTransformAbsolute();
   },
   SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    //console.log("SETOVERLAYLOCATION", PostMan.state.id);
     const transform = payload;
     if (!isValidMatrix(transform)) { throw new Error("Received invalid transform"); }
 
     if (state.smoothedVrcOrigin && isValidMatrix(state.smoothedVrcOrigin)) {
-      // Update relative position
       state.relativePosition = multiplyMatrix(invertMatrix(state.smoothedVrcOrigin), transform);
-      // When explicitly setting location, apply it immediately without smoothing
       setOverlayTransformAbsolute(transform);
     } else {
-      // If no valid VRC origin, set absolute position directly without smoothing
       setOverlayTransformAbsolute(transform);
     }
   },
   SYNCOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    //console.log("SYNCOVERLAYLOCATION", PostMan.state.id);
     const transform = payload;
     if (!isValidMatrix(transform)) { throw new Error("Received invalid transform"); }
 
-    // Store the received transform as our relative position
     state.relativePosition = transform;
     
-    // When syncing positions between overlays in the same space,
-    // we need to consider the current VRC origin
     if (state.smoothedVrcOrigin && isValidMatrix(state.smoothedVrcOrigin)) {
-      // Calculate new absolute position by combining VRC origin with received relative position
       const newAbsolutePosition = multiplyMatrix(state.smoothedVrcOrigin, state.relativePosition);
       
-      // Apply the new absolute position directly without additional smoothing
-      // This ensures synced overlays appear in exactly the same position
       setOverlayTransformAbsolute(newAbsolutePosition);
       
-      //CustomLogger.log("overlay", `Applied synced position from remote overlay with VRC origin`);
     } else {
-      // If no valid VRC origin, set absolute position directly without smoothing
       setOverlayTransformAbsolute(transform);
-      //CustomLogger.log("overlay", `Applied synced position from remote overlay without VRC origin`);
     }
   },
   INITOPENVR: (payload: bigint | SerializedBigInt) => {
     let ptrn: bigint;
     
-    // Handle serialized BigInt coming from the network
     if (typeof payload === 'object' && payload !== null && '__bigint__' in payload) {
       ptrn = BigInt(payload.__bigint__);
     } else {
       ptrn = payload as bigint;
     }
     
-    //console.log("INITOPENVR using pointer value:", ptrn);
     const systemPtr = Deno.UnsafePointer.create(ptrn);
     state.vrSystem = new OpenVR.IVRSystem(systemPtr);
     state.overlayClass = new OpenVR.IVROverlay(systemPtr);
@@ -122,7 +98,6 @@ new PostMan(state, {
     state.vrcOriginActor = payload;
     CustomLogger.log("actor", `VRC Origin Actor assigned: ${state.vrcOriginActor}`);
 
-    // Start the update loop if it's not already running and we have an overlay
     if (state.overlayTransform && !state.isRunning) {
       state.isRunning = true;
       updateLoop();
@@ -130,12 +105,7 @@ new PostMan(state, {
   }
 } as const);
 
-//#region screencapture
 
-
-//#endregion
-
-//#region openvr funcs
 
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
   if (state.overlayTransform) {
@@ -148,12 +118,10 @@ function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
   return state.overlayTransform.getTransformAbsolute();
 }
 
-//#endregion
 
-async function main(overlayname: string, overlaytexture: string, sync: boolean) {
+function main(overlayname: string, overlaytexture: string, sync: boolean) {
   state.sync = sync;
 
-  //#region create overlay
   CustomLogger.log("overlay", "Creating overlay...");
   const overlay = state.overlayClass as OpenVR.IVROverlay;
   const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
@@ -169,7 +137,6 @@ async function main(overlayname: string, overlaytexture: string, sync: boolean) 
   state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
   CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
 
-  // Send overlay handle to input actor if specified
   if (state.inputActor) {
     PostMan.PostMessage({
       address: { fm: state.id, to: state.inputActor },
@@ -178,28 +145,13 @@ async function main(overlayname: string, overlaytexture: string, sync: boolean) 
     });
   }
 
-
-  const imgpath = Deno.realPathSync(overlaytexture);
-  overlay.SetOverlayFromFile(overlayHandle, imgpath);
+  overlay.SetOverlayFromFile(overlayHandle, Deno.realPathSync(overlaytexture));
   overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
 
   overlay.ShowOverlay(overlayHandle);
 
-
   CustomLogger.log("overlay", "Overlay initialized and shown");
-  //#endregion
-
-  // Initialize screen capture
-
-
-
-
-
   state.isRunning = true;
-
-  // Start the desktop capture loop
-
-
 
   updateLoop();
   
@@ -216,7 +168,6 @@ function getSmoothedTransform(window: (OpenVR.HmdMatrix34 | null)[]): OpenVR.Hmd
   const validTransforms = window.filter(isValidMatrix) as OpenVR.HmdMatrix34[];
 
   if (validTransforms.length === 0) {
-    //CustomLogger.warn("smoothing", "No valid transforms in smoothing window");
     return null;
   }
 
@@ -247,71 +198,52 @@ function getSmoothedTransform(window: (OpenVR.HmdMatrix34 | null)[]): OpenVR.Hmd
 }
 
 async function updateLoop() {
-  // Track the last synced position to avoid unnecessary updates
   let lastSyncedRelativePosition: OpenVR.HmdMatrix34 | null = null;
   let lastSyncTime = 0;
-  const syncInterval = 1000; // Sync at most every 200ms to limit network traffic
+  const syncInterval = 1000;
 
   while (state.isRunning) {
 
 
     try {
-      // Only proceed if we have a VRC origin actor assigned
       if (state.vrcOriginActor) {
-        // Get the current VRC origin position
         const newVrcOrigin = await PostMan.PostMessage({
           target: state.vrcOriginActor,
           type: "GETVRCORIGIN",
           payload: null,
         }, true) as OpenVR.HmdMatrix34;
 
-        // If we got a valid matrix
         if (isValidMatrix(newVrcOrigin)) {
-          // Store the raw origin
           state.vrcOrigin = newVrcOrigin;
 
-          // Add to smoothing window for a smoother experience
           addToSmoothingWindow(vrcOriginSmoothingWindow, newVrcOrigin);
           const smoothedNewVrcOrigin = getSmoothedTransform(vrcOriginSmoothingWindow);
 
-          // Update our position if we have a valid smoothed origin and it's different from what we had before
           if (smoothedNewVrcOrigin && (!state.smoothedVrcOrigin || !matrixEquals(state.smoothedVrcOrigin, smoothedNewVrcOrigin))) {
-            // Update our smoothed VRC origin
             state.smoothedVrcOrigin = smoothedNewVrcOrigin;
 
-            // Calculate new absolute position by combining VRC origin with our relative position
             const newAbsolutePosition = multiplyMatrix(state.smoothedVrcOrigin, state.relativePosition);
 
-            // Add to smoothing window for the overlay position
             addToSmoothingWindow(smoothingWindow, newAbsolutePosition);
             const smoothedAbsolutePosition = getSmoothedTransform(smoothingWindow);
 
-            // Apply the smoothed position to the overlay
             if (smoothedAbsolutePosition) {
               setOverlayTransformAbsolute(smoothedAbsolutePosition);
             }
           }
 
-          // Check if we should sync our position to other dogoverlay actors
           const now = Date.now();
           if (
-            // Only sync if enough time has passed since last sync
             (now - lastSyncTime > syncInterval) &&
-            // Only sync if our position has changed significantly
             (!lastSyncedRelativePosition || !matrixEquals(lastSyncedRelativePosition, state.relativePosition))
           ) {
-            //await wait(500)
-            //console.log(PostMan.state.id,  PostMan.state.addressBook)
-            //CustomLogger.log("overlay", "sync");
 
-            // Find all dogoverlay actors in addressbook (excluding self)
             const dogOverlayActors = Array.from(PostMan.state.addressBook)
               .filter((addr): addr is string => typeof addr === 'string' && addr.startsWith('dogoverlay@') && addr !== state.id);
 
             if (dogOverlayActors.length > 0) {
               CustomLogger.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
 
-              // Send our position to all other dogoverlay actors
               if (state.sync) {
                 PostMan.PostMessage({
                   target: dogOverlayActors,
@@ -320,7 +252,6 @@ async function updateLoop() {
                 });
               }
               
-              // Update sync tracking
               lastSyncedRelativePosition = { ...state.relativePosition };
               lastSyncTime = now;
             }
@@ -332,11 +263,10 @@ async function updateLoop() {
         CustomLogger.log("updateLoop", "No VRC origin actor assigned");
       }
 
-      // Run at 90Hz for smooth VR experience
       await wait(1000 / 90);
     } catch (error) {
       CustomLogger.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
-      await wait(1000); // Wait a bit longer on error to avoid spam
+      await wait(1000);
     }
   }
 }

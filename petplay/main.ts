@@ -38,6 +38,7 @@ async function main() {
   const input = await PostMan.create("./controllers.ts");
   const origin = await PostMan.create("./VRCOrigin.ts");
   const overlay = await PostMan.create("./dogoverlay.ts");
+  const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
 
 
@@ -48,7 +49,7 @@ async function main() {
   })
 
   PostMan.PostMessage({
-    target: [origin, overlay],
+    target: [origin, overlay, laser],
     type: "INITOPENVR",
     payload: ivroverlay
   })
@@ -63,6 +64,17 @@ async function main() {
     target: origin,
     type: "ASSIGNHMD",
     payload: hmd,
+  });
+  PostMan.PostMessage({
+    target: laser,
+    type: "ASSIGNINPUT",
+    payload: input,
+  });
+
+  PostMan.PostMessage({
+    target: laser,
+    type: "STARTLASERS",
+    payload: null
   });
 
   PostMan.PostMessage({
