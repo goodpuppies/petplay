@@ -121,7 +121,8 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
 //#endregion
 
 
-// ...existing code...
+const DOWNSCALE_RATIO = 1.0;
+
 
 async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
     textureStructPtr: Deno.PointerValue<OpenVR.Texture>, framesToSend: number = 1) {
@@ -173,35 +174,44 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
                 if (actorId === state.id) continue;
                 sentCount++;
 
-                // Scale down the frame to reduce data size
-                const scaleFactor = 0.5;  // 50% of original size
+                // Scale down the frame to reduce data size based on DOWNSCALE_RATIO
+                const scaleFactor = DOWNSCALE_RATIO;  // Use the global constant
                 const scaledWidth = Math.floor(frame.width * scaleFactor);
                 const scaledHeight = Math.floor(frame.height * scaleFactor);
 
-                CustomLogger.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight}`);
+                CustomLogger.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight} (ratio: ${DOWNSCALE_RATIO})`);
 
-                // Create a scaled down version to reduce data size
-                const scaledData = new Uint8Array(scaledWidth * scaledHeight * 4);
-                for (let y = 0; y < scaledHeight; y++) {
-                    for (let x = 0; x < scaledWidth; x++) {
-                        const srcX = Math.floor(x / scaleFactor);
-                        const srcY = Math.floor(y / scaleFactor);
+                // Skip scaling if ratio is 1.0 (full resolution)
+                let pixelsToSend: Uint8Array;
+                if (scaleFactor === 1.0) {
+                    // Use original frame data directly
+                    pixelsToSend = new Uint8Array(frame.data);
+                } else {
+                    // Create a scaled down version to reduce data size
+                    const scaledData = new Uint8Array(scaledWidth * scaledHeight * 4);
+                    for (let y = 0; y < scaledHeight; y++) {
+                        for (let x = 0; x < scaledWidth; x++) {
+                            const srcX = Math.floor(x / scaleFactor);
+                            const srcY = Math.floor(y / scaleFactor);
 
-                        const srcPos = (srcY * frame.width + srcX) * 4;
-                        const destPos = (y * scaledWidth + x) * 4;
+                            const srcPos = (srcY * frame.width + srcX) * 4;
+                            const destPos = (y * scaledWidth + x) * 4;
 
-                        scaledData[destPos] = frame.data[srcPos];
-                        scaledData[destPos + 1] = frame.data[srcPos + 1];
-                        scaledData[destPos + 2] = frame.data[srcPos + 2];
-                        scaledData[destPos + 3] = frame.data[srcPos + 3];
+                            scaledData[destPos] = frame.data[srcPos];
+                            scaledData[destPos + 1] = frame.data[srcPos + 1];
+                            scaledData[destPos + 2] = frame.data[srcPos + 2];
+                            scaledData[destPos + 3] = frame.data[srcPos + 3];
+                        }
                     }
+                    pixelsToSend = scaledData;
                 }
 
                 // Convert to base64 using Node's Buffer
-                const base64Data = Buffer.from(scaledData).toString('base64');
+                const base64Data = Buffer.from(pixelsToSend).toString('base64');
 
                 const frameMsg = continuousMode ? `streaming frame #${frameCount}` : `frame ${frameCount}/${framesToSend}`;
-                CustomLogger.log("overlay", `Sending ${frameMsg} to actor ${actorId} (base64 size: ${base64Data.length} bytes)`);
+                const scalingInfo = scaleFactor === 1.0 ? "full resolution" : `${DOWNSCALE_RATIO * 100}% scale`;
+                CustomLogger.log("overlay", `Sending ${frameMsg} to actor ${actorId} (${scalingInfo}, base64 size: ${base64Data.length} bytes)`);
 
                 PostMan.PostMessage({
                     target: actorId,
