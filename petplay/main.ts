@@ -33,7 +33,6 @@ async function main() {
     payload: null
   }, true)
 
-
   const hmd = await PostMan.create("./hmd.ts");
   const input = await PostMan.create("./controllers.ts");
   const origin = await PostMan.create("./VRCOrigin.ts");
@@ -41,16 +40,14 @@ async function main() {
   const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
 
-
   PostMan.PostMessage({
     target: hmd,
     type: "INITOPENVR",
     payload: ivrsystem
   })
-
   PostMan.PostMessage({
     target: [origin, overlay, laser],
-    type: "INITOPENVR",
+    type: "INITOVROVERLAY",
     payload: ivroverlay
   })
 
@@ -59,7 +56,6 @@ async function main() {
     type: "ASSIGNVRC",
     payload: osc,
   });
-
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNHMD",
@@ -70,29 +66,27 @@ async function main() {
     type: "ASSIGNINPUT",
     payload: input,
   });
+  PostMan.PostMessage({
+    target: origin,
+    type: "STARTORIGIN",
+    payload: {
+      name: "originoverlay",
+      texture: "../resources/P1.png",
+    },
+  });
+  //this is delay dependent pls fix
+  await wait(500)
+  PostMan.PostMessage({
+    target: overlay,
+    type: "ASSIGNVRCORIGIN",
+    payload: origin,
+  });
 
   PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
     payload: null
   });
-
-  PostMan.PostMessage({
-    target: origin,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "overlayXX",
-      texture: "../resources/P1.png",
-      sync: false,
-    },
-  });
-
-  PostMan.PostMessage({
-    target: [overlay],
-    type: "ASSIGNVRCORIGIN",
-    payload: origin,
-  });
-
   PostMan.PostMessage({
     target: overlay,
     type: "STARTOVERLAY",

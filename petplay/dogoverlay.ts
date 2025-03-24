@@ -9,16 +9,12 @@ import { isValidMatrix, multiplyMatrix, invertMatrix, matrixEquals } from "../cl
 
 const state = {
   id: "",
-  db: {},
   name: "dogoverlay",
   sync: false,
   overlayClass: null as OpenVR.IVROverlay | null,
   overlayerror: OpenVR.OverlayError.VROverlayError_None,
   overlayHandle: 0n,
   overlayTransform: null as OpenVRTransform | null,
-  addressBook: new Set(),
-  TrackingUniverseOriginPTR: null,
-  vrSystem: null as OpenVR.IVRSystem | null,
   vrcOriginActor: null as string | null,
   vrcOrigin: null as OpenVR.HmdMatrix34 | null,
   smoothedVrcOrigin: null as OpenVR.HmdMatrix34 | null,
@@ -31,8 +27,6 @@ const state = {
   } as OpenVR.HmdMatrix34,
   isRunning: false,
   screenCapturer: null as ScreenCapturer | null,
-  grabbedController: null as "left" | "right" | null,
-  grabOffset: null as OpenVR.HmdMatrix34 | null,
   inputActor: "",
 };
 
@@ -40,20 +34,15 @@ const smoothingWindowSize = 10;
 const smoothingWindow: OpenVR.HmdMatrix34[] = [];
 const vrcOriginSmoothingWindow: OpenVR.HmdMatrix34[] = [];
 
-type SerializedBigInt = { __bigint__: string };
-
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => {
-  },
+  CUSTOMINIT: (_payload: void) => {},
   STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, inputActor?: string }) => {
     if (payload.inputActor) {
       state.inputActor = payload.inputActor;
     }
     main(payload.name, payload.texture, payload.sync);
   },
-  GETOVERLAYLOCATION: (_payload: void) => {
-    return GetOverlayTransformAbsolute();
-  },
+  GETOVERLAYLOCATION: (_payload: void) => {return GetOverlayTransformAbsolute();},
   SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
     const transform = payload;
     if (!isValidMatrix(transform)) { throw new Error("Received invalid transform"); }
@@ -73,26 +62,15 @@ new PostMan(state, {
     
     if (state.smoothedVrcOrigin && isValidMatrix(state.smoothedVrcOrigin)) {
       const newAbsolutePosition = multiplyMatrix(state.smoothedVrcOrigin, state.relativePosition);
-      
+
       setOverlayTransformAbsolute(newAbsolutePosition);
-      
     } else {
       setOverlayTransformAbsolute(transform);
     }
   },
-  INITOPENVR: (payload: bigint | SerializedBigInt) => {
-    let ptrn: bigint;
-    
-    if (typeof payload === 'object' && payload !== null && '__bigint__' in payload) {
-      ptrn = BigInt(payload.__bigint__);
-    } else {
-      ptrn = payload as bigint;
-    }
-    
-    const systemPtr = Deno.UnsafePointer.create(ptrn);
-    state.vrSystem = new OpenVR.IVRSystem(systemPtr);
+  INITOVROVERLAY: (payload: bigint) => {
+    const systemPtr = Deno.UnsafePointer.create(payload);
     state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-    CustomLogger.log("overlay", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
   },
   ASSIGNVRCORIGIN: (payload: string) => {
     state.vrcOriginActor = payload;
@@ -105,8 +83,6 @@ new PostMan(state, {
   }
 } as const);
 
-
-
 function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
   if (state.overlayTransform) {
     state.overlayTransform.setTransformAbsolute(transform);
@@ -117,7 +93,6 @@ function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
   if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
   return state.overlayTransform.getTransformAbsolute();
 }
-
 
 function main(overlayname: string, overlaytexture: string, sync: boolean) {
   state.sync = sync;
@@ -203,7 +178,6 @@ async function updateLoop() {
   const syncInterval = 1000;
 
   while (state.isRunning) {
-
 
     try {
       if (state.vrcOriginActor) {

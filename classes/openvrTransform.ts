@@ -1,5 +1,6 @@
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
+import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { CustomLogger } from "./customlogger.ts";
 
 export class OpenVRTransform {
@@ -12,10 +13,7 @@ export class OpenVRTransform {
     }
 
     setTransformAbsolute(transform: OpenVR.HmdMatrix34) {
-        const transformBuffer = new ArrayBuffer(OpenVR.HmdMatrix34Struct.byteSize);
-        const transformView = new DataView(transformBuffer);
-        OpenVR.HmdMatrix34Struct.write(transform, transformView);
-        const transformPtr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(transformBuffer)!;
+        const [transformPtr, _transformView] = createStruct<OpenVR.HmdMatrix34>(transform, OpenVR.HmdMatrix34Struct)
         this.overlayClass.SetOverlayTransformAbsolute(
             this.overlayHandle, 
             OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding, 
@@ -25,21 +23,13 @@ export class OpenVRTransform {
 
     getTransformAbsolute(): OpenVR.HmdMatrix34 {
         const TrackingUniverseOriginPTR = P.Int32P<OpenVR.TrackingUniverseOrigin>();
-        const hmd34size = OpenVR.HmdMatrix34Struct.byteSize;
-        const hmd34buf = new ArrayBuffer(hmd34size);
-        const hmd34view = new DataView(hmd34buf);
-        const m34ptr = Deno.UnsafePointer.of<OpenVR.HmdMatrix34>(hmd34buf)!;
-
+        const [m34ptr, hmd34view] = createStruct<OpenVR.HmdMatrix34>(null, OpenVR.HmdMatrix34Struct)
         const error = this.overlayClass.GetOverlayTransformAbsolute(
             this.overlayHandle, 
             TrackingUniverseOriginPTR, 
             m34ptr
         );
-
-        if (error !== OpenVR.OverlayError.VROverlayError_None) {
-            CustomLogger.error("actorerr", `Failed to get overlay transform: ${OpenVR.OverlayError[error]}`);
-            throw new Error("Failed to get overlay transform");
-        }
+        if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Failed to get overlay transform");
 
         return OpenVR.HmdMatrix34Struct.read(hmd34view) as OpenVR.HmdMatrix34;
     }

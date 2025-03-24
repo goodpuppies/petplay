@@ -15,7 +15,6 @@ const state = {
     overlayClass: null as OpenVR.IVROverlay | null,
     overlayHandle: 0n as OpenVR.OverlayHandle,
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
-    sync: false,
     addressBook: new Set(),
     overlayTransform: null as OpenVRTransform | null,
     originChangeCount: 0,
@@ -25,44 +24,18 @@ const state = {
 new PostMan(state, {
     CUSTOMINIT: (_payload: void) => {
     },
-    LOG: (_payload: void) => {
-        CustomLogger.log("actor", state.id);
+    ASSIGNVRC: (payload: string) => {state.vrc = payload;},
+    ASSIGNHMD: (payload: string) => {state.hmd = payload;},
+    STARTORIGIN: (payload: { name: string, texture: string }) => {
+        mainX(payload.name, payload.texture);
     },
-    GETID: (_payload: void) => {
-        return state.id
-    },
-    ASSIGNVRC: (payload: string) => {
-        state.vrc = payload;
-    },
-    ASSIGNHMD: (payload: string) => {
-        state.hmd = payload;
-    },
-    STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean }) => {
-        mainX(payload.name, payload.texture, payload.sync);
-    },
-    ADDADDRESS: (payload: string) => {
-        state.addressBook.add(payload);
-    },
-    GETOVERLAYLOCATION: (_payload: void) => {
-        const m34 = GetOverlayTransformAbsolute();
-        return m34
-    },
-    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-        const transform = payload;
-        if (state.sync == false) {
-            CustomLogger.log("syncloop", "set transform ");
-        }
-        setOverlayTransformAbsolute(transform);
-    },
-    INITOPENVR: (payload: bigint) => {
-        const ptrn = payload;
-        const systemPtr = Deno.UnsafePointer.create(ptrn);
+    ADDADDRESS: (payload: string) => {state.addressBook.add(payload);},
+    GETOVERLAYLOCATION: (_payload: void) => {return GetOverlayTransformAbsolute() },
+    INITOVROVERLAY: (payload: bigint) => {
+        const systemPtr = Deno.UnsafePointer.create(payload);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-        CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
-    GETVRCORIGIN: (_payload: void) => {
-        return state.origin
-    }
+    GETVRCORIGIN: (_payload: void) => {return state.origin}
 } as const);
 
 //#region out of scope
@@ -97,32 +70,23 @@ interface LastKnownRotation {
 
 //#endregion
 
-async function mainX(overlaymame: string, overlaytexture: string, sync: boolean) {
+async function mainX(overlaymame: string, overlaytexture: string) {
     try {
-        state.sync = sync;
         state.transformStabilizer = new TransformStabilizer();
 
         CustomLogger.log("overlay", "Creating overlay...");
         const overlay = state.overlayClass as OpenVR.IVROverlay;
         const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
         const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
-
-        if (error !== OpenVR.OverlayError.VROverlayError_None) {
-            throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
-        }
-
+        if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
         state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
 
-        const imgpath = Deno.realPathSync(overlaytexture);
-        overlay.SetOverlayFromFile(overlayHandle, imgpath);
+        overlay.SetOverlayFromFile(overlayHandle, Deno.realPathSync(overlaytexture));
         overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
         overlay.ShowOverlay(overlayHandle);
 
-        const initialTransformSize = OpenVR.HmdMatrix34Struct.byteSize;
-        const initialTransformBuf = new ArrayBuffer(initialTransformSize);
-        const initialTransformView = new DataView(initialTransformBuf);
 
         const initialTransform: OpenVR.HmdMatrix34 = {
             m: [
@@ -131,12 +95,9 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                 [0.0, 0.0, 1.0, -2.0]
             ]
         };
-        OpenVR.HmdMatrix34Struct.write(initialTransform, initialTransformView);
         setOverlayTransformAbsolute(initialTransform);
 
         CustomLogger.log("default", "Overlay created and shown.");
-
-
 
         function transformCoordinate(value: number): number {
             return (value - 0.5) * 340;
@@ -196,11 +157,9 @@ async function mainX(overlaymame: string, overlaytexture: string, sync: boolean)
                 const rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
                 const rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
 
-
                 const transformedX = transformCoordinate(lastKnownPosition.x) + rotatedHmdX;
                 const transformedY = transformCoordinate(lastKnownPosition.y);
                 const transformedZ = transformCoordinate(lastKnownPosition.z) - rotatedHmdZ;
-
 
                 const cosCorrectedYaw = Math.cos(correctedYaw);
                 const sinCorrectedYaw = Math.sin(correctedYaw);

@@ -22,9 +22,8 @@ const state = {
 
 new PostMan(state, {
     CUSTOMINIT: (_payload: void) => {},
-    INITOPENVR: (payload: bigint) => {
+    INITOVROVERLAY: (payload: bigint) => {
         const systemPtr = Deno.UnsafePointer.create(payload);
-        state.vrSystem = new OpenVR.IVRSystem(systemPtr);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
     },
     ASSIGNINPUT: (payload: string) => { state.inputActor = payload },
