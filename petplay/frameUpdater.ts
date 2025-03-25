@@ -61,7 +61,7 @@ async function DeskCapLoop(
     let frame
     if (state.screenCapturer) {
       const capturedFrame = await state.screenCapturer!.getLatestFrame();
-      if (capturedFrame === null) { await wait(1000); console.log("no frame"); continue }
+      if (capturedFrame === null) { await wait(1000); continue }
       frame = {
         pixels: capturedFrame.data,
         width: capturedFrame.width,

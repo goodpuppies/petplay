@@ -19,7 +19,8 @@ new PostMan(state, {
 } as const);
 
 async function main() {
-  CustomLogger.log("default", "main actor started");
+  const startTime = performance.now();
+  CustomLogger.log("default", "creating scene");
 
   const ivr = await PostMan.create("./OpenVR.ts")
   const ivrsystem = await PostMan.PostMessage({
@@ -51,7 +52,6 @@ async function main() {
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
-
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNVRC",
@@ -75,14 +75,11 @@ async function main() {
       texture: "../resources/P1.png",
     },
   });
-
   PostMan.PostMessage({
     target: origin,
     type: "ADDOVERLAY",
     payload: dogoverlay,
   });
-
-
   PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
@@ -97,13 +94,11 @@ async function main() {
       sync: true,
     },
   });
-
   const handle = await PostMan.PostMessage({
     target: dogoverlay,
     type: "GETOVERLAYHANDLE",
     payload: null
   }, true);
-  
   PostMan.PostMessage({
     target: updater,
     type: "STARTUPDATER",
@@ -112,14 +107,13 @@ async function main() {
       overlayhandle: handle,
     }
   })
-
-
-
+  const endTime = performance.now();
+  const timeElapsed = Math.round(endTime - startTime);
+  CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
   inputloop(input, dogoverlay);
 }
 
 async function inputloop(inputactor: string, overlayactor: string) {
-  CustomLogger.log("default", "inputloop started");
   while (true) {
 
     const inputstate = await PostMan.PostMessage({

@@ -72,7 +72,6 @@ async function main(overlaymame: string, overlaytexture: string) {
       ]
     };
     setTransform(initialTransform);  
-    CustomLogger.log("default", "Overlay created and shown.");  
 
     let lastOrigin: OpenVR.HmdMatrix34 | null = null;
     let lastLogTime = Date.now();  
