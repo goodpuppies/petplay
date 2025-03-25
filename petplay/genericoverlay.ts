@@ -10,13 +10,11 @@ import { multiplyMatrix, invertMatrix } from "../classes/matrixutils.ts";
 const state = {
   name: "genericoverlay",
   sync: false,
+  isRunning: false,
   overlayClass: null as OpenVR.IVROverlay | null,
-  overlayerror: OpenVR.OverlayError.VROverlayError_None,
   overlayHandle: 0n,
   vrcOrigin: null as OpenVR.HmdMatrix34 | null,
-  isRunning: false,
   screenCapturer: null as ScreenCapturer | null,
-  inputActor: "",
   relativePosition: {
     m: [
       [1, 0, 0, 0],
@@ -32,28 +30,20 @@ new PostMan(state, {
     const systemPtr = Deno.UnsafePointer.create(payload);
     state.overlayClass = new OpenVR.IVROverlay(systemPtr);
   },
-  GETOVERLAYHANDLE: (_payload: void) => {
-    return state.overlayHandle
-  },
-  STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, inputActor?: string }) => {
-    if (payload.inputActor) {
-      state.inputActor = payload.inputActor;
-    }
+  GETOVERLAYHANDLE: (_payload: void) => { return state.overlayHandle },
+  STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, }) => {
     main(payload.name, payload.texture, payload.sync);
   },
   GETOVERLAYLOCATION: (_payload: void) => {
-    if (!state.overlayClass || !state.overlayHandle) {
-      throw new Error("Overlay not initialized");
-    }
+    if (!state.overlayClass || !state.overlayHandle) { throw new Error("Overlay not initialized"); }
     return getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
   },
   SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    const transform = payload;
     if (state.vrcOrigin) {
-      state.relativePosition = multiplyMatrix(invertMatrix(state.vrcOrigin), transform);
-      setTransform(transform);
+      state.relativePosition = multiplyMatrix(invertMatrix(state.vrcOrigin), payload);
+      setTransform(payload);
     } else {
-      setTransform(transform);
+      setTransform(payload);
     }
   },
   ORIGINUPDATE: (payload: OpenVR.HmdMatrix34) => {
@@ -63,47 +53,29 @@ new PostMan(state, {
     setTransform(newAbsolutePosition);
   },
   SYNCOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    const transform = payload;
-    state.relativePosition = transform;
+    state.relativePosition = payload;
     if (state.vrcOrigin) {
       const newAbsolutePosition = multiplyMatrix(state.vrcOrigin, state.relativePosition);
       setTransform(newAbsolutePosition);
     } else {
-      setTransform(transform);
+      setTransform(payload);
     }
   },
 } as const);
 
-
-
 function main(overlayname: string, overlaytexture: string, sync: boolean) {
   state.sync = sync;
 
-  CustomLogger.log("overlay", "Creating overlay...");
-  const overlay = state.overlayClass as OpenVR.IVROverlay;
+  //get overlayhandle
   const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-  if (!overlay) throw new Error("openvr not ready")
-  const error = overlay.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
+  if (!state.overlayClass) throw new Error("openvr not ready")
+  const error = state.overlayClass.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
+  if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
+  state.overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
 
-  if (error !== OpenVR.OverlayError.VROverlayError_None) {
-    throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
-  }
-  if (overlayHandlePTR === null) throw new Error("Invalid pointer");
-  const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
-  state.overlayHandle = overlayHandle;
-  CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
-
-  if (state.inputActor) {
-    PostMan.PostMessage({
-      address: { fm: PostMan.state.id, to: state.inputActor },
-      type: "SETOVERLAYHANDLE",
-      payload: overlayHandle
-    });
-  }
-
-  overlay.SetOverlayFromFile(overlayHandle, Deno.realPathSync(overlaytexture));
-  overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
-  overlay.ShowOverlay(overlayHandle);
+  state.overlayClass.SetOverlayFromFile(state.overlayHandle, Deno.realPathSync(overlaytexture));
+  state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 0.7);
+  state.overlayClass.ShowOverlay(state.overlayHandle);
 
   CustomLogger.log("overlay", "Overlay initialized and shown");
   state.isRunning = true;

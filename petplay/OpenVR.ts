@@ -15,33 +15,16 @@ new PostMan(state, {
     CUSTOMINIT: (_payload) => {
         initializeOpenVR();
     },
-    LOG: (_payload) => {
-        CustomLogger.log("actor", PostMan.state.id);
-    },
-    GETID: (_payload) => {
-        return PostMan.state.id
-    },
     GETOPENVRPTR: (_payload) => {
-        if (!state.vrSystemPTR) {
-            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${PostMan.state.id}`);
-            return;
-        }
-
+        if (!state.vrSystemPTR) throw new Error("OpenVR system not initialized")
         const ivrsystem = state.vrSystemPTR
-
         const systemPtrNumeric = Deno.UnsafePointer.value(ivrsystem);
-
         return systemPtrNumeric
     },
     GETOVERLAYPTR: (_payload) => {
-        if (!state.overlayPTR) {
-            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${PostMan.state.id}`);
-            return;
-        }
+        if (!state.overlayPTR) throw new Error("overlay system not initialized")
         const overlay = state.overlayPTR
-
         const overlayPtrNumeric = Deno.UnsafePointer.value(overlay);
-
         return overlayPtrNumeric
     }
 } as const)
@@ -49,35 +32,20 @@ new PostMan(state, {
 async function initializeOpenVR() {
 
     const success = await OpenVR.initializeOpenVR("../resources/openvr_api");
-    if (!success) {
-        console.error("Failed to initialize OpenVR library");
-        return;
-    }
+    if (!success) throw new Error("failed to initialize openvr")
 
     const initErrorPtr = P.Int32P<OpenVR.InitError>();
     OpenVR.VR_InitInternal(initErrorPtr, OpenVR.ApplicationType.VRApplication_Overlay);
     const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
 
-    if (initError !== OpenVR.InitError.VRInitError_None) {
-        CustomLogger.error("actorerr", `Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`);
-        throw new Error("Failed to initialize OpenVR");
-    }
+    if (initError !== OpenVR.InitError.VRInitError_None) throw new Error(`Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`)
 
     const systemPtr = OpenVR.VR_GetGenericInterface(stringToPointer(OpenVR.IVRSystem_Version), initErrorPtr);
     const overlayPtr = OpenVR.VR_GetGenericInterface(stringToPointer(OpenVR.IVROverlay_Version), initErrorPtr);
 
     const interfaceError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
 
-    if (interfaceError !== OpenVR.InitError.VRInitError_None) {
-        CustomLogger.error("actorerr", `Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError]}`);
-        throw new Error("Failed to get IVRSystem interface");
-    }
-
-    const initerrorptr = Deno.UnsafePointer.of<OpenVR.InitError>(new Int32Array(1))!
-    const TypeSafeINITERRPTR: OpenVR.InitErrorPTRType = initerrorptr
-
-
-    const errorX = Deno.UnsafePointer.of(new Int32Array(1))!;
+    if (interfaceError !== OpenVR.InitError.VRInitError_None) throw new Error(`Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError]}`)
 
     state.vrSystemPTR = systemPtr
     state.overlayPTR = overlayPtr

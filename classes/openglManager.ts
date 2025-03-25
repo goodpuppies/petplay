@@ -1,5 +1,5 @@
 import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
-import { createWindow, DwmWindow, getProcAddress } from "https://deno.land/x/dwm@0.3.4/mod.ts";
+import { createWindow, DwmWindow, getProcAddress } from "@gfx/dwm";
 import { flipVertical } from "./screenutils.ts";
 
 export class OpenGLManager {
@@ -54,7 +54,7 @@ export class OpenGLManager {
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             this.checkGLError("texture creation");
         } catch (error) {
-            console.error(`Failed to create window: ${error.message}`);
+            console.error(`Failed to create window: ${(error as Error).message}`);
             throw error;
         }
     }
@@ -73,7 +73,7 @@ export class OpenGLManager {
             0,
             gl.RGBA,
             gl.UNSIGNED_BYTE,
-            pixels
+            flippedPixels
         );
 
         this.checkGLError("upload texture data");

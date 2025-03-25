@@ -19,7 +19,6 @@ const state = {
     isRunning: false
 };
 
-
 new PostMan(state, {
     CUSTOMINIT: (_payload: void) => {},
     INITOVROVERLAY: (payload: bigint) => {
@@ -37,7 +36,6 @@ new PostMan(state, {
         destroyLaserOverlays();
     }
 } as const);
-
 
 async function updateLoop() {
     while (state.isRunning) {
@@ -98,9 +96,6 @@ function createLaserOverlays() {
     state.overlayClass.SetOverlayWidthInMeters(state.rightLaserHandle, LASER_POINTER_WIDTH);
 }
 
-
-
-
 function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR.HmdMatrix34) {
     if (!state.overlayClass) return;
 
@@ -121,11 +116,7 @@ function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR
         ]
     };
 
-
     const modlaserPose = multiplyMatrix(laserPose, transformer)
-
-
-
     // Get pointer 
     const [posePTR, _transformView] = createStruct<OpenVR.HmdMatrix34>(modlaserPose, OpenVR.HmdMatrix34Struct)
 
@@ -135,7 +126,6 @@ function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR
         OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
         posePTR
     );
-
     // Set texture bounds to control laser length
     const data = {
         uMin: 0,
@@ -144,7 +134,6 @@ function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR
         vMax: LASER_POINTER_LENGTH / LASER_POINTER_WIDTH // Stretch texture to make laser longer 
     }
     const [texBoundsPtr, _texBoundsView] = createStruct<OpenVR.TextureBounds>(data, OpenVR.TextureBoundsStruct)
-
 
     state.overlayClass.SetOverlayTextureBounds(handle, texBoundsPtr);
     state.overlayClass.ShowOverlay(handle);
@@ -176,7 +165,6 @@ function createIntersectionOverlay(): bigint {
 
     return intersectionHandle as bigint;
 }
-
 function updateIntersectionOverlay(intersectionWrapper: { intersection: OpenVR.OverlayIntersectionResults }) {
     if (!state.overlayClass || !state.intersectionOverlayHandle) return;
 

@@ -39,25 +39,7 @@ async function main() {
   const dogoverlay = await PostMan.create("./genericoverlay.ts");
   const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
-  //const frame = await PostMan.create("./frameSource.ts");
   const updater = await PostMan.create("./frameUpdater.ts");
-
-/*   const actorTree = {
-    origin: {
-      address: origin,
-      children: {
-        overlay: {
-          address: overlay,
-          assignMessage: "ASSIGNVRCORIGIN",
-        },
-        laser: {
-          address: laser,
-          assignMessage: "ASSIGNVRCORIGIN",
-        },
-      },
-    },
-  };
-  await assignActorHierarchy(actorTree) */
 
   PostMan.PostMessage({
     target: hmd,
