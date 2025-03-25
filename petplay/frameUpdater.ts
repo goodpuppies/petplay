@@ -2,6 +2,9 @@ import { PostMan, wait } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
+import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
+import { CustomLogger } from "../classes/customlogger.ts";
+import { setImmediate } from "node:timers";
 
 //takes an overlay handle and a frame source, updates overlay texture continuously
 interface frame {
@@ -12,43 +15,73 @@ interface frame {
 
 const state = {
   name: "updater",
-  framesource: null as string | null,
   overlayHandle: null as bigint | null,
   overlayClass: null as OpenVR.IVROverlay | null,
   glManager: null as OpenGLManager | null,
   isRunning: false,
+  screenCapturer: null as ScreenCapturer | null,
+  currentFrame: null as frame | null,
+  framesource: null as string | null
 };
 
 new PostMan(state, {
   CUSTOMINIT: (_payload: void) => {
   },
-  STARTUPDATER: (payload: { overlayclass: bigint, overlayhandle: bigint, framesource: string }) => {
+  STARTUPDATER: (payload: { overlayclass: bigint, overlayhandle: bigint, framesource?: string }) => {
     state.overlayClass = new OpenVR.IVROverlay(Deno.UnsafePointer.create(payload.overlayclass));
     state.overlayHandle = payload.overlayhandle
-    state.framesource = payload.framesource
+    if (payload.framesource) state.framesource = payload.framesource
     main()
-  }
+  },
+  GETFRAME: (_payload: void): frame | null => {
+    if (state.currentFrame == null) { return null }
+    return state.currentFrame
+  },
 } as const);
+
+function INITSCREENCAP(): ScreenCapturer {
+  const capturer = new ScreenCapturer({
+    debug: false,
+    onStats: ({ fps, avgLatency }) => {
+      CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+    },
+    executablePath: "../resources/screen-streamer"
+  });
+  return capturer;
+}
 
 async function DeskCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) { 
   while (state.isRunning) {
-    if (!state.framesource) throw new Error("no framesource")
+    if (!state.framesource && !state.screenCapturer) throw new Error("no framesource")
     if (!state.overlayClass) throw new Error("no overlay")
     if (!state.overlayHandle) throw new Error("no overlay")
-    const frame = await PostMan.PostMessage({
-      target: state.framesource,
-      type: "GETFRAME",
-      payload: null
-    }, true) as frame | null
+    
+    let frame
+    if (state.screenCapturer) {
+      const capturedFrame = await state.screenCapturer!.getLatestFrame();
+      if (capturedFrame === null) { await wait(1000); console.log("no frame"); continue }
+      frame = {
+        pixels: capturedFrame.data,
+        width: capturedFrame.width,
+        height: capturedFrame.height
+      }
+      state.currentFrame = frame
+      await new Promise(resolve => setImmediate(resolve)); 
+    } else {
+      frame = await PostMan.PostMessage({
+        target: state.framesource!,
+        type: "GETFRAME",
+        payload: null
+      }, true) as frame | null
+    }
+
     if (!frame) { console.log("no frane"); await wait(1000); continue}
     createTextureFromScreenshot(frame.pixels, frame.width, frame.height);
     const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
     if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("wtf")
   }
-
-
 }
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
@@ -63,12 +96,16 @@ function INITGL(name?: string) {
 }
 
 function main() {
-  if (!state.framesource) throw new Error("no framesource")
   if (!state.overlayClass) throw new Error("no overlay")
   if (!state.overlayHandle) throw new Error("no overlay")
-
   
+  if (!state.framesource) { 
+    //native capture mode
+    state.screenCapturer = INITSCREENCAP();
+  }
+
   state.isRunning = true;
+  
   INITGL();
 
   const texture = state.glManager!.getTexture();
@@ -84,9 +121,16 @@ function main() {
     eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto,
   };
   const [textureStructPtr, _textureStructView ] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct)
-
   DeskCapLoop(textureStructPtr);
-
 }
 
+globalThis.addEventListener("unload", cleanup);
+
+async function cleanup() {
+  state.isRunning = false;
+  if (state.screenCapturer) {
+    await state.screenCapturer.dispose();
+    state.screenCapturer = null;
+  }
+}
 

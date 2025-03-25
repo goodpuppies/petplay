@@ -39,7 +39,7 @@ async function main() {
   const dogoverlay = await PostMan.create("./genericoverlay.ts");
   const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
-  const frame = await PostMan.create("./frameSource.ts");
+  //const frame = await PostMan.create("./frameSource.ts");
   const updater = await PostMan.create("./frameUpdater.ts");
 
 /*   const actorTree = {
@@ -128,7 +128,6 @@ async function main() {
     payload: {
       overlayclass: ivroverlay,
       overlayhandle: handle,
-      framesource: frame
     }
   })
 
