@@ -81,6 +81,7 @@ async function DeskCapLoop(
     createTextureFromScreenshot(frame.pixels, frame.width, frame.height);
     const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
     if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("wtf")
+    state.overlayClass.WaitFrameSync(100)
   }
 }
 

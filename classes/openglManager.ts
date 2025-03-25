@@ -71,9 +71,9 @@ export class OpenGLManager {
             width,
             height,
             0,
-            gl.BGRA,
+            gl.RGBA,
             gl.UNSIGNED_BYTE,
-            flippedPixels
+            pixels
         );
 
         this.checkGLError("upload texture data");
