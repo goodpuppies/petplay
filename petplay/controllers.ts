@@ -38,14 +38,14 @@ new PostMan(state, {
         );
         if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get pose data")
         error = vrInput.GetPoseActionDataRelativeToNow(
-            handPoseRightHandle,
-            OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
-            0,
-            posedatarightpointer,
-            OpenVR.InputPoseActionDataStruct.byteSize,
-            OpenVR.k_ulInvalidInputValueHandle
+            handPoseRightHandle, // bigint of type OpenVR.ActionHandle
+            OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding, //enum
+            0, //regular number
+            posedatarightpointer, //created by createStruct is type Deno.PointerValue<OpenVR.InputPoseActionData>
+            OpenVR.InputPoseActionDataStruct.byteSize, //sized structs have a bytesize
+            OpenVR.k_ulInvalidInputValueHandle // not a pointer just a bigint from type export const k_ulInvalidInputValueHandle: InputValueHandle = 0n;//uint64_t
         );
-        if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get pose data")
+        if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get pose data") //openvr uses return error enum style and instead of return modify a pointer
         const leftPoseData = OpenVR.InputPoseActionDataStruct.read(poseDataViewL);
         const rightPoseData = OpenVR.InputPoseActionDataStruct.read(poseDataViewR);
         //#endregion

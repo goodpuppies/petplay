@@ -3,7 +3,7 @@ import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
-import { OpenVRTransform } from "../classes/openvrTransform.ts";
+import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { TransformStabilizer } from "../classes/transformStabilizer.ts";
 
 const state = {
@@ -16,7 +16,6 @@ const state = {
     overlayHandle: 0n as OpenVR.OverlayHandle,
     overlayerror: OpenVR.OverlayError.VROverlayError_None,
     addressBook: new Set(),
-    overlayTransform: null as OpenVRTransform | null,
     originChangeCount: 0,
     transformStabilizer: null as TransformStabilizer | null,
 };
@@ -24,31 +23,24 @@ const state = {
 new PostMan(state, {
     CUSTOMINIT: (_payload: void) => {
     },
-    ASSIGNVRC: (payload: string) => {state.vrc = payload;},
-    ASSIGNHMD: (payload: string) => {state.hmd = payload;},
+    ASSIGNVRC: (payload: string) => { state.vrc = payload; },
+    ASSIGNHMD: (payload: string) => { state.hmd = payload; },
     STARTORIGIN: (payload: { name: string, texture: string }) => {
         mainX(payload.name, payload.texture);
     },
-    ADDADDRESS: (payload: string) => {state.addressBook.add(payload);},
-    GETOVERLAYLOCATION: (_payload: void) => {return GetOverlayTransformAbsolute() },
+    ADDADDRESS: (payload: string) => { state.addressBook.add(payload); },
+    GETOVERLAYLOCATION: (_payload: void) => {
+        if (!state.overlayClass || !state.overlayHandle) {
+            throw new Error("Overlay not initialized");
+        }
+        return getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
+    },
     INITOVROVERLAY: (payload: bigint) => {
         const systemPtr = Deno.UnsafePointer.create(payload);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
     },
-    GETVRCORIGIN: (_payload: void) => {return state.origin}
+    GETVRCORIGIN: (_payload: void) => { return state.origin }
 } as const);
-
-//#region out of scope
-
-function setOverlayTransformAbsolute(transform: OpenVR.HmdMatrix34) {
-    if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
-    state.overlayTransform.setTransformAbsolute(transform);
-}
-
-function GetOverlayTransformAbsolute(): OpenVR.HmdMatrix34 {
-    if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
-    return state.overlayTransform.getTransformAbsolute();
-}
 
 const PositionX: string = "/avatar/parameters/CustomObjectSync/PositionX";
 const PositionY: string = "/avatar/parameters/CustomObjectSync/PositionY";
@@ -68,7 +60,10 @@ interface LastKnownRotation {
     y: number;
 }
 
-//#endregion
+function setTransform(transform: OpenVR.HmdMatrix34) {
+    if (!state.overlayClass || !state.overlayHandle) return;
+    setOverlayTransformAbsolute(state.overlayClass, state.overlayHandle, transform);
+}
 
 async function mainX(overlaymame: string, overlaytexture: string) {
     try {
@@ -81,12 +76,10 @@ async function mainX(overlaymame: string, overlaytexture: string) {
         if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
-        state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
 
         overlay.SetOverlayFromFile(overlayHandle, Deno.realPathSync(overlaytexture));
         overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
         overlay.ShowOverlay(overlayHandle);
-
 
         const initialTransform: OpenVR.HmdMatrix34 = {
             m: [
@@ -95,7 +88,7 @@ async function mainX(overlaymame: string, overlaytexture: string) {
                 [0.0, 0.0, 1.0, -2.0]
             ]
         };
-        setOverlayTransformAbsolute(initialTransform);
+        setTransform(initialTransform);
 
         CustomLogger.log("default", "Overlay created and shown.");
 
@@ -202,7 +195,7 @@ async function mainX(overlaymame: string, overlaytexture: string) {
                         hmdTransform,
                         finalMatrix
                     );
-                    setOverlayTransformAbsolute(finalMatrix);
+                    setTransform(finalMatrix);
 
                     // Use stabilized matrix for origin updates too
                     if (isOriginChanged(stabilizedMatrix)) {
@@ -211,7 +204,7 @@ async function mainX(overlaymame: string, overlaytexture: string) {
                         lastOrigin = stabilizedMatrix;
                     }
                 } else {
-                    setOverlayTransformAbsolute(finalMatrix);
+                    setTransform(finalMatrix);
 
                     if (isOriginChanged(pureMatrix)) {
                         state.origin = pureMatrix;

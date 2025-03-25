@@ -1,5 +1,5 @@
 import { PostMan } from "../submodules/stageforge/mod.ts";
-import { wait } from "../classes/utils.ts";
+import { wait, assignActorHierarchy } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 
@@ -36,9 +36,28 @@ async function main() {
   const hmd = await PostMan.create("./hmd.ts");
   const input = await PostMan.create("./controllers.ts");
   const origin = await PostMan.create("./VRCOrigin.ts");
-  const overlay = await PostMan.create("./dogoverlay.ts");
+  const dogoverlay = await PostMan.create("./genericoverlay.ts");
   const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
+  const frame = await PostMan.create("./desktopFrame.ts");
+  const updater = await PostMan.create("./frameUpdater.ts");
+
+/*   const actorTree = {
+    origin: {
+      address: origin,
+      children: {
+        overlay: {
+          address: overlay,
+          assignMessage: "ASSIGNVRCORIGIN",
+        },
+        laser: {
+          address: laser,
+          assignMessage: "ASSIGNVRCORIGIN",
+        },
+      },
+    },
+  };
+  await assignActorHierarchy(actorTree) */
 
   PostMan.PostMessage({
     target: hmd,
@@ -46,7 +65,7 @@ async function main() {
     payload: ivrsystem
   })
   PostMan.PostMessage({
-    target: [origin, overlay, laser],
+    target: [origin, dogoverlay, laser],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
@@ -77,7 +96,7 @@ async function main() {
   //this is delay dependent pls fix
   await wait(500)
   PostMan.PostMessage({
-    target: overlay,
+    target: dogoverlay,
     type: "ASSIGNVRCORIGIN",
     payload: origin,
   });
@@ -88,7 +107,7 @@ async function main() {
     payload: null
   });
   PostMan.PostMessage({
-    target: overlay,
+    target: dogoverlay,
     type: "STARTOVERLAY",
     payload: {
       name: "pet1",
@@ -97,7 +116,25 @@ async function main() {
     },
   });
 
-  inputloop(input, overlay);
+  const handle = await PostMan.PostMessage({
+    target: dogoverlay,
+    type: "GETOVERLAYHANDLE",
+    payload: null
+  }, true);
+  
+  PostMan.PostMessage({
+    target: updater,
+    type: "STARTUPDATER",
+    payload: {
+      overlayclass: ivroverlay,
+      overlayhandle: handle,
+      framesource: frame
+    }
+  })
+
+
+
+  inputloop(input, dogoverlay);
 }
 
 async function inputloop(inputactor: string, overlayactor: string) {

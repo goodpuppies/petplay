@@ -3,6 +3,7 @@ import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.t
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
+import { multiplyMatrix } from "../classes/matrixutils.ts";
 
 const LASER_POINTER_WIDTH = 0.002; // 2mm wide
 const LASER_POINTER_LENGTH = 0.2; // 20cm long
@@ -98,8 +99,19 @@ function createLaserOverlays() {
     state.overlayClass.SetOverlayWidthInMeters(state.rightLaserHandle, LASER_POINTER_WIDTH);
 }
 
+
+
+
 function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR.HmdMatrix34) {
     if (!state.overlayClass) return;
+
+    const transformer: OpenVR.HmdMatrix34 = {
+        m: [
+            [1, 0, 0, 0],
+            [0, 0, 1, 0],
+            [0, -1, 0, 0]
+        ]
+    };
 
     // just set laser pose to controller pose
     const laserPose: OpenVR.HmdMatrix34 = {
@@ -110,8 +122,13 @@ function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR
         ]
     };
 
+
+    const modlaserPose = multiplyMatrix(laserPose, transformer)
+
+
+
     // Get pointer 
-    const [posePTR, _transformView] = createStruct<OpenVR.HmdMatrix34>(laserPose, OpenVR.HmdMatrix34Struct)
+    const [posePTR, _transformView] = createStruct<OpenVR.HmdMatrix34>(modlaserPose, OpenVR.HmdMatrix34Struct)
 
     // Update overlay transform 
     state.overlayClass.SetOverlayTransformAbsolute(

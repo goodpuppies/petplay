@@ -294,7 +294,7 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
 
         const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
-        const boundsPtr = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct, true)
+        const [boundsPtr, boudsView] = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct, true)
         overlay.SetOverlayTextureBounds(overlayHandle, boundsPtr);
 
 
@@ -323,7 +323,7 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
             eType: OpenVR.TextureType.TextureType_OpenGL,
             eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto,
         };
-        const textureStructPtr = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct, true)
+        const [textureStructPtr, textureStructView ] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct)
         state.textureStructPtr = textureStructPtr;
 
         state.isRunning = true;
