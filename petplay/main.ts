@@ -39,7 +39,7 @@ async function main() {
   const dogoverlay = await PostMan.create("./genericoverlay.ts");
   const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
-  const frame = await PostMan.create("./desktopFrame.ts");
+  const frame = await PostMan.create("./frameSource.ts");
   const updater = await PostMan.create("./frameUpdater.ts");
 
 /*   const actorTree = {
@@ -93,13 +93,13 @@ async function main() {
       texture: "../resources/P1.png",
     },
   });
-  //this is delay dependent pls fix
-  await wait(500)
+
   PostMan.PostMessage({
-    target: dogoverlay,
-    type: "ASSIGNVRCORIGIN",
-    payload: origin,
+    target: origin,
+    type: "ADDOVERLAY",
+    payload: dogoverlay,
   });
+
 
   PostMan.PostMessage({
     target: laser,

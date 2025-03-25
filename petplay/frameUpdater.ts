@@ -11,7 +11,6 @@ interface frame {
 }
 
 const state = {
-  id: "",
   name: "updater",
   framesource: null as string | null,
   overlayHandle: null as bigint | null,

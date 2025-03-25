@@ -10,7 +10,6 @@ interface frame {
 }
 
 const state = {
-  id: "",
   name: "desktop",
   screenCapturer: null as ScreenCapturer | null,
   isRunning: false,

@@ -3,7 +3,6 @@ import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.t
 import { CustomLogger } from "../classes/customlogger.ts";
 
 const state = {
-    id: "",
     name: "hmd_position_actor",
     vrSystem: null as OpenVR.IVRSystem | null,
 };
@@ -12,17 +11,17 @@ new PostMan(state, {
     CUSTOMINIT: (_payload) => {
     },
     LOG: (_payload) => {
-        CustomLogger.log("actor", state.id);
+        CustomLogger.log("actor", PostMan.state.id);
     },
     GETID: (_payload) => {
-        return state.id
+        return PostMan.state.id
     },
     INITOPENVR: (payload) => {
         const ptrn = payload;
         const systemPtr = Deno.UnsafePointer.create(ptrn); 
         state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
 
-        CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
+        CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
     },
     GETHMDPOSITION: (_payload) => {
         return getHMDPose();

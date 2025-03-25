@@ -9,7 +9,6 @@ const LASER_POINTER_WIDTH = 0.002; // 2mm wide
 const LASER_POINTER_LENGTH = 0.2; // 20cm long
 
 const state = {
-    id: "",
     name: "laserpointer",
     overlayClass: null as OpenVR.IVROverlay | null,
     intersectionOverlayHandle: null as bigint | null,

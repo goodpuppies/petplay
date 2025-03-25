@@ -6,7 +6,6 @@ import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 //steamvr input handling
 
 const state = {
-    id: "",
     name: "ovrinput",
     TrackingUniverseOriginPTR: null,
     inputerror: OpenVR.InputError.VRInputError_None,

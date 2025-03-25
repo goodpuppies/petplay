@@ -9,9 +9,7 @@ interface coord {
 }
 
 const state = {
-    id: "",
     name: "vrccoordinate",
-    socket: null,
     coordinate: {} as coord,
     oscSubscriber: null as OscSubscriber | null,
 };

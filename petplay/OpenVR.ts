@@ -5,14 +5,10 @@ import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts"
 import { CustomLogger } from "../classes/customlogger.ts";
 
 const state = {
-    id: "",
-    db: {},
     name: "openvr",
-    socket: null,
     sync: false,
     vrSystemPTR: null as Deno.PointerValue | null,
     overlayPTR: null as Deno.PointerValue | null,
-    addressBook: new Set(),
 };
 
 new PostMan(state, {
@@ -20,14 +16,14 @@ new PostMan(state, {
         initializeOpenVR();
     },
     LOG: (_payload) => {
-        CustomLogger.log("actor", state.id);
+        CustomLogger.log("actor", PostMan.state.id);
     },
     GETID: (_payload) => {
-        return state.id
+        return PostMan.state.id
     },
     GETOPENVRPTR: (_payload) => {
         if (!state.vrSystemPTR) {
-            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
+            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${PostMan.state.id}`);
             return;
         }
 
@@ -39,7 +35,7 @@ new PostMan(state, {
     },
     GETOVERLAYPTR: (_payload) => {
         if (!state.overlayPTR) {
-            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
+            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${PostMan.state.id}`);
             return;
         }
         const overlay = state.overlayPTR
