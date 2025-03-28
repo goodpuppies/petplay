@@ -16,7 +16,7 @@ const state = {
   overlayerror: OpenVR.OverlayError.VROverlayError_None,
   originChangeCount: 0,
   transformStabilizer: null as TransformStabilizer2 | null,
-  overlay: null as string | null
+  overlays: [] as string[],
 };
 
 new PostMan(state, {
@@ -39,7 +39,7 @@ new PostMan(state, {
     state.overlayClass = new OpenVR.IVROverlay(systemPtr);
   },
   ADDOVERLAY: (payload: string) => {
-    state.overlay = payload
+    state.overlays.push(payload);
   }
 } as const);
 
@@ -51,10 +51,20 @@ const RotationY: string = "/avatar/parameters/CustomObjectSync/RotationY";
 const lastKnownPosition: LastKnownPosition = { x: 0, y: 0, z: 0 };
 const lastKnownRotation: LastKnownRotation = { y: 0 };
 
+function originReaction() {
+  if (state.overlays.length > 0) {
+    PostMan.PostMessage({
+      target: state.overlays,
+      type: "ORIGINUPDATE",
+      payload: state.origin
+    })
+  }
+}
+
 async function main(overlaymame: string, overlaytexture: string) {
   try {
     state.transformStabilizer = new TransformStabilizer2();  
-    CustomLogger.log("overlay", "Creating overlay...");
+    CustomLogger.log("overlay", "Creating origin...");
     const overlay = state.overlayClass as OpenVR.IVROverlay;
     const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
@@ -209,12 +219,3 @@ function setTransform(transform: OpenVR.HmdMatrix34) {
   setOverlayTransformAbsolute(state.overlayClass, state.overlayHandle, transform);
 }
 
-function originReaction() {
-  if (state.overlay) {
-    PostMan.PostMessage({
-      target: state.overlay,
-      type: "ORIGINUPDATE",
-      payload: state.origin
-    })
-  }
-}

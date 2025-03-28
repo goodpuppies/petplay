@@ -5,10 +5,18 @@ import { createStruct } from "../../submodules/OpenVR_TS_Bindings_Deno/utils.ts"
 import { CustomLogger } from "../../classes/customlogger.ts";
 import { ScreenCapturer } from "../../classes/ScreenCapturer/scclass.ts";
 import { OpenGLManager } from "../../classes/openglManager.ts";
-import { OpenVRTransform } from "../../classes/openvrTransform.ts";
+import { setOverlayTransformAbsolute, getOverlayTransformAbsolute} from "../../classes/openvrTransform.ts";
 import { Buffer } from "node:buffer";
 
+function setTransform(transform: OpenVR.HmdMatrix34) {
+  if (!state.overlayClass || !state.overlayHandle) return;
+  setOverlayTransformAbsolute(state.overlayClass, state.overlayHandle, transform);
+}
 
+function getTransform() {
+    if (!state.overlayClass || !state.overlayHandle) return;
+    getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
+}
 
 const state = {
     id: "",
@@ -16,7 +24,6 @@ const state = {
     sync: false,
     overlayClass: null as OpenVR.IVROverlay | null,
     overlayHandle: 0n,
-    overlayTransform: null as OpenVRTransform | null,
     vrSystem: null as OpenVR.IVRSystem | null,
     isRunning: false,
     screenCapturer: null as ScreenCapturer | null,
@@ -33,12 +40,10 @@ new PostMan(state, {
         main(payload.name, payload.sync, payload.frames);
     },
     GETOVERLAYLOCATION: (_payload: void) => {
-        if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
-        return state.overlayTransform.getTransformAbsolute();
+        return getTransform()
     },
     SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-        if (!state.overlayTransform) { throw new Error("overlayTransform is null"); }
-        state.overlayTransform.setTransformAbsolute(payload);
+        setTransform(payload);
     },
     INITOPENVR: (payload: bigint | SerializedBigInt) => {
         let ptrn: bigint;
@@ -260,8 +265,6 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
     }
 }
 
-
-
 function INITGL(name?: string) {
     state.glManager = new OpenGLManager();
     state.glManager.initialize(name);
@@ -276,7 +279,6 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         INITGL(overlayname);
 
 
-
         CustomLogger.log("overlay", "Creating overlay...");
         const overlay = state.overlayClass as OpenVR.IVROverlay;
         const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
@@ -287,14 +289,13 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         }
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
-        state.overlayTransform = new OpenVRTransform(overlay, overlayHandle);
         CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
 
 
         overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
 
         const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
-        const [boundsPtr, boudsView] = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct, true)
+        const [boundsPtr, boudsView] = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct)
         overlay.SetOverlayTextureBounds(overlayHandle, boundsPtr);
 
 
@@ -305,9 +306,8 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
                 [0.0, 0.0, 1.0, -2.5]
             ]
         };
-        if (state.overlayTransform) {
-            state.overlayTransform.setTransformAbsolute(initialTransform);
-        }
+
+        setTransform(initialTransform)
 
         overlay.ShowOverlay(overlayHandle);
         CustomLogger.log("overlay", "Overlay initialized and shown");

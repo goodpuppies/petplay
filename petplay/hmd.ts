@@ -8,23 +8,14 @@ const state = {
 };
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload) => {
-    },
-    LOG: (_payload) => {
-        CustomLogger.log("actor", PostMan.state.id);
-    },
-    GETID: (_payload) => {
-        return PostMan.state.id
-    },
+    CUSTOMINIT: (_payload) => { },
+    GETHMDPOSITION: (_payload) => { return getHMDPose(); },
     INITOPENVR: (payload) => {
         const ptrn = payload;
         const systemPtr = Deno.UnsafePointer.create(ptrn); 
         state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
 
         CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
-    },
-    GETHMDPOSITION: (_payload) => {
-        return getHMDPose();
     },
 } as const);
 

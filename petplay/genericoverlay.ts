@@ -25,14 +25,17 @@ const state = {
 };
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => { },
-  INITOVROVERLAY: (payload: bigint) => {
-    const systemPtr = Deno.UnsafePointer.create(payload);
-    state.overlayClass = new OpenVR.IVROverlay(systemPtr);
+  CUSTOMINIT: (_payload: void) => {
+    PostMan.setTopic("muffin")
   },
   GETOVERLAYHANDLE: (_payload: void) => { return state.overlayHandle },
   STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, }) => {
     main(payload.name, payload.texture, payload.sync);
+  },
+  INITOVROVERLAY: (payload: bigint) => {
+    const systemPtr = Deno.UnsafePointer.create(payload);
+    state.overlayClass = new OpenVR.IVROverlay(systemPtr);
+    console.log(PostMan.state.id, "ovr ready")
   },
   GETOVERLAYLOCATION: (_payload: void) => {
     if (!state.overlayClass || !state.overlayHandle) { throw new Error("Overlay not initialized"); }
@@ -68,7 +71,7 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
 
   //get overlayhandle
   const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-  if (!state.overlayClass) throw new Error("openvr not ready")
+  if (!state.overlayClass) throw new Error(`${PostMan.state.id} openvr not ready`)
   const error = state.overlayClass.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
   if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
   state.overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();

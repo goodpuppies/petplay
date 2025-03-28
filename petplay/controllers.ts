@@ -56,14 +56,14 @@ new PostMan(state, {
             OpenVR.InputDigitalActionDataStruct.byteSize,
             OpenVR.k_ulInvalidInputValueHandle
         );
-        if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get action data")
+        //if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get action data")
         error = vrInput.GetDigitalActionData(
             grabRightHandle,
             grabRightPointer,
             OpenVR.InputDigitalActionDataStruct.byteSize,
             OpenVR.k_ulInvalidInputValueHandle
         );
-        if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get action data")
+        //if (error !== OpenVR.InputError.VRInputError_None) throw new Error("fail to get action data")
         const leftGrabData = OpenVR.InputDigitalActionDataStruct.read(grabDataViewL);
         const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(grabDataViewR);
 

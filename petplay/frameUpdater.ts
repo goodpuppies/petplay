@@ -5,6 +5,8 @@ import { OpenGLManager } from "../classes/openglManager.ts";
 import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { setImmediate } from "node:timers";
+import { Buffer } from "node:buffer";
+
 
 //takes an overlay handle and a frame source, updates overlay texture continuously
 interface frame {
@@ -26,17 +28,25 @@ const state = {
 
 new PostMan(state, {
   CUSTOMINIT: (_payload: void) => {
+    PostMan.setTopic("muffin")
   },
   STARTUPDATER: (payload: { overlayclass: bigint, overlayhandle: bigint, framesource?: string }) => {
     state.overlayClass = new OpenVR.IVROverlay(Deno.UnsafePointer.create(payload.overlayclass));
     state.overlayHandle = payload.overlayhandle
+    console.log("we have overlayhandle", state.overlayHandle)
     if (payload.framesource) state.framesource = payload.framesource
     main()
   },
-  GETFRAME: (_payload: void): frame | null => {
-    if (state.currentFrame == null) { return null }
-    return state.currentFrame
-  },
+  GETFRAME: (_payload: void): { pixels: string, width: number, height: number } | null => {
+      if (state.currentFrame == null) { return null }
+      // Convert Uint8Array pixels to base64 string for transport
+      const base64Pixels = Buffer.from(state.currentFrame.pixels).toString('base64');
+      return {
+        pixels: base64Pixels,
+        width: state.currentFrame.width,
+        height: state.currentFrame.height
+      }
+    },
 } as const);
 
 function INITSCREENCAP(): ScreenCapturer {
@@ -58,7 +68,12 @@ async function DeskCapLoop(
     if (!state.overlayClass) throw new Error("no overlay")
     if (!state.overlayHandle) throw new Error("no overlay")
     
-    let frame
+    interface frametype {
+      pixels: Uint8Array<ArrayBufferLike>,
+      width: number,
+      height: number
+    }
+    let frame: frametype | null
     if (state.screenCapturer) {
       const capturedFrame = await state.screenCapturer!.getLatestFrame();
       if (capturedFrame === null) { await wait(1000); continue }
@@ -70,11 +85,18 @@ async function DeskCapLoop(
       state.currentFrame = frame
       await new Promise(resolve => setImmediate(resolve)); 
     } else {
-      frame = await PostMan.PostMessage({
+      // Get the frame from remote source
+      const remoteFrame = await PostMan.PostMessage({
         target: state.framesource!,
         type: "GETFRAME",
         payload: null
-      }, true) as frame | null
+      }, true) as { pixels: string, width: number, height: number } | null;
+      if (!remoteFrame) { console.log("no frame"); await wait(1000); continue }
+      frame = {
+        pixels: Buffer.from(remoteFrame.pixels, 'base64'),
+        width: remoteFrame.width,
+        height: remoteFrame.height
+      };
     }
 
     if (!frame) { console.log("no frane"); await wait(1000); continue}
@@ -97,8 +119,8 @@ function INITGL(name?: string) {
 }
 
 function main() {
-  if (!state.overlayClass) throw new Error("no overlay")
-  if (!state.overlayHandle) throw new Error("no overlay")
+  if (!state.overlayClass) throw new Error("no overlayclass")
+  if (!state.overlayHandle) throw new Error("no overlayhandle")
   
   if (!state.framesource) { 
     //native capture mode

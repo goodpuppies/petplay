@@ -20,12 +20,12 @@ const state = {
 };
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload: void) => {},
+    CUSTOMINIT: (_payload: void) => { },
+    ASSIGNINPUT: (payload: string) => { state.inputActor = payload },
     INITOVROVERLAY: (payload: bigint) => {
         const systemPtr = Deno.UnsafePointer.create(payload);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
     },
-    ASSIGNINPUT: (payload: string) => { state.inputActor = payload },
     STARTLASERS: () => {
         createLaserOverlays();
         state.isRunning = true;
@@ -141,17 +141,13 @@ function updateLaserOverlay(handle: OpenVR.OverlayHandle, controllerPose: OpenVR
 
 //#region intersection
 function createIntersectionOverlay(): bigint {
-    if (!state.overlayClass) {
-        throw new Error("Overlay class not initialized");
-    }
+    if (!state.overlayClass) throw new Error("Overlay class not initialized");
 
     // Create the intersection overlay
     const intersectionHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     const error = state.overlayClass.CreateOverlay("intersection.point", "Intersection Point", intersectionHandlePTR);
     const intersectionHandle = new Deno.UnsafePointerView(intersectionHandlePTR).getBigUint64();
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-        throw new Error("failed to create intersection overlay");
-    }
+    if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("failed to create intersection overlay");
 
     const pixels = new Uint32Array([0xFF0000FF, 0xFF0000FF, 0xFF0000FF, 0xFF0000FF]);
     const pixelBuffer = pixels.buffer;
