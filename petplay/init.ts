@@ -4,7 +4,7 @@ import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/Iroh
 setupIrohDebugMode(false);
 const postalservice = new PostalService(IrohWebWorker);
 
-PostalService.debugMode = true;
+PostalService.debugMode = false;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
 const mainAddress = await postalservice.add("./main.ts");
