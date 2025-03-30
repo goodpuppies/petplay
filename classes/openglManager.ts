@@ -59,8 +59,11 @@ export class OpenGLManager {
         }
     }
 
-    createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
-        const flippedPixels = flipVertical(pixels, width, height);
+    createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number, noFlip?: boolean): void {
+        let pixelsX
+        if (!noFlip) pixelsX = flipVertical(pixels, width, height);
+        else pixelsX = pixels
+
         if (this.texture === null) { throw new Error("texture is null"); }
 
         gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
@@ -73,7 +76,7 @@ export class OpenGLManager {
             0,
             gl.RGBA,
             gl.UNSIGNED_BYTE,
-            flippedPixels
+            pixelsX
         );
 
         this.checkGLError("upload texture data");

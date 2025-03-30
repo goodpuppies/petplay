@@ -3,6 +3,7 @@ import { wait, assignActorHierarchy } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { stat } from "node:fs";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 
 //main process
 
@@ -107,7 +108,9 @@ async function main() {
   state.origin = origin as string
   const laser = await PostMan.create("./laser.ts");
   const osc = await PostMan.create("./OSC.ts");
-  const updater = await PostMan.create("./frameUpdater.ts");
+  //const updater = await PostMan.create("./frameUpdater.ts");
+  const webupdater = await PostMan.create("./webUpdater.ts");
+  const dogoverlay = await PostMan.create("./genericoverlay.ts")
 
 
   PostMan.PostMessage({
@@ -116,7 +119,7 @@ async function main() {
     payload: ivrsystem
   })
   PostMan.PostMessage({
-    target: [origin, laser],
+    target: [origin, laser, dogoverlay],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
@@ -144,18 +147,19 @@ async function main() {
       texture: "../resources/P1.png",
     },
   });
-
   PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
     payload: null
   });
 
+
+
   /* PostMan.PostMessage({
   target: origin,
   type: "ADDOVERLAY",
   payload: dogoverlay1,
-  }); */
+  });
   /* PostMan.PostMessage({
     target: dogoverlay1,
     type: "STARTOVERLAY",
@@ -205,10 +209,40 @@ async function main() {
   }) */
 
 
+  PostMan.PostMessage({
+    target: dogoverlay,
+    type: "STARTOVERLAY",
+    payload: {
+      name: "pet1",
+      texture: "../resources/P1.png",
+      sync: true,
+    },
+  });
+  const handle = await PostMan.PostMessage({
+    target: dogoverlay,
+    type: "GETOVERLAYHANDLE",
+    payload: null
+  }, true);
+  PostMan.PostMessage({
+    target: webupdater,
+    type: "STARTUPDATER",
+    payload: {
+      overlayclass: ivroverlay,
+      overlayhandle: handle,
+    }
+  })
+  PostMan.PostMessage({
+    target: hmd,
+    type: "ASSIGNWEB",
+    payload: webupdater
+  })
+
+
+
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
-  //state.overlays.push(dogoverlay1)
+  state.overlays.push(dogoverlay)
   //state.overlays.push(dogoverlay2)
   inputloop(input);
 }
