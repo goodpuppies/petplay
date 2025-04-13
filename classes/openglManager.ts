@@ -5,18 +5,19 @@ import { flipVertical } from "./screenutils.ts";
 import { cstr } from "https://deno.land/x/dwm@0.3.4/src/platform/glfw/ffi.ts";
 
 export class OpenGLManager {
-    private texture: Uint32Array | null = null; // Output Panorama Texture
-    private sourceTexture: Uint32Array | null = null; // Input Combined Eye Texture
+    private outputTexture: Uint32Array | null = null; // Renamed for clarity
+    private leftEyeTexture: Uint32Array | null = null; // Texture for Left Eye
+    private rightEyeTexture: Uint32Array | null = null; // Texture for Right Eye
     private window: DwmWindow | null = null;
     private uniqueId: string;
     private shaderProgram: gl.GLuint | null = null; // Adjust type based on gluten bindings if needed
     private vao: gl.GLuint | null = null; // Use appropriate type for VAO ID (e.g., number or specific type)
     private fbo: gl.GLuint | null = null; // Use appropriate type for FBO ID
     private uniformLocations: {
-        sourceTexture?: gl.GLint | null;
+        eyeLeft?: gl.GLint | null;         // Sampler uniform for left eye
+        eyeRight?: gl.GLint | null;        // Sampler uniform for right eye
         lookRotation?: gl.GLint | null;
         halfFOVInRadians?: gl.GLint | null;
-        // Add VargglesBlock location if using UBOs
     } = {};
     private outputWidth: number = 0; // Store dimensions for viewport
     private outputHeight: number = 0;
@@ -158,7 +159,7 @@ export class OpenGLManager {
         }
     }
 
-    initialize(name?: string, panoramaWidth: number = 1024, panoramaHeight: number = 1024) {
+    initialize(name?: string, panoramaWidth: number = 4096, panoramaHeight: number = 4096) { // Default to 4096x4096
         console.log("--- Initializing OpenGLManager ---");
         try {
             const windowTitle = `${name || "Texture Overlay"}_${this.uniqueId.slice(0, 8)}`;
@@ -269,33 +270,43 @@ export class OpenGLManager {
             gl.UseProgram(this.shaderProgram);
             this.checkGLError("UseProgram (for uniforms)");
 
-            const sourceTexLocName = "sourceTexture";
+            const eyeLeftLocName = "eyeLeft";
+            const eyeRightLocName = "eyeRight";
             const lookRotLocName = "lookRotation";
             const fovLocName = "halfFOVInRadians";
 
-            this.uniformLocations.sourceTexture = gl.GetUniformLocation(this.shaderProgram, cstr(sourceTexLocName));
-            this.checkGLError(`GetUniformLocation ${sourceTexLocName}`);
-            console.log(`Uniform location '${sourceTexLocName}': ${this.uniformLocations.sourceTexture}`);
+            // Get locations for the two samplers and other uniforms
+            this.uniformLocations.eyeLeft = gl.GetUniformLocation(this.shaderProgram!, cstr(eyeLeftLocName));
+            this.checkGLError(`GetUniformLocation ${eyeLeftLocName}`);
+            console.log(`Uniform location '${eyeLeftLocName}': ${this.uniformLocations.eyeLeft}`);
 
-            this.uniformLocations.lookRotation = gl.GetUniformLocation(this.shaderProgram, cstr(lookRotLocName));
+            this.uniformLocations.eyeRight = gl.GetUniformLocation(this.shaderProgram!, cstr(eyeRightLocName));
+            this.checkGLError(`GetUniformLocation ${eyeRightLocName}`);
+            console.log(`Uniform location '${eyeRightLocName}': ${this.uniformLocations.eyeRight}`);
+
+            this.uniformLocations.lookRotation = gl.GetUniformLocation(this.shaderProgram!, cstr(lookRotLocName));
             this.checkGLError(`GetUniformLocation ${lookRotLocName}`);
             console.log(`Uniform location '${lookRotLocName}': ${this.uniformLocations.lookRotation}`);
 
-            this.uniformLocations.halfFOVInRadians = gl.GetUniformLocation(this.shaderProgram, cstr(fovLocName));
+            this.uniformLocations.halfFOVInRadians = gl.GetUniformLocation(this.shaderProgram!, cstr(fovLocName));
             this.checkGLError(`GetUniformLocation ${fovLocName}`);
             console.log(`Uniform location '${fovLocName}': ${this.uniformLocations.halfFOVInRadians}`);
 
-            // Set the sampler uniform only once (it points to texture unit 0)
-            if (this.uniformLocations.sourceTexture !== null && this.uniformLocations.sourceTexture !== -1) { // Check for valid location (-1 often indicates not found)
-                console.log(`Setting uniform '${sourceTexLocName}' (loc=${this.uniformLocations.sourceTexture}) to texture unit 0.`);
-                gl.Uniform1i(this.uniformLocations.sourceTexture, 0); // Texture Unit 0
-                this.checkGLError(`Uniform1i ${sourceTexLocName}`);
-            } else {
-                console.warn(`Uniform '${sourceTexLocName}' not found or inactive.`);
-            }
+            // --- Set Sampler Uniforms (Point to Texture Units) ---
+            if (this.uniformLocations.eyeLeft !== null && this.uniformLocations.eyeLeft !== -1) {
+                console.log(`Setting uniform '${eyeLeftLocName}' (loc=${this.uniformLocations.eyeLeft}) to texture unit 0.`);
+                gl.Uniform1i(this.uniformLocations.eyeLeft, 0); // eyeLeft uses Texture Unit 0
+                this.checkGLError(`Uniform1i ${eyeLeftLocName}`);
+            } else { console.warn(`Uniform '${eyeLeftLocName}' not found or inactive.`); }
+
+            if (this.uniformLocations.eyeRight !== null && this.uniformLocations.eyeRight !== -1) {
+                console.log(`Setting uniform '${eyeRightLocName}' (loc=${this.uniformLocations.eyeRight}) to texture unit 1.`);
+                gl.Uniform1i(this.uniformLocations.eyeRight, 1); // eyeRight uses Texture Unit 1
+                this.checkGLError(`Uniform1i ${eyeRightLocName}`);
+            } else { console.warn(`Uniform '${eyeRightLocName}' not found or inactive.`); }
 
             console.log("Unbinding shader program.");
-            gl.UseProgram(0); // Unbind program for now
+            gl.UseProgram(0);
             this.checkGLError("UseProgram(0)");
             console.log("--- Shader Setup Complete ---");
 
@@ -304,40 +315,52 @@ export class OpenGLManager {
             this.outputWidth = panoramaWidth;
             this.outputHeight = panoramaHeight;
             console.log(`Output dimensions: ${this.outputWidth}x${this.outputHeight}`);
+            console.warn(`--- WARNING: Using ${this.outputWidth}x${this.outputHeight} output. VROverlayFlags_StereoPanorama strongly prefers a 2:1 aspect ratio for correct mapping. Visual distortions may occur. ---`);
 
-            // Output Texture (this.texture)
-            this.texture = new Uint32Array(1);
-            gl.GenTextures(1, this.texture);
-            console.log(`Generated output texture ID: ${this.texture[0]}`);
-            gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
+            // Output Texture (this.outputTexture)
+            this.outputTexture = new Uint32Array(1);
+            gl.GenTextures(1, this.outputTexture);
+            console.log(`Generated output texture ID: ${this.outputTexture[0]}`);
+            gl.BindTexture(gl.TEXTURE_2D, this.outputTexture[0]);
             this.checkGLError("GenTextures/BindTexture output");
-            console.log(`Allocating output texture storage (${this.outputWidth}x${this.outputHeight}, RGBA)...`);
-            gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.outputWidth, this.outputHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); // Allocate storage
+            gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.outputWidth, this.outputHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
             this.checkGLError("TexImage2D output");
-            console.log("Setting output texture parameters (LINEAR, CLAMP_TO_EDGE)...");
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             this.checkGLError("TexParameteri output");
 
-            // Input Texture (this.sourceTexture)
-            this.sourceTexture = new Uint32Array(1);
-            gl.GenTextures(1, this.sourceTexture);
-            console.log(`Generated source texture ID: ${this.sourceTexture[0]}`);
-            gl.BindTexture(gl.TEXTURE_2D, this.sourceTexture[0]);
-            this.checkGLError("GenTextures/BindTexture source");
-            console.log("Setting source texture parameters (LINEAR, CLAMP_TO_EDGE)...");
+            // Input Texture (Left Eye)
+            this.leftEyeTexture = new Uint32Array(1);
+            gl.GenTextures(1, this.leftEyeTexture);
+            console.log(`Generated left eye texture ID: ${this.leftEyeTexture[0]}`);
+            gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
+            this.checkGLError("GenTextures/BindTexture left eye");
+            // Set parameters (allocate storage later during render)
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            this.checkGLError("TexParameteri source");
-            console.log("Unbinding source texture.");
-            gl.BindTexture(gl.TEXTURE_2D, 0); // Unbind
-            this.checkGLError("Unbind source texture");
-            console.log("--- Texture Setup Complete ---");
+            this.checkGLError("TexParameteri left eye");
 
+            // Input Texture (Right Eye)
+            this.rightEyeTexture = new Uint32Array(1);
+            gl.GenTextures(1, this.rightEyeTexture);
+            console.log(`Generated right eye texture ID: ${this.rightEyeTexture[0]}`);
+            gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
+            this.checkGLError("GenTextures/BindTexture right eye");
+            // Set parameters (allocate storage later during render)
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            this.checkGLError("TexParameteri right eye");
+
+            console.log("Unbinding textures.");
+            gl.BindTexture(gl.TEXTURE_2D, 0);
+            this.checkGLError("Unbind textures");
+            console.log("--- Texture Setup Complete ---");
 
             // --- Framebuffer Object (FBO) Setup ---
             console.log("--- Starting FBO Setup ---");
@@ -347,8 +370,9 @@ export class OpenGLManager {
             console.log(`Generated FBO ID: ${this.fbo}`);
             gl.BindFramebuffer(gl.FRAMEBUFFER, this.fbo);
             this.checkGLError("GenFramebuffers/BindFramebuffer");
-            console.log(`Attaching output texture (ID: ${this.texture[0]}) to FBO ${this.fbo} COLOR_ATTACHMENT0...`);
-            gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture[0], 0);
+            // Attach the single *output* texture
+            console.log(`Attaching output texture (ID: ${this.outputTexture[0]}) to FBO ${this.fbo} COLOR_ATTACHMENT0...`);
+            gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.outputTexture[0], 0);
             this.checkGLError("FramebufferTexture2D");
 
             console.log(`Checking FBO status (ID: ${this.fbo})...`);
@@ -401,81 +425,87 @@ export class OpenGLManager {
         }
     }
 
-    // This function now performs rendering using the shaders
-    // It assumes initialize() has been called successfully.
-    // Needs lookRotation (e.g., Float32Array[16]) and halfFOVInRadians (number)
+
     renderPanoramaFromData(
-        pixels: Uint8Array,
-        width: number,
-        height: number,
-        lookRotation: Float32Array, // Assuming Mat4 is represented as Float32Array[16]
-        halfFOVInRadians: number,
-        noFlip?: boolean
+        leftPixels: Uint8Array,
+        rightPixels: Uint8Array,
+        eyeWidth: number, // Width of ONE eye texture
+        eyeHeight: number, // Height of ONE eye texture
+        lookRotation: Float32Array,
+        halfFOVInRadians: number
+        // noFlip removed - shader handles texture coordinate interpretation
     ): void {
-        // console.log("--- Rendering Panorama ---"); // Optional: Log render calls
-        if (!this.fbo || !this.shaderProgram || !this.vao || !this.sourceTexture || !this.texture) {
+        if (!this.fbo || !this.shaderProgram || !this.vao || !this.leftEyeTexture || !this.rightEyeTexture || !this.outputTexture) {
             console.error("Render call failed: OpenGL resources not initialized.");
-            throw new Error("OpenGL resources not initialized. Call initialize() first.");
+            throw new Error("OpenGL resources not initialized.");
         }
+        // Check uniforms needed for this shader
         if (this.uniformLocations.lookRotation === null || this.uniformLocations.lookRotation === -1 ||
-            this.uniformLocations.halfFOVInRadians === null || this.uniformLocations.halfFOVInRadians === -1) {
+            this.uniformLocations.halfFOVInRadians === null || this.uniformLocations.halfFOVInRadians === -1 ||
+            this.uniformLocations.eyeLeft === null || this.uniformLocations.eyeLeft === -1 || // Check sampler uniforms
+            this.uniformLocations.eyeRight === null || this.uniformLocations.eyeRight === -1) {
             console.error("Render call failed: Required uniform locations not found.");
             throw new Error("Uniform locations not found.");
         }
 
-        // 1. Upload Pixel Data to Source Texture
-        // console.log(`Uploading ${width}x${height} source texture data...`); // Optional
-        let pixelsToUpload = noFlip ? pixels : flipVertical(pixels, width, height);
-        gl.ActiveTexture(gl.TEXTURE0); // Activate texture unit 0
-        gl.BindTexture(gl.TEXTURE_2D, this.sourceTexture[0]);
+        // --- 1. Upload Pixel Data to Separate Eye Textures ---
+        // Left Eye Texture
+        gl.ActiveTexture(gl.TEXTURE0); // Activate texture unit 0 for left eye
+        gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
         gl.TexImage2D(
-            gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixelsToUpload
+            gl.TEXTURE_2D, 0, gl.RGBA, eyeWidth, eyeHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, leftPixels
         );
-        if (!this.checkGLError("upload source texture data")) return; // Stop if error
+        if (!this.checkGLError("upload left eye texture data")) return;
 
-        // 2. Bind FBO
-        // console.log(`Binding FBO ${this.fbo}...`); // Optional
+        // Right Eye Texture
+        gl.ActiveTexture(gl.TEXTURE1); // Activate texture unit 1 for right eye
+        gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
+        gl.TexImage2D(
+            gl.TEXTURE_2D, 0, gl.RGBA, eyeWidth, eyeHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, rightPixels
+        );
+        if (!this.checkGLError("upload right eye texture data")) return;
+
+        // --- 2. Bind FBO, Set Viewport ---
         gl.BindFramebuffer(gl.FRAMEBUFFER, this.fbo);
         if (!this.checkGLError("bind FBO")) return;
-
-        // 3. Set Viewport
-        // console.log(`Setting viewport to ${this.outputWidth}x${this.outputHeight}...`); // Optional
-        gl.Viewport(0, 0, this.outputWidth, this.outputHeight);
+        gl.Viewport(0, 0, this.outputWidth, this.outputHeight); // Render to the full output texture
         if (!this.checkGLError("set viewport")) return;
+        // Optional: gl.Clear(...) if needed
 
-        // 4. Clear (Optional)
-        // gl.ClearColor(0.0, 0.0, 0.0, 1.0);
-        // gl.Clear(gl.COLOR_BUFFER_BIT);
-
-        // 5. Use Shader Program
-        // console.log(`Using shader program ${this.shaderProgram}...`); // Optional
+        // --- 3. Use Shader Program ---
         gl.UseProgram(this.shaderProgram);
         if (!this.checkGLError("use program")) return;
 
-        // 6. Set Uniforms
-        // console.log("Setting uniforms..."); // Optional
-        // Texture unit 0 is already bound and the sampler uniform is set to 0 in initialize
-        gl.UniformMatrix4fv(this.uniformLocations.lookRotation!, 1, 0, lookRotation); // Assuming transpose is false (0)
+        // --- 4. Set Non-Sampler Uniforms ---
+        gl.UniformMatrix4fv(this.uniformLocations.lookRotation!, 1, 0, lookRotation); // transpose = 0 (false) for column-major
         gl.Uniform1f(this.uniformLocations.halfFOVInRadians!, halfFOVInRadians);
         if (!this.checkGLError("set uniforms")) return;
 
-        // 7. Bind VAO
-        // console.log(`Binding VAO ${this.vao}...`); // Optional
+        // --- 5. Ensure Correct Textures are Bound to Correct Units ---
+        // (Already done during upload, but good practice to re-affirm if unsure)
+        gl.ActiveTexture(gl.TEXTURE0);
+        gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
+        gl.ActiveTexture(gl.TEXTURE1);
+        gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
+
+        // --- 6. Bind VAO ---
         gl.BindVertexArray(this.vao);
         if (!this.checkGLError("bind VAO")) return;
 
-        // 8. Draw Fullscreen Quad
-        // console.log("Drawing arrays (TRIANGLE_STRIP, 0, 4)..."); // Optional
-        gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        // --- 7. Draw Fullscreen Quad ---
+        gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4); // Use TRIANGLE_STRIP for the standard quad
         if (!this.checkGLError("draw arrays")) return;
 
-        // 9. Unbind resources
-        // console.log("Unbinding resources..."); // Optional
+        // --- 8. Unbind resources ---
         gl.BindVertexArray(0);
         gl.UseProgram(0);
         gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
-        gl.BindTexture(gl.TEXTURE_2D, 0); // Unbind source texture
-        // console.log("--- Panorama Rendering Complete ---"); // Optional
+        gl.ActiveTexture(gl.TEXTURE0); // Reset active texture unit
+        gl.BindTexture(gl.TEXTURE_2D, 0); // Unbind textures
+        gl.ActiveTexture(gl.TEXTURE1);
+        gl.BindTexture(gl.TEXTURE_2D, 0);
+        gl.ActiveTexture(gl.TEXTURE0); // Explicitly reset to unit 0
+
     }
 
     createTextureFromData(pixels: Uint8Array, width: number, height: number, noFlip?: boolean): void {
@@ -524,8 +554,9 @@ export class OpenGLManager {
         this.checkGLError("upload texture data");
     }
 
+    // getTexture now returns the output texture ID
     getTexture(): Uint32Array | null {
-        return this.texture;
+        return this.outputTexture;
     }
 
     cleanup() {
@@ -551,19 +582,23 @@ export class OpenGLManager {
             gl.DeleteProgram(this.shaderProgram);
             this.shaderProgram = null;
         }
-        if (this.sourceTexture) {
-            console.log(`Deleting Source Texture ID: ${this.sourceTexture[0]}`);
-            // gl.DeleteTextures expects an array
-            gl.DeleteTextures(1, this.sourceTexture);
-            this.sourceTexture = null;
+        if (this.leftEyeTexture) {
+            console.log(`Deleting Left Eye Texture ID: ${this.leftEyeTexture[0]}`);
+            gl.DeleteTextures(1, this.leftEyeTexture);
+            this.leftEyeTexture = null;
         }
-        if (this.texture) {
-            console.log(`Deleting Output Texture ID: ${this.texture[0]}`);
-            // gl.DeleteTextures expects an array
-            gl.DeleteTextures(1, this.texture);
-            this.texture = null;
+        if (this.rightEyeTexture) {
+            console.log(`Deleting Right Eye Texture ID: ${this.rightEyeTexture[0]}`);
+            gl.DeleteTextures(1, this.rightEyeTexture);
+            this.rightEyeTexture = null;
         }
 
+        // Delete the output texture
+        if (this.outputTexture) {
+            console.log(`Deleting Output Texture ID: ${this.outputTexture[0]}`);
+            gl.DeleteTextures(1, this.outputTexture);
+            this.outputTexture = null;
+        }
         if (this.window) {
             console.log("Closing window...");
             this.window.close();
