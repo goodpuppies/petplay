@@ -267,7 +267,7 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
 
 function INITGL(name?: string) {
   state.glManager = new OpenGLManager();
-  state.glManager.initialize(name, 4096, 2048);
+  state.glManager.initialize(name, 4096, 4096);
   if (!state.glManager) { throw new Error("glManager is null"); }
 }
 
