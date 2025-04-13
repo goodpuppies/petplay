@@ -109,7 +109,7 @@ async function DeskCapLoop(
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
   if (!state.glManager) { throw new Error("glManager is null"); }
-  state.glManager.createTextureFromScreenshot(pixels, width, height);
+  state.glManager.createTextureFromData(pixels, width, height);
 }
 
 function INITGL(name?: string) {

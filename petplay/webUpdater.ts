@@ -86,10 +86,10 @@ function INITSCREENCAP(): WebCapturer {
   return capturer;
 }
 
-async function DeskCapLoop(
+async function WebCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) { 
-  console.log("deskcaploop")
+  console.log("webcaploop")
   while (state.isRunning) {
     if (!state.framesource && !state.screenCapturer) throw new Error("no framesource")
     if (!state.overlayClass) throw new Error("no overlay")
@@ -137,7 +137,13 @@ async function DeskCapLoop(
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
   if (!state.glManager) { throw new Error("glManager is null"); }
-  state.glManager.createTextureFromScreenshot(pixels, width, height, true);
+  const identityLookRotation = new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1
+  ]);
+  state.glManager.renderPanoramaFromData(pixels, width, height, identityLookRotation, Math.PI / 4, true);
 }
 
 function INITGL(name?: string) {
@@ -165,7 +171,7 @@ function main() {
   const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
   const [boundsPtr, _boudsView] = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct)
   state.overlayClass.SetOverlayTextureBounds(state.overlayHandle, boundsPtr);
-  state.overlayClass.SetOverlayFlag(state.overlayHandle, OpenVR.OverlayFlags.VROverlayFlags_SideBySide_Parallel, true)
+  state.overlayClass.SetOverlayFlag(state.overlayHandle, OpenVR.OverlayFlags.VROverlayFlags_StereoPanorama, true)
 
   const textureData = {
     handle: BigInt(texture[0]),
@@ -173,7 +179,7 @@ function main() {
     eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto,
   };
   const [textureStructPtr, _textureStructView ] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct)
-  DeskCapLoop(textureStructPtr);
+  WebCapLoop(textureStructPtr);
 }
 
 globalThis.addEventListener("unload", cleanup);
