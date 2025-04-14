@@ -462,20 +462,41 @@ function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Fl
 
 function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null): void {
   if (!state.glManager) { throw new Error("glManager is null"); }
+  if (!state.vrSystem) { throw new Error("vrSystem is null"); }
   
   // Use the provided render pose if available, otherwise fall back to the current state.hmdpose
   const renderHmdPose = renderPose || state.hmdpose;
   
   if (!renderHmdPose) { 
-    console.warn("no hmdpose available, skipping render"); 
-    return; 
+    throw new Error("No render pose available - reprojection requires both render and current poses");
   }
 
-  // Get current pose for reprojection (timewarp)
-  const currentHmdPose = state.hmdpose;
+  // Get the absolute freshest HMD pose directly from OpenVR for reprojection
+  const posesSize = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
+  const poseArrayBuffer = new ArrayBuffer(posesSize);
+  const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
+
+  // Get real-time pose with zero prediction (0 seconds into future)
+  state.vrSystem.GetDeviceToAbsoluteTrackingPose(
+    OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+    0,
+    posePtr,
+    OpenVR.k_unMaxTrackedDeviceCount
+  );
+
+  const hmdIndex = OpenVR.k_unTrackedDeviceIndex_Hmd;
+  const poseView = new DataView(
+    poseArrayBuffer,
+    hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
+    OpenVR.TrackedDevicePoseStruct.byteSize
+  );
+  const currentHmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
   
-  // Don't do reprojection if render pose and current pose are the same
-  const doReprojection = currentHmdPose !== renderHmdPose;
+
+  // Verify we have valid tracking for both poses
+  if (!renderHmdPose.bPoseIsValid || !currentHmdPose.bPoseIsValid) {
+    throw new Error("Invalid tracking data - reprojection requires valid tracking for both render and current poses");
+  }
 
   // Process the render pose matrix (from when the frame was captured)
   const renderHmdMatVR = renderHmdPose.mDeviceToAbsoluteTracking.m;
@@ -488,24 +509,19 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
     0, 0, 0, 1
   ]);
 
-  // For reprojection/timewarp, also process the current pose matrix
-  let currentUniverseFromHmd_ColMajor: Float32Array | undefined;
-  
-  if (doReprojection && currentHmdPose) {
-    const currentHmdMatVR = currentHmdPose.mDeviceToAbsoluteTracking.m;
-    currentUniverseFromHmd_ColMajor = new Float32Array([
-      currentHmdMatVR[0][0], currentHmdMatVR[1][0], currentHmdMatVR[2][0], 0,
-      currentHmdMatVR[0][1], currentHmdMatVR[1][1], currentHmdMatVR[2][1], 0,
-      currentHmdMatVR[0][2], currentHmdMatVR[1][2], currentHmdMatVR[2][2], 0,
-      0, 0, 0, 1
-    ]);
-  }
+  // Also process the freshly obtained current pose matrix
+  const currentHmdMatVR = currentHmdPose.mDeviceToAbsoluteTracking.m;
+  const currentUniverseFromHmd_ColMajor = new Float32Array([
+    currentHmdMatVR[0][0], currentHmdMatVR[1][0], currentHmdMatVR[2][0], 0,
+    currentHmdMatVR[0][1], currentHmdMatVR[1][1], currentHmdMatVR[2][1], 0,
+    currentHmdMatVR[0][2], currentHmdMatVR[1][2], currentHmdMatVR[2][2], 0,
+    0, 0, 0, 1
+  ]);
 
   // 2. Calculate the inverse of render pose (World -> HMD)
   const hmdFromUniverse_ColMajor = invertMatrix4(renderUniverseFromHmd_ColMajor);
   if (!hmdFromUniverse_ColMajor) {
-    console.error("Failed to invert HMD pose matrix!");
-    return; // Cannot proceed without inverse
+    throw new Error("Failed to invert render pose matrix - reprojection cannot proceed");
   }
 
   // 3. Apply the Z-axis scale (1, 1, -1)
@@ -514,57 +530,33 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   // Use the original FOV value
   const sourceVerticalHalfFOVRadians = (112.0 / 2.0) * (Math.PI / 180.0);
 
-  // Split the SBS texture (keep your existing splitSBSTexture function)
+  // Split the SBS texture
   if (width % 2 !== 0) {
-    console.error("Input texture width is not even, cannot split SBS correctly.");
-    return;
+    throw new Error("Input texture width is not even, cannot split SBS correctly for reprojection");
   }
   const eyeWidth = width / 2;
   const { left: leftPixels, right: rightPixels } = splitSBSTexture(pixels, width, height);
 
-  // If we're doing reprojection (timewarp) and have both poses, use them
-  if (doReprojection && currentUniverseFromHmd_ColMajor) {
-    // Calculate current pose inverse and scaling for reprojection
-    const currentHmdFromUniverse_ColMajor = invertMatrix4(currentUniverseFromHmd_ColMajor);
-    if (!currentHmdFromUniverse_ColMajor) {
-      console.error("Failed to invert current HMD pose matrix for reprojection!");
-      // Fall back to non-reprojection mode
-      state.glManager.renderPanoramaFromData(
-        leftPixels,
-        rightPixels,
-        eyeWidth,
-        height,
-        finalLookRotation,
-        sourceVerticalHalfFOVRadians
-      );
-      return;
-    }
-
-    const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
-    
-    // Call the render function with both poses for reprojection
-    state.glManager.renderPanoramaFromData(
-      leftPixels,
-      rightPixels,
-      eyeWidth,
-      height,
-      finalLookRotation, // Render pose
-      sourceVerticalHalfFOVRadians,
-      finalCurrentPose // Current pose for reprojection
-    );
-    
-    console.log("Applied reprojection (timewarp) to reduce perceived latency");
-  } else {
-    // Standard rendering without reprojection
-    state.glManager.renderPanoramaFromData(
-      leftPixels,
-      rightPixels,
-      eyeWidth,
-      height,
-      finalLookRotation,
-      sourceVerticalHalfFOVRadians
-    );
+  // Calculate current pose inverse and scaling for reprojection
+  const currentHmdFromUniverse_ColMajor = invertMatrix4(currentUniverseFromHmd_ColMajor);
+  if (!currentHmdFromUniverse_ColMajor) {
+    throw new Error("Failed to invert current HMD pose matrix - reprojection cannot proceed");
   }
+
+  const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
+  
+  console.log("Applying reprojection with freshly obtained pose");
+  
+  // Call the render function with both poses for reprojection
+  state.glManager.renderPanoramaFromData(
+    leftPixels,
+    rightPixels,
+    eyeWidth,
+    height,
+    finalLookRotation, // Render pose
+    sourceVerticalHalfFOVRadians,
+    finalCurrentPose // Current pose for reprojection
+  );
 }
 
 function INITGL(name?: string) {
