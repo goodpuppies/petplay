@@ -102,7 +102,7 @@ async function main() {
   }, true)
   state.ivroverlay = ivroverlay as string
 
-  const hmd = await PostMan.create("./hmd.ts");
+  //const hmd = await PostMan.create("./hmd.ts");
   const input = await PostMan.create("./controllers.ts");
   const origin = await PostMan.create("./VRCOrigin.ts");
   state.origin = origin as string
@@ -114,7 +114,7 @@ async function main() {
 
 
   PostMan.PostMessage({
-    target: hmd,
+    target: webupdater,
     type: "INITOPENVR",
     payload: ivrsystem
   })
@@ -129,24 +129,24 @@ async function main() {
     type: "ASSIGNVRC",
     payload: osc,
   });
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: origin,
     type: "ASSIGNHMD",
     payload: hmd,
-  });
+  }); */
   PostMan.PostMessage({
     target: laser,
     type: "ASSIGNINPUT",
     payload: input,
   });
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: origin,
     type: "STARTORIGIN",
     payload: {
       name: "originoverlay",
       texture: "../resources/P1.png",
     },
-  });
+  }); */
   PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
@@ -231,11 +231,11 @@ async function main() {
       overlayhandle: handle,
     }
   })
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: hmd,
     type: "ASSIGNWEB",
     payload: webupdater
-  })
+  }) */
 
 
 

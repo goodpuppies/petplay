@@ -9,14 +9,15 @@ import { Buffer } from "node:buffer";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 
-function setTransform(transform: OpenVR.HmdMatrix34) {
-  if (!state.overlayClass || !state.overlayHandle) return;
-  setOverlayTransformAbsolute(state.overlayClass, state.overlayHandle, transform);
-}
-
 //takes an overlay handle and a frame source, updates overlay texture continuously
 interface frame {
   pixels: Uint8Array,
+  width: number,
+  height: number
+}
+
+interface frametype {
+  pixels: Uint8Array<ArrayBufferLike>,
   width: number,
   height: number
 }
@@ -31,6 +32,7 @@ const state = {
   currentFrame: null as frame | null,
   framesource: null as string | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
+  vrSystem: null as OpenVR.IVRSystem | null,
 };
 
 new PostMan(state, {
@@ -54,27 +56,54 @@ new PostMan(state, {
       height: state.currentFrame.height
     }
   },
-  HMDPOSE: (payload: OpenVR.TrackedDevicePose) => {
+  INITOPENVR: (payload) => {
+    const ptrn = payload;
+    const systemPtr = Deno.UnsafePointer.create(ptrn); 
+    state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
+
+    CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
+    hmdloop()
+  },
+  /* HMDPOSE: (payload: OpenVR.TrackedDevicePose) => {
     state.hmdpose = payload
     state.screenCapturer?.sendWsMsg(JSON.stringify(payload))
-    //hmdlink(payload)
-  }
+  } */
 } as const);
 
-function hmdlink(pose: OpenVR.TrackedDevicePose) {
-  const m34: OpenVR.HmdMatrix34 = pose.mDeviceToAbsoluteTracking
+async function hmdloop() {
+  while (true) {
+    const vrSystem = state.vrSystem!;
+    const posesSize = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
+    const poseArrayBuffer = new ArrayBuffer(posesSize);
+    const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
 
-  const transform: OpenVR.HmdMatrix34 = {
-    m: [
-      [1, 0, 0, 0], 
-      [0, 1, 0, 0],
-      [0, 0, 1, -1]
-    ]
+    vrSystem.GetDeviceToAbsoluteTrackingPose(
+      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      0,
+      posePtr,
+      OpenVR.k_unMaxTrackedDeviceCount
+    );
+  
+    const hmdIndex = OpenVR.k_unTrackedDeviceIndex_Hmd;
+    const poseView = new DataView(
+      poseArrayBuffer,
+      hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
+      OpenVR.TrackedDevicePoseStruct.byteSize
+    );
+    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+
+    // Add timestamp to the pose data for accurate tracking on the frontend
+    const timestampedPose = {
+      ...hmdPose,
+      timestamp: Date.now() // Add high-precision timestamp
+    };
+
+    state.hmdpose = timestampedPose;
+    if (state.screenCapturer) {
+      state.screenCapturer?.sendWsMsg(JSON.stringify(timestampedPose))
+    }
+    await wait(1)
   }
-
-  const thing2 = multiplyMatrix(m34, transform)
-
-  setTransform(thing2)
 }
 
 function INITSCREENCAP(): WebCapturer {
@@ -97,12 +126,6 @@ async function WebCapLoop(
     if (!state.overlayClass) throw new Error("no overlay")
     if (!state.overlayHandle) throw new Error("no overlay")
     
-    interface frametype {
-      pixels: Uint8Array<ArrayBufferLike>,
-      width: number,
-      height: number
-    }
-
     let frame: frametype | null
     if (state.screenCapturer) {
       const capturedFrame = await state.screenCapturer!.getLatestFrame();
@@ -130,10 +153,10 @@ async function WebCapLoop(
     }
 
     if (!frame) { console.log("no frane"); await wait(1000); continue }
-    createTextureFromScreenshot(frame.pixels, frame.width, frame.height);
+    createTextureFromData(frame.pixels, frame.width, frame.height);
     const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
     if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("wtf")
-    state.overlayClass.WaitFrameSync(100)
+    //state.overlayClass.WaitFrameSync(100)
   }
 }
 
@@ -207,9 +230,9 @@ function invertMatrix4(mat: Float32Array): Float32Array | null {
   return out;
 }
 
-// Scales a 4x4 matrix by a vector (modifies columns)
-// Note: Assumes column-major input matrix 'mat'
 function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Float32Array {
+  // Scales a 4x4 matrix by a vector (modifies columns)
+  // Note: Assumes column-major input matrix 'mat'
   const out = new Float32Array(mat); // Copy existing matrix
   out[0] *= scaleVec[0]; out[1] *= scaleVec[0]; out[2] *= scaleVec[0]; out[3] *= scaleVec[0]; // Scale X column
   out[4] *= scaleVec[1]; out[5] *= scaleVec[1]; out[6] *= scaleVec[1]; out[7] *= scaleVec[1]; // Scale Y column
@@ -218,8 +241,7 @@ function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Fl
   return out;
 }
 
-
-function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
+function createTextureFromData(pixels: Uint8Array, width: number, height: number): void {
   if (!state.glManager) { throw new Error("glManager is null"); }
   if (!state.hmdpose) { console.warn("no hmdpose yet, skipping render"); return; }
 
@@ -230,7 +252,7 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
     hmdMatVR[0][0], hmdMatVR[1][0], hmdMatVR[2][0], 0,
     hmdMatVR[0][1], hmdMatVR[1][1], hmdMatVR[2][1], 0,
     hmdMatVR[0][2], hmdMatVR[1][2], hmdMatVR[2][2], 0,
-    hmdMatVR[0][3], hmdMatVR[1][3], hmdMatVR[2][3], 1
+    0, 0, 0, 1
   ]);
 
   // 2. Calculate the inverse (World -> HMD)
@@ -325,4 +347,3 @@ async function cleanup() {
     state.screenCapturer = null;
   }
 }
-
