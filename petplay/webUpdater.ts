@@ -28,7 +28,7 @@ const state = {
   overlayClass: null as OpenVR.IVROverlay | null,
   glManager: null as OpenGLManager | null,
   isRunning: false,
-  screenCapturer: null as WebCapturer | null,
+  webCapturer: null as WebCapturer | null,
   currentFrame: null as frame | null,
   framesource: null as string | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
@@ -99,10 +99,10 @@ async function hmdloop() {
     };
 
     state.hmdpose = timestampedPose;
-    if (state.screenCapturer) {
-      state.screenCapturer?.sendWsMsg(JSON.stringify(timestampedPose))
+    if (state.webCapturer) {
+      state.webCapturer?.sendWsMsg(JSON.stringify(timestampedPose))
     }
-    await wait(1)
+    await wait(10)
   }
 }
 
@@ -114,49 +114,131 @@ function INITSCREENCAP(): WebCapturer {
     },
     executablePath: "../resources/denotauri"
   });
+  
   return capturer;
 }
 
 async function WebCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) { 
-  console.log("webcaploop")
-  while (state.isRunning) {
-    if (!state.framesource && !state.screenCapturer) throw new Error("no framesource")
-    if (!state.overlayClass) throw new Error("no overlay")
-    if (!state.overlayHandle) throw new Error("no overlay")
+  console.log("webcaploop starting - using push notifications")
+  
+  // Track if we're currently processing a frame
+  let processingFrame = false; 
+  
+  // Function to process the latest frame from webcapturer
+  async function processLatestFrame() {
+    // If already processing a frame, don't start another one
+    if (processingFrame) return;
     
-    let frame: frametype | null
-    if (state.screenCapturer) {
-      const capturedFrame = await state.screenCapturer!.getLatestFrame();
-      if (capturedFrame === null) { console.log("no frane"); await wait(1000); continue }
-      frame = {
+    try {
+      // Set flag to prevent parallel processing
+      processingFrame = true;
+      
+      if (!state.framesource && !state.webCapturer) throw new Error("no framesource")
+      if (!state.overlayClass) throw new Error("no overlay")
+      if (!state.overlayHandle) throw new Error("no overlay")
+      
+      // Get latest frame with minimal overhead
+      const preGetFrameTime = Date.now();
+      const capturedFrame = await state.webCapturer!.getLatestFrame();
+      const postGetFrameTime = Date.now();
+      const getFrameTime = postGetFrameTime - preGetFrameTime;
+      
+      if (capturedFrame === null) { 
+        console.log("no frame available");
+        processingFrame = false;
+        return;
+      }
+      
+      const frame = {
         pixels: capturedFrame.data,
         width: capturedFrame.width,
         height: capturedFrame.height
-      }
-      state.currentFrame = frame
-      await new Promise(resolve => setImmediate(resolve)); 
-    } else {
-      // Get the frame from remote source
-      const remoteFrame = await PostMan.PostMessage({
-        target: state.framesource!,
-        type: "GETFRAME",
-        payload: null
-      }, true) as { pixels: string, width: number, height: number } | null;
-      if (!remoteFrame) { console.log("no frame"); await wait(1000); continue }
-      frame = {
-        pixels: Buffer.from(remoteFrame.pixels, 'base64'),
-        width: remoteFrame.width,
-        height: remoteFrame.height
       };
+      state.currentFrame = frame;
+      
+      if (!capturedFrame.timestamp) { throw new Error("no timestamp") }
+      const frameTimestamp = capturedFrame.timestamp;
+      const frameAvailableTime = capturedFrame.frameAvailableTime;
+      
+      console.log(`getFrameTime: ${getFrameTime} ms`);
+      
+      // Timestamp before texture creation
+      const textureCreationStartTime = Date.now();
+      createTextureFromData(frame.pixels, frame.width, frame.height);
+      
+      // Calculate end-to-end latency with push model
+      const endTime = Date.now();
+      const e2eLatency = endTime - frameTimestamp; // End-to-end latency
+      const textureTime = endTime - textureCreationStartTime; // Time spent in texture creation
+      
+      // Calculate additional timings if available
+      let webCapLoopLatency = "";
+      if (frameAvailableTime) {
+        // Time from frame available in shared memory to texture creation
+        const frameAvailToTextureTime = textureCreationStartTime - frameAvailableTime;
+        
+        // Time from getLatestFrame to texture creation
+        const getFrameToTextureTime = textureCreationStartTime - preGetFrameTime;
+        
+        webCapLoopLatency = ` | FrameAvail→Texture: ${frameAvailToTextureTime.toFixed(0)} ms` +
+                             ` | GetFrame→Texture: ${getFrameToTextureTime.toFixed(0)} ms`;
+      }
+      
+      console.log(`Push Notification E2E: ${e2eLatency.toFixed(0)} ms (Texture: ${textureTime.toFixed(0)} ms)${webCapLoopLatency}`);
+      
+      // Update the texture in the overlay
+      const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
+      if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
+    } catch (error) {
+      console.error("Error processing frame:", error);
+    } finally {
+      // Clear flag to allow processing next frame
+      processingFrame = false;
     }
-
-    if (!frame) { console.log("no frane"); await wait(1000); continue }
-    createTextureFromData(frame.pixels, frame.width, frame.height);
-    const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
-    if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("wtf")
-    //state.overlayClass.WaitFrameSync(100)
+  }
+  
+  // Setup for new frame notification with callback
+  if (state.webCapturer) {
+    // Register callback for immediate processing when new frames arrive
+    state.webCapturer.onNewFrame(processLatestFrame);
+    
+    console.log("Push notification system ready for frames");
+  } else if (state.framesource) {
+    console.log("Remote frame source - not using push model");
+    
+    // For remote frames only, maintain a traditional polling loop
+    (async function remoteFrameLoop() {
+      while (state.isRunning) {
+        try {
+          if (!processingFrame) { // Only process if not already processing
+            const remoteFrame = await PostMan.PostMessage({
+              type: "GETFRAME",
+              payload: null
+            }, true) as { data: Uint8Array, width: number, height: number, timestamp: number } | null;
+            
+            if (remoteFrame) {
+              // Process remote frame similar to local frames
+              // This is a fallback for non-WebCapturer sources
+              // Implementation omitted as you mentioned it's not necessary
+            }
+          }
+        } catch (error) {
+          console.error("Error getting remote frame:", error);
+        }
+        
+        // Wait before next attempt
+        await wait(50);
+      }
+    })();
+  } else {
+    throw new Error("No frame source available");
+  }
+  
+  // Keep the function alive while the system is running
+  while (state.isRunning) {
+    await wait(1000); // Just wait to keep the function active
   }
 }
 
@@ -299,7 +381,8 @@ function main() {
   
   if (!state.framesource) { 
     //native capture mode
-    state.screenCapturer = INITSCREENCAP();
+    state.webCapturer = INITSCREENCAP();
+    state.webCapturer.start()
   }
 
   state.isRunning = true;
@@ -342,8 +425,8 @@ globalThis.addEventListener("unload", cleanup);
 
 async function cleanup() {
   state.isRunning = false;
-  if (state.screenCapturer) {
-    await state.screenCapturer.dispose();
-    state.screenCapturer = null;
+  if (state.webCapturer) {
+    await state.webCapturer.dispose();
+    state.webCapturer = null;
   }
 }

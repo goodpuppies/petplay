@@ -3,6 +3,14 @@ let isConnected = false;
 let wsServer: Deno.HttpServer | null = null;
 let wsConnection: WebSocket | null = null;
 
+// SharedArrayBuffer state
+let sharedBuffer: SharedArrayBuffer | null = null;
+let sharedView: DataView | null = null;
+let frameReadyFlag: Int32Array | null = null;
+let sharedPixelData: Uint8Array | null = null;
+let metadataSize = 24; // Default values, will be updated in 'init' message
+let headerSize = 28;
+
 const worker = self as unknown as Worker;
 
 function startWebSocketServer(port: number) {
@@ -22,32 +30,67 @@ function startWebSocketServer(port: number) {
       });
       
       socket.addEventListener("message", (event) => {
-        // Process incoming frame data from WebSocket
+        // Get timestamp as early as possible
+        const messageArrivalTime = Date.now();
+        
         try {
           // Handle binary data
           if (event.data instanceof ArrayBuffer) {
-            const frameStart = performance.now();
+            // Check if SharedArrayBuffer is initialized
+            if (!sharedBuffer || !sharedView || !frameReadyFlag || !sharedPixelData) {
+              console.error("SharedArrayBuffer not initialized");
+              return;
+            }
+
             const buffer = new Uint8Array(event.data);
             
-            // Parse metadata (first 8 bytes: width, height)
-            const metadataView = new DataView(buffer.buffer, buffer.byteOffset, 8);
+            // Parse metadata from incoming buffer (first 16 bytes: width, height, timestamp)
+            const metadataView = new DataView(buffer.buffer, buffer.byteOffset, 16);
             const width = metadataView.getUint32(0, true);
             const height = metadataView.getUint32(4, true);
+            const frameTimestamp = metadataView.getFloat64(8, true); // Read timestamp
             
-            // Extract the pixel data (remaining bytes after metadata)
-            const pixelData = new Uint8Array(buffer.buffer, buffer.byteOffset + 8);
+            // Calculate and log network latency
+            const networkSendLatency = messageArrivalTime - frameTimestamp;
+            console.log(`Net+Send Latency: ${networkSendLatency.toFixed(2)} ms`);
+
+            // Start timing direct memory access
+            const processStartTime = Date.now();
             
-            const receiveTime = performance.now() - frameStart;
+            // Set frame ready flag to 0 during update (locked state)
+            Atomics.store(frameReadyFlag, 0, 0);
             
+            // Write metadata to shared buffer
+            sharedView.setUint32(0, width, true);
+            sharedView.setUint32(4, height, true);
+            sharedView.setFloat64(8, frameTimestamp, true);
+            
+            // Extract and copy the pixel data directly to shared buffer
+            const pixelData = new Uint8Array(buffer.buffer, buffer.byteOffset + 16);
+            sharedPixelData.set(pixelData); // Direct copy to shared memory
+            
+            // Store the time when the frame becomes available in shared memory
+            const frameAvailableTime = Date.now();
+            sharedView.setFloat64(16, frameAvailableTime, true);
+            
+            // Mark frame as ready in the shared buffer
+            Atomics.store(frameReadyFlag, 0, 1);
+            
+            // PUSH MODEL: Directly notify main thread about the new frame
+            // This is much more immediate than polling or waiting
             worker.postMessage({ 
-              type: 'frame', 
-              data: pixelData,
-              width: width,
-              height: height,
-              receiveTime 
+              type: 'frameReady',
+              width,
+              height,
+              timestamp: frameTimestamp,
+              frameAvailableTime
             });
+            
+            // Log direct memory access time
+            const processEndTime = Date.now();
+            console.log(`Direct memory write time: ${processEndTime - processStartTime} ms`);
           } else {
-            throw new Error("Expected binary data but received text");
+            console.error("Expected binary data but received text");
           }
         } catch (err) {
           console.error("Error processing WebSocket message:", err);
@@ -76,11 +119,28 @@ function startWebSocketServer(port: number) {
 }
 
 worker.onmessage = async (e: MessageEvent) => {
-  const { type, port } = e.data;
+  const { type } = e.data;
   
-  if (type === 'connect') {
+  if (type === 'init') {
+    // Initialize SharedArrayBuffer from main thread
+    try {
+      sharedBuffer = e.data.buffer as SharedArrayBuffer;
+      metadataSize = e.data.metadataSize || 24;
+      headerSize = e.data.headerSize || 28;
+      
+      // Create views into the shared buffer
+      sharedView = new DataView(sharedBuffer);
+      frameReadyFlag = new Int32Array(sharedBuffer, metadataSize, 1);
+      sharedPixelData = new Uint8Array(sharedBuffer, headerSize);
+      
+      console.log("Worker initialized with SharedArrayBuffer");
+    } catch (error) {
+      console.error("Error initializing SharedArrayBuffer in worker:", error);
+      worker.postMessage({ type: 'error', error: `Failed to initialize SharedArrayBuffer: ${error}` });
+    }
+  } else if (type === 'connect') {
+    const { port } = e.data;
     await startWebSocketServer(port);
-
   } else if (type === 'stop') {
     isConnected = false;
     
@@ -96,7 +156,7 @@ worker.onmessage = async (e: MessageEvent) => {
     
     worker.postMessage({ type: 'stopped' });
   } else if (type === "WSMSG") {
-    const { type, payload } = e.data;
+    const { payload } = e.data;
     wsConnection?.send(payload);
   }
 };
