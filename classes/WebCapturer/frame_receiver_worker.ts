@@ -29,19 +29,13 @@ function startWebSocketServer(port: number) {
             const frameStart = performance.now();
             const buffer = new Uint8Array(event.data);
             
-            // Parse metadata (first 16 bytes: width, height, size, chunks)
-            const metadataView = new DataView(buffer.buffer, buffer.byteOffset, 16);
+            // Parse metadata (first 8 bytes: width, height)
+            const metadataView = new DataView(buffer.buffer, buffer.byteOffset, 8);
             const width = metadataView.getUint32(0, true);
             const height = metadataView.getUint32(4, true);
-            const totalSize = metadataView.getUint32(8, true);
-            const numChunks = metadataView.getUint32(12, true);
             
-            // Parse chunk size (next 4 bytes)
-            const chunkSizeView = new DataView(buffer.buffer, buffer.byteOffset + 16, 4);
-            const chunkSize = chunkSizeView.getUint32(0, true);
-            
-            // Extract the pixel data (remaining bytes)
-            const pixelData = new Uint8Array(buffer.buffer, buffer.byteOffset + 20, chunkSize);
+            // Extract the pixel data (remaining bytes after metadata)
+            const pixelData = new Uint8Array(buffer.buffer, buffer.byteOffset + 8);
             
             const receiveTime = performance.now() - frameStart;
             
