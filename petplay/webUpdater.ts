@@ -476,10 +476,13 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   const poseArrayBuffer = new ArrayBuffer(posesSize);
   const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
 
-  // Get real-time pose with zero prediction (0 seconds into future)
+  // Define prediction amount in seconds (e.g., 11ms)
+  const PREDICTION_SECONDS = 0.005; 
+
+  // Get predicted pose 
   state.vrSystem.GetDeviceToAbsoluteTrackingPose(
     OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
-    0,
+    PREDICTION_SECONDS, // Predict slightly into the future
     posePtr,
     OpenVR.k_unMaxTrackedDeviceCount
   );

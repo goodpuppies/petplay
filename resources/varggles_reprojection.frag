@@ -8,14 +8,15 @@ uniform mat4 renderPose;
 uniform mat4 currentPose;    
 uniform float halfFOVInRadians;
 
+const float warpFactor = 0.5;
+
 layout (location = 0) out vec4 outColor;
 
 const float PI = 3.141592;
 const float HALF_PI = 0.5 * PI;
 const float QUARTER_PI = 0.25 * PI;
 
-// Dampening factor to control reprojection strength
-const float REPROJECTION_STRENGTH = 1.0; // Keep at 1.0 to test full corrected effect
+//#define USE_ORIENTATION_ONLY
 
 void main() {
     vec2 xy_flipped = vec2(uv.x, 1.0 - uv.y);
@@ -34,34 +35,47 @@ void main() {
 
     float fovScalar = tan(halfFOVInRadians) / tan(QUARTER_PI); 
 
-    // Base lookup direction based on output UV (conceptually in CurrentHMD space)
-    vec3 cubeMapLookupDirection = vec3(
-        sin(xy_angles.x) * cos(xy_eye_angles.y), 
-        sin(xy_eye_angles.y),                     
-        cos(xy_angles.x) * cos(xy_eye_angles.y)  
+    // Base direction from spherical angles (as if there's no re-projection)
+    vec3 originalDirection = vec3(
+        sin(xy_angles.x) * cos(xy_eye_angles.y),
+        sin(xy_eye_angles.y),
+        cos(xy_angles.x) * cos(xy_eye_angles.y)
     );
 
-    // --- REPROJECTION LOGIC --- 
-    // Standard Lookup Direction (no reprojection adjustment)
-    vec3 standardLookupDirection = cubeMapLookupDirection;
+    mat4 relativeMatrix = currentPose * inverse(renderPose);
 
-    // Reprojected Lookup Direction
-    // Calculate relative rotation: CurrentHMD -> RenderHMD
-    // inverse(renderPose) transforms RenderHMD -> World
-    // currentPose transforms World -> CurrentHMD
-    // So inverse(renderPose) * currentPose transforms CurrentHMD -> RenderHMD
-    mat4 relativeRotation = inverse(renderPose) * currentPose; 
-    // Apply to find equivalent direction in RenderHMD space
-    vec3 reprojectedLookupDirection = (relativeRotation * vec4(cubeMapLookupDirection, 0.0)).xyz;
+#ifdef USE_ORIENTATION_ONLY
+    // Zero out translation for orientation-only timewarp:
+    mat3 rotPart       = mat3(relativeMatrix);
+    mat4 orientationOnlyMatrix = mat4(
+        vec4(rotPart[0], 0.0),
+        vec4(rotPart[1], 0.0),
+        vec4(rotPart[2], 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0)
+    );
+    relativeMatrix = orientationOnlyMatrix;
+#endif
 
-    // Blend the lookup directions based on strength
-    vec3 finalLookupDirection = mix(standardLookupDirection, reprojectedLookupDirection, REPROJECTION_STRENGTH);
-    // --- END REPROJECTION LOGIC ---
-    
-    // Apply the standard renderPose transformation (like in varggles.frag) to the final lookup direction
-    vec3 renderHmdDirection = (renderPose * vec4(finalLookupDirection, 0.0)).xyz;
+    // Transform the original direction into the "old render" space
+    // to see how it should be oriented now
+    vec3 reprojectedDirection = (relativeMatrix * vec4(originalDirection, 0.0)).xyz;
 
-    // Project the final direction
+    // Blend between no warp (0) and full warp (1)
+    vec3 finalDirection = mix(originalDirection, reprojectedDirection, warpFactor);
+
+    //---------------------------------------
+    // Re-apply the original pose
+    //---------------------------------------
+    vec3 renderHmdDirection = (renderPose * vec4(finalDirection, 0.0)).xyz;
+
+    // If the direction is behind the camera, you can discard (optional)
+    if (renderHmdDirection.z >= 0.0) {
+       discard;
+    }
+
+    //---------------------------------------
+    // Project to 2D
+    //---------------------------------------
     float projX = (renderHmdDirection.x / abs(renderHmdDirection.z)) / fovScalar;
     float projY = (renderHmdDirection.y / abs(renderHmdDirection.z)) / fovScalar;
 
