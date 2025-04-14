@@ -89,6 +89,10 @@ async function WebCapLoop(
   // Track if we're currently processing a frame
   let processingFrame = false; 
   
+  // Track frame dropping statistics for recovery mechanism
+  let consecutiveDrops = 0;
+  let lastProcessedTime = Date.now();
+  
   // Function to process the latest frame from webcapturer
   async function processLatestFrame() {
     // If already processing a frame, don't start another one
@@ -153,6 +157,45 @@ async function WebCapLoop(
         return;
       }
       
+      // Age-based frame dropping - drop frames that are too old to be relevant
+      const now = Date.now();
+      const frameAge = now - capturedFrame.timestamp;
+      const MAX_FRAME_AGE_MS = 40; // Frames older than this will be dropped
+      
+      // Determine if we should process this frame
+      const shouldDrop = frameAge > MAX_FRAME_AGE_MS;
+      
+      // Recovery logic - if we've dropped too many consecutive frames,
+      // force processing of this frame to break out of the death spiral
+      const MAX_CONSECUTIVE_DROPS = 5;
+      const TIME_SINCE_LAST_PROCESSED = now - lastProcessedTime;
+      const FORCED_PROCESS_INTERVAL_MS = 100; // Force a frame every 200ms minimum
+      
+      const forceProcess = (consecutiveDrops >= MAX_CONSECUTIVE_DROPS) || 
+                          (TIME_SINCE_LAST_PROCESSED > FORCED_PROCESS_INTERVAL_MS);
+      
+      if (shouldDrop && !forceProcess) {
+        //console.log(`Dropping stale frame: age ${frameAge}ms exceeds threshold ${MAX_FRAME_AGE_MS}ms (consecutive: ${consecutiveDrops})`);
+        
+        // Reset the frame ready flag even though we're not processing this frame
+        if (state.webCapturer) {
+          state.webCapturer.resetFrameReadyFlag();
+        }
+        
+        consecutiveDrops++;
+        processingFrame = false;
+        return;
+      } else if (shouldDrop && forceProcess) {
+        // We're processing a stale frame to recover
+        console.log(`RECOVERY: Processing stale frame despite age ${frameAge}ms to prevent death spiral`);
+        consecutiveDrops = 0;
+        lastProcessedTime = now;
+      } else {
+        // Normal processing of a fresh frame
+        consecutiveDrops = 0;
+        lastProcessedTime = now;
+      }
+      
       const frame = {
         pixels: capturedFrame.data,
         width: capturedFrame.width,
@@ -188,13 +231,19 @@ async function WebCapLoop(
                              ` | GetFrame→Texture: ${getFrameToTextureTime.toFixed(0)} ms`;
       }
       
-      console.log(`Push Notification E2E: ${e2eLatency.toFixed(0)} ms (Texture: ${textureTime.toFixed(0)} ms)${webCapLoopLatency}`);
+      //console.log(`Push Notification E2E: ${e2eLatency.toFixed(0)} ms (Texture: ${textureTime.toFixed(0)} ms)${webCapLoopLatency}`);
       
       // Update the texture in the overlay
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
       if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
 
       state.overlayClass.WaitFrameSync(100)
+      
+      // CRITICAL FIX: Reset the frame ready flag after processing to prevent timestamp accumulation
+      // Without this, old frames stack up causing the FrameAvail→Texture time to grow continuously
+      if (state.webCapturer) {
+        state.webCapturer.resetFrameReadyFlag();
+      }
     } catch (error) {
       console.error("Error processing frame:", error);
     } finally {

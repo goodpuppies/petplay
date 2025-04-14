@@ -299,6 +299,18 @@ export class WebCapturer {
   }
 
   /**
+   * Resets the frame ready flag to indicate the frame has been processed.
+   * This should be called after a frame has been fully processed to avoid 
+   * timestamp accumulation.
+   */
+  resetFrameReadyFlag(): void {
+    if (this.frameReadyFlag) {
+      // Reset the flag to indicate frame has been processed
+      Atomics.store(this.frameReadyFlag, 0, 0);
+    }
+  }
+
+  /**
    * Stops the capture process and cleans up resources.
    * The instance cannot be reused after calling this method.
    */
