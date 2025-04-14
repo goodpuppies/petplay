@@ -460,29 +460,49 @@ function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Fl
   return out;
 }
 
-function createTextureFromData(pixels: Uint8Array, width: number, height: number, pose?: OpenVR.TrackedDevicePose | null): void {
+function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null): void {
   if (!state.glManager) { throw new Error("glManager is null"); }
   
-  // Use the provided pose if available, otherwise fall back to the current state.hmdpose
-  const hmdPose = pose || state.hmdpose;
+  // Use the provided render pose if available, otherwise fall back to the current state.hmdpose
+  const renderHmdPose = renderPose || state.hmdpose;
   
-  if (!hmdPose) { 
+  if (!renderHmdPose) { 
     console.warn("no hmdpose available, skipping render"); 
     return; 
   }
 
-  const hmdMatVR = hmdPose.mDeviceToAbsoluteTracking.m;
+  // Get current pose for reprojection (timewarp)
+  const currentHmdPose = state.hmdpose;
+  
+  // Don't do reprojection if render pose and current pose are the same
+  const doReprojection = currentHmdPose !== renderHmdPose;
+
+  // Process the render pose matrix (from when the frame was captured)
+  const renderHmdMatVR = renderHmdPose.mDeviceToAbsoluteTracking.m;
 
   // 1. Convert OpenVR matrix (row-major) to Column-Major Float32Array (HMD -> World)
-  const universeFromHmd_ColMajor = new Float32Array([
-    hmdMatVR[0][0], hmdMatVR[1][0], hmdMatVR[2][0], 0,
-    hmdMatVR[0][1], hmdMatVR[1][1], hmdMatVR[2][1], 0,
-    hmdMatVR[0][2], hmdMatVR[1][2], hmdMatVR[2][2], 0,
+  const renderUniverseFromHmd_ColMajor = new Float32Array([
+    renderHmdMatVR[0][0], renderHmdMatVR[1][0], renderHmdMatVR[2][0], 0,
+    renderHmdMatVR[0][1], renderHmdMatVR[1][1], renderHmdMatVR[2][1], 0,
+    renderHmdMatVR[0][2], renderHmdMatVR[1][2], renderHmdMatVR[2][2], 0,
     0, 0, 0, 1
   ]);
 
-  // 2. Calculate the inverse (World -> HMD)
-  const hmdFromUniverse_ColMajor = invertMatrix4(universeFromHmd_ColMajor);
+  // For reprojection/timewarp, also process the current pose matrix
+  let currentUniverseFromHmd_ColMajor: Float32Array | undefined;
+  
+  if (doReprojection && currentHmdPose) {
+    const currentHmdMatVR = currentHmdPose.mDeviceToAbsoluteTracking.m;
+    currentUniverseFromHmd_ColMajor = new Float32Array([
+      currentHmdMatVR[0][0], currentHmdMatVR[1][0], currentHmdMatVR[2][0], 0,
+      currentHmdMatVR[0][1], currentHmdMatVR[1][1], currentHmdMatVR[2][1], 0,
+      currentHmdMatVR[0][2], currentHmdMatVR[1][2], currentHmdMatVR[2][2], 0,
+      0, 0, 0, 1
+    ]);
+  }
+
+  // 2. Calculate the inverse of render pose (World -> HMD)
+  const hmdFromUniverse_ColMajor = invertMatrix4(renderUniverseFromHmd_ColMajor);
   if (!hmdFromUniverse_ColMajor) {
     console.error("Failed to invert HMD pose matrix!");
     return; // Cannot proceed without inverse
@@ -502,15 +522,49 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   const eyeWidth = width / 2;
   const { left: leftPixels, right: rightPixels } = splitSBSTexture(pixels, width, height);
 
-  // Call the render function with the CORRECT lookRotation
-  state.glManager.renderPanoramaFromData(
-    leftPixels,
-    rightPixels,
-    eyeWidth,
-    height,
-    finalLookRotation, // Pass the calculated inverse & scaled matrix
-    sourceVerticalHalfFOVRadians
-  );
+  // If we're doing reprojection (timewarp) and have both poses, use them
+  if (doReprojection && currentUniverseFromHmd_ColMajor) {
+    // Calculate current pose inverse and scaling for reprojection
+    const currentHmdFromUniverse_ColMajor = invertMatrix4(currentUniverseFromHmd_ColMajor);
+    if (!currentHmdFromUniverse_ColMajor) {
+      console.error("Failed to invert current HMD pose matrix for reprojection!");
+      // Fall back to non-reprojection mode
+      state.glManager.renderPanoramaFromData(
+        leftPixels,
+        rightPixels,
+        eyeWidth,
+        height,
+        finalLookRotation,
+        sourceVerticalHalfFOVRadians
+      );
+      return;
+    }
+
+    const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
+    
+    // Call the render function with both poses for reprojection
+    state.glManager.renderPanoramaFromData(
+      leftPixels,
+      rightPixels,
+      eyeWidth,
+      height,
+      finalLookRotation, // Render pose
+      sourceVerticalHalfFOVRadians,
+      finalCurrentPose // Current pose for reprojection
+    );
+    
+    console.log("Applied reprojection (timewarp) to reduce perceived latency");
+  } else {
+    // Standard rendering without reprojection
+    state.glManager.renderPanoramaFromData(
+      leftPixels,
+      rightPixels,
+      eyeWidth,
+      height,
+      finalLookRotation,
+      sourceVerticalHalfFOVRadians
+    );
+  }
 }
 
 function INITGL(name?: string) {

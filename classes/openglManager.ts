@@ -11,6 +11,7 @@ export class OpenGLManager {
     private window: DwmWindow | null = null;
     private uniqueId: string;
     private shaderProgram: gl.GLuint | null = null; // Adjust type based on gluten bindings if needed
+    private reprojectionShaderProgram: gl.GLuint | null = null; // Added for reprojection
     private vao: gl.GLuint | null = null; // Use appropriate type for VAO ID (e.g., number or specific type)
     private fbo: gl.GLuint | null = null; // Use appropriate type for FBO ID
     private uniformLocations: {
@@ -19,10 +20,16 @@ export class OpenGLManager {
         lookRotation?: gl.GLint | null;
         halfFOVInRadians?: gl.GLint | null;
     } = {};
+    private reprojectionUniformLocations: {
+        renderPoseMatrix?: gl.GLint | null;
+        currentPoseMatrix?: gl.GLint | null;
+        halfFOVInRadians?: gl.GLint | null; // Keep this as reprojection still needs FOV
+        eyeLeft?: gl.GLint | null;
+        eyeRight?: gl.GLint | null;
+    } = {};
+    private reprojectionEnabled: boolean = false; // Flag to indicate if reprojection shader is ready
     private outputWidth: number = 0; // Store dimensions for viewport
     private outputHeight: number = 0;
-
-    
 
     constructor() {
         // Generate a crypto UUID for unique window identification
@@ -56,7 +63,6 @@ export class OpenGLManager {
             throw e;
         }
     }
-
 
     private compileShader(source: string, type: gl.GLenum): gl.GLuint | null { // Use appropriate return type if not WebGLShader
         const typeString = type === gl.VERTEX_SHADER ? 'VERTEX' : (type === gl.FRAGMENT_SHADER ? 'FRAGMENT' : 'UNKNOWN');
@@ -125,38 +131,6 @@ export class OpenGLManager {
         }
         console.log(`+++ ${typeString} Shader ID ${shader} compiled SUCCESSFULLY. +++`);
         return shader; // Return the shader ID/handle
-    }
-
-    initializeOLD(name?: string) {
-        // Create window and initialize GL with unique title
-        try {
-            const windowTitle = `${name || "Texture Overlay"}_${this.uniqueId.slice(0, 8)}`;
-
-            this.window = createWindow({
-                title: windowTitle,
-                width: 1,
-                height: 1,
-                resizable: false,
-                visible: false,
-                glVersion: [3, 2],
-                gles: false,
-            });
-
-            gl.load(getProcAddress);
-            this.checkGLError("gl.load");
-
-            this.texture = new Uint32Array(1);
-            gl.GenTextures(1, this.texture);
-            gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
-            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            this.checkGLError("texture creation");
-        } catch (error) {
-            console.error(`Failed to create window: ${(error as Error).message}`);
-            throw error;
-        }
     }
 
     initialize(name?: string, panoramaWidth: number = 4096, panoramaHeight: number = 4096) { // Default to 4096x4096
@@ -266,7 +240,7 @@ export class OpenGLManager {
             gl.DeleteShader(fragmentShader);
             console.log("Shaders detached and deleted.");
 
-            console.log(`Using program ${this.shaderProgram} to get uniform locations...`);
+            //console.log(`Using program ${this.shaderProgram} to get uniform locations...`);
             gl.UseProgram(this.shaderProgram);
             this.checkGLError("UseProgram (for uniforms)");
 
@@ -309,6 +283,136 @@ export class OpenGLManager {
             gl.UseProgram(0);
             this.checkGLError("UseProgram(0)");
             console.log("--- Shader Setup Complete ---");
+
+            // --- Reprojection Shader Setup (Conditional) ---
+            const reprojectionFragPath = "c:\\GIT\\petplay\\resources\\varggles_reprojection.frag";
+            let reprojectionVertexShader: number | null = null; // Declare here for broader scope
+            let reprojectionFragmentShader: number | null = null;
+            try {
+                console.log("TRYINITI REPROJ")
+                const reprojectionFragSource = this.loadShaderSourceSync(reprojectionFragPath);
+                console.log("--- Starting Reprojection Shader Setup ---");
+
+                // Re-compile the *same* vertex shader source
+                // Doing this ensures we have a valid vertex shader object even if the
+                // original 'vertexShader' was deleted after linking the standard program.
+                reprojectionVertexShader = this.compileShader(vertSource, gl.VERTEX_SHADER);
+                reprojectionFragmentShader = this.compileShader(reprojectionFragSource, gl.FRAGMENT_SHADER);
+
+                if (!reprojectionVertexShader || !reprojectionFragmentShader) {
+                    console.error("Reprojection shader compilation failed. Reprojection disabled.");
+                    // Clean up any successfully compiled shader
+                    if (reprojectionVertexShader) gl.DeleteShader(reprojectionVertexShader);
+                    if (reprojectionFragmentShader) gl.DeleteShader(reprojectionFragmentShader);
+                    throw new Error("Reprojection shader compilation failed"); // Throw to skip rest of setup
+                }
+                console.log(`Reprojection Shaders Compiled: VS ID ${reprojectionVertexShader}, FS ID ${reprojectionFragmentShader}`);
+
+                console.log("Creating reprojection shader program...");
+                this.reprojectionShaderProgram = gl.CreateProgram();
+                if (!this.reprojectionShaderProgram || this.reprojectionShaderProgram === 0) {
+                    console.error("Failed to create reprojection shader program.");
+                    this.checkGLError("CreateProgram reprojection");
+                    if (reprojectionVertexShader) gl.DeleteShader(reprojectionVertexShader);
+                    if (reprojectionFragmentShader) gl.DeleteShader(reprojectionFragmentShader);
+                    throw new Error("Failed to create reprojection shader program");
+                }
+                console.log(`Created reprojection shader program: ID ${this.reprojectionShaderProgram}`);
+
+                console.log(`Attaching shaders (VS: ${reprojectionVertexShader}, FS: ${reprojectionFragmentShader}) to reprojection program ${this.reprojectionShaderProgram}...`);
+                gl.AttachShader(this.reprojectionShaderProgram, reprojectionVertexShader);
+                this.checkGLError("AttachShader REPROJECTION VERTEX");
+                gl.AttachShader(this.reprojectionShaderProgram, reprojectionFragmentShader);
+                this.checkGLError("AttachShader REPROJECTION FRAGMENT");
+                console.log("Reprojection shaders attached.");
+
+                console.log(`Linking reprojection program ${this.reprojectionShaderProgram}...`);
+                gl.LinkProgram(this.reprojectionShaderProgram);
+                if (!this.checkGLError(`LinkProgram reprojection`)) {
+                    // Clean up shaders and program if linking fails
+                    gl.DeleteShader(reprojectionVertexShader);
+                    gl.DeleteShader(reprojectionFragmentShader);
+                    gl.DeleteProgram(this.reprojectionShaderProgram);
+                    this.reprojectionShaderProgram = null;
+                    throw new Error("Reprojection shader program linking failed");
+                }
+                console.log(`Link command issued for reprojection program ${this.reprojectionShaderProgram}.`);
+
+                const reprojectionLinkStatus = new Int32Array(1);
+                gl.GetProgramiv(this.reprojectionShaderProgram, gl.LINK_STATUS, reprojectionLinkStatus);
+                this.checkGLError("GetProgramiv LINK_STATUS reprojection");
+
+                if (!reprojectionLinkStatus[0]) {
+                    console.error(`!!! Reprojection shader program ID ${this.reprojectionShaderProgram} linking FAILED !!!`);
+                    const log = new Uint8Array(1024);
+                    const logLength = new Int32Array(1);
+                    gl.GetProgramInfoLog(this.reprojectionShaderProgram, log.length, logLength, log);
+                    this.checkGLError("GetProgramInfoLog LINK_STATUS reprojection");
+                    console.error(`--- Reprojection Program Link Log (ID ${this.reprojectionShaderProgram}) ---`);
+                    console.error(new TextDecoder().decode(log.slice(0, logLength[0])));
+                    console.error(`--- End Reprojection Program Link Log ---`);
+                    // Clean up shaders and program if linking fails
+                    gl.DeleteShader(reprojectionVertexShader);
+                    gl.DeleteShader(reprojectionFragmentShader);
+                    gl.DeleteProgram(this.reprojectionShaderProgram);
+                    this.reprojectionShaderProgram = null;
+                    throw new Error("Reprojection shader program linking failed");
+                } else {
+                    console.log(`>>> Reprojection shader program ID ${this.reprojectionShaderProgram} linked successfully.`);
+                }
+
+                // Detach and delete reprojection shaders after successful linking
+                console.log(`Detaching and deleting shaders for reprojection program ${this.reprojectionShaderProgram}...`);
+                gl.DetachShader(this.reprojectionShaderProgram, reprojectionVertexShader);
+                this.checkGLError("DetachShader REPROJECTION VERTEX");
+                gl.DetachShader(this.reprojectionShaderProgram, reprojectionFragmentShader);
+                this.checkGLError("DetachShader REPROJECTION FRAGMENT");
+                gl.DeleteShader(reprojectionVertexShader); // Now safe to delete the vertex shader
+                this.checkGLError("DeleteShader REPROJECTION VERTEX");
+                gl.DeleteShader(reprojectionFragmentShader);
+                this.checkGLError("DeleteShader REPROJECTION FRAGMENT");
+                console.log("Reprojection shaders detached and deleted.");
+
+                // --- Get Uniform Locations for Reprojection Shader Program ---
+                console.log(`Getting uniform locations for reprojection program ${this.reprojectionShaderProgram}...`);
+                this.reprojectionUniformLocations.renderPoseMatrix = gl.GetUniformLocation(this.reprojectionShaderProgram, cstr("renderPose"));
+                this.reprojectionUniformLocations.currentPoseMatrix = gl.GetUniformLocation(this.reprojectionShaderProgram, cstr("currentPose"));
+                this.reprojectionUniformLocations.halfFOVInRadians = gl.GetUniformLocation(this.reprojectionShaderProgram, cstr("halfFOVInRadians")); // Still needed
+                this.reprojectionUniformLocations.eyeLeft = gl.GetUniformLocation(this.reprojectionShaderProgram, cstr("eyeLeft"));
+                this.reprojectionUniformLocations.eyeRight = gl.GetUniformLocation(this.reprojectionShaderProgram, cstr("eyeRight"));
+                this.checkGLError("GetUniformLocation reprojection");
+
+                // Validate required reprojection uniforms
+                if (this.reprojectionUniformLocations.renderPoseMatrix === null || this.reprojectionUniformLocations.renderPoseMatrix === -1 ||
+                    this.reprojectionUniformLocations.currentPoseMatrix === null || this.reprojectionUniformLocations.currentPoseMatrix === -1 ||
+                    this.reprojectionUniformLocations.halfFOVInRadians === null || this.reprojectionUniformLocations.halfFOVInRadians === -1 ||
+                    this.reprojectionUniformLocations.eyeLeft === null || this.reprojectionUniformLocations.eyeLeft === -1 ||
+                    this.reprojectionUniformLocations.eyeRight === null || this.reprojectionUniformLocations.eyeRight === -1) {
+                    console.error("!!! Failed to get all required uniform locations for reprojection shader.");
+                    this.checkGLError("GetUniformLocation reprojection validation"); // Check if GetError reveals issues
+                    gl.DeleteProgram(this.reprojectionShaderProgram); // Clean up program
+                    this.reprojectionShaderProgram = null;
+                    throw new Error("Failed to get required reprojection uniform locations.");
+                }
+
+                console.log("Reprojection uniform locations:", this.reprojectionUniformLocations);
+                this.reprojectionEnabled = true; // Mark reprojection as available
+                console.log("--- Reprojection Shader Setup SUCCESSFUL ---");
+
+            } catch (error) {
+                
+                console.warn(`Reprojection shader setup failed or skipped: ${(error as Error).message}. Reprojection will be disabled.`);
+                this.reprojectionShaderProgram = null; // Ensure it's null if setup fails
+                this.reprojectionEnabled = false;
+                throw new Error((error as Error).message);
+                // Cleanup of shaders/program happens within the try block or above catch blocks
+            }
+
+            // Now delete the original standard vertex shader if it hasn't been deleted yet
+            // (It might have been detached but not deleted if we reused it)
+            // Safest just to delete it here to ensure cleanup. Check if it still exists.
+            // NOTE: The variable 'vertexShader' from the standard setup might be out of scope here.
+            // Relying on the cleanup inside the reprojection setup (recompiling vertex shader) is safer.
 
             // --- Texture Setup ---
             console.log("--- Starting Texture Setup ---");
@@ -425,78 +529,129 @@ export class OpenGLManager {
         }
     }
 
-
     renderPanoramaFromData(
         leftPixels: Uint8Array,
         rightPixels: Uint8Array,
         eyeWidth: number, // Width of ONE eye texture
         eyeHeight: number, // Height of ONE eye texture
-        lookRotation: Float32Array,
-        halfFOVInRadians: number
-        // noFlip removed - shader handles texture coordinate interpretation
+        renderPoseMatrix: Float32Array, // Renamed from lookRotation
+        halfFOVInRadians: number,
+        currentPoseMatrix?: Float32Array | null // Added optional current pose
     ): void {
-        if (!this.fbo || !this.shaderProgram || !this.vao || !this.leftEyeTexture || !this.rightEyeTexture || !this.outputTexture) {
-            console.error("Render call failed: OpenGL resources not initialized.");
+
+        // Determine if we should use reprojection
+        const useReprojection = this.reprojectionEnabled && !!this.reprojectionShaderProgram && !!currentPoseMatrix;
+
+        // Select the shader program and uniform locations based on the decision
+        const activeShaderProgram = useReprojection ? this.reprojectionShaderProgram : this.shaderProgram;
+        const activeUniforms = useReprojection ? this.reprojectionUniformLocations : this.uniformLocations;
+
+        // --- 1. Check Resources ---
+        if (!this.fbo || !activeShaderProgram || !this.vao || !this.leftEyeTexture || !this.rightEyeTexture || !this.outputTexture) {
+            console.error(`Render call failed (${useReprojection ? 'Reprojection' : 'Standard'}): Essential OpenGL resources not initialized.`);
             throw new Error("OpenGL resources not initialized.");
         }
-        // Check uniforms needed for this shader
-        if (this.uniformLocations.lookRotation === null || this.uniformLocations.lookRotation === -1 ||
-            this.uniformLocations.halfFOVInRadians === null || this.uniformLocations.halfFOVInRadians === -1 ||
-            this.uniformLocations.eyeLeft === null || this.uniformLocations.eyeLeft === -1 || // Check sampler uniforms
-            this.uniformLocations.eyeRight === null || this.uniformLocations.eyeRight === -1) {
-            console.error("Render call failed: Required uniform locations not found.");
-            throw new Error("Uniform locations not found.");
+
+        // --- 2. Check Required Uniform Locations for the *Chosen* Shader ---
+        let uniformsValid = false;
+        if (useReprojection) {
+            const reprojUniforms = activeUniforms as any; // Type assertion
+            console.log("Checking reprojection uniforms:", reprojUniforms);
+            uniformsValid =
+                reprojUniforms.renderPoseMatrix !== null && reprojUniforms.renderPoseMatrix !== -1 &&
+                reprojUniforms.currentPoseMatrix !== null && reprojUniforms.currentPoseMatrix !== -1 &&
+                reprojUniforms.halfFOVInRadians !== null && reprojUniforms.halfFOVInRadians !== -1 &&
+                reprojUniforms.eyeLeft !== null && reprojUniforms.eyeLeft !== -1 &&
+                reprojUniforms.eyeRight !== null && reprojUniforms.eyeRight !== -1;
+            if (!uniformsValid) console.error("Reprojection uniforms invalid:", reprojUniforms);
+        } else {
+            const stdUniforms = activeUniforms as any; // Type assertion
+            //console.log("Checking standard uniforms:", stdUniforms);
+            uniformsValid =
+                stdUniforms.lookRotation !== null && stdUniforms.lookRotation !== -1 && // Use lookRotation here
+                stdUniforms.halfFOVInRadians !== null && stdUniforms.halfFOVInRadians !== -1 &&
+                stdUniforms.eyeLeft !== null && stdUniforms.eyeLeft !== -1 &&
+                stdUniforms.eyeRight !== null && stdUniforms.eyeRight !== -1;
+            if (!uniformsValid) console.error("Standard uniforms invalid:", stdUniforms);
         }
 
-        // --- 1. Upload Pixel Data to Separate Eye Textures ---
+        if (!uniformsValid) {
+            const shaderMode = useReprojection ? 'reprojection' : 'standard';
+            console.error(`Render call failed: Required uniform locations not found for ${shaderMode} shader.`);
+            this.checkGLError(`GetUniformLocation validation (${shaderMode})`); // Check GL error state
+            throw new Error(`Required uniform locations not found for ${shaderMode} shader.`);
+        }
+        console.log(`Using ${useReprojection ? 'Reprojection' : 'Standard'} shader program: ID ${activeShaderProgram}`);
+
+        // --- 3. Upload Pixel Data to Separate Eye Textures ---
+        // (No changes needed here, just ensure texture units match shader expectations)
         // Left Eye Texture
-        gl.ActiveTexture(gl.TEXTURE0); // Activate texture unit 0 for left eye
+        gl.ActiveTexture(gl.TEXTURE0); // Activate texture unit 0 for left eye (eyeLeft uniform)
+        this.checkGLError("active texture 0");
         gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
+        this.checkGLError("bind left texture");
         gl.TexImage2D(
             gl.TEXTURE_2D, 0, gl.RGBA, eyeWidth, eyeHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, leftPixels
         );
         if (!this.checkGLError("upload left eye texture data")) return;
 
         // Right Eye Texture
-        gl.ActiveTexture(gl.TEXTURE1); // Activate texture unit 1 for right eye
+        gl.ActiveTexture(gl.TEXTURE1); // Activate texture unit 1 for right eye (eyeRight uniform)
+        this.checkGLError("active texture 1");
         gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
+        this.checkGLError("bind right texture");
         gl.TexImage2D(
             gl.TEXTURE_2D, 0, gl.RGBA, eyeWidth, eyeHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, rightPixels
         );
         if (!this.checkGLError("upload right eye texture data")) return;
 
-        // --- 2. Bind FBO, Set Viewport ---
+        // --- 4. Bind FBO, Set Viewport ---
         gl.BindFramebuffer(gl.FRAMEBUFFER, this.fbo);
         if (!this.checkGLError("bind FBO")) return;
         gl.Viewport(0, 0, this.outputWidth, this.outputHeight); // Render to the full output texture
         if (!this.checkGLError("set viewport")) return;
         // Optional: gl.Clear(...) if needed
 
-        // --- 3. Use Shader Program ---
-        gl.UseProgram(this.shaderProgram);
-        if (!this.checkGLError("use program")) return;
+        // --- 5. Use *Selected* Shader Program ---
+        gl.UseProgram(activeShaderProgram);
+        if (!this.checkGLError(`use program (${useReprojection ? 'Reprojection' : 'Standard'})`)) return;
 
-        // --- 4. Set Non-Sampler Uniforms ---
-        gl.UniformMatrix4fv(this.uniformLocations.lookRotation!, 1, 0, lookRotation); // transpose = 0 (false) for column-major
-        gl.Uniform1f(this.uniformLocations.halfFOVInRadians!, halfFOVInRadians);
-        if (!this.checkGLError("set uniforms")) return;
+        // --- 6. Set Uniforms based on Mode ---
+        if (useReprojection) {
+            const reprojUniforms = activeUniforms as any;
+            gl.UniformMatrix4fv(reprojUniforms.renderPoseMatrix!, 1, 0, renderPoseMatrix); // transpose = 0 (false)
+            gl.UniformMatrix4fv(reprojUniforms.currentPoseMatrix!, 1, 0, currentPoseMatrix!); // transpose = 0 (false)
+            gl.Uniform1f(reprojUniforms.halfFOVInRadians!, halfFOVInRadians);
+            gl.Uniform1i(reprojUniforms.eyeLeft!, 0); // Texture unit 0
+            gl.Uniform1i(reprojUniforms.eyeRight!, 1); // Texture unit 1
+            if (!this.checkGLError("set reprojection uniforms")) return;
+            console.log("Reprojection uniforms set.");
+        } else {
+            const stdUniforms = activeUniforms as any;
+            gl.UniformMatrix4fv(stdUniforms.lookRotation!, 1, 0, renderPoseMatrix); // Use renderPoseMatrix for lookRotation
+            gl.Uniform1f(stdUniforms.halfFOVInRadians!, halfFOVInRadians);
+            gl.Uniform1i(stdUniforms.eyeLeft!, 0); // Texture unit 0
+            gl.Uniform1i(stdUniforms.eyeRight!, 1); // Texture unit 1
+            if (!this.checkGLError("set standard uniforms")) return;
+            console.log("Standard uniforms set.");
+        }
 
-        // --- 5. Ensure Correct Textures are Bound to Correct Units ---
-        // (Already done during upload, but good practice to re-affirm if unsure)
-        gl.ActiveTexture(gl.TEXTURE0);
-        gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
-        gl.ActiveTexture(gl.TEXTURE1);
-        gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
+        // --- 7. Ensure Correct Textures are Bound to Correct Units ---
+        // (Already done during upload, but doesn't hurt to be explicit if needed)
+        // gl.ActiveTexture(gl.TEXTURE0);
+        // gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
+        // gl.ActiveTexture(gl.TEXTURE1);
+        // gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
 
-        // --- 6. Bind VAO ---
+        // --- 8. Bind VAO ---
         gl.BindVertexArray(this.vao);
         if (!this.checkGLError("bind VAO")) return;
 
-        // --- 7. Draw Fullscreen Quad ---
+        // --- 9. Draw Fullscreen Quad ---
         gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4); // Use TRIANGLE_STRIP for the standard quad
         if (!this.checkGLError("draw arrays")) return;
 
-        // --- 8. Unbind resources ---
+        // --- 10. Unbind resources ---
         gl.BindVertexArray(0);
         gl.UseProgram(0);
         gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
@@ -505,33 +660,11 @@ export class OpenGLManager {
         gl.ActiveTexture(gl.TEXTURE1);
         gl.BindTexture(gl.TEXTURE_2D, 0);
         gl.ActiveTexture(gl.TEXTURE0); // Explicitly reset to unit 0
-
+        this.checkGLError("unbind resources");
+        console.log(`--- Panorama Render (${useReprojection ? 'Reprojection' : 'Standard'}) Complete ---`);
     }
 
     createTextureFromData(pixels: Uint8Array, width: number, height: number, noFlip?: boolean): void {
-        let pixelsX
-        if (!noFlip) pixelsX = flipVertical(pixels, width, height);
-        else pixelsX = pixels
-
-        if (this.texture === null) { throw new Error("texture is null"); }
-
-        gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
-        gl.TexImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            width,
-            height,
-            0,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            pixelsX
-        );
-
-        this.checkGLError("upload texture data");
-    }
-
-    createPanoramaTextureFromData(pixels: Uint8Array, width: number, height: number, noFlip?: boolean): void {
         let pixelsX
         if (!noFlip) pixelsX = flipVertical(pixels, width, height);
         else pixelsX = pixels
@@ -581,6 +714,12 @@ export class OpenGLManager {
             // No need for array for DeleteProgram
             gl.DeleteProgram(this.shaderProgram);
             this.shaderProgram = null;
+        }
+        if (this.reprojectionShaderProgram) {
+            console.log(`Deleting Reprojection Shader Program ID: ${this.reprojectionShaderProgram}`);
+            // No need for array for DeleteProgram
+            gl.DeleteProgram(this.reprojectionShaderProgram);
+            this.reprojectionShaderProgram = null;
         }
         if (this.leftEyeTexture) {
             console.log(`Deleting Left Eye Texture ID: ${this.leftEyeTexture[0]}`);
