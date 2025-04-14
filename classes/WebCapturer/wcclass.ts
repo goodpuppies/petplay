@@ -14,6 +14,10 @@ export interface CapturedFrame {
   timestamp: number;
   /** Time when the frame became available in shared memory */
   frameAvailableTime?: number;
+  /** Timestamp of the pose used to render this frame */
+  poseTimestamp?: number;
+  /** ID of the pose used to render this frame */
+  poseId?: number;
 }
 
 /**
@@ -67,7 +71,7 @@ export class WebCapturer {
 
   // Constants for SharedArrayBuffer
   private static readonly MAX_FRAME_SIZE = 9 * 1024 * 1024; // ~9MB for 1080p RGBA with some extra space
-  private static readonly METADATA_SIZE = 24; // 4 bytes width + 4 bytes height + 8 bytes timestamp + 8 bytes frameAvailableTime
+  private static readonly METADATA_SIZE = 40; // 4 bytes width + 4 bytes height + 8 bytes timestamp + 8 bytes frameAvailableTime + 8 bytes poseTimestamp + 8 bytes poseId
   private static readonly SYNC_SIZE = 4; // 4 bytes for frame ready flag
   private static readonly HEADER_SIZE = WebCapturer.METADATA_SIZE + WebCapturer.SYNC_SIZE;
   private static readonly BUFFER_SIZE = WebCapturer.HEADER_SIZE + WebCapturer.MAX_FRAME_SIZE;
@@ -172,7 +176,7 @@ export class WebCapturer {
           
           try {
             // Extract metadata from the message for convenience
-            const { width, height, timestamp, frameAvailableTime } = e.data;
+            const { width, height, timestamp, poseTimestamp, poseId, frameAvailableTime } = e.data;
             
             // Calculate the notification latency
             const notificationLatency = frameDetectTime - frameAvailableTime;
@@ -190,7 +194,9 @@ export class WebCapturer {
                 width,
                 height,
                 timestamp,
-                frameAvailableTime
+                frameAvailableTime,
+                poseTimestamp,
+                poseId
               };
               
               // Update stats

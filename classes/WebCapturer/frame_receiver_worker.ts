@@ -44,11 +44,35 @@ function startWebSocketServer(port: number) {
 
             const buffer = new Uint8Array(event.data);
             
-            // Parse metadata from incoming buffer (first 16 bytes: width, height, timestamp)
-            const metadataView = new DataView(buffer.buffer, buffer.byteOffset, 16);
+            // Parse metadata from incoming buffer
+            // First section (16 bytes): width(4), height(4), timestamp(8)
+            // Extended metadata may include poseTimestamp(8) and poseId(8)
+            const metadataSize = buffer.byteLength >= 32 ? 32 : (buffer.byteLength >= 24 ? 24 : 16);
+            const metadataView = new DataView(buffer.buffer, buffer.byteOffset, metadataSize);
+            
             const width = metadataView.getUint32(0, true);
             const height = metadataView.getUint32(4, true);
             const frameTimestamp = metadataView.getFloat64(8, true); // Read timestamp
+            
+            // Safely read pose timestamp if available
+            let poseTimestamp = frameTimestamp; // Default to frame timestamp if no pose timestamp
+            if (metadataSize >= 24) {
+              try {
+                poseTimestamp = metadataView.getFloat64(16, true); // Read pose timestamp
+              } catch (e) {
+                console.warn("Failed to read pose timestamp, using frame timestamp instead");
+              }
+            }
+            
+            // Safely read pose ID if available
+            let poseId = undefined;
+            if (metadataSize >= 32) {
+              try {
+                poseId = metadataView.getFloat64(24, true); // Read pose ID
+              } catch (e) {
+                console.warn("Failed to read pose ID");
+              }
+            }
             
             // Calculate and log network latency
             const networkSendLatency = messageArrivalTime - frameTimestamp;
@@ -60,18 +84,24 @@ function startWebSocketServer(port: number) {
             // Set frame ready flag to 0 during update (locked state)
             Atomics.store(frameReadyFlag, 0, 0);
             
-            // Write metadata to shared buffer
+            // Update the shared metadata
             sharedView.setUint32(0, width, true);
             sharedView.setUint32(4, height, true);
             sharedView.setFloat64(8, frameTimestamp, true);
+            sharedView.setFloat64(16, poseTimestamp, true);
+            
+            if (poseId !== undefined) {
+              sharedView.setFloat64(24, poseId, true);
+            }
             
             // Extract and copy the pixel data directly to shared buffer
-            const pixelData = new Uint8Array(buffer.buffer, buffer.byteOffset + 16);
+            const pixelDataOffset = metadataSize;
+            const pixelData = new Uint8Array(buffer.buffer, buffer.byteOffset + pixelDataOffset);
             sharedPixelData.set(pixelData); // Direct copy to shared memory
             
             // Store the time when the frame becomes available in shared memory
             const frameAvailableTime = Date.now();
-            sharedView.setFloat64(16, frameAvailableTime, true);
+            sharedView.setFloat64(32, frameAvailableTime, true);
             
             // Mark frame as ready in the shared buffer
             Atomics.store(frameReadyFlag, 0, 1);
@@ -83,6 +113,8 @@ function startWebSocketServer(port: number) {
               width,
               height,
               timestamp: frameTimestamp,
+              poseTimestamp,
+              poseId,
               frameAvailableTime
             });
             

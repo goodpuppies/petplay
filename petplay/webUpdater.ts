@@ -27,12 +27,81 @@ const state = {
   overlayHandle: null as bigint | null,
   overlayClass: null as OpenVR.IVROverlay | null,
   glManager: null as OpenGLManager | null,
-  isRunning: false,
-  webCapturer: null as WebCapturer | null,
-  currentFrame: null as frame | null,
+  isRunning: false as boolean,
   framesource: null as string | null,
+  webCapturer: null as WebCapturer | null,
+  currentFrame: null as frametype | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
   vrSystem: null as OpenVR.IVRSystem | null,
+  
+  // Sequential pose ID counter
+  nextPoseId: 1,
+  
+  // Store a history of poses with timestamps and IDs for proper frame-pose synchronization
+  poseHistory: [] as Array<{
+    id: number,
+    timestamp: number, 
+    pose: OpenVR.TrackedDevicePose
+  }>,
+  
+  // Map of pose IDs to poses for fast lookup
+  poseMap: new Map<number, OpenVR.TrackedDevicePose>(),
+  
+  MAX_POSE_HISTORY: 3000, // Store a large history for debugging
+  
+  // Get pose by its exact ID
+  getPoseById: function(poseId: number): OpenVR.TrackedDevicePose | null {
+    // Fast lookup from map
+    const pose = this.poseMap.get(poseId);
+    if (pose) {
+      //console.log(`Found exact pose match for ID: ${poseId}`);
+      return pose;
+    }
+    
+    console.log(`No pose found for ID: ${poseId}`);
+    return this.hmdpose; // Fallback to current pose
+  },
+  
+  // For compatibility - get the closest historical pose to a timestamp
+  getClosestPose: function(frameTimestamp: number): OpenVR.TrackedDevicePose | null {
+    if (this.poseHistory.length === 0) {
+      return this.hmdpose; // Fallback to current pose if no history
+    }
+    
+    // Find pose with closest timestamp
+    let closestPose = this.poseHistory[0];
+    let minTimeDiff = Math.abs(closestPose.timestamp - frameTimestamp);
+    
+    for (let i = 1; i < this.poseHistory.length; i++) {
+      const timeDiff = Math.abs(this.poseHistory[i].timestamp - frameTimestamp);
+      if (timeDiff < minTimeDiff) {
+        minTimeDiff = timeDiff;
+        closestPose = this.poseHistory[i];
+      }
+    }
+    
+    console.log(`Using closest pose with time diff: ${minTimeDiff}ms`);
+    return closestPose.pose;
+  },
+  
+  // Get the exact historical pose matching a timestamp
+  getExactPose: function(poseTimestamp: number): OpenVR.TrackedDevicePose | null {
+    if (this.poseHistory.length === 0) {
+      console.log("no history")
+      return this.hmdpose; // Fallback to current pose if no history
+    }
+    
+    // Try to find exact match first
+    const exactMatch = this.poseHistory.find(p => p.timestamp === poseTimestamp);
+    if (exactMatch) {
+      console.log("exact")
+      return exactMatch.pose;
+    }
+    console.log("miss")
+    
+    // If no exact match, fall back to closest pose
+    return this.getClosestPose(poseTimestamp);
+  }
 };
 
 new PostMan(state, {
@@ -130,13 +199,40 @@ async function WebCapLoop(
         );
         const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
 
-        // Add timestamp to the pose data for accurate tracking on the frontend
+        // Assign a sequential ID to this pose
+        const poseId = state.nextPoseId++;
+        const currentPoseTimestamp = Date.now();
+        
+        // Add timestamp and ID to the pose data for accurate tracking on the frontend
         const timestampedPose = {
           ...hmdPose,
-          timestamp: Date.now() // Add high-precision timestamp
+          timestamp: currentPoseTimestamp,
+          id: poseId
         };
 
+        // Store current pose
         state.hmdpose = hmdPose;
+        
+        // Store in pose history for frame-pose synchronization
+        const poseEntry = {
+          id: poseId,
+          timestamp: currentPoseTimestamp,
+          pose: hmdPose
+        };
+        
+        state.poseHistory.push(poseEntry);
+        
+        // Also store in the map for fast lookup
+        state.poseMap.set(poseId, hmdPose);
+        
+        // Limit history size
+        if (state.poseHistory.length > state.MAX_POSE_HISTORY) {
+          const removed = state.poseHistory.shift();
+          if (removed) {
+            state.poseMap.delete(removed.id);
+          }
+        }
+        
         if (state.webCapturer) {
           state.webCapturer?.sendWsMsg(JSON.stringify(timestampedPose));
         }
@@ -206,12 +302,22 @@ async function WebCapLoop(
       if (!capturedFrame.timestamp) { throw new Error("no timestamp") }
       const frameTimestamp = capturedFrame.timestamp;
       const frameAvailableTime = capturedFrame.frameAvailableTime;
+      const poseId = capturedFrame.poseId;
       
       //console.log(`getFrameTime: ${getFrameTime} ms`);
       
       // Timestamp before texture creation
       const textureCreationStartTime = Date.now();
-      createTextureFromData(frame.pixels, frame.width, frame.height);
+      
+      // IMPORTANT: Get historically accurate pose for this frame's timestamp
+      // Use the exact pose ID if available
+      const historicalPose = poseId ? 
+                             state.getPoseById(poseId) : 
+                             state.getClosestPose(frameTimestamp);
+      
+      // Pass the historical pose directly to the texture creation function
+      // instead of modifying the global state
+      createTextureFromData(frame.pixels, frame.width, frame.height, historicalPose);
       
       // Calculate end-to-end latency with push model
       const endTime = Date.now();
@@ -354,11 +460,18 @@ function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Fl
   return out;
 }
 
-function createTextureFromData(pixels: Uint8Array, width: number, height: number): void {
+function createTextureFromData(pixels: Uint8Array, width: number, height: number, pose?: OpenVR.TrackedDevicePose | null): void {
   if (!state.glManager) { throw new Error("glManager is null"); }
-  if (!state.hmdpose) { console.warn("no hmdpose yet, skipping render"); return; }
+  
+  // Use the provided pose if available, otherwise fall back to the current state.hmdpose
+  const hmdPose = pose || state.hmdpose;
+  
+  if (!hmdPose) { 
+    console.warn("no hmdpose available, skipping render"); 
+    return; 
+  }
 
-  const hmdMatVR = state.hmdpose.mDeviceToAbsoluteTracking.m;
+  const hmdMatVR = hmdPose.mDeviceToAbsoluteTracking.m;
 
   // 1. Convert OpenVR matrix (row-major) to Column-Major Float32Array (HMD -> World)
   const universeFromHmd_ColMajor = new Float32Array([
