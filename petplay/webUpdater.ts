@@ -62,49 +62,12 @@ new PostMan(state, {
     state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
 
     CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
-    hmdloop()
   },
   /* HMDPOSE: (payload: OpenVR.TrackedDevicePose) => {
     state.hmdpose = payload
     state.screenCapturer?.sendWsMsg(JSON.stringify(payload))
   } */
 } as const);
-
-async function hmdloop() {
-  while (true) {
-    const vrSystem = state.vrSystem!;
-    const posesSize = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
-    const poseArrayBuffer = new ArrayBuffer(posesSize);
-    const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
-
-    vrSystem.GetDeviceToAbsoluteTrackingPose(
-      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
-      0,
-      posePtr,
-      OpenVR.k_unMaxTrackedDeviceCount
-    );
-  
-    const hmdIndex = OpenVR.k_unTrackedDeviceIndex_Hmd;
-    const poseView = new DataView(
-      poseArrayBuffer,
-      hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
-      OpenVR.TrackedDevicePoseStruct.byteSize
-    );
-    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
-
-    // Add timestamp to the pose data for accurate tracking on the frontend
-    const timestampedPose = {
-      ...hmdPose,
-      timestamp: Date.now() // Add high-precision timestamp
-    };
-
-    state.hmdpose = timestampedPose;
-    if (state.webCapturer) {
-      state.webCapturer?.sendWsMsg(JSON.stringify(timestampedPose))
-    }
-    await wait(10)
-  }
-}
 
 function INITSCREENCAP(): WebCapturer {
   const capturer = new WebCapturer({
@@ -139,6 +102,45 @@ async function WebCapLoop(
       if (!state.overlayClass) throw new Error("no overlay")
       if (!state.overlayHandle) throw new Error("no overlay")
       
+      // ==========================================
+      // INTEGRATED HMD POSE TRACKING - Get the latest HMD pose first
+      // ==========================================
+      if (state.vrSystem) {
+        const vrSystem = state.vrSystem;
+        const posesSize = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
+        const poseArrayBuffer = new ArrayBuffer(posesSize);
+        const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
+
+        vrSystem.GetDeviceToAbsoluteTrackingPose(
+          OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+          0,
+          posePtr,
+          OpenVR.k_unMaxTrackedDeviceCount
+        );
+      
+        const hmdIndex = OpenVR.k_unTrackedDeviceIndex_Hmd;
+        const poseView = new DataView(
+          poseArrayBuffer,
+          hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
+          OpenVR.TrackedDevicePoseStruct.byteSize
+        );
+        const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+
+        // Add timestamp to the pose data for accurate tracking on the frontend
+        const timestampedPose = {
+          ...hmdPose,
+          timestamp: Date.now() // Add high-precision timestamp
+        };
+
+        state.hmdpose = hmdPose;
+        if (state.webCapturer) {
+          state.webCapturer?.sendWsMsg(JSON.stringify(timestampedPose));
+        }
+      }
+      // ==========================================
+      // END OF INTEGRATED HMD POSE TRACKING
+      // ==========================================
+      
       // Get latest frame with minimal overhead
       const preGetFrameTime = Date.now();
       const capturedFrame = await state.webCapturer!.getLatestFrame();
@@ -162,7 +164,7 @@ async function WebCapLoop(
       const frameTimestamp = capturedFrame.timestamp;
       const frameAvailableTime = capturedFrame.frameAvailableTime;
       
-      console.log(`getFrameTime: ${getFrameTime} ms`);
+      //console.log(`getFrameTime: ${getFrameTime} ms`);
       
       // Timestamp before texture creation
       const textureCreationStartTime = Date.now();
@@ -191,6 +193,8 @@ async function WebCapLoop(
       // Update the texture in the overlay
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
       if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
+
+      state.overlayClass.WaitFrameSync(100)
     } catch (error) {
       console.error("Error processing frame:", error);
     } finally {
@@ -209,29 +213,7 @@ async function WebCapLoop(
     console.log("Remote frame source - not using push model");
     
     // For remote frames only, maintain a traditional polling loop
-    (async function remoteFrameLoop() {
-      while (state.isRunning) {
-        try {
-          if (!processingFrame) { // Only process if not already processing
-            const remoteFrame = await PostMan.PostMessage({
-              type: "GETFRAME",
-              payload: null
-            }, true) as { data: Uint8Array, width: number, height: number, timestamp: number } | null;
-            
-            if (remoteFrame) {
-              // Process remote frame similar to local frames
-              // This is a fallback for non-WebCapturer sources
-              // Implementation omitted as you mentioned it's not necessary
-            }
-          }
-        } catch (error) {
-          console.error("Error getting remote frame:", error);
-        }
-        
-        // Wait before next attempt
-        await wait(50);
-      }
-    })();
+  
   } else {
     throw new Error("No frame source available");
   }

@@ -176,7 +176,7 @@ export class WebCapturer {
             
             // Calculate the notification latency
             const notificationLatency = frameDetectTime - frameAvailableTime;
-            console.log(`Direct push notification latency: ${notificationLatency.toFixed(2)} ms`);
+            //console.log(`Direct push notification latency: ${notificationLatency.toFixed(2)} ms`);
             
             // Get the frame data directly from the shared buffer
             // This is a view, not a copy

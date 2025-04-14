@@ -52,7 +52,7 @@ function startWebSocketServer(port: number) {
             
             // Calculate and log network latency
             const networkSendLatency = messageArrivalTime - frameTimestamp;
-            console.log(`Net+Send Latency: ${networkSendLatency.toFixed(2)} ms`);
+            //console.log(`Net+Send Latency: ${networkSendLatency.toFixed(2)} ms`);
 
             // Start timing direct memory access
             const processStartTime = Date.now();
@@ -88,7 +88,7 @@ function startWebSocketServer(port: number) {
             
             // Log direct memory access time
             const processEndTime = Date.now();
-            console.log(`Direct memory write time: ${processEndTime - processStartTime} ms`);
+            //console.log(`Direct memory write time: ${processEndTime - processStartTime} ms`);
           } else {
             console.error("Expected binary data but received text");
           }
