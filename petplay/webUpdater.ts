@@ -477,7 +477,7 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
 
   // Define prediction amount in seconds (e.g., 11ms)
-  const PREDICTION_SECONDS = 0.005; 
+  const PREDICTION_SECONDS = 0.00; 
 
   // Get predicted pose 
   state.vrSystem.GetDeviceToAbsoluteTrackingPose(
@@ -548,7 +548,7 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
 
   const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
   
-  console.log("Applying reprojection with freshly obtained pose");
+  //console.log("Applying reprojection with freshly obtained pose");
   
   // Call the render function with both poses for reprojection
   state.glManager.renderPanoramaFromData(

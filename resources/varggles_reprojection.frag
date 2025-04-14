@@ -8,7 +8,7 @@ uniform mat4 renderPose;
 uniform mat4 currentPose;    
 uniform float halfFOVInRadians;
 
-const float warpFactor = 0.5;
+const float warpFactor = 0.6;
 
 layout (location = 0) out vec4 outColor;
 
@@ -42,19 +42,7 @@ void main() {
         cos(xy_angles.x) * cos(xy_eye_angles.y)
     );
 
-    mat4 relativeMatrix = currentPose * inverse(renderPose);
-
-#ifdef USE_ORIENTATION_ONLY
-    // Zero out translation for orientation-only timewarp:
-    mat3 rotPart       = mat3(relativeMatrix);
-    mat4 orientationOnlyMatrix = mat4(
-        vec4(rotPart[0], 0.0),
-        vec4(rotPart[1], 0.0),
-        vec4(rotPart[2], 0.0),
-        vec4(0.0, 0.0, 0.0, 1.0)
-    );
-    relativeMatrix = orientationOnlyMatrix;
-#endif
+    mat4 relativeMatrix = inverse(renderPose) * currentPose;
 
     // Transform the original direction into the "old render" space
     // to see how it should be oriented now

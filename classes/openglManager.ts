@@ -556,7 +556,7 @@ export class OpenGLManager {
         let uniformsValid = false;
         if (useReprojection) {
             const reprojUniforms = activeUniforms as any; // Type assertion
-            console.log("Checking reprojection uniforms:", reprojUniforms);
+            //console.log("Checking reprojection uniforms:", reprojUniforms);
             uniformsValid =
                 reprojUniforms.renderPoseMatrix !== null && reprojUniforms.renderPoseMatrix !== -1 &&
                 reprojUniforms.currentPoseMatrix !== null && reprojUniforms.currentPoseMatrix !== -1 &&
@@ -581,7 +581,7 @@ export class OpenGLManager {
             this.checkGLError(`GetUniformLocation validation (${shaderMode})`); // Check GL error state
             throw new Error(`Required uniform locations not found for ${shaderMode} shader.`);
         }
-        console.log(`Using ${useReprojection ? 'Reprojection' : 'Standard'} shader program: ID ${activeShaderProgram}`);
+        //console.log(`Using ${useReprojection ? 'Reprojection' : 'Standard'} shader program: ID ${activeShaderProgram}`);
 
         // --- 3. Upload Pixel Data to Separate Eye Textures ---
         // (No changes needed here, just ensure texture units match shader expectations)
@@ -625,7 +625,7 @@ export class OpenGLManager {
             gl.Uniform1i(reprojUniforms.eyeLeft!, 0); // Texture unit 0
             gl.Uniform1i(reprojUniforms.eyeRight!, 1); // Texture unit 1
             if (!this.checkGLError("set reprojection uniforms")) return;
-            console.log("Reprojection uniforms set.");
+            //console.log("Reprojection uniforms set.");
         } else {
             const stdUniforms = activeUniforms as any;
             gl.UniformMatrix4fv(stdUniforms.lookRotation!, 1, 0, renderPoseMatrix); // Use renderPoseMatrix for lookRotation
@@ -661,7 +661,7 @@ export class OpenGLManager {
         gl.BindTexture(gl.TEXTURE_2D, 0);
         gl.ActiveTexture(gl.TEXTURE0); // Explicitly reset to unit 0
         this.checkGLError("unbind resources");
-        console.log(`--- Panorama Render (${useReprojection ? 'Reprojection' : 'Standard'}) Complete ---`);
+        //console.log(`--- Panorama Render (${useReprojection ? 'Reprojection' : 'Standard'}) Complete ---`);
     }
 
     createTextureFromData(pixels: Uint8Array, width: number, height: number, noFlip?: boolean): void {
