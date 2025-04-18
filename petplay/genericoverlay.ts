@@ -76,7 +76,8 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
   if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
   state.overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
 
-  state.overlayClass.SetOverlayFromFile(state.overlayHandle, Deno.realPathSync(overlaytexture));
+  
+  //state.overlayClass.SetOverlayFromFile(state.overlayHandle, Deno.realPathSync(overlaytexture));
   state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 1.8);
   state.overlayClass.ShowOverlay(state.overlayHandle);
 

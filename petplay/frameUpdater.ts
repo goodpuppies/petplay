@@ -55,7 +55,7 @@ function INITSCREENCAP(): ScreenCapturer {
     onStats: ({ fps, avgLatency }) => {
       CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
     },
-    executablePath: "../resources/screen-streamer"
+    executablePath: "./resources/screen-streamer"
   });
   return capturer;
 }

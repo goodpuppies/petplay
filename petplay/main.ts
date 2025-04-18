@@ -89,7 +89,7 @@ async function main() {
   const startTime = performance.now();
   CustomLogger.log("default", "creating scene");
 
-  const ivr = await PostMan.create("./OpenVR.ts")
+  const ivr = await PostMan.create("./OpenVR.ts", import.meta.url)
   const ivrsystem = await PostMan.PostMessage({
     target: ivr,
     type: "GETOPENVRPTR",
@@ -103,14 +103,14 @@ async function main() {
   state.ivroverlay = ivroverlay as string
 
   //const hmd = await PostMan.create("./hmd.ts");
-  const input = await PostMan.create("./controllers.ts");
-  const origin = await PostMan.create("./VRCOrigin.ts");
+  //const input = await PostMan.create("./controllers.ts", import.meta.url);
+  const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
   state.origin = origin as string
-  const laser = await PostMan.create("./laser.ts");
-  const osc = await PostMan.create("./OSC.ts");
+  //const laser = await PostMan.create("./laser.ts", import.meta.url);
+  const osc = await PostMan.create("./OSC.ts", import.meta.url);
   //const updater = await PostMan.create("./frameUpdater.ts");
-  const webupdater = await PostMan.create("./webUpdater.ts");
-  const dogoverlay = await PostMan.create("./genericoverlay.ts")
+  const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
+  const dogoverlay = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
 
   PostMan.PostMessage({
@@ -119,11 +119,11 @@ async function main() {
     payload: ivrsystem
   })
   PostMan.PostMessage({
-    target: [origin, laser, dogoverlay],
+    target: [origin, dogoverlay],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
-  await wait(10000)
+  await wait(1000)
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNVRC",
@@ -134,11 +134,11 @@ async function main() {
     type: "ASSIGNHMD",
     payload: hmd,
   }); */
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: laser,
     type: "ASSIGNINPUT",
     payload: input,
-  });
+  }); */
   /* PostMan.PostMessage({
     target: origin,
     type: "STARTORIGIN",
@@ -147,12 +147,12 @@ async function main() {
       texture: "../resources/P1.png",
     },
   }); */
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
     payload: null
   });
-
+ */
 
 
   /* PostMan.PostMessage({
@@ -214,7 +214,7 @@ async function main() {
     type: "STARTOVERLAY",
     payload: {
       name: "pet1",
-      texture: "../resources/P1.png",
+      texture: "./resources/P1.png",
       sync: true,
     },
   });
@@ -244,7 +244,7 @@ async function main() {
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
   state.overlays.push(dogoverlay)
   //state.overlays.push(dogoverlay2)
-  inputloop(input);
+  //inputloop(input);
 }
 
 async function spawnOvelay(name:string) {
@@ -267,7 +267,7 @@ async function spawnOvelay(name:string) {
     type: "STARTOVERLAY",
     payload: {
       name: name,
-      texture: "../resources/P1.png",
+      texture: "./resources/P1.png",
       sync: true,
     },
   });

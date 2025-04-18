@@ -419,7 +419,6 @@ export class OpenGLManager {
             this.outputWidth = panoramaWidth;
             this.outputHeight = panoramaHeight;
             console.log(`Output dimensions: ${this.outputWidth}x${this.outputHeight}`);
-            console.warn(`--- WARNING: Using ${this.outputWidth}x${this.outputHeight} output. VROverlayFlags_StereoPanorama strongly prefers a 2:1 aspect ratio for correct mapping. Visual distortions may occur. ---`);
 
             // Output Texture (this.outputTexture)
             this.outputTexture = new Uint32Array(1);

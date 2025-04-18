@@ -2,6 +2,7 @@ import { PostMan } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct, stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
+import { wait } from "../classes/utils.ts";
 
 //steamvr input handling
 
@@ -224,9 +225,10 @@ new PostMan(state, {
 } as const);
 
 
-function main() {
+async function main() {
 
     //get action handles
+    await wait(6000)
     error = vrInput.SetActionManifestPath(manifestPath);
     if (error !== OpenVR.InputError.VRInputError_None) throw new Error("Failed to set action manifest path");
 
@@ -271,8 +273,8 @@ function updateActionState() {
 
 //#region boilerplate data setup
 let error;
-await OpenVR.initializeOpenVR("../resources/openvr_api");
-const manifestPath = Deno.realPathSync("../resources/actions.json");
+await wait(5000)
+const manifestPath = Deno.realPathSync("./resources/actions.json");
 const initerrorptr = Deno.UnsafePointer.of<OpenVR.InitError>(new Int32Array(1))!
 const TypeSafeINITERRPTR: OpenVR.InitErrorPTRType = initerrorptr
 const IVRInputPtr = OpenVR.VR_GetGenericInterface(stringToPointer(OpenVR.IVRInput_Version), TypeSafeINITERRPTR);

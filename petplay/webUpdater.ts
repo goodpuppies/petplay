@@ -8,6 +8,8 @@ import { setImmediate } from "node:timers";
 import { Buffer } from "node:buffer";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
+import { join } from "jsr:@std/path@^1.0.6";
+import { fromFileUrl } from "jsr:@std/path@^1.0.6/windows/from-file-url";
 
 //takes an overlay handle and a frame source, updates overlay texture continuously
 interface frame {
@@ -139,12 +141,25 @@ new PostMan(state, {
 } as const);
 
 function INITSCREENCAP(): WebCapturer {
+  //write temp
+
+
+  const fullPath = join(fromFileUrl(import.meta.url), "../../resources/denotauri.exe");
+  console.log("Trying to read", fullPath);
+  const dll = Deno.readFileSync(fullPath);
+  const tmp = Deno.makeTempFileSync({ suffix: '.exe' });
+
+  Deno.writeFileSync(tmp, dll);
+  console.log("Temporary file dumped:", tmp);
+
+
+  
   const capturer = new WebCapturer({
     debug: false,
     onStats: ({ fps, avgLatency }) => {
       CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
     },
-    executablePath: "../resources/denotauri"
+    executablePath: tmp
   });
   
   return capturer;

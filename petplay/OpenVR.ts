@@ -31,7 +31,7 @@ new PostMan(state, {
 
 async function initializeOpenVR() {
 
-    const success = await OpenVR.initializeOpenVR("../resources/openvr_api");
+    const success = OpenVR.initializeOpenVR("../resources/openvr_api.dll", import.meta.url);
     if (!success) throw new Error("failed to initialize openvr")
 
     const initErrorPtr = P.Int32P<OpenVR.InitError>();
