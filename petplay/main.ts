@@ -100,59 +100,69 @@ async function main() {
     type: "GETOVERLAYPTR",
     payload: null
   }, true)
+  const ivrinput = await PostMan.PostMessage({
+    target: ivr,
+    type: "GETINPUTPTR",
+    payload: null
+  }, true)
   state.ivroverlay = ivroverlay as string
 
-  //const hmd = await PostMan.create("./hmd.ts");
-  //const input = await PostMan.create("./controllers.ts", import.meta.url);
+  const hmd = await PostMan.create("./hmd.ts", import.meta.url);
+  const input = await PostMan.create("./controllers.ts", import.meta.url);
   const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
   state.origin = origin as string
-  //const laser = await PostMan.create("./laser.ts", import.meta.url);
+  const laser = await PostMan.create("./laser.ts", import.meta.url);
   const osc = await PostMan.create("./OSC.ts", import.meta.url);
   //const updater = await PostMan.create("./frameUpdater.ts");
   const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
   const dogoverlay = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
-
   PostMan.PostMessage({
-    target: webupdater,
+    target: input,
+    type: "INITINPUT",
+    payload: [ivrinput, ivroverlay]
+  })
+  PostMan.PostMessage({
+    target: [hmd, webupdater],
     type: "INITOPENVR",
     payload: ivrsystem
   })
+
   PostMan.PostMessage({
-    target: [origin, dogoverlay],
+    target: [origin, dogoverlay, laser],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
-  await wait(1000)
+  //await wait(1000)
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNVRC",
     payload: osc,
   });
-  /* PostMan.PostMessage({
+  PostMan.PostMessage({
     target: origin,
     type: "ASSIGNHMD",
     payload: hmd,
-  }); */
-  /* PostMan.PostMessage({
+  });
+  PostMan.PostMessage({
     target: laser,
     type: "ASSIGNINPUT",
     payload: input,
-  }); */
-  /* PostMan.PostMessage({
+  });
+  PostMan.PostMessage({
     target: origin,
     type: "STARTORIGIN",
     payload: {
       name: "originoverlay",
       texture: "../resources/P1.png",
     },
-  }); */
-  /* PostMan.PostMessage({
+  });
+  PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
     payload: null
   });
- */
+
 
 
   /* PostMan.PostMessage({
@@ -244,7 +254,7 @@ async function main() {
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
   state.overlays.push(dogoverlay)
   //state.overlays.push(dogoverlay2)
-  //inputloop(input);
+  inputloop(input);
 }
 
 async function spawnOvelay(name:string) {
