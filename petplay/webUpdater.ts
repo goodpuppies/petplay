@@ -2,10 +2,9 @@ import { PostMan, wait } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
-import { WebCapturer } from "../classes/WebCapturer/wcclass.ts";
+import { IpcCapturer, type CapturedIpcFrame } from "../classes/IpcCapturer/ipc_capturer_class.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { setImmediate } from "node:timers";
-import { Buffer } from "node:buffer";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 import { join } from "jsr:@std/path@^1.0.6";
@@ -19,7 +18,7 @@ interface frame {
 }
 
 interface frametype {
-  pixels: Uint8Array<ArrayBufferLike>,
+  pixels: Uint8Array,
   width: number,
   height: number
 }
@@ -31,7 +30,7 @@ const state = {
   glManager: null as OpenGLManager | null,
   isRunning: false as boolean,
   framesource: null as string | null,
-  webCapturer: null as WebCapturer | null,
+  ipcCapturer: null as IpcCapturer | null,
   currentFrame: null as frametype | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
   vrSystem: null as OpenVR.IVRSystem | null,
@@ -134,41 +133,27 @@ new PostMan(state, {
 
     CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
   },
-  /* HMDPOSE: (payload: OpenVR.TrackedDevicePose) => {
+  HMDPOSE: (payload: OpenVR.TrackedDevicePose) => {
     state.hmdpose = payload
-    state.screenCapturer?.sendWsMsg(JSON.stringify(payload))
-  } */
+    // Pose sending via IPC will be handled separately later
+  } 
 } as const);
 
-function INITSCREENCAP(): WebCapturer {
-  //write temp
-
-
-  const fullPath = join(fromFileUrl(import.meta.url), "../../resources/denotauri.exe");
-  console.log("Trying to read", fullPath);
-  const dll = Deno.readFileSync(fullPath);
-  const tmp = Deno.makeTempFileSync({ suffix: '.exe' });
-
-  Deno.writeFileSync(tmp, dll);
-  console.log("Temporary file dumped:", tmp);
-
-
-  
-  const capturer = new WebCapturer({
-    debug: false,
+function INITIPCCAP(): IpcCapturer {
+  const capturer = new IpcCapturer({
+    debug: false, 
     onStats: ({ fps, avgLatency }) => {
-      CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+      CustomLogger.log("screencap", `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
     },
-    executablePath: tmp
   });
   
   return capturer;
 }
 
-async function WebCapLoop(
+async function IpcCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) { 
-  console.log("webcaploop starting - using push notifications")
+  console.log("IpcCapLoop starting - using push notifications")
   
   // Track if we're currently processing a frame
   let processingFrame = false; 
@@ -186,7 +171,7 @@ async function WebCapLoop(
       // Set flag to prevent parallel processing
       processingFrame = true;
       
-      if (!state.framesource && !state.webCapturer) throw new Error("no framesource")
+      if (!state.framesource && !state.ipcCapturer) throw new Error("no framesource or ipc capturer")
       if (!state.overlayClass) throw new Error("no overlay")
       if (!state.overlayHandle) throw new Error("no overlay")
       
@@ -248,8 +233,8 @@ async function WebCapLoop(
           }
         }
         
-        if (state.webCapturer) {
-          state.webCapturer?.sendWsMsg(JSON.stringify(timestampedPose));
+        if (state.ipcCapturer) {
+          // Pose sending via IPC will be handled separately later
         }
       }
       // ==========================================
@@ -258,7 +243,7 @@ async function WebCapLoop(
       
       // Get latest frame with minimal overhead
       const preGetFrameTime = Date.now();
-      const capturedFrame = await state.webCapturer!.getLatestFrame();
+      const capturedFrame: CapturedIpcFrame | null = await state.ipcCapturer!.getLatestFrame();
       const postGetFrameTime = Date.now();
       const getFrameTime = postGetFrameTime - preGetFrameTime;
       
@@ -267,6 +252,8 @@ async function WebCapLoop(
         processingFrame = false;
         return;
       }
+      
+      console.log(`[WebUpdater] processLatestFrame: Received frame. Width=${capturedFrame.width}, Height=${capturedFrame.height}, PixelData type=${typeof capturedFrame.pixelData}, length=${capturedFrame.pixelData?.byteLength}`); // DEBUG
       
       // Age-based frame dropping - drop frames that are too old to be relevant
       const now = Date.now();
@@ -289,9 +276,7 @@ async function WebCapLoop(
         //console.log(`Dropping stale frame: age ${frameAge}ms exceeds threshold ${MAX_FRAME_AGE_MS}ms (consecutive: ${consecutiveDrops})`);
         
         // Reset the frame ready flag even though we're not processing this frame
-        if (state.webCapturer) {
-          state.webCapturer.resetFrameReadyFlag();
-        }
+        // Resetting the flag is now handled internally by getLatestFrame in IpcCapturer
         
         consecutiveDrops++;
         processingFrame = false;
@@ -307,43 +292,29 @@ async function WebCapLoop(
         lastProcessedTime = now;
       }
       
-      const frame = {
-        pixels: capturedFrame.data,
-        width: capturedFrame.width,
-        height: capturedFrame.height
-      };
-      state.currentFrame = frame;
-      
-      if (!capturedFrame.timestamp) { throw new Error("no timestamp") }
-      const frameTimestamp = capturedFrame.timestamp;
-      const frameAvailableTime = capturedFrame.frameAvailableTime;
-      const poseId = capturedFrame.poseId;
-      
-      //console.log(`getFrameTime: ${getFrameTime} ms`);
+      state.currentFrame = capturedFrame;
       
       // Timestamp before texture creation
       const textureCreationStartTime = Date.now();
       
       // IMPORTANT: Get historically accurate pose for this frame's timestamp
       // Use the exact pose ID if available
-      const historicalPose = poseId ? 
-                             state.getPoseById(poseId) : 
-                             state.getClosestPose(frameTimestamp);
+      const historicalPose = state.hmdpose;
       
       // Pass the historical pose directly to the texture creation function
       // instead of modifying the global state
-      createTextureFromData(frame.pixels, frame.width, frame.height, historicalPose);
+      createTextureFromData(capturedFrame.pixelData, capturedFrame.width, capturedFrame.height, historicalPose);
       
       // Calculate end-to-end latency with push model
       const endTime = Date.now();
-      const e2eLatency = endTime - frameTimestamp; // End-to-end latency
+      const e2eLatency = endTime - capturedFrame.timestamp; // End-to-end latency
       const textureTime = endTime - textureCreationStartTime; // Time spent in texture creation
       
       // Calculate additional timings if available
       let webCapLoopLatency = "";
-      if (frameAvailableTime) {
+      if (capturedFrame.frameAvailableTime) {
         // Time from frame available in shared memory to texture creation
-        const frameAvailToTextureTime = textureCreationStartTime - frameAvailableTime;
+        const frameAvailToTextureTime = textureCreationStartTime - capturedFrame.frameAvailableTime;
         
         // Time from getLatestFrame to texture creation
         const getFrameToTextureTime = textureCreationStartTime - preGetFrameTime;
@@ -358,13 +329,15 @@ async function WebCapLoop(
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
       if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
 
-      state.overlayClass.WaitFrameSync(100)
+      // REMOVE WaitFrameSync - let the push model drive updates
+      // state.overlayClass.WaitFrameSync(100) 
       
-      // CRITICAL FIX: Reset the frame ready flag after processing to prevent timestamp accumulation
-      // Without this, old frames stack up causing the FrameAvail→Texture time to grow continuously
+      // CRITICAL FIX: Resetting the flag is handled internally by getLatestFrame in IpcCapturer
+      /*
       if (state.webCapturer) {
         state.webCapturer.resetFrameReadyFlag();
       }
+      */
     } catch (error) {
       console.error("Error processing frame:", error);
     } finally {
@@ -374,11 +347,11 @@ async function WebCapLoop(
   }
   
   // Setup for new frame notification with callback
-  if (state.webCapturer) {
+  if (state.ipcCapturer) { 
     // Register callback for immediate processing when new frames arrive
-    state.webCapturer.onNewFrame(processLatestFrame);
+    state.ipcCapturer.onNewFrame(processLatestFrame); 
     
-    console.log("Push notification system ready for frames");
+    console.log("IPC Push notification system ready for frames");
   } else if (state.framesource) {
     console.log("Remote frame source - not using push model");
     
@@ -395,6 +368,13 @@ async function WebCapLoop(
 }
 
 function splitSBSTexture(pixels: Uint8Array, width: number, height: number): { left: Uint8Array, right: Uint8Array } {
+  console.log(`[WebUpdater] splitSBSTexture: Received sourceBuffer type=${typeof pixels}, length=${pixels?.byteLength}`); // DEBUG
+  
+  if (!pixels) {
+    console.error("splitSBSTexture received undefined sourceBuffer!");
+    throw new Error("splitSBSTexture received undefined sourceBuffer!"); // Let's make it throw
+  }
+  
   const eyeWidth = width / 2;
   const eyeByteWidth = eyeWidth * 4; // Assuming RGBA format (4 bytes per pixel)
   const totalByteWidth = width * 4;
@@ -476,8 +456,11 @@ function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Fl
 }
 
 function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null): void {
-  if (!state.glManager) { throw new Error("glManager is null"); }
-  if (!state.vrSystem) { throw new Error("vrSystem is null"); }
+  console.log(`[WebUpdater] createTextureFromData: Received pixels type=${typeof pixels}, length=${pixels?.byteLength}, width=${width}, height=${height}`); // DEBUG
+  
+  if (!state.overlayClass || !state.overlayHandle) {
+    throw new Error("Missing required state properties for texture creation");
+  }
   
   // Use the provided render pose if available, otherwise fall back to the current state.hmdpose
   const renderHmdPose = renderPose || state.hmdpose;
@@ -588,9 +571,9 @@ function main() {
   if (!state.overlayHandle) throw new Error("no overlayhandle")
   
   if (!state.framesource) { 
-    //native capture mode
-    state.webCapturer = INITSCREENCAP();
-    state.webCapturer.start()
+    // native capture mode using IPC
+    state.ipcCapturer = INITIPCCAP(); 
+    state.ipcCapturer.start() 
   }
 
   state.isRunning = true;
@@ -626,15 +609,15 @@ function main() {
     eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto,
   };
   const [textureStructPtr, _textureStructView ] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct)
-  WebCapLoop(textureStructPtr);
+  IpcCapLoop(textureStructPtr);
 }
 
 globalThis.addEventListener("unload", cleanup);
 
 async function cleanup() {
   state.isRunning = false;
-  if (state.webCapturer) {
-    await state.webCapturer.dispose();
-    state.webCapturer = null;
+  if (state.ipcCapturer) { 
+    await state.ipcCapturer.dispose(); 
+    state.ipcCapturer = null; 
   }
 }

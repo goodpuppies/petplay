@@ -243,7 +243,7 @@ new PostMan(state, {
 
 let actionSetHandle: bigint
 let error;
-const manifestPath = Deno.realPathSync("../../resources/actions.json");
+const manifestPath = Deno.realPathSync("resources/actions.json");
 
 function main() {
 
