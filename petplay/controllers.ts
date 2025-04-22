@@ -26,7 +26,7 @@ new PostMan(state, {
   SETOVERLAYHANDLE: (payload: bigint) => { state.targetOverlayHandle = payload },
   SETOVERLAYACTOR: (payload: string) => {state.overlayActor = payload},
   SETLASER: (payload: string) => { state.laser = payload },
-  INITINPUT: async (payload)  => {
+  INITINPUT: (payload)  => {
     const inputPtr = Deno.UnsafePointer.create(payload[0]);
     const overlayPtr = Deno.UnsafePointer.create(payload[1])
     state.vrInput = new OpenVR.IVRInput(inputPtr);
@@ -241,6 +241,9 @@ new PostMan(state, {
   }
 } as const);
 
+let actionSetHandle: bigint
+let error;
+const manifestPath = Deno.realPathSync("../../resources/actions.json");
 
 function main() {
 
@@ -300,10 +303,7 @@ function updateActionState() {
 //#region boilerplate data setup
 
 
-let actionSetHandle:bigint
-let error;
 
-const manifestPath = Deno.realPathSync("./resources/actions.json");
 
 
 //get action set handle
