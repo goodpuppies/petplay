@@ -253,7 +253,7 @@ async function IpcCapLoop(
         return;
       }
       
-      console.log(`[WebUpdater] processLatestFrame: Received frame. Width=${capturedFrame.width}, Height=${capturedFrame.height}, PixelData type=${typeof capturedFrame.pixelData}, length=${capturedFrame.pixelData?.byteLength}`); // DEBUG
+      //console.log(`[WebUpdater] processLatestFrame: Received frame. Width=${capturedFrame.width}, Height=${capturedFrame.height}, PixelData type=${typeof capturedFrame.pixelData}, length=${capturedFrame.pixelData?.byteLength}`); // DEBUG
       
       // Age-based frame dropping - drop frames that are too old to be relevant
       const now = Date.now();
@@ -368,7 +368,7 @@ async function IpcCapLoop(
 }
 
 function splitSBSTexture(pixels: Uint8Array, width: number, height: number): { left: Uint8Array, right: Uint8Array } {
-  console.log(`[WebUpdater] splitSBSTexture: Received sourceBuffer type=${typeof pixels}, length=${pixels?.byteLength}`); // DEBUG
+  //console.log(`[WebUpdater] splitSBSTexture: Received sourceBuffer type=${typeof pixels}, length=${pixels?.byteLength}`); // DEBUG
   
   if (!pixels) {
     console.error("splitSBSTexture received undefined sourceBuffer!");
@@ -456,7 +456,7 @@ function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Fl
 }
 
 function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null): void {
-  console.log(`[WebUpdater] createTextureFromData: Received pixels type=${typeof pixels}, length=${pixels?.byteLength}, width=${width}, height=${height}`); // DEBUG
+  //console.log(`[WebUpdater] createTextureFromData: Received pixels type=${typeof pixels}, length=${pixels?.byteLength}, width=${width}, height=${height}`); // DEBUG
   
   if (!state.overlayClass || !state.overlayHandle) {
     throw new Error("Missing required state properties for texture creation");

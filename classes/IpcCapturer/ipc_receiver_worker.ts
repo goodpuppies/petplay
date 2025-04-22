@@ -1,10 +1,10 @@
 // classes/IpcCapturer/ipc_receiver_worker.ts
-import { listen, type NamedPipeListener } from "jsr:@milly/namedpipe@^1.1"; // Use listen
+import { listen, type NamedPipeListener, type NamedPipeConn } from "jsr:@milly/namedpipe@^1.1"; // Use listen
 
 let pipeListener: NamedPipeListener | null = null;
 let isListening = false;
 let stopListening = false;
-let currentConnection: Deno.Conn | null = null; // Keep track of the current connection
+let currentConnection: NamedPipeConn | null = null; // Keep track of the current connection
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
 // --- SharedArrayBuffer State ---
@@ -24,7 +24,7 @@ let internalBufferSize = 0; // Size of the worker's internal read buffer
 const worker = self as unknown as Worker;
 
 // Adapted from pipeserver.ts, integrated with SAB and worker communication
-async function handlePersistentConnection(conn: Deno.Conn): Promise<void> {
+async function handlePersistentConnection(conn: NamedPipeConn): Promise<void> {
   console.log('[IPC Worker] Client connected to pipe.');
   currentConnection = conn;
   worker.postMessage({ type: 'connected' });
