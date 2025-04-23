@@ -238,7 +238,23 @@ async function IpcCapLoop(
         }
         
         if (state.ipcCapturer) {
-          // Pose sending via IPC will be handled separately later
+          // Original HmdMatrix34 (3x4, row-major, nested array)
+          const m34 = hmdPose.mDeviceToAbsoluteTracking.m;
+          
+          // Convert to 16-element Float32Array (4x4 matrix, row-major)
+          // Add padding [0, 0, 0, 1] for the last row
+          const matrix16 = new Float32Array([
+            // Row 0
+            m34[0][0], m34[0][1], m34[0][2], m34[0][3],
+            // Row 1
+            m34[1][0], m34[1][1], m34[1][2], m34[1][3],
+            // Row 2
+            m34[2][0], m34[2][1], m34[2][2], m34[2][3],
+            // Row 3 (Padding)
+            0,         0,         0,         1
+          ]);
+
+          state.ipcCapturer.sendTransformMatrix(matrix16); // Pass the Float32Array directly
         }
       }
 

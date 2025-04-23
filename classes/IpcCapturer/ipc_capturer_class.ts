@@ -254,28 +254,26 @@ export class IpcCapturer {
   /**
    * Sends the XR device's 4x4 transform matrix to the IPC worker.
    * The worker will then forward this data via the transform named pipe.
-   * @param matrix A 16-element array representing the 4x4 matrix (column-major or row-major, ensure consistency with receiver).
+   * @param matrixData A Float32Array representing the 4x4 matrix (column-major or row-major, ensure consistency with receiver).
    */
-  public sendTransformMatrix(matrix: number[]): void {
+  public sendTransformMatrix(matrixData: Float32Array): void {
     if (!this.worker) {
       console.warn("[IpcCapturer] Worker not initialized, cannot send transform matrix.");
       return;
     }
 
-    if (!matrix || matrix.length !== 16) {
-        console.error("[IpcCapturer] Invalid matrix provided to sendTransformMatrix. Expected 16 numbers.");
+    // Check if it's a Float32Array and has the correct byte length (16 floats * 4 bytes/float = 64 bytes)
+    if (!(matrixData instanceof Float32Array) || matrixData.byteLength !== 64) {
+        console.error(`[IpcCapturer] Invalid matrix provided to sendTransformMatrix. Expected Float32Array with byteLength 64, received:`, matrixData);
         // Per user preference, throw an error for undefined behavior
-        throw new Error("Invalid matrix provided to sendTransformMatrix. Expected a 16-element number array.");
+        throw new Error("Invalid matrix provided to sendTransformMatrix. Expected Float32Array with byteLength 64.");
     }
-
-    // Convert to Float32Array for efficient transfer
-    const matrixData = new Float32Array(matrix);
 
     // Post message to the worker
     // Note: Transferable objects are not strictly needed for Float32Array to workers unless very large, 
     // but it's good practice if performance becomes critical.
     // For now, standard postMessage is fine.
-    this.worker.postMessage({ type: 'sendTransform', matrix: matrixData });
+    this.worker.postMessage({ type: 'sendTransform', matrix: matrixData }); 
     // console.log("[IpcCapturer] Sent transform matrix to worker."); // Optional logging
   }
 
