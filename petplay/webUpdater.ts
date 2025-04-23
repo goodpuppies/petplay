@@ -164,15 +164,13 @@ async function IpcCapLoop(
   
   // Function to process the latest frame from webcapturer
   async function processLatestFrame() {
-    console.log("frame")
     // If already processing a frame, don't start another one
     if (processingFrame) {
-      console.log("still processing frame")
+      //console.log("still processing frame")
       return;
     }
     
     try {
-      console.log("frame")
       // Set flag to prevent parallel processing
       processingFrame = true;
       
@@ -180,6 +178,7 @@ async function IpcCapLoop(
       if (!state.overlayClass) throw new Error("no overlay")
       if (!state.overlayHandle) throw new Error("no overlay")
       
+
       // ==========================================
       // INTEGRATED HMD POSE TRACKING - Get the latest HMD pose first
       // ==========================================
@@ -242,21 +241,26 @@ async function IpcCapLoop(
           // Pose sending via IPC will be handled separately later
         }
       }
+
       // ==========================================
       // END OF INTEGRATED HMD POSE TRACKING
       // ==========================================
       
       // Get latest frame with minimal overhead
+      if (!state.ipcCapturer) throw new Error("no ipc capturer")
+
       const preGetFrameTime = Date.now();
-      const capturedFrame: CapturedIpcFrame | null = await state.ipcCapturer!.getLatestFrame();
+      const capturedFrame: CapturedIpcFrame | null = await state.ipcCapturer.getLatestFrame();
       const postGetFrameTime = Date.now();
       const getFrameTime = postGetFrameTime - preGetFrameTime;
-      
+
+
       if (capturedFrame === null) { 
         console.log("no frame available");
         processingFrame = false;
         return;
       }
+
       
       //console.log(`[WebUpdater] processLatestFrame: Received frame. Width=${capturedFrame.width}, Height=${capturedFrame.height}, PixelData type=${typeof capturedFrame.pixelData}, length=${capturedFrame.pixelData?.byteLength}`); // DEBUG
       
@@ -296,7 +300,7 @@ async function IpcCapLoop(
         consecutiveDrops = 0;
         lastProcessedTime = now;
       }
-      
+
       state.currentFrame = capturedFrame;
       
       // Timestamp before texture creation

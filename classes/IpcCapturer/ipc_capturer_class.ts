@@ -30,7 +30,7 @@ type WorkerStopMessage = { type: 'stop' };
 type MainThreadMessage = WorkerInitMessage | WorkerConnectMessage | WorkerStopMessage;
 
 type WorkerReadyMessage = { type: 'workerReady' };
-type WorkerListeningMessage = { type: 'listening'; pipeName: string };
+type WorkerListeningMessage = { type: 'framePipeListening'; pipeName: string };
 type WorkerConnectedMessage = { type: 'connected' };
 type WorkerDisconnectedMessage = { type: 'disconnected' };
 type WorkerFrameReadyMessage = { type: 'frameReady'; width: number; height: number /* Add other relevant info if needed */ };
@@ -135,7 +135,7 @@ export class IpcCapturer {
           this.log(`Worker message: ${msg.type}`, msg);
 
           switch (msg.type) {
-            case 'listening':
+            case 'framePipeListening':
               this.isStarted = true;
               this.log(`Worker listening on pipe: ${msg.pipeName}`);
               resolve(); // Start successful
@@ -228,7 +228,6 @@ export class IpcCapturer {
     // Notify callbacks
     this.onNewFrameCallbacks.forEach(callback => {
       try {
-        console.log("[IpcCapturer] Notifying onNewFrame callback");
             callback();
         } catch (e) {
             console.error("[IpcCapturer] Error in onNewFrame callback:", e);
@@ -284,21 +283,17 @@ export class IpcCapturer {
    * creates a COPY of the pixel data, and resets the flag.
    * Returns null if no *new* frame is available since the last call.
    */
-  async getLatestFrame(): Promise<CapturedIpcFrame | null> {
+  getLatestFrame(): CapturedIpcFrame | null {
     if (!this.isStarted) {
-      this.log("getLatestFrame called before start, initiating start...");
-      try {
-         await this.start();
-      } catch (err) {
-         console.error("[IpcCapturer] Failed to start automatically for getLatestFrame:", err);
-         throw new Error("IPC Capturer failed to start.");
-      }
+      throw new Error("getLatestFrame called before start");
     }
-
+    
     // Check the flag. If 0, no new data is ready.
     if (Atomics.load(this.frameReadyFlag, 0) === 0) {
+      console.log("no frame available")
         return null; 
     }
+
 
     // Flag is 1: New data available. Read, copy, and reset flag.
     try {
