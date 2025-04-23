@@ -25,7 +25,7 @@ type WorkerInitMessage = {
   headerSize: number;
   framePixelSize: number;
 };
-type WorkerConnectMessage = { type: 'connect'; pipeName: string };
+type WorkerConnectMessage = { type: 'connectFramePipe'; pipeName: string };
 type WorkerStopMessage = { type: 'stop' };
 type MainThreadMessage = WorkerInitMessage | WorkerConnectMessage | WorkerStopMessage;
 
@@ -178,7 +178,7 @@ export class IpcCapturer {
         await new Promise(res => setTimeout(res, 10)); 
 
         // Tell worker to connect
-        const connectMsg: WorkerConnectMessage = { type: 'connect', pipeName: this.options.pipeName };
+        const connectMsg: WorkerConnectMessage = { type: 'connectFramePipe', pipeName: this.options.pipeName };
         this.worker.postMessage(connectMsg);
         this.log(`Sent 'connect' for pipe: ${this.options.pipeName}`);
 
@@ -227,7 +227,8 @@ export class IpcCapturer {
 
     // Notify callbacks
     this.onNewFrameCallbacks.forEach(callback => {
-        try {
+      try {
+        console.log("[IpcCapturer] Notifying onNewFrame callback");
             callback();
         } catch (e) {
             console.error("[IpcCapturer] Error in onNewFrame callback:", e);
@@ -251,8 +252,35 @@ export class IpcCapturer {
     };
   }
 
-  /** 
-   * Gets the latest frame data. Checks the sync flag, reads from SharedArrayBuffer,
+  /**
+   * Sends the XR device's 4x4 transform matrix to the IPC worker.
+   * The worker will then forward this data via the transform named pipe.
+   * @param matrix A 16-element array representing the 4x4 matrix (column-major or row-major, ensure consistency with receiver).
+   */
+  public sendTransformMatrix(matrix: number[]): void {
+    if (!this.worker) {
+      console.warn("[IpcCapturer] Worker not initialized, cannot send transform matrix.");
+      return;
+    }
+
+    if (!matrix || matrix.length !== 16) {
+        console.error("[IpcCapturer] Invalid matrix provided to sendTransformMatrix. Expected 16 numbers.");
+        // Per user preference, throw an error for undefined behavior
+        throw new Error("Invalid matrix provided to sendTransformMatrix. Expected a 16-element number array.");
+    }
+
+    // Convert to Float32Array for efficient transfer
+    const matrixData = new Float32Array(matrix);
+
+    // Post message to the worker
+    // Note: Transferable objects are not strictly needed for Float32Array to workers unless very large, 
+    // but it's good practice if performance becomes critical.
+    // For now, standard postMessage is fine.
+    this.worker.postMessage({ type: 'sendTransform', matrix: matrixData });
+    // console.log("[IpcCapturer] Sent transform matrix to worker."); // Optional logging
+  }
+
+  /** Gets the latest frame data. Checks the sync flag, reads from SharedArrayBuffer,
    * creates a COPY of the pixel data, and resets the flag.
    * Returns null if no *new* frame is available since the last call.
    */

@@ -164,10 +164,15 @@ async function IpcCapLoop(
   
   // Function to process the latest frame from webcapturer
   async function processLatestFrame() {
+    console.log("frame")
     // If already processing a frame, don't start another one
-    if (processingFrame) return;
+    if (processingFrame) {
+      console.log("still processing frame")
+      return;
+    }
     
     try {
+      console.log("frame")
       // Set flag to prevent parallel processing
       processingFrame = true;
       
