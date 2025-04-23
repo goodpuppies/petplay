@@ -5,9 +5,8 @@ let pipeListener: NamedPipeListener | null = null;
 let isListening = false;
 let stopListening = false;
 let currentConnection: NamedPipeConn | null = null; // Keep track of the current connection
-let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+// Removed currentReader
 
-// --- SharedArrayBuffer State ---
 let sharedBuffer: SharedArrayBuffer | null = null;
 let sharedView: DataView | null = null;
 let frameReadyFlag: Int32Array | null = null;
@@ -29,114 +28,62 @@ async function handlePersistentConnection(conn: NamedPipeConn): Promise<void> {
   currentConnection = conn;
   worker.postMessage({ type: 'connected' });
   
-  currentReader = conn.readable.getReader();
-  const reader = currentReader; // Local ref for safety within loop
-
-  // Pre-allocated buffer and pointers for reading from the pipe
-  let buffer = new Uint8Array(internalBufferSize);
-  let readPos = 0;  // Start position of unread data in 'buffer'
-  let writePos = 0; // End position of unread data in 'buffer'
+  // Use direct reads into SharedArrayBuffer for optimal performance
+  if (!sharedBuffer || !frameReadyFlag) {
+    console.error("[IPC Worker] SharedArrayBuffer not initialized. Aborting.");
+    return;
+  }
+  // Helper to read exactly `target.length` bytes
+  async function readExactly(conn: NamedPipeConn, target: Uint8Array): Promise<boolean> {
+    let offset = 0;
+    while (offset < target.length && !stopListening) {
+      const n = await conn.read(target.subarray(offset));
+      if (n === null) return false;
+      if (n > 0) offset += n;
+    }
+    return offset === target.length;
+  }
+  // Pre-allocate header buffer and typed-array views
+  const headerBuf = new Uint8Array(METADATA_SIZE);
+  const headerView = new DataView(headerBuf.buffer);
+  const metaArray = new Uint32Array(sharedBuffer, 0, METADATA_SIZE / 4);
   let totalFramesReceived = 0;
 
   try {
     while (!stopListening) {
-      // --- Compact buffer if necessary --- 
-      if (readPos > 0 && writePos > readPos) {
-         buffer.set(buffer.subarray(readPos, writePos), 0);
-         writePos -= readPos;
-         readPos = 0;
-      }
-      // Check if buffer is full after compaction
-      if (writePos === buffer.byteLength) {
-          console.error("[IPC Worker] Internal read buffer full, cannot read more data. Potential logic error or frame size mismatch.");
-          // Consider how to recover - maybe discard buffer and wait for next frame?
-          // For now, break the read loop for this connection.
-          break; 
-      }
+      // Start per-frame performance timing
+      const frameStart = performance.now();
+      // Read header
+      const ok = await readExactly(conn, headerBuf);
+      const tHeader = performance.now();
+      if (!ok || stopListening) break;
+      const w = headerView.getUint32(0, true);
+      const h = headerView.getUint32(WIDTH_BYTES, true);
+      const pixelSize = w * h * 4;
 
-      // --- Read more data into the buffer --- 
-      const { value, done } = await reader.read();
+      // Write metadata to SAB
+      const tMetaStart = performance.now();
+      Atomics.store(frameReadyFlag, 0, 0);
+      metaArray[0] = w;
+      metaArray[1] = h;
+      const tMeta = performance.now();
 
-      if (done || stopListening) {
-        console.log(`[IPC Worker] Pipe read stream closed (Done: ${done}, Stop: ${stopListening}).`);
-        break;
-      }
-      if (!value || value.byteLength === 0) {
-        console.log('[IPC Worker] Read 0 bytes, continuing.');
-        continue; // Should not happen often with named pipes but handle defensively
-      }
+      // Read pixels directly into SAB
+      const tPixStart = performance.now();
+      const pixelView = new Uint8Array(sharedBuffer, HEADER_SIZE, pixelSize);
+      const ok2 = await readExactly(conn, pixelView);
+      if (!ok2 || stopListening) break;
 
-      // Append new data
-      const spaceAvailable = buffer.byteLength - writePos;
-      const bytesToCopy = Math.min(value.byteLength, spaceAvailable);
-      if (bytesToCopy < value.byteLength) {
-          console.warn(`[IPC Worker] Read buffer overflow imminent. Received ${value.byteLength}, space ${spaceAvailable}. Truncating read.`);
-      }
-      buffer.set(value.subarray(0, bytesToCopy), writePos);
-      writePos += bytesToCopy;
-
-      // --- Process complete frames from the buffer ---
-      while (writePos - readPos >= METADATA_SIZE) {
-        const metadataView = new DataView(buffer.buffer, buffer.byteOffset + readPos, METADATA_SIZE);
-        const width = metadataView.getUint32(0, true);
-        const height = metadataView.getUint32(WIDTH_BYTES, true);
-        const requiredPixelSize = width * height * 4;
-        expectedFrameSize = METADATA_SIZE + requiredPixelSize;
-
-        if (writePos - readPos >= expectedFrameSize) {
-          const frameData = buffer.subarray(readPos, readPos + expectedFrameSize);
-          readPos += expectedFrameSize; // Consume frame from buffer
-
-          // --- Process Frame into SharedArrayBuffer ---
-          try {
-            if (!sharedBuffer || !sharedView || !frameReadyFlag || !sharedPixelData) {
-              console.error("[IPC Worker] SharedArrayBuffer not initialized. Skipping frame.");
-              continue;
-            }
-
-            // Lock not strictly needed with single worker write, but good practice
-            Atomics.store(frameReadyFlag, 0, 0); // 0 = writing/not ready
-
-            // 1. Parse Metadata (from pipe data)
-            const receivedMetadataView = new DataView(frameData.buffer, frameData.byteOffset, METADATA_SIZE);
-            const receivedWidth = receivedMetadataView.getUint32(0, true);
-            const receivedHeight = receivedMetadataView.getUint32(WIDTH_BYTES, true);
-
-            // 2. Write Metadata to Shared Buffer
-            sharedView.setUint32(0, receivedWidth, true);
-            sharedView.setUint32(WIDTH_BYTES, receivedHeight, true);
-            
-            // 3. Write Pixel Data to Shared Buffer
-            const pixelDataOffset = METADATA_SIZE;
-            const pixelData = frameData.subarray(pixelDataOffset);
-            sharedPixelData.set(pixelData); // Direct copy
-
-            // 4. Mark Frame Ready
-            Atomics.store(frameReadyFlag, 0, 1); // 1 = ready
-
-            // 5. Notify Main Thread (Push Model)
-            worker.postMessage({ 
-              type: 'frameReady',
-              width: receivedWidth,
-              height: receivedHeight
-            });
-            totalFramesReceived++;
-            // Log periodically
-            if (totalFramesReceived % 30 === 0) {
-              // console.log(`[IPC Worker] Processed ${totalFramesReceived} frames.`);
-            }
-
-          } catch (err) {
-            console.error("[IPC Worker] Error processing frame into SharedArrayBuffer:", err);
-            Atomics.store(frameReadyFlag!, 0, 0); // Ensure flag is reset on error
-            // Use throw error for any undefined behaviour as per user rules
-            throw new Error(`Error processing frame: ${err}`);
-          }
-          // ----------------------------------------
-        } else {
-          break;
-        }
-      }
+      const tNotifyStart = performance.now();
+      Atomics.store(frameReadyFlag, 0, 1);
+      worker.postMessage({ type: 'frameReady', width: w, height: h });
+      const tNotify = performance.now();
+      totalFramesReceived++;
+      console.log(
+        `[IPC Worker] Frame ${totalFramesReceived}: total ${(tNotify - frameStart).toFixed(2)}ms` +
+        ` (hdr ${(tHeader - frameStart).toFixed(2)}ms, meta ${(tMeta - tMetaStart).toFixed(2)}ms, ` +
+        `pix ${(tNotifyStart - tPixStart).toFixed(2)}ms, notify ${(tNotify - tNotifyStart).toFixed(2)}ms)`
+      );
     }
   } catch (error) {
     if (!stopListening) { // Don't log error if we stopped intentionally
@@ -146,12 +93,9 @@ async function handlePersistentConnection(conn: NamedPipeConn): Promise<void> {
   } finally {
     console.log('[IPC Worker] Closing pipe connection read loop.');
     isListening = false; // Mark as not actively listening on this connection
-    currentReader = null;
+    // Removed reader; no cancellation required
     currentConnection = null;
-    // Don't close the reader here if it was cancelled by stopListening
-    if (!stopListening && reader) {
-       try { await reader.cancel(); } catch(e) { console.warn("[IPC Worker] Error cancelling reader:", e); }
-    }
+    // Note: we skip cancelling any stream reader
     try { await conn.close(); } catch (e) { console.warn("[IPC Worker] Error closing connection:", e); }
     // Only post disconnected if we weren't explicitly stopped
     if (!stopListening) {
@@ -231,12 +175,7 @@ worker.onmessage = async (e: MessageEvent) => {
     stopListening = true;
     isListening = false;
 
-    // Cancel any ongoing read operation
-    if (currentReader) {
-        console.log('[IPC Worker] Cancelling current reader...');
-        try { await currentReader.cancel(); } catch(e) { console.warn("[IPC Worker] Error cancelling reader during stop:", e); }
-        currentReader = null;
-    }
+    // Removed reader cancellation logic
     // Close the current connection if it exists
     if (currentConnection) {
         console.log('[IPC Worker] Closing current connection...');
