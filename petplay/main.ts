@@ -254,7 +254,7 @@ async function main() {
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
   state.overlays.push(dogoverlay)
   //state.overlays.push(dogoverlay2)
-  inputloop(input);
+  //inputloop(input);
 }
 
 async function spawnOvelay(name:string) {

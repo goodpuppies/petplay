@@ -2,13 +2,13 @@ import { PostMan, wait } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
-import { IpcCapturer, type CapturedIpcFrame } from "../classes/IpcCapturer/ipc_capturer_class.ts";
+import { ScreenCapturer, type CapturedFrame } from "../classes/CefCap/frame_receiver.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { setImmediate } from "node:timers";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
-import { multiplyMatrix } from "../classes/matrixutils.ts";
-import { join } from "jsr:@std/path@^1.0.6";
-import { fromFileUrl } from "jsr:@std/path@^1.0.6/windows/from-file-url";
+import {  invertMatrix4, scaleMatrix4} from "../classes/matrixutils.ts";
+
+import { splitSBSTexture } from "../classes/extrautils.ts";
 
 //takes an overlay handle and a frame source, updates overlay texture continuously
 interface frame {
@@ -29,11 +29,11 @@ const state = {
   overlayClass: null as OpenVR.IVROverlay | null,
   glManager: null as OpenGLManager | null,
   isRunning: false as boolean,
-  framesource: null as string | null,
-  ipcCapturer: null as IpcCapturer | null,
-  currentFrame: null as frametype | null,
+  Capturer: null as ScreenCapturer | null,
+  currentFrame: null as CapturedFrame | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
   vrSystem: null as OpenVR.IVRSystem | null,
+  socket: null as WebSocket | null, 
   
   // Sequential pose ID counter
   nextPoseId: 1,
@@ -113,18 +113,7 @@ new PostMan(state, {
     state.overlayClass = new OpenVR.IVROverlay(Deno.UnsafePointer.create(payload.overlayclass));
     state.overlayHandle = payload.overlayhandle
     console.log("we have overlayhandle", state.overlayHandle)
-    if (payload.framesource) state.framesource = payload.framesource
     main()
-  },
-  GETFRAME: (_payload: void): { pixels: string, width: number, height: number } | null => {
-    if (state.currentFrame == null) { return null }
-    // Convert Uint8Array pixels to base64 string for transport
-    const base64Pixels = Buffer.from(state.currentFrame.pixels).toString('base64');
-    return {
-      pixels: base64Pixels,
-      width: state.currentFrame.width,
-      height: state.currentFrame.height
-    }
   },
   INITOPENVR: (payload) => {
     const ptrn = payload;
@@ -139,8 +128,8 @@ new PostMan(state, {
   } 
 } as const);
 
-function INITIPCCAP(): IpcCapturer {
-  const capturer = new IpcCapturer({
+function INITIPCCAP(): ScreenCapturer {
+  const capturer = new ScreenCapturer ({
     debug: false, 
     onStats: ({ fps, avgLatency }) => {
       CustomLogger.log("screencap", `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
@@ -158,10 +147,7 @@ async function IpcCapLoop(
   // Track if we're currently processing a frame
   let processingFrame = false; 
   
-  // Track frame dropping statistics for recovery mechanism
-  let consecutiveDrops = 0;
-  let lastProcessedTime = Date.now();
-  
+
   // Function to process the latest frame from webcapturer
   async function processLatestFrame() {
     // If already processing a frame, don't start another one
@@ -174,7 +160,7 @@ async function IpcCapLoop(
       // Set flag to prevent parallel processing
       processingFrame = true;
       
-      if (!state.framesource && !state.ipcCapturer) throw new Error("no framesource or ipc capturer")
+      if (!state.Capturer) throw new Error("no framesource or ipc capturer")
       if (!state.overlayClass) throw new Error("no overlay")
       if (!state.overlayHandle) throw new Error("no overlay")
       
@@ -237,25 +223,7 @@ async function IpcCapLoop(
           }
         }
         
-        if (state.ipcCapturer) {
-          // Original HmdMatrix34 (3x4, row-major, nested array)
-          const m34 = hmdPose.mDeviceToAbsoluteTracking.m;
-          
-          // Convert to 16-element Float32Array (4x4 matrix, row-major)
-          // Add padding [0, 0, 0, 1] for the last row
-          const matrix16 = new Float32Array([
-            // Row 0
-            m34[0][0], m34[0][1], m34[0][2], m34[0][3],
-            // Row 1
-            m34[1][0], m34[1][1], m34[1][2], m34[1][3],
-            // Row 2
-            m34[2][0], m34[2][1], m34[2][2], m34[2][3],
-            // Row 3 (Padding)
-            0,         0,         0,         1
-          ]);
-
-          state.ipcCapturer.sendTransformMatrix(matrix16); // Pass the Float32Array directly
-        }
+        sendpose(hmdPose)
       }
 
       // ==========================================
@@ -263,125 +231,55 @@ async function IpcCapLoop(
       // ==========================================
       
       // Get latest frame with minimal overhead
-      if (!state.ipcCapturer) throw new Error("no ipc capturer")
-
-      const preGetFrameTime = Date.now();
-      const capturedFrame: CapturedIpcFrame | null = await state.ipcCapturer.getLatestFrame();
-      const postGetFrameTime = Date.now();
-      const getFrameTime = postGetFrameTime - preGetFrameTime;
+      if (!state.Capturer) throw new Error("no ipc capturer")
 
 
-      if (capturedFrame === null) { 
+
+
+
+      if (state.currentFrame === null) { 
         console.log("no frame available");
         processingFrame = false;
         return;
       }
 
-      
-      //console.log(`[WebUpdater] processLatestFrame: Received frame. Width=${capturedFrame.width}, Height=${capturedFrame.height}, PixelData type=${typeof capturedFrame.pixelData}, length=${capturedFrame.pixelData?.byteLength}`); // DEBUG
-      
-      // Age-based frame dropping - drop frames that are too old to be relevant
-      const now = Date.now();
-      const frameAge = now - capturedFrame.timestamp;
-      const MAX_FRAME_AGE_MS = 40; // Frames older than this will be dropped
-      
-      // Determine if we should process this frame
-      const shouldDrop = frameAge > MAX_FRAME_AGE_MS;
-      
-      // Recovery logic - if we've dropped too many consecutive frames,
-      // force processing of this frame to break out of the death spiral
-      const MAX_CONSECUTIVE_DROPS = 5;
-      const TIME_SINCE_LAST_PROCESSED = now - lastProcessedTime;
-      const FORCED_PROCESS_INTERVAL_MS = 100; // Force a frame every 200ms minimum
-      
-      const forceProcess = (consecutiveDrops >= MAX_CONSECUTIVE_DROPS) || 
-                          (TIME_SINCE_LAST_PROCESSED > FORCED_PROCESS_INTERVAL_MS);
-      
-      if (shouldDrop && !forceProcess) {
-        //console.log(`Dropping stale frame: age ${frameAge}ms exceeds threshold ${MAX_FRAME_AGE_MS}ms (consecutive: ${consecutiveDrops})`);
-        
-        // Reset the frame ready flag even though we're not processing this frame
-        // Resetting the flag is now handled internally by getLatestFrame in IpcCapturer
-        
-        consecutiveDrops++;
-        processingFrame = false;
-        return;
-      } else if (shouldDrop && forceProcess) {
-        // We're processing a stale frame to recover
-        console.log(`RECOVERY: Processing stale frame despite age ${frameAge}ms to prevent death spiral`);
-        consecutiveDrops = 0;
-        lastProcessedTime = now;
-      } else {
-        // Normal processing of a fresh frame
-        consecutiveDrops = 0;
-        lastProcessedTime = now;
-      }
 
-      state.currentFrame = capturedFrame;
-      
-      // Timestamp before texture creation
-      const textureCreationStartTime = Date.now();
-      
-      // IMPORTANT: Get historically accurate pose for this frame's timestamp
-      // Use the exact pose ID if available
+
+      state.currentFrame 
+
       const historicalPose = state.hmdpose;
       
       // Pass the historical pose directly to the texture creation function
       // instead of modifying the global state
-      createTextureFromData(capturedFrame.pixelData, capturedFrame.width, capturedFrame.height, historicalPose);
+      createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height, historicalPose);
+
       
-      // Calculate end-to-end latency with push model
-      const endTime = Date.now();
-      const e2eLatency = endTime - capturedFrame.timestamp; // End-to-end latency
-      const textureTime = endTime - textureCreationStartTime; // Time spent in texture creation
-      
-      // Calculate additional timings if available
-      let webCapLoopLatency = "";
-      if (capturedFrame.frameAvailableTime) {
-        // Time from frame available in shared memory to texture creation
-        const frameAvailToTextureTime = textureCreationStartTime - capturedFrame.frameAvailableTime;
-        
-        // Time from getLatestFrame to texture creation
-        const getFrameToTextureTime = textureCreationStartTime - preGetFrameTime;
-        
-        webCapLoopLatency = ` | FrameAvail→Texture: ${frameAvailToTextureTime.toFixed(0)} ms` +
-                             ` | GetFrame→Texture: ${getFrameToTextureTime.toFixed(0)} ms`;
-      }
-      
-      //console.log(`Push Notification E2E: ${e2eLatency.toFixed(0)} ms (Texture: ${textureTime.toFixed(0)} ms)${webCapLoopLatency}`);
-      
+
       // Update the texture in the overlay
+      //console.log("frame up")
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
       if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
 
-      // REMOVE WaitFrameSync - let the push model drive updates
-      // state.overlayClass.WaitFrameSync(100) 
+      state.overlayClass.WaitFrameSync(100) 
       
-      // CRITICAL FIX: Resetting the flag is handled internally by getLatestFrame in IpcCapturer
-      /*
-      if (state.webCapturer) {
-        state.webCapturer.resetFrameReadyFlag();
-      }
-      */
     } catch (error) {
       console.error("Error processing frame:", error);
     } finally {
       // Clear flag to allow processing next frame
+      await wait(1)
       processingFrame = false;
     }
   }
   
   // Setup for new frame notification with callback
-  if (state.ipcCapturer) { 
-    // Register callback for immediate processing when new frames arrive
-    state.ipcCapturer.onNewFrame(processLatestFrame); 
+  if (state.Capturer) { 
+    // Register callback for immediate processing when new frames arriveprocessLatestFrame
+    state.Capturer.onNewFrame((frame) => { 
+      state.currentFrame = frame
+      processLatestFrame()
+    }); 
     
     console.log("IPC Push notification system ready for frames");
-  } else if (state.framesource) {
-    console.log("Remote frame source - not using push model");
-    
-    // For remote frames only, maintain a traditional polling loop
-  
   } else {
     throw new Error("No frame source available");
   }
@@ -392,93 +290,6 @@ async function IpcCapLoop(
   }
 }
 
-function splitSBSTexture(pixels: Uint8Array, width: number, height: number): { left: Uint8Array, right: Uint8Array } {
-  //console.log(`[WebUpdater] splitSBSTexture: Received sourceBuffer type=${typeof pixels}, length=${pixels?.byteLength}`); // DEBUG
-  
-  if (!pixels) {
-    console.error("splitSBSTexture received undefined sourceBuffer!");
-    throw new Error("splitSBSTexture received undefined sourceBuffer!"); // Let's make it throw
-  }
-  
-  const eyeWidth = width / 2;
-  const eyeByteWidth = eyeWidth * 4; // Assuming RGBA format (4 bytes per pixel)
-  const totalByteWidth = width * 4;
-  const left = new Uint8Array(eyeWidth * height * 4);
-  const right = new Uint8Array(eyeWidth * height * 4);
-
-  for (let y = 0; y < height; y++) {
-    const rowOffset = y * totalByteWidth;
-    const destRowOffset = y * eyeByteWidth;
-
-    // Copy left half
-    left.set(pixels.subarray(rowOffset, rowOffset + eyeByteWidth), destRowOffset);
-    // Copy right half
-    right.set(pixels.subarray(rowOffset + eyeByteWidth, rowOffset + totalByteWidth), destRowOffset);
-  }
-  return { left, right };
-}
-
-function invertMatrix4(mat: Float32Array): Float32Array | null {
-  const out = new Float32Array(16);
-  const m = mat; // Alias for shorter lines
-
-  const m00 = m[0], m01 = m[1], m02 = m[2], m03 = m[3];
-  const m10 = m[4], m11 = m[5], m12 = m[6], m13 = m[7];
-  const m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
-  const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
-
-  const b00 = m00 * m11 - m01 * m10;
-  const b01 = m00 * m12 - m02 * m10;
-  const b02 = m00 * m13 - m03 * m10;
-  const b03 = m01 * m12 - m02 * m11;
-  const b04 = m01 * m13 - m03 * m11;
-  const b05 = m02 * m13 - m03 * m12;
-  const b06 = m20 * m31 - m21 * m30;
-  const b07 = m20 * m32 - m22 * m30;
-  const b08 = m20 * m33 - m23 * m30;
-  const b09 = m21 * m32 - m22 * m31;
-  const b10 = m21 * m33 - m23 * m31;
-  const b11 = m22 * m33 - m23 * m32;
-
-  // Calculate the determinant
-  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-
-  if (!det) {
-    console.error("Matrix is not invertible!");
-    return null;
-  }
-  det = 1.0 / det;
-
-  out[0] = (m11 * b11 - m12 * b10 + m13 * b09) * det;
-  out[1] = (m02 * b10 - m01 * b11 - m03 * b09) * det;
-  out[2] = (m31 * b05 - m32 * b04 + m33 * b03) * det;
-  out[3] = (m22 * b04 - m21 * b05 - m23 * b03) * det;
-  out[4] = (m12 * b08 - m10 * b11 - m13 * b07) * det;
-  out[5] = (m00 * b11 - m02 * b08 + m03 * b07) * det;
-  out[6] = (m32 * b02 - m30 * b05 - m33 * b01) * det;
-  out[7] = (m20 * b05 - m22 * b02 + m23 * b01) * det;
-  out[8] = (m10 * b10 - m11 * b08 + m13 * b06) * det;
-  out[9] = (m01 * b08 - m00 * b10 - m03 * b06) * det;
-  out[10] = (m30 * b04 - m31 * b02 + m33 * b00) * det;
-  out[11] = (m21 * b02 - m20 * b04 - m23 * b00) * det;
-  out[12] = (m11 * b07 - m10 * b09 - m12 * b06) * det;
-  out[13] = (m00 * b09 - m01 * b07 + m02 * b06) * det;
-  out[14] = (m31 * b01 - m30 * b03 - m32 * b00) * det;
-  out[15] = (m20 * b03 - m21 * b01 + m22 * b00) * det;
-
-  return out;
-}
-
-function scaleMatrix4(mat: Float32Array, scaleVec: [number, number, number]): Float32Array {
-  // Scales a 4x4 matrix by a vector (modifies columns)
-  // Note: Assumes column-major input matrix 'mat'
-  const out = new Float32Array(mat); // Copy existing matrix
-  out[0] *= scaleVec[0]; out[1] *= scaleVec[0]; out[2] *= scaleVec[0]; out[3] *= scaleVec[0]; // Scale X column
-  out[4] *= scaleVec[1]; out[5] *= scaleVec[1]; out[6] *= scaleVec[1]; out[7] *= scaleVec[1]; // Scale Y column
-  out[8] *= scaleVec[2]; out[9] *= scaleVec[2]; out[10] *= scaleVec[2]; out[11] *= scaleVec[2]; // Scale Z column
-  // W column (translation) remains unchanged by this type of scale
-  return out;
-}
 
 function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null): void {
   //console.log(`[WebUpdater] createTextureFromData: Received pixels type=${typeof pixels}, length=${pixels?.byteLength}, width=${width}, height=${height}`); // DEBUG
@@ -501,6 +312,7 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
 
   // Define prediction amount in seconds (e.g., 11ms)
   const PREDICTION_SECONDS = 0.00; 
+  if (!state.vrSystem) throw new Error("no vr system")
 
   // Get predicted pose 
   state.vrSystem.GetDeviceToAbsoluteTrackingPose(
@@ -572,6 +384,7 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
   
   //console.log("Applying reprojection with freshly obtained pose");
+  if (!state.glManager) throw new Error("no gl manager")
   
   // Call the render function with both poses for reprojection
   state.glManager.renderPanoramaFromData(
@@ -591,15 +404,30 @@ function INITGL(name?: string) {
   if (!state.glManager) { throw new Error("glManager is null"); }
 }
 
+function sendpose(pose: OpenVR.TrackedDevicePose) {
+  if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+    try {
+      // Serialize the pose data. You might want a more specific format later.
+      const poseData = JSON.stringify(pose);
+      state.socket.send(poseData);
+    } catch (error) {
+      console.error("Error sending pose data via WebSocket:", error);
+      // Handle potential serialization errors or closed socket during send
+    }
+  } else {
+    //console.log("WebSocket not ready to send pose data.");
+    
+  }
+}
+
 function main() {
   if (!state.overlayClass) throw new Error("no overlayclass")
   if (!state.overlayHandle) throw new Error("no overlayhandle")
   
-  if (!state.framesource) { 
-    // native capture mode using IPC
-    state.ipcCapturer = INITIPCCAP(); 
-    state.ipcCapturer.start() 
-  }
+
+
+  state.Capturer = INITIPCCAP();
+  state.Capturer.start() 
 
   state.isRunning = true;
   
@@ -635,14 +463,57 @@ function main() {
   };
   const [textureStructPtr, _textureStructView ] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct)
   IpcCapLoop(textureStructPtr);
+
+  Deno.serve({ port: 8887 }, (req) => {
+    if (req.headers.get("upgrade") != "websocket") {
+      return new Response(null, { status: 501 }); // Not a WebSocket request
+    }
+
+    const { socket, response } = Deno.upgradeWebSocket(req);
+
+    socket.addEventListener("open", () => {
+      console.log("WebSocket client connected!");
+      // Assign the connected socket to the state
+      // Note: This only handles one client. For multiple clients, you'd need a different approach.
+      if (state.socket && state.socket.readyState !== WebSocket.CLOSED) {
+        console.warn("Replacing existing WebSocket connection.");
+        state.socket.close(); // Close the old one if it exists
+      }
+      state.socket = socket;
+    });
+
+    socket.addEventListener("message", (event) => {
+      console.log("Received message:", event.data);
+      if (event.data === "ping") {
+        socket.send("pong");
+      }
+      // Add more message handling logic here if needed
+    });
+
+    socket.addEventListener("close", () => {
+      console.log("WebSocket client disconnected.");
+      if (state.socket === socket) {
+        state.socket = null; // Clear the state if this socket closes
+      }
+    });
+
+    socket.addEventListener("error", (err) => {
+      console.error("WebSocket error:", err);
+      if (state.socket === socket) {
+        state.socket = null; // Clear the state on error too
+      }
+    });
+
+    return response; // Return the response to complete the upgrade
+  })
 }
 
 globalThis.addEventListener("unload", cleanup);
 
 async function cleanup() {
   state.isRunning = false;
-  if (state.ipcCapturer) { 
-    await state.ipcCapturer.dispose(); 
-    state.ipcCapturer = null; 
+  if (state.Capturer) { 
+    await state.Capturer.dispose(); 
+    state.Capturer = null; 
   }
 }
