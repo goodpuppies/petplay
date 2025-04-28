@@ -1,7 +1,6 @@
 import { PostalService } from "../submodules/stageforge/mod.ts"
 import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
 import { asyncPrompt, createTemp, destroyTemp, wait } from "../classes/utils.ts";
-import { dirname, join, extname } from "jsr:@std/path";
 
 createTemp(import.meta.dirname!)
 console.log("Press Ctrl-C to close");

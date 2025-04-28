@@ -3,6 +3,7 @@ import { createWindow, DwmWindow, getProcAddress } from "@gfx/dwm";
 import { flipVertical } from "./screenutils.ts";
 
 import { cstr } from "https://deno.land/x/dwm@0.3.4/src/platform/glfw/ffi.ts";
+import { join } from "jsr:@std/path";
 
 export class OpenGLManager {
     private outputTexture: Uint32Array | null = null; // Renamed for clarity
@@ -57,7 +58,8 @@ export class OpenGLManager {
     private loadShaderSourceSync(path: string): string { // Renamed and made synchronous
         // Implement file reading logic here (e.g., using Deno.readTextFileSync)
         try {
-            return Deno.readTextFileSync(path); // Use synchronous version
+            const basepath = join(import.meta.dirname!, "../resources")
+            return Deno.readTextFileSync(join(basepath, path))
         } catch (e) {
             console.error(`Failed to load shader ${path}:`, e);
             throw e;
@@ -167,8 +169,8 @@ export class OpenGLManager {
 
             // --- Shader Setup ---
             //console.log("--- Starting Shader Setup ---");
-            const vertSource = this.loadShaderSourceSync("c:\\GIT\\petplay\\resources\\varggles.vert");
-            const fragSource = this.loadShaderSourceSync("c:\\GIT\\petplay\\resources\\varggles.frag");
+            const vertSource = this.loadShaderSourceSync("varggles.vert");
+            const fragSource = this.loadShaderSourceSync("varggles.frag");
 
             const vertexShader = this.compileShader(vertSource, gl.VERTEX_SHADER);
             const fragmentShader = this.compileShader(fragSource, gl.FRAGMENT_SHADER);
@@ -285,7 +287,7 @@ export class OpenGLManager {
             //console.log("--- Shader Setup Complete ---");
 
             // --- Reprojection Shader Setup (Conditional) ---
-            const reprojectionFragPath = "c:\\GIT\\petplay\\resources\\varggles_reprojection.frag";
+            const reprojectionFragPath = "varggles_reprojection.frag";
             let reprojectionVertexShader: number | null = null; // Declare here for broader scope
             let reprojectionFragmentShader: number | null = null;
             try {
