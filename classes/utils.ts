@@ -41,6 +41,16 @@ export function tempFile(filename: string, suffix: string, folder: string, base:
   return path
 }
 
-export function clearTemp() {
-  Deno.removeSync("./tmp", { recursive: true });
+export async function createTemp(base: string) {
+  await Deno.mkdir("./tmp", { recursive: true })
+
+  //stupid hack
+  const path = join(import.meta.dirname!, "../resources")
+  const file = Deno.readFileSync(join(path, "bindings_oculus_touch.json"))
+  const tmppath = join("./tmp", "bindings_oculus_touch.json")
+  Deno.writeFileSync(tmppath, file)
+}
+
+export function destroyTemp() {
+  Deno.removeSync("./tmp", { recursive: true })
 }
