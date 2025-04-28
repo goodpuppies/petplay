@@ -122,14 +122,17 @@ function INITIPCCAP(): ScreenCapturer {
 
 function IpcCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
-) { 
+) {
   console.log("IpcCapLoop starting - using push notifications")
   if (!state.glManager) throw new Error("no gl manager")
-  
-  let processingFrame = false; 
 
+  let processingFrame = false;
   const sourceVerticalHalfFOVRadians = (112.0 / 2.0) * (Math.PI / 180.0);
-  
+
+  // Pre-allocate buffers outside the frame processing function
+  let leftPixels: Uint8Array | null = null;
+  let rightPixels: Uint8Array | null = null;
+
   // Function to process the latest frame from webcapturer
   function processLatestFrame() {
     // If already processing a frame, don't start another one
@@ -137,15 +140,15 @@ function IpcCapLoop(
       //console.log("still processing frame")
       return;
     }
-    
+
     try {
       // Set flag to prevent parallel processing
       processingFrame = true;
-      
+
       if (!state.Capturer) throw new Error("no framesource or ipc capturer")
       if (!state.overlayClass) throw new Error("no overlay")
       if (!state.overlayHandle) throw new Error("no overlay")
-      
+
 
       // ==========================================
       // INTEGRATED HMD POSE TRACKING - Get the latest HMD pose first
@@ -212,38 +215,60 @@ function IpcCapLoop(
       // ==========================================
       // END OF INTEGRATED HMD POSE TRACKING
       // ==========================================
-      
+
       // Get latest frame with minimal overhead
       if (!state.Capturer) throw new Error("no ipc capturer")
 
-      if (state.currentFrame === null) { 
-        console.log("no frame available");
+      if (state.currentFrame === null) {
+        //console.log("no frame available"); // Less noisy log
         processingFrame = false;
         return;
       }
-      //const historicalPose = state.hmdpose;
-      // Pass the historical pose directly to the texture creation function
-      // instead of modifying the global state
-      const [pixelsX, width, height, finalCurrentPose ] =  createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height);
-      const { left: leftPixels, right: rightPixels } = splitSBSTexture(pixelsX as Uint8Array<ArrayBufferLike>, width as number, height as number);
+
+      //let t0 = performance.now();
+      const textureData = createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height) as [Uint8Array, number, number, Float32Array];
+      // Destructure the typed result
+      const [pixelsX, width, height, finalCurrentPose] = textureData;
+     // let t1 = performance.now();
+      //console.log(`createTextureFromData took ${t1 - t0} ms`);
+
+      //t0 = performance.now();
+      // Ensure output buffers are allocated and correctly sized
+      const eyeWidth = width / 2;
+      const requiredEyeSize = eyeWidth * height * 4;
+      if (!leftPixels || leftPixels.byteLength !== requiredEyeSize) {
+        console.log(`Allocating/Reallocating eye buffers: ${eyeWidth}x${height} (${requiredEyeSize} bytes)`);
+        leftPixels = new Uint8Array(requiredEyeSize);
+        rightPixels = new Uint8Array(requiredEyeSize);
+      }
+
+      // Call the modified splitSBSTexture
+      splitSBSTexture(pixelsX, width , height, leftPixels, rightPixels as Uint8Array);
+      //t1 = performance.now();
+      //console.log(`splitSBSTexture took ${t1 - t0} ms`);
+
+      //t0 = performance.now();
+      // Use the pre-allocated (and now filled) buffers
       state.glManager!.renderPanoramaFromData(
-        leftPixels,
-        rightPixels,
+        leftPixels, // Pass the filled buffer
+        rightPixels as Uint8Array, // Pass the filled buffer
         width as number / 2,
         height as number,
         finalCurrentPose as Float32Array, // Render pose
         sourceVerticalHalfFOVRadians,
         finalCurrentPose as Float32Array // Current pose for reprojection
       );
-      
+      //t1 = performance.now();
+      //console.log(`renderPanoramaFromData took ${t1 - t0} ms`);
+
 
       // Update the texture in the overlay
       //console.log("frame up")
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
       if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
 
-      //state.overlayClass.WaitFrameSync(100) 
-      
+      //state.overlayClass.WaitFrameSync(100)
+
     } catch (error) {
       console.error("Error processing frame:", error);
     } finally {
@@ -253,7 +278,7 @@ function IpcCapLoop(
       processingFrame = false;
     }
   }
-  
+
   if (state.Capturer) { 
     state.Capturer.onNewFrame((frame) => { 
       state.currentFrame = frame
