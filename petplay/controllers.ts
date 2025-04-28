@@ -2,8 +2,9 @@ import { PostMan } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct, stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
-import { wait } from "../classes/utils.ts";
+import { wait, tempFile } from "../classes/utils.ts";
 import { dirname, join, extname } from "jsr:@std/path";
+
 
 
 //steamvr input handling
@@ -33,9 +34,6 @@ new PostMan(state, {
     const overlayPtr = Deno.UnsafePointer.create(payload[1])
     state.vrInput = new OpenVR.IVRInput(inputPtr);
     state.vrOverlay = new OpenVR.IVROverlay(overlayPtr)
-    console.log("uh")
-    
-
     main()
   },
   GETCONTROLLERDATA: (_payload: void) => {
@@ -245,14 +243,8 @@ new PostMan(state, {
 
 let actionSetHandle: bigint
 let error;
-//const manifestPath = Deno.realPathSync("resources/actions.json");
-const manifest= "actions.json"
-
-const basepath = join(import.meta.dirname!, "../resources");
-const action = Deno.readFileSync(join(basepath, manifest))
-const temppath = Deno.makeTempFileSync({ suffix: ".json" })
-Deno.writeFileSync(temppath, action)
-const manifestPath = temppath
+const manifestPath = tempFile("actions.json", ".json", "../resources", import.meta.dirname!)
+console.log("manifestPath: ", manifestPath)
 
 function main() {
 

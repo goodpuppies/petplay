@@ -97,7 +97,7 @@ export class ScreenCapturer {
           this.lastStatsTime = performance.now();
           resolve();
         } else if (type === 'connected') {
-          console.debug("Client connected to worker");
+          //console.debug("Client connected to worker");
         } else if (type === 'frame-ready') {
           // Use ping-pong buffer by index
           const view = this.sabViews[index] || this.sabViews[0];

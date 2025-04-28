@@ -50,7 +50,6 @@ async function skipBytes(size: number): Promise<boolean> {
 async function startReceiving() {
   // Read initial metadata ONCE if not already done for this connection
   if (!initialMetadataRead) {
-    console.log("[Worker] Reading initial metadata...");
     const metaBuf = new Uint8Array(16);
     const okMeta = await readExactlyTo(metaBuf);
     if (!okMeta) {
@@ -91,7 +90,7 @@ async function startReceiving() {
 
     // Ensure SAB capacity based on initial read
     if (sabs.length < 2 || sabs[0].byteLength < frameTotalSize) {
-      console.log(`[Worker] Resizing SABs to ${frameTotalSize} bytes.`);
+      //console.log(`[Worker] Resizing SABs to ${frameTotalSize} bytes.`);
       sabs = [new SharedArrayBuffer(frameTotalSize!), new SharedArrayBuffer(frameTotalSize!)]; // Ensure 2 SABs exist
       sabViews = sabs.map(sab => new Uint8Array(sab));
       worker.postMessage({ type: 'resize', buffers: sabs });
@@ -158,7 +157,7 @@ worker.onmessage = async (e: MessageEvent) => {
     if (Array.isArray(buffers)) {
       sabs = buffers;
       sabViews = sabs.map(b => new Uint8Array(b));
-      console.log(`[Worker] Initialized with provided SABs of size ${sabs.length > 0 ? sabs[0].byteLength : 0}`);
+      //console.log(`[Worker] Initialized with provided SABs of size ${sabs.length > 0 ? sabs[0].byteLength : 0}`);
     } else {
         // If no buffers provided, create some defaults (will be resized if needed)
         sabs = [new SharedArrayBuffer(1024*1024), new SharedArrayBuffer(1024*1024)];

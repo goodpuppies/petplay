@@ -1,5 +1,5 @@
 export const CustomLogger = (() => {
-    let activeChannels: string[] = ["default", "postman","postalservice", "overlay", "perf", "iroh"]; // Initialize with default channel
+    let activeChannels: string[] = ["default", "postman","postalservice", "overlay", "perf", "iroh", "vrcorigin"]; // Initialize with default channel
     const setChannel = (channel: string | string[]) => {
         if (Array.isArray(channel)) {
             activeChannels = channel;

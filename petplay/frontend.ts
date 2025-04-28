@@ -32,7 +32,7 @@ async function main() {
     // The base path for included assets relative to the script
     const assetsBasePath = join(import.meta.dirname!, "../dist"); // 'dist' is the included folder name
 
-    console.log(`Serving included assets from: ${assetsBasePath}`);
+    //console.log(`Serving included assets from: ${assetsBasePath}`);
     Deno.serve({ port: 5173 }, async (req: Request) => {
       const url = new URL(req.url);
       let pathname = url.pathname;
@@ -83,7 +83,7 @@ async function main() {
         }
       }
     });
-    console.log("Server listening on http://localhost:5173");
+    //console.log("Server listening on http://localhost:5173");
   } else {
     const command = new Deno.Command("deno", {
       args: ["task", "dev"],

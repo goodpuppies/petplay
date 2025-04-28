@@ -81,7 +81,7 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
   state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 1.8);
   state.overlayClass.ShowOverlay(state.overlayHandle);
 
-  CustomLogger.log("overlay", "Overlay initialized and shown");
+  CustomLogger.log("overlay", "Generic Overlay initialized and shown");
   state.isRunning = true;
 
   updateLoop();

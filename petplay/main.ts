@@ -1,5 +1,5 @@
 import { PostMan } from "../submodules/stageforge/mod.ts";
-import { wait, assignActorHierarchy } from "../classes/utils.ts";
+import { wait, assignActorHierarchy, clearTemp } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { stat } from "node:fs";
@@ -86,6 +86,7 @@ new PostMan(state, {
 } as const);
 
 async function main() {
+
   const startTime = performance.now();
   CustomLogger.log("default", "creating scene");
 
@@ -116,7 +117,7 @@ async function main() {
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   const osc = await PostMan.create("./OSC.ts", import.meta.url);
   //const updater = await PostMan.create("./frameUpdater.ts");
-  const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
+  //const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
   const dogoverlay = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
   PostMan.PostMessage({
@@ -125,7 +126,7 @@ async function main() {
     payload: [ivrinput, ivroverlay]
   })
   PostMan.PostMessage({
-    target: [hmd, webupdater],
+    target: [hmd],
     type: "INITOPENVR",
     payload: ivrsystem
   })
@@ -235,14 +236,14 @@ async function main() {
     type: "GETOVERLAYHANDLE",
     payload: null
   }, true);
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: webupdater,
     type: "STARTUPDATER",
     payload: {
       overlayclass: ivroverlay,
       overlayhandle: handle,
     }
-  })
+  }) */
   /* PostMan.PostMessage({
     target: hmd,
     type: "ASSIGNWEB",
@@ -256,7 +257,7 @@ async function main() {
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
   state.overlays.push(dogoverlay)
   //state.overlays.push(dogoverlay2)
-  //inputloop(input);
+  inputloop(input);
 }
 
 async function spawnOvelay(name:string) {

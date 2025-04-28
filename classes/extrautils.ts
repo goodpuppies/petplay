@@ -32,3 +32,4 @@ export function splitSBSTexture(
     rightOutput.set(pixels.subarray(rowOffset + eyeByteWidth, rowOffset + totalByteWidth), destRowOffset);
   }
 }
+
