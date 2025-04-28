@@ -1,10 +1,13 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, wait } from "../submodules/stageforge/mod.ts";
 
 import { dirname, join, extname } from "jsr:@std/path";
 
 const state = {
 
 };
+
+let cefProcess: Deno.ChildProcess | null = null;
+let devProcess: Deno.ChildProcess | null = null;
 
 new PostMan(state, {
   CUSTOMINIT: (_payload) => { main() },
@@ -27,10 +30,105 @@ const mimeTypes: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
-  // Add more as needed
 };
 
-async function main() {
+Deno.addSignalListener("SIGINT", () => {
+  console.log("Received SIGINT. Cleaning up child processes...");
+  try {
+    if (cefProcess) {
+      console.log("Terminating CEF process...");
+      cefProcess.kill("SIGTERM"); // Or "SIGKILL" if SIGTERM is ineffective
+      cefProcess = null; // Clear the reference
+    }
+  } catch (error) {
+    console.error("Error terminating CEF process:", error);
+  }
+  try {
+    if (devProcess) {
+      console.log("Terminating dev process...");
+      devProcess.kill("SIGTERM");
+      devProcess = null; // Clear the reference
+    }
+  } catch (error) {
+    console.error("Error terminating dev process:", error);
+  }
+
+
+});
+
+function copyDirectoryContents(sourceDir: string, destDir: string) {
+  Deno.mkdirSync(destDir, { recursive: true }); // Ensure destination directory exists
+
+  for (const dirEntry of Deno.readDirSync(sourceDir)) {
+    const sourcePath = join(sourceDir, dirEntry.name);
+    const destPath = join(destDir, dirEntry.name);
+
+    if (dirEntry.isFile) {
+      const fileContent = Deno.readFileSync(sourcePath);
+      Deno.writeFileSync(destPath, fileContent);
+    } else if (dirEntry.isDirectory) {
+      // Recursively copy subdirectory contents
+      copyDirectoryContents(sourcePath, destPath);
+    }
+  }
+}
+
+async function cefspawn() {
+  const sourceCefDir = join(import.meta.dirname!, "../cef");
+  console.log("trymake ", join("./tmp", "cef"))
+  Deno.mkdirSync(join("./tmp", "cef"), {recursive: true})
+  const tempCefDir = join("./tmp", "cef");
+
+  try {
+
+    Deno.mkdirSync(tempCefDir, { recursive: true });
+
+    console.log(`Copying CEF files from ${sourceCefDir} to ${tempCefDir}`);
+    // Use the helper function to copy all contents recursively
+    copyDirectoryContents(sourceCefDir, tempCefDir);
+    console.log("CEF files copied successfully.");
+
+
+    // Define the path to the executable within the temporary directory
+    const cefExecutablePath = join(tempCefDir, "cefsimple.exe");
+
+    // Check if the executable exists after copying
+    try {
+      Deno.statSync(cefExecutablePath);
+      console.log(`Found executable at: ${cefExecutablePath}`);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        console.error(`Error: cefsimple.exe not found in ${tempCefDir} after copy.`);
+        return; // Stop execution if executable is missing
+      }
+      throw error;
+    }
+
+    console.log("EXEC!!!")
+    const command = new Deno.Command(cefExecutablePath, {
+      args: [],
+      // Optionally set the current working directory if cefsimple.exe needs it
+      // cwd: tempCefDir,
+      stdin: "piped",
+      stdout: "inherit", // Inherit stdout to see output
+      stderr: "inherit", // Inherit stderr for errors
+    });
+    cefProcess = command.spawn();
+
+    // Manually close stdin if cefsimple.exe doesn't need input
+    cefProcess.stdin.close();
+
+    // Consider waiting for the process to exit or handling its output/errors
+    const status = await cefProcess.status;
+   console.log(`CEF process exited with code: ${status.code}`);
+
+  } catch (error) {
+    console.error("Error during CEF setup or execution:", error);
+  }
+}
+
+function main() {
+  
 
   if (BUILD) {
     // Assets are expected to be included via `deno compile --include`
@@ -97,9 +195,12 @@ async function main() {
       stderr: "inherit",
       stdin: "inherit",
     });
-    const process = command.spawn();
-    await process.status;
+    devProcess = command.spawn();
   }
+
+  cefspawn()
+
+  
 
 }
 

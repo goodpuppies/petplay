@@ -52,5 +52,16 @@ export async function createTemp(base: string) {
 }
 
 export function destroyTemp() {
-  Deno.removeSync("./tmp", { recursive: true })
+  Deno.removeSync("./tmp/", { recursive: true })
+  Deno.removeSync("./tmp/cef", { recursive: true })
+}
+
+const stream = Deno.stdin.readable.values();
+export async function asyncPrompt(): Promise<string> {
+  const next = await stream.next();
+  if ("done" in next && next.done) {
+    return "";
+  } else {
+    return new TextDecoder().decode(next.value).slice(0, -1);
+  }
 }

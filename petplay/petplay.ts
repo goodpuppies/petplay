@@ -1,12 +1,12 @@
 import { PostalService } from "../submodules/stageforge/mod.ts"
 import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
-import { createTemp, destroyTemp } from "../classes/utils.ts";
+import { asyncPrompt, createTemp, destroyTemp, wait } from "../classes/utils.ts";
 import { dirname, join, extname } from "jsr:@std/path";
+
 createTemp(import.meta.dirname!)
-
 console.log("Press Ctrl-C to close");
-
-Deno.addSignalListener("SIGINT", () => {
+Deno.addSignalListener("SIGINT", async () => {
+  await wait(100)
   destroyTemp()
   console.log("exit!");
   Deno.exit();
@@ -26,17 +26,6 @@ postalservice.PostMessage({
   payload: null,
 });
 
-//stdin is broken cuz of tmpfile
-/* const stream = Deno.stdin.readable.values();
-async function asyncPrompt(): Promise<string> {
-  const next = await stream.next();
-  if ("done" in next && next.done) {
-    return "";
-  } else {
-    return new TextDecoder().decode(next.value).slice(0, -1);
-  }
-}
-
 if (import.meta.main) {
   while (true) {
     const msgD = await asyncPrompt() ?? "";
@@ -46,5 +35,6 @@ if (import.meta.main) {
       type: "STDIN",
       payload: msg,
     });
+    await wait(1)
   }
-} */
+}
