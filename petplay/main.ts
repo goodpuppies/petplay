@@ -7,11 +7,19 @@ import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 
 //main process
 
+type actionData = [
+  OpenVR.InputPoseActionData,
+  OpenVR.InputPoseActionData,
+  OpenVR.InputDigitalActionData,
+  OpenVR.InputDigitalActionData,
+]
+
 const state = {
   name: "main",
   ivroverlay: null as null | string,
   origin: null as null | string,
-  overlays: [] as string[]
+  overlays: [] as string[],
+  socket: null as WebSocket | null
 };
 
 new PostMan(state, {
@@ -258,6 +266,44 @@ async function main() {
   //state.overlays.push(vraggles)
   //state.overlays.push(dogoverlay2)
   inputloop(input);
+  Deno.serve({ port: 8888 }, (req) => {
+    if (req.headers.get("upgrade") != "websocket") {
+      return new Response(null, { status: 501 }); // Not a WebSocket request
+    }
+
+    const { socket, response } = Deno.upgradeWebSocket(req);
+
+    socket.addEventListener("open", () => {
+      console.log("WebSocket client connected!");
+      if (state.socket && state.socket.readyState !== WebSocket.CLOSED) {
+        console.warn("Replacing existing WebSocket connection.");
+        state.socket.close();
+      }
+      state.socket = socket;
+    });
+
+    socket.addEventListener("message", (event) => {
+      console.log("Received message:", event.data);
+      if (event.data === "ping") {
+        socket.send("pong");
+      }
+
+    });
+    socket.addEventListener("close", () => {
+      console.log("WebSocket client disconnected.");
+      if (state.socket === socket) {
+        state.socket = null;
+      }
+    });
+    socket.addEventListener("error", (err) => {
+      console.error("WebSocket error:", err);
+      if (state.socket === socket) {
+        state.socket = null;
+      }
+    });
+
+    return response; // Return the response to complete the upgrade
+  })
 }
 
 async function spawnOvelay(name:string) {
@@ -319,22 +365,19 @@ async function assignFrame(source: string, overlay: string, remote?:string) {
 }
 
 async function inputloop(inputactor: string) {
-  type actionData = [
-    OpenVR.InputPoseActionData,
-    OpenVR.InputPoseActionData,
-    OpenVR.InputDigitalActionData,
-    OpenVR.InputDigitalActionData,
-  ]
+
   while (true) {
+
+
+    const inputstate = await PostMan.PostMessage({
+      target: inputactor,
+      type: "GETCONTROLLERDATA",
+      payload: null,
+    }, true) as actionData
+
 
     if (state.overlays.length > 0) {
 
-      const inputstate = await PostMan.PostMessage({
-        target: inputactor,
-        type: "GETCONTROLLERDATA",
-        payload: null,
-      }, true) as actionData
-      
       if (inputstate[2].bState == 1) {
         PostMan.PostMessage({
           target: state.overlays,
@@ -351,6 +394,31 @@ async function inputloop(inputactor: string) {
 
       await wait(10);
     }
-    await wait(0)
+
+    sendcontroller(inputstate)
+
+    await wait(10)
+  }
+}
+
+function sendcontroller(pose: actionData) {
+  if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+    try {
+      // Replacer function to handle BigInt serialization
+      const replacer = (key: string, value: any) =>
+        typeof value === 'bigint'
+          ? value.toString()
+          : value; // return everything else unchanged
+
+      state.socket.send(JSON.stringify(pose, replacer));
+
+    } catch (error) {
+      console.error("Error sending controller data:", error);
+      // Decide if re-throwing is necessary or just log the error
+      // throw new Error("wtf" ) 
+    }
+  } else {
+    // Optional: Log if the socket is not open or available
+    // console.warn("WebSocket not open, cannot send controller data.");
   }
 }
