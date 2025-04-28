@@ -1,2 +1,4 @@
 /*.exe
 /stuff/
+dist/
+cef/

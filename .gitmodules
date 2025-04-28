@@ -14,3 +14,11 @@
 	path = submodules/petplayserver
 	url = https://github.com/goodpuppies/petplayserver.git
 	branch = main
+[submodule "submodules/frontend"]
+	path = submodules/frontend
+	url = https://github.com/goodpuppies/frontend.git
+	branch = main
+[submodule "submodules/cefpuppy"]
+	path = submodules/cefpuppy
+	url = https://github.com/goodpuppies/cefpuppy.git
+	branch = main

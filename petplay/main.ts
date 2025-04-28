@@ -3,6 +3,7 @@ import { wait, assignActorHierarchy } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
 import { stat } from "node:fs";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 
 //main process
 
@@ -85,10 +86,13 @@ new PostMan(state, {
 } as const);
 
 async function main() {
+
   const startTime = performance.now();
   CustomLogger.log("default", "creating scene");
 
-  const ivr = await PostMan.create("./OpenVR.ts")
+  await PostMan.create("./frontend.ts", import.meta.url)
+
+  const ivr = await PostMan.create("./OpenVR.ts", import.meta.url)
   const ivrsystem = await PostMan.PostMessage({
     target: ivr,
     type: "GETOPENVRPTR",
@@ -99,28 +103,40 @@ async function main() {
     type: "GETOVERLAYPTR",
     payload: null
   }, true)
+  const ivrinput = await PostMan.PostMessage({
+    target: ivr,
+    type: "GETINPUTPTR",
+    payload: null
+  }, true)
   state.ivroverlay = ivroverlay as string
 
-  const hmd = await PostMan.create("./hmd.ts");
-  const input = await PostMan.create("./controllers.ts");
-  const origin = await PostMan.create("./VRCOrigin.ts");
+  const hmd = await PostMan.create("./hmd.ts", import.meta.url);
+  const input = await PostMan.create("./controllers.ts", import.meta.url);
+  const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
   state.origin = origin as string
-  const laser = await PostMan.create("./laser.ts");
-  const osc = await PostMan.create("./OSC.ts");
-  const updater = await PostMan.create("./frameUpdater.ts");
-
+  const laser = await PostMan.create("./laser.ts", import.meta.url);
+  const osc = await PostMan.create("./OSC.ts", import.meta.url);
+  //const updater = await PostMan.create("./frameUpdater.ts");
+  const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
+  const vraggles = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
   PostMan.PostMessage({
-    target: hmd,
+    target: input,
+    type: "INITINPUT",
+    payload: [ivrinput, ivroverlay]
+  })
+  PostMan.PostMessage({
+    target: [hmd, webupdater],
     type: "INITOPENVR",
     payload: ivrsystem
   })
+
   PostMan.PostMessage({
-    target: [origin, laser],
+    target: [origin, vraggles, laser],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
-  await wait(10000)
+  //await wait(1000)
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNVRC",
@@ -144,18 +160,19 @@ async function main() {
       texture: "../resources/P1.png",
     },
   });
-
   PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
     payload: null
   });
 
+
+
   /* PostMan.PostMessage({
   target: origin,
   type: "ADDOVERLAY",
   payload: dogoverlay1,
-  }); */
+  });
   /* PostMan.PostMessage({
     target: dogoverlay1,
     type: "STARTOVERLAY",
@@ -205,10 +222,40 @@ async function main() {
   }) */
 
 
+  PostMan.PostMessage({
+    target: vraggles,
+    type: "STARTOVERLAY",
+    payload: {
+      name: "pet1",
+      texture: "./resources/P1.png",
+      sync: true,
+    },
+  });
+  const handle = await PostMan.PostMessage({
+    target: vraggles,
+    type: "GETOVERLAYHANDLE",
+    payload: null
+  }, true);
+  PostMan.PostMessage({
+    target: webupdater,
+    type: "STARTUPDATER",
+    payload: {
+      overlayclass: ivroverlay,
+      overlayhandle: handle,
+    }
+  })
+  /* PostMan.PostMessage({
+    target: hmd,
+    type: "ASSIGNWEB",
+    payload: webupdater
+  }) */
+
+
+
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
-  //state.overlays.push(dogoverlay1)
+  //state.overlays.push(vraggles)
   //state.overlays.push(dogoverlay2)
   inputloop(input);
 }
@@ -233,7 +280,7 @@ async function spawnOvelay(name:string) {
     type: "STARTOVERLAY",
     payload: {
       name: name,
-      texture: "../resources/P1.png",
+      texture: "./resources/P1.png",
       sync: true,
     },
   });

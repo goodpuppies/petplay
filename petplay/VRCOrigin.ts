@@ -1,5 +1,5 @@
 import { PostMan } from "../submodules/stageforge/mod.ts";
-import { wait } from "../classes/utils.ts";
+import { tempFile, wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
@@ -64,14 +64,15 @@ function originReaction() {
 async function main(overlaymame: string, overlaytexture: string) {
   try {
     state.transformStabilizer = new TransformStabilizer2();  
-    CustomLogger.log("overlay", "Creating origin...");
+    CustomLogger.log("vrcorigin", "Creating origin...");
     const overlay = state.overlayClass as OpenVR.IVROverlay;
     const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
     if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
     const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
-    state.overlayHandle = overlayHandle;  
-    overlay.SetOverlayFromFile(overlayHandle, Deno.realPathSync(overlaytexture));
+    state.overlayHandle = overlayHandle;
+    const path = tempFile(overlaytexture, ".png", "../resources", import.meta.dirname! )
+    overlay.SetOverlayFromFile(overlayHandle, path);
     overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
     overlay.ShowOverlay(overlayHandle);  
     const initialTransform: OpenVR.HmdMatrix34 = {
@@ -132,7 +133,7 @@ async function main(overlaymame: string, overlaytexture: string) {
       await wait(11);
     }
   } catch (e) {
-    CustomLogger.error("overlay", `Error in mainX: ${(e as Error).message}`);
+    CustomLogger.error("vrcorigin", `Error in origin: ${(e as Error).message}`);
   }
 }
 
