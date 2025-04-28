@@ -4,8 +4,14 @@
     "@number0/iroh": "npm:@number0/iroh@^0.31.0"
   },
   "tasks": {
-    "compile": "deno run -A compile.ts",
-    "release": "deno run -A release.ts"
+    "vitebuild": "cd submodules/frontend && deno task build",
+    "build": {
+      "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --icon resources/petplay.ico petplay/petplay.ts",
+      "dependencies": [
+        "vitebuild"
+      ]
+    },
+    "dev": "deno run -A petplay/petplay.ts dev"
   },
   "unstable": [
     "net",

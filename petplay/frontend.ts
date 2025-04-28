@@ -10,7 +10,12 @@ new PostMan(state, {
   CUSTOMINIT: (_payload) => { main() },
 } as const);
 
-const BUILD = true
+let BUILD: boolean
+if (Deno.args[0] === "dev") {
+  BUILD = false
+} else {
+  BUILD = true
+}
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html",

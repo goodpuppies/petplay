@@ -118,7 +118,7 @@ async function main() {
   const osc = await PostMan.create("./OSC.ts", import.meta.url);
   //const updater = await PostMan.create("./frameUpdater.ts");
   const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
-  const dogoverlay = await PostMan.create("./genericoverlay.ts", import.meta.url)
+  const vraggles = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
   PostMan.PostMessage({
     target: input,
@@ -132,7 +132,7 @@ async function main() {
   })
 
   PostMan.PostMessage({
-    target: [origin, dogoverlay, laser],
+    target: [origin, vraggles, laser],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
@@ -223,7 +223,7 @@ async function main() {
 
 
   PostMan.PostMessage({
-    target: dogoverlay,
+    target: vraggles,
     type: "STARTOVERLAY",
     payload: {
       name: "pet1",
@@ -232,7 +232,7 @@ async function main() {
     },
   });
   const handle = await PostMan.PostMessage({
-    target: dogoverlay,
+    target: vraggles,
     type: "GETOVERLAYHANDLE",
     payload: null
   }, true);
@@ -255,7 +255,7 @@ async function main() {
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
   CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
-  state.overlays.push(dogoverlay)
+  //state.overlays.push(vraggles)
   //state.overlays.push(dogoverlay2)
   inputloop(input);
 }
