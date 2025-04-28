@@ -124,8 +124,11 @@ function IpcCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) { 
   console.log("IpcCapLoop starting - using push notifications")
+  if (!state.glManager) throw new Error("no gl manager")
   
   let processingFrame = false; 
+
+  const sourceVerticalHalfFOVRadians = (112.0 / 2.0) * (Math.PI / 180.0);
   
   // Function to process the latest frame from webcapturer
   function processLatestFrame() {
@@ -221,8 +224,17 @@ function IpcCapLoop(
       //const historicalPose = state.hmdpose;
       // Pass the historical pose directly to the texture creation function
       // instead of modifying the global state
-      createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height);
-
+      const [pixelsX, width, height, finalCurrentPose ] =  createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height);
+      const { left: leftPixels, right: rightPixels } = splitSBSTexture(pixelsX as Uint8Array<ArrayBufferLike>, width as number, height as number);
+      state.glManager!.renderPanoramaFromData(
+        leftPixels,
+        rightPixels,
+        width as number / 2,
+        height as number,
+        finalCurrentPose as Float32Array, // Render pose
+        sourceVerticalHalfFOVRadians,
+        finalCurrentPose as Float32Array // Current pose for reprojection
+      );
       
 
       // Update the texture in the overlay
@@ -256,11 +268,11 @@ function IpcCapLoop(
 
 
 
-function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null): void {
+function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null) {
   if (!state.overlayClass || !state.overlayHandle) throw new Error("Missing required state properties for texture creation");
   if (!state.vrSystem) throw new Error("no vr system")
-  if (!state.glManager) throw new Error("no gl manager")
-  const sourceVerticalHalfFOVRadians = (112.0 / 2.0) * (Math.PI / 180.0);
+
+
   
   //const renderHmdPose = renderPose || state.hmdpose!; //fallback to current pose in state
   const currentHmdPose = gethmdpose()
@@ -294,17 +306,8 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
 
   if (width % 2 !== 0) throw new Error("Input texture width is not even");
-  const { left: leftPixels, right: rightPixels } = splitSBSTexture(pixels, width, height);
+  return [pixels, width, height, finalCurrentPose ]
 
-  state.glManager.renderPanoramaFromData(
-    leftPixels,
-    rightPixels,
-    width / 2,
-    height,
-    finalCurrentPose, // Render pose
-    sourceVerticalHalfFOVRadians,
-    finalCurrentPose // Current pose for reprojection
-  );
 }
 
 
