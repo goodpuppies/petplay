@@ -52,8 +52,8 @@ export async function createTemp(base: string) {
 }
 
 export function destroyTemp() {
+  console.log("CLEAN")
   Deno.removeSync("./tmp/", { recursive: true })
-  Deno.removeSync("./tmp/cef", { recursive: true })
 }
 
 const stream = Deno.stdin.readable.values();

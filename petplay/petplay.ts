@@ -6,7 +6,7 @@ import { dirname, join, extname } from "jsr:@std/path";
 createTemp(import.meta.dirname!)
 console.log("Press Ctrl-C to close");
 Deno.addSignalListener("SIGINT", async () => {
-  await wait(100)
+  await wait(3000)
   destroyTemp()
   console.log("exit!");
   Deno.exit();
