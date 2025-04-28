@@ -18,3 +18,7 @@
 	path = submodules/frontend
 	url = https://github.com/goodpuppies/frontend.git
 	branch = main
+[submodule "submodules/cefpuppy"]
+	path = submodules/cefpuppy
+	url = https://github.com/goodpuppies/cefpuppy.git
+	branch = main
