@@ -89,6 +89,8 @@ async function main() {
   const startTime = performance.now();
   CustomLogger.log("default", "creating scene");
 
+  await PostMan.create("./frontend.ts", import.meta.url)
+
   const ivr = await PostMan.create("./OpenVR.ts", import.meta.url)
   const ivrsystem = await PostMan.PostMessage({
     target: ivr,

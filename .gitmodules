@@ -17,3 +17,7 @@
 [submodule "submodules/puppyweb"]
 	path = submodules/puppyweb
 	url = https://github.com/goodpuppies/puppyweb.git
+[submodule "submodules/frontend"]
+	path = submodules/frontend
+	url = https://github.com/goodpuppies/frontend.git
+	branch = main
