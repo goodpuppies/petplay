@@ -5,14 +5,19 @@
   },
   "tasks": {
     "vitebuild": "cd submodules/frontend && deno task build",
-    "cefbuild": "cd submodules/cefpuppy && powershell -ExecutionPolicy Bypass -File ./build.ps1 -ExampleName cefsimple -Profile release",
+    "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "build": {
       "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./cef/ --icon resources/petplay.ico petplay/petplay.ts",
       "dependencies": [
         "vitebuild", "cefbuild"
       ]
     },
-    "dev": "deno run -A petplay/petplay.ts dev"
+    "dev": {
+      "command":"deno run -A petplay/petplay.ts dev",
+      "dependencies": [
+        "cefbuild"
+      ]
+    }
   },
   "unstable": [
     "net",
