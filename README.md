@@ -1,9 +1,4 @@
-# AR in VR for VRChat and other platforms
-
-- [x] preliminary VRC integration
-- [x] iroh-net P2P
-- [ ] [WIP] desktop capture
-- [ ] advanced vrc api integration ( instance, friends, etc api )
+# A modular overlay augmented reality system
 
 Join the discord! https://discord.gg/Ms24sS9kEa
 
