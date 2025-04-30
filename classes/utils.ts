@@ -51,6 +51,11 @@ export async function createTemp(base: string) {
   Deno.writeFileSync(tmppath, file)
 }
 
+export function ensuredenodir() {
+  const denoDir = join(Deno.env.get("LOCALAPPDATA") || "", "deno");
+  Deno.mkdirSync(denoDir, { recursive: true });
+}
+
 export function destroyTemp() {
   console.log("CLEAN")
   Deno.removeSync("./tmp/", { recursive: true })

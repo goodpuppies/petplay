@@ -1,7 +1,8 @@
 import { PostalService } from "../submodules/stageforge/mod.ts"
 import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
-import { asyncPrompt, createTemp, destroyTemp, wait } from "../classes/utils.ts";
+import { asyncPrompt, createTemp, destroyTemp, wait, ensuredenodir } from "../classes/utils.ts";
 
+ensuredenodir()
 createTemp(import.meta.dirname!)
 console.log("Press Ctrl-C to close");
 Deno.addSignalListener("SIGINT", async () => {
