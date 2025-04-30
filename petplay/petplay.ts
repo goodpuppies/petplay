@@ -8,7 +8,7 @@ console.log("Press Ctrl-C to close");
 Deno.addSignalListener("SIGINT", async () => {
   await wait(3000)
   destroyTemp()
-  console.log("exit!");
+  console.log("exit! WOOF~");
   Deno.exit();
 });
 

@@ -150,71 +150,7 @@ function IpcCapLoop(
       if (!state.overlayHandle) throw new Error("no overlay")
 
 
-      // ==========================================
-      // INTEGRATED HMD POSE TRACKING - Get the latest HMD pose first
-      // ==========================================
-      /*
-      if (state.vrSystem) {
-        const vrSystem = state.vrSystem;
-        const posesSize = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
-        const poseArrayBuffer = new ArrayBuffer(posesSize);
-        const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
 
-        vrSystem.GetDeviceToAbsoluteTrackingPose(
-          OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
-          0,
-          posePtr,
-          OpenVR.k_unMaxTrackedDeviceCount
-        );
-      
-        const hmdIndex = OpenVR.k_unTrackedDeviceIndex_Hmd;
-        const poseView = new DataView(
-          poseArrayBuffer,
-          hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
-          OpenVR.TrackedDevicePoseStruct.byteSize
-        );
-        const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
-
-        // Assign a sequential ID to this pose
-        const poseId = state.nextPoseId++;
-        const currentPoseTimestamp = Date.now();
-        
-        // Add timestamp and ID to the pose data for accurate tracking on the frontend
-        const timestampedPose = {
-          ...hmdPose,
-          timestamp: currentPoseTimestamp,
-          id: poseId
-        };
-
-        // Store current pose
-        state.hmdpose = hmdPose;
-        
-        // Store in pose history for frame-pose synchronization
-        const poseEntry = {
-          id: poseId,
-          timestamp: currentPoseTimestamp,
-          pose: hmdPose
-        };
-        
-        state.poseHistory.push(poseEntry);
-        
-        // Also store in the map for fast lookup
-        state.poseMap.set(poseId, hmdPose);
-        
-        // Limit history size
-        if (state.poseHistory.length > state.MAX_POSE_HISTORY) {
-          const removed = state.poseHistory.shift();
-          if (removed) {
-            state.poseMap.delete(removed.id);
-          }
-        }
-        
-        //sendpose(hmdPose)
-      }
-      */
-      // ==========================================
-      // END OF INTEGRATED HMD POSE TRACKING
-      // ==========================================
 
       // Get latest frame with minimal overhead
       if (!state.Capturer) throw new Error("no ipc capturer")
