@@ -115,7 +115,7 @@ function INITSCREENCAP(): ScreenCapturer {
         onStats: ({ fps, avgLatency }) => {
             CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
         },
-        executablePath: "./../resources/screen-streamer"
+        executablePath: "../../resources/screen-streamer"
     });
     return capturer;
 }
@@ -267,7 +267,7 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
 
 function INITGL(name?: string) {
     state.glManager = new OpenGLManager();
-    state.glManager.initialize(name);
+    state.glManager.initialize2D(name);
     if (!state.glManager) { throw new Error("glManager is null"); }
 }
 

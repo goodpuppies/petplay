@@ -288,7 +288,7 @@ function main() {
   
   INITGL();
 
-  const texture = state.glManager!.getTexture();
+  const texture = state.glManager!.getPanoramaTexture();
   if (!texture) { throw new Error("texture is null"); }
 
   const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
@@ -353,7 +353,7 @@ function gethmdpose() {
 
 function INITGL(name?: string) {
   state.glManager = new OpenGLManager();
-  state.glManager.initialize(name, 4096, 4096);
+  state.glManager.initializePanoramic(name, 4096, 4096);
   if (!state.glManager) { throw new Error("glManager is null"); }
 }
 //#endregion

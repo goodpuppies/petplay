@@ -7,6 +7,7 @@ import { join } from "jsr:@std/path";
 
 export class OpenGLManager {
     private outputTexture: Uint32Array | null = null; // Renamed for clarity
+    private texture: Uint32Array | null = null;
     private leftEyeTexture: Uint32Array | null = null; // Texture for Left Eye
     private rightEyeTexture: Uint32Array | null = null; // Texture for Right Eye
     private window: DwmWindow | null = null;
@@ -135,7 +136,7 @@ export class OpenGLManager {
         return shader; // Return the shader ID/handle
     }
 
-    initialize(name?: string, panoramaWidth: number = 4096, panoramaHeight: number = 4096) { // Default to 4096x4096
+    initializePanoramic(name?: string, panoramaWidth: number = 4096, panoramaHeight: number = 4096) { // Default to 4096x4096
         //console.log("--- Initializing OpenGLManager ---");
         try {
             const windowTitle = `${name || "Texture Overlay"}_${this.uniqueId.slice(0, 8)}`;
@@ -527,6 +528,38 @@ export class OpenGLManager {
         }
     }
 
+    initialize2D(name?: string) {
+        // Create window and initialize GL with unique title
+        try {
+            const windowTitle = `${name || "Texture Overlay"}_${this.uniqueId.slice(0, 8)}`;
+
+            this.window = createWindow({
+                title: windowTitle,
+                width: 1,
+                height: 1,
+                resizable: false,
+                visible: false,
+                glVersion: [3, 2],
+                gles: false,
+            });
+
+            gl.load(getProcAddress);
+            this.checkGLError("gl.load");
+
+            this.texture = new Uint32Array(1);
+            gl.GenTextures(1, this.texture);
+            gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            this.checkGLError("texture creation");
+        } catch (error) {
+            console.error(`Failed to create window: ${(error as Error).message}`);
+            throw error;
+        }
+    }
+
     renderPanoramaFromData(
         leftPixels: Uint8Array,
         rightPixels: Uint8Array,
@@ -701,8 +734,12 @@ export class OpenGLManager {
         this.checkGLError("upload texture data");
     }
 
-    // getTexture now returns the output texture ID
     getTexture(): Uint32Array | null {
+        return this.texture;
+    }
+
+    // getTexture now returns the output texture ID
+    getPanoramaTexture(): Uint32Array | null {
         return this.outputTexture;
     }
 
@@ -745,7 +782,11 @@ export class OpenGLManager {
             gl.DeleteTextures(1, this.rightEyeTexture);
             this.rightEyeTexture = null;
         }
-
+        if (this.texture) {
+            console.log(`Deleting Output Texture ID: ${this.texture[0]}`);
+            gl.DeleteTextures(1, this.texture);
+            this.texture = null;
+        }
         // Delete the output texture
         if (this.outputTexture) {
             console.log(`Deleting Output Texture ID: ${this.outputTexture[0]}`);

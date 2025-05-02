@@ -114,7 +114,7 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
 
 function INITGL(name?: string) {
   state.glManager = new OpenGLManager();
-  state.glManager.initialize(name);
+  state.glManager.initializePanoramic(name);
   if (!state.glManager) { throw new Error("glManager is null"); }
 }
 
@@ -131,7 +131,7 @@ function main() {
   
   INITGL();
 
-  const texture = state.glManager!.getTexture();
+  const texture = state.glManager!.getPanoramaTexture();
   if (!texture) { throw new Error("texture is null"); }
 
   const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
