@@ -71,8 +71,10 @@ async function main(overlaymame: string, overlaytexture: string) {
     if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
     const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
     state.overlayHandle = overlayHandle;
-    const path = tempFile(overlaytexture, ".png", "../resources", import.meta.dirname! )
-    overlay.SetOverlayFromFile(overlayHandle, path);
+    const path = tempFile(overlaytexture, import.meta.dirname!)
+    console.log(path)
+    const e = overlay.SetOverlayFromFile(overlayHandle, path);
+    if (e !== OpenVR.OverlayError.VROverlayError_None) {console.error(e)}
     overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
     overlay.ShowOverlay(overlayHandle);  
     const initialTransform: OpenVR.HmdMatrix34 = {

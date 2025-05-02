@@ -32,10 +32,10 @@ export async function assignActorHierarchy(
   }
 }
 
-export function tempFile(filename: string, suffix: string, folder: string, base: string): string {
-  const basepath = join(base, folder)
+export function tempFile(filename: string, base: string): string {
+  const basepath = join(base, "../")
   const file = Deno.readFileSync(join(basepath, filename))
-  const temppath = Deno.makeTempFileSync({ dir: "./tmp", suffix: suffix })
+  const temppath = Deno.makeTempFileSync({ dir: "./tmp", suffix: extname(filename) })
   Deno.writeFileSync(temppath, file)
   const path = Deno.realPathSync(temppath)
   return path

@@ -1,5 +1,5 @@
 import { PostMan } from "../submodules/stageforge/mod.ts";
-import { wait } from "../classes/utils.ts";
+import { wait, tempFile } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { CustomLogger } from "../classes/customlogger.ts";
@@ -42,18 +42,32 @@ new PostMan(state, {
     return getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
   },
   SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
+    // Always apply the requested absolute transform
+    setTransform(payload);
+    // Only calculate relative position if the origin is known
     if (state.vrcOrigin) {
       state.relativePosition = multiplyMatrix(invertMatrix(state.vrcOrigin), payload);
-      setTransform(payload);
-    } else {
-      setTransform(payload);
     }
+    // If origin is not known yet, relativePosition will be calculated on the first ORIGINUPDATE
   },
   ORIGINUPDATE: (payload: OpenVR.HmdMatrix34) => {
-    if (!state.overlayHandle) return;
-    state.vrcOrigin = payload;
-    const newAbsolutePosition = multiplyMatrix(state.vrcOrigin, state.relativePosition);
-    setTransform(newAbsolutePosition);
+    if (!state.overlayHandle || !state.overlayClass) return;
+
+    const isFirstOriginUpdate = !state.vrcOrigin;
+    state.vrcOrigin = payload; // Store the new origin
+
+    if (isFirstOriginUpdate) {
+      // First time getting the origin: Calculate relative position based on current absolute position
+      const currentAbsolutePosition = getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
+      if (currentAbsolutePosition) { // Ensure we got a valid transform
+          state.relativePosition = multiplyMatrix(invertMatrix(state.vrcOrigin), currentAbsolutePosition);
+      }
+      // Do not call setTransform here, overlay is already where it should be.
+    } else {
+      // Origin updated: Maintain relative position by calculating and setting new absolute position
+      const newAbsolutePosition = multiplyMatrix(state.vrcOrigin, state.relativePosition);
+      setTransform(newAbsolutePosition);
+    }
   },
   SYNCOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
     state.relativePosition = payload;
@@ -61,7 +75,12 @@ new PostMan(state, {
       const newAbsolutePosition = multiplyMatrix(state.vrcOrigin, state.relativePosition);
       setTransform(newAbsolutePosition);
     } else {
-      setTransform(payload);
+      // If origin isn't known, we can't apply the relative position yet.
+      // Option 1: Apply payload as absolute (might be unexpected if origin arrives later)
+      // setTransform(payload);
+      // Option 2: Do nothing, wait for origin (safer)
+      // Current behavior: Does nothing if origin is unknown. Let's keep it this way for now.
+      // If an absolute position is needed before origin is known, SETOVERLAYLOCATION should be used.
     }
   },
 } as const);
@@ -76,9 +95,9 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
   if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
   state.overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
 
-  
-  //state.overlayClass.SetOverlayFromFile(state.overlayHandle, Deno.realPathSync(overlaytexture));
-  state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 1.8);
+  const path = tempFile(overlaytexture, import.meta.dirname!)
+  state.overlayClass.SetOverlayFromFile(state.overlayHandle, path);
+  state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 0.4);
   state.overlayClass.ShowOverlay(state.overlayHandle);
 
   CustomLogger.log("overlay", "Generic Overlay initialized and shown");

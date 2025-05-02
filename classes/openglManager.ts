@@ -589,7 +589,15 @@ export class OpenGLManager {
         gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
         this.checkGLError("bind left texture");
         gl.TexImage2D(
-            gl.TEXTURE_2D, 0, gl.RGBA, eyeWidth, eyeHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, leftPixels
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            eyeWidth,
+            eyeHeight,
+            0,
+            gl.BGRA,
+            gl.UNSIGNED_BYTE,
+            leftPixels
         );
         if (!this.checkGLError("upload left eye texture data")) return;
 
@@ -599,7 +607,15 @@ export class OpenGLManager {
         gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
         this.checkGLError("bind right texture");
         gl.TexImage2D(
-            gl.TEXTURE_2D, 0, gl.RGBA, eyeWidth, eyeHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, rightPixels
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            eyeWidth,
+            eyeHeight,
+            0,
+            gl.BGRA,
+            gl.UNSIGNED_BYTE,
+            rightPixels
         );
         if (!this.checkGLError("upload right eye texture data")) return;
 

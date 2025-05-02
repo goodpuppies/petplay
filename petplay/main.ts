@@ -4,22 +4,18 @@ import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.t
 import { CustomLogger } from "../classes/customlogger.ts";
 import { stat } from "node:fs";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
-
-//main process
-
-type actionData = [
-  OpenVR.InputPoseActionData,
-  OpenVR.InputPoseActionData,
-  OpenVR.InputDigitalActionData,
-  OpenVR.InputDigitalActionData,
-]
+import { createWebSocketServer, WebSocketServerController } from "../classes/sock.ts";
+import { ToAddress } from "../submodules/stageforge/src/lib/types.ts";
+import { multiplyMatrix } from "../classes/matrixutils.ts";
 
 const state = {
   name: "main",
   ivroverlay: null as null | string,
   origin: null as null | string,
   overlays: [] as string[],
-  socket: null as WebSocket | null
+  socket: null as WebSocketServerController | null,
+  menusocket: null as WebSocketServerController | null,
+  inputstate: null as actionData | null
 };
 
 new PostMan(state, {
@@ -125,7 +121,7 @@ async function main() {
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   const osc = await PostMan.create("./OSC.ts", import.meta.url);
   //const updater = await PostMan.create("./frameUpdater.ts");
-  const webupdater = await PostMan.create("./webUpdater.ts", import.meta.url);
+  const webxr = await PostMan.create("./webUpdater.ts", import.meta.url);
   const vraggles = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
   PostMan.PostMessage({
@@ -134,13 +130,13 @@ async function main() {
     payload: [ivrinput, ivroverlay]
   })
   PostMan.PostMessage({
-    target: [hmd, webupdater],
+    target: [hmd, webxr],
     type: "INITOPENVR",
     payload: ivrsystem
   })
 
   PostMan.PostMessage({
-    target: [origin, vraggles, laser],
+    target: [origin, laser, vraggles], //
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
@@ -165,7 +161,7 @@ async function main() {
     type: "STARTORIGIN",
     payload: {
       name: "originoverlay",
-      texture: "../resources/P1.png",
+      texture: "./resources/PetPlay.png",
     },
   });
   PostMan.PostMessage({
@@ -173,8 +169,6 @@ async function main() {
     type: "STARTLASERS",
     payload: null
   });
-
-
 
   /* PostMan.PostMessage({
   target: origin,
@@ -245,7 +239,7 @@ async function main() {
     payload: null
   }, true);
   PostMan.PostMessage({
-    target: webupdater,
+    target: webxr,
     type: "STARTUPDATER",
     payload: {
       overlayclass: ivroverlay,
@@ -266,49 +260,37 @@ async function main() {
   //state.overlays.push(vraggles)
   //state.overlays.push(dogoverlay2)
   inputloop(input);
-  Deno.serve({ port: 8888 }, (req) => {
-    if (req.headers.get("upgrade") != "websocket") {
-      return new Response(null, { status: 501 }); // Not a WebSocket request
+
+  state.socket = createWebSocketServer(8888);
+
+  state.menusocket = createWebSocketServer(8889);
+
+  if (state.menusocket) {
+  state.menusocket.onmessage = (socket, event) => {
+    try {
+      const message = JSON.parse(event.data);
+      CustomLogger.log("network", `Received menu state: ${JSON.stringify(message)}`);
+
+      if (message.type === 'uiState') {
+        if (message.layersActive) {
+          CustomLogger.log("actor", "Menu requested overlay spawn via layersActive=true");
+          spawnOvelay(`menu_layer_overlay@${crypto.randomUUID()}`);
+        } else {
+          CustomLogger.log("actor", "Menu layersActive is false (despawn logic needed here)");
+        }
+      }
+    } catch (error) {
+      CustomLogger.log("error", `Failed to parse or handle menu message: ${error}`);
+      CustomLogger.log("error", `Raw message data: ${event.data}`);
     }
+  };
+  }
 
-    const { socket, response } = Deno.upgradeWebSocket(req);
-
-    socket.addEventListener("open", () => {
-      console.log("WebSocket client connected!");
-      if (state.socket && state.socket.readyState !== WebSocket.CLOSED) {
-        console.warn("Replacing existing WebSocket connection.");
-        state.socket.close();
-      }
-      state.socket = socket;
-    });
-
-    socket.addEventListener("message", (event) => {
-      console.log("Received message:", event.data);
-      if (event.data === "ping") {
-        socket.send("pong");
-      }
-
-    });
-    socket.addEventListener("close", () => {
-      console.log("WebSocket client disconnected.");
-      if (state.socket === socket) {
-        state.socket = null;
-      }
-    });
-    socket.addEventListener("error", (err) => {
-      console.error("WebSocket error:", err);
-      if (state.socket === socket) {
-        state.socket = null;
-      }
-    });
-
-    return response; // Return the response to complete the upgrade
-  })
 }
 
-async function spawnOvelay(name:string) {
-  const overlay = await PostMan.create("./genericoverlay.ts");
-  //setup
+async function spawnOvelay(name:string): Promise<ToAddress> {
+  CustomLogger.log("actor", `Attempting to spawn overlay with name: ${name}`);
+  const overlay = await PostMan.create("./genericoverlay.ts", import.meta.url);
   PostMan.PostMessage({
     target: overlay,
     type: "INITOVROVERLAY",
@@ -316,21 +298,30 @@ async function spawnOvelay(name:string) {
   })
 
   PostMan.PostMessage({
-    target: state.origin as string,
+    target: overlay,
+    type: "STARTOVERLAY",
+    payload: {
+      name: name,
+      texture: "./resources/P1.png",
+      sync: false,
+    },
+  });
+
+  PostMan.PostMessage({
+    target: state.origin!,
     type: "ADDOVERLAY",
     payload: overlay,
   });
 
   PostMan.PostMessage({
     target: overlay,
-    type: "STARTOVERLAY",
-    payload: {
-      name: name,
-      texture: "./resources/P1.png",
-      sync: true,
-    },
+    type: "SETOVERLAYLOCATION",
+    payload: state.inputstate![0].pose.mDeviceToAbsoluteTracking,
   });
-  state.overlays.push(overlay)
+
+
+  //state.overlays.push(overlay);
+  return overlay
 }
 
 async function assignFrame(source: string, overlay: string, remote?:string) {
@@ -369,56 +360,94 @@ async function inputloop(inputactor: string) {
   while (true) {
 
 
-    const inputstate = await PostMan.PostMessage({
-      target: inputactor,
-      type: "GETCONTROLLERDATA",
-      payload: null,
-    }, true) as actionData
+  const inputstate = await PostMan.PostMessage({
+    target: inputactor,
+    type: "GETCONTROLLERDATA",
+    payload: null,
+  }, true) as actionData
+  state.inputstate = inputstate
 
 
-    if (state.overlays.length > 0) {
+  if (state.overlays.length > 0) {
 
-      if (inputstate[2].bState == 1) {
-        PostMan.PostMessage({
-          target: state.overlays,
-          type: "SETOVERLAYLOCATION",
-          payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
-        });
-      } else if (inputstate[3].bState == 1) {
-        PostMan.PostMessage({
-          target: state.overlays,
-          type: "SETOVERLAYLOCATION",
-          payload: inputstate[1].pose.mDeviceToAbsoluteTracking,
-        });
-      }
-
-      await wait(10);
+    if (inputstate[2].bState == 1) {
+    PostMan.PostMessage({
+      target: state.overlays,
+      type: "SETOVERLAYLOCATION",
+      payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
+    });
+    } else if (inputstate[3].bState == 1) {
+    PostMan.PostMessage({
+      target: state.overlays,
+      type: "SETOVERLAYLOCATION",
+      payload: inputstate[1].pose.mDeviceToAbsoluteTracking,
+    });
     }
 
-    sendcontroller(inputstate)
+    await wait(10);
+  }
 
-    await wait(10)
+  //#region JANK
+  const transformer: OpenVR.HmdMatrix34 = {
+    m: [
+      [1.0000000,  0.0000000,  0.0000000, 0],
+      [0.0000000,  0.7071068,  0.7071068, 0],
+      [0.0000000, -0.7071068, 0.7071068, 0]
+    ]
+  };
+
+  const controller1: OpenVR.HmdMatrix34 = {
+    m: [
+      [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[0]],
+      [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[1]],
+      [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[2]]
+    ]
+  };
+  const controller2: OpenVR.HmdMatrix34 = {
+    m: [
+      [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[0]],
+      [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[1]],
+      [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[2]]
+    ]
+  };
+
+  const controller1mod = multiplyMatrix(controller1, transformer)
+  const controller2mod = multiplyMatrix(controller2, transformer)
+
+  inputstate[0].pose.mDeviceToAbsoluteTracking = controller1mod
+  inputstate[1].pose.mDeviceToAbsoluteTracking = controller2mod
+  //#endregion
+
+  sendcontroller(inputstate)
+
+  await wait(10)
   }
 }
 
 function sendcontroller(pose: actionData) {
-  if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-    try {
-      // Replacer function to handle BigInt serialization
-      const replacer = (key: string, value: any) =>
-        typeof value === 'bigint'
-          ? value.toString()
-          : value; // return everything else unchanged
+  if (state.socket && state.socket.hasClients()) {
+  try {
+    const replacer = (key: string, value: any) =>
+    typeof value === 'bigint'
+      ? value.toString()
+      : value;
 
-      state.socket.send(JSON.stringify(pose, replacer));
+    state.socket.send(JSON.stringify(pose, replacer));
 
-    } catch (error) {
-      console.error("Error sending controller data:", error);
-      // Decide if re-throwing is necessary or just log the error
-      // throw new Error("wtf" ) 
-    }
+  } catch (error) {
+    console.error("Error sending controller data:", error);
+    // Decide if re-throwing is necessary or just log the error
+    // throw new Error("wtf" ) 
+  }
   } else {
-    // Optional: Log if the socket is not open or available
-    // console.warn("WebSocket not open, cannot send controller data.");
+  // Optional: Log if the socket is not open or available
+  // console.warn("WebSocket not open, cannot send controller data.");
   }
 }
+
+type actionData = [
+  OpenVR.InputPoseActionData,
+  OpenVR.InputPoseActionData,
+  OpenVR.InputDigitalActionData,
+  OpenVR.InputDigitalActionData,
+]

@@ -243,7 +243,7 @@ new PostMan(state, {
 
 let actionSetHandle: bigint
 let error;
-const manifestPath = tempFile("actions.json", ".json", "../resources", import.meta.dirname!)
+const manifestPath = tempFile("./resources/actions.json", import.meta.dirname!)
 console.log("manifestPath: ", manifestPath)
 
 function main() {
