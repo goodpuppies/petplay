@@ -683,12 +683,6 @@ export class OpenGLManager {
             //console.log("Standard uniforms set.");
         }
 
-        // --- 7. Ensure Correct Textures are Bound to Correct Units ---
-        // (Already done during upload, but doesn't hurt to be explicit if needed)
-        // gl.ActiveTexture(gl.TEXTURE0);
-        // gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
-        // gl.ActiveTexture(gl.TEXTURE1);
-        // gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
 
         // --- 8. Bind VAO ---
         gl.BindVertexArray(this.vao);
@@ -738,7 +732,6 @@ export class OpenGLManager {
         return this.texture;
     }
 
-    // getTexture now returns the output texture ID
     getPanoramaTexture(): Uint32Array | null {
         return this.outputTexture;
     }

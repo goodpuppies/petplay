@@ -6,6 +6,7 @@ import { CustomLogger } from "../classes/customlogger.ts";
 import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { multiplyMatrix, invertMatrix } from "../classes/matrixutils.ts";
+import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 
 const state = {
   name: "genericoverlay",
@@ -43,10 +44,21 @@ new PostMan(state, {
   },
   SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
     // Always apply the requested absolute transform
-    setTransform(payload);
+
+    const transformer: OpenVR.HmdMatrix34 = {
+      m: [
+        [1, 0, 0, 0],
+        [0, 0, 1, 0],
+        [0, -1, 0, 0]
+      ]
+    };
+
+    const pose = multiplyMatrix(payload, transformer)
+
+    setTransform(pose);
     // Only calculate relative position if the origin is known
     if (state.vrcOrigin) {
-      state.relativePosition = multiplyMatrix(invertMatrix(state.vrcOrigin), payload);
+      state.relativePosition = multiplyMatrix(invertMatrix(state.vrcOrigin), pose);
     }
     // If origin is not known yet, relativePosition will be calculated on the first ORIGINUPDATE
   },
@@ -96,9 +108,34 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
   state.overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
 
   const path = tempFile(overlaytexture, import.meta.dirname!)
-  state.overlayClass.SetOverlayFromFile(state.overlayHandle, path);
+  //state.overlayClass.SetOverlayFromFile(state.overlayHandle, path);
   state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 0.4);
   state.overlayClass.ShowOverlay(state.overlayHandle);
+
+  const blaa: OpenVR.HmdMatrix34 = {
+    m: [
+      [1, 0, 0, 0],
+      [0, 1, 0, 0],
+      [0, 0, 1, 0]
+    ]
+  } 
+  const b: OpenVR.HmdVector2 = {
+    v: [0,0]
+  }
+
+  const [transformPtr, transformView] = createStruct<OpenVR.HmdMatrix34>(blaa, OpenVR.HmdMatrix34Struct);
+  const [transform2Ptr, transform2View] = createStruct<OpenVR.HmdVector2>(b, OpenVR.HmdVector2Struct);
+  const err = state.overlayClass.GetTransformForOverlayCoordinates(
+    state.overlayHandle,
+    OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+    transform2Ptr,
+    transformPtr
+  )
+  if (err !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
+  console.error(OpenVR.HmdMatrix34Struct.read(transformView))
+  console.error(OpenVR.HmdVector2Struct.read(transform2View))
+  //throw new Error("a")
+
 
   CustomLogger.log("overlay", "Generic Overlay initialized and shown");
   state.isRunning = true;

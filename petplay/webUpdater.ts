@@ -126,6 +126,8 @@ function IpcCapLoop(
   console.log("IpcCapLoop starting - using push notifications")
   if (!state.glManager) throw new Error("no gl manager")
 
+  let lastFrameEnd = performance.now();
+  
   let processingFrame = false;
   const sourceVerticalHalfFOVRadians = (112.0 / 2.0) * (Math.PI / 180.0);
 
@@ -140,6 +142,7 @@ function IpcCapLoop(
       //console.log("still processing frame")
       return;
     }
+    const frameStart = performance.now()
 
     try {
       // Set flag to prevent parallel processing
@@ -148,9 +151,6 @@ function IpcCapLoop(
       if (!state.Capturer) throw new Error("no framesource or ipc capturer")
       if (!state.overlayClass) throw new Error("no overlay")
       if (!state.overlayHandle) throw new Error("no overlay")
-
-
-
 
       // Get latest frame with minimal overhead
       if (!state.Capturer) throw new Error("no ipc capturer")
@@ -161,14 +161,14 @@ function IpcCapLoop(
         return;
       }
 
-      //let t0 = performance.now();
+      let t0 = performance.now();
       const textureData = createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height) as [Uint8Array, number, number, Float32Array];
       // Destructure the typed result
       const [pixelsX, width, height, finalCurrentPose] = textureData;
-     // let t1 = performance.now();
+      let t1 = performance.now();
       //console.log(`createTextureFromData took ${t1 - t0} ms`);
 
-      //t0 = performance.now();
+      t0 = performance.now();
       // Ensure output buffers are allocated and correctly sized
       const eyeWidth = width / 2;
       const requiredEyeSize = eyeWidth * height * 4;
@@ -180,10 +180,10 @@ function IpcCapLoop(
 
       // Call the modified splitSBSTexture
       splitSBSTexture(pixelsX, width , height, leftPixels, rightPixels as Uint8Array);
-      //t1 = performance.now();
+      t1 = performance.now();
       //console.log(`splitSBSTexture took ${t1 - t0} ms`);
 
-      //t0 = performance.now();
+      t0 = performance.now();
       // Use the pre-allocated (and now filled) buffers
       state.glManager!.renderPanoramaFromData(
         leftPixels, // Pass the filled buffer
@@ -194,15 +194,19 @@ function IpcCapLoop(
         sourceVerticalHalfFOVRadians,
         finalCurrentPose as Float32Array // Current pose for reprojection
       );
-      //t1 = performance.now();
+      t1 = performance.now();
       //console.log(`renderPanoramaFromData took ${t1 - t0} ms`);
 
 
       // Update the texture in the overlay
       //console.log("frame up")
+      t0 = performance.now();
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
       if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
-
+      t1 = performance.now();
+      //console.log(`SetOverlayTexture took ${t1 - t0} ms`);
+      const frameEnd = performance.now()
+      //console.log(`full frame took ${frameEnd - frameStart} ms`);
       //state.overlayClass.WaitFrameSync(100)
 
     } catch (error) {
@@ -215,12 +219,30 @@ function IpcCapLoop(
     }
   }
 
-  if (state.Capturer) { 
-    state.Capturer.onNewFrame((frame) => { 
-      state.currentFrame = frame
-      processLatestFrame()
-    }); 
-    
+  if (state.Capturer) {
+    state.Capturer.onNewFrame((frame) => {
+      const now = performance.now();
+
+      // 1) Idle-time: how long we sat waiting since the end of last frame’s processing
+      const idleTime = now - lastFrameEnd;
+
+      // 2) Start processing
+      const procStart = now;
+      state.currentFrame = frame;
+      processLatestFrame();
+      const procEnd = performance.now();
+
+      // 3) Processing time
+      const processingTime = procEnd - procStart;
+
+      // 4) Update lastFrameEnd for the next round
+      lastFrameEnd = procEnd;
+
+      /* console.log(
+        `⏱ idle: ${idleTime.toFixed(2)} ms,  processing: ${processingTime.toFixed(2)} ms`
+      ); */
+    });
+
     console.log("IPC Push notification system ready for frames");
   } else {
     throw new Error("No frame source available");

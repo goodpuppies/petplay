@@ -15,8 +15,16 @@ const state = {
   overlays: [] as string[],
   socket: null as WebSocketServerController | null,
   menusocket: null as WebSocketServerController | null,
-  inputstate: null as actionData | null
+  inputstate: null as actionData | null,
+  desktopOverlay: {} as desktopoverlay,
+  updater: null as string | null
 };
+
+interface desktopoverlay {
+  overlay: string;
+  frameupdater: string;
+  enabled: boolean;  
+}
 
 new PostMan(state, {
   MAIN: (_payload: string) => {
@@ -120,7 +128,8 @@ async function main() {
   state.origin = origin as string
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   const osc = await PostMan.create("./OSC.ts", import.meta.url);
-  //const updater = await PostMan.create("./frameUpdater.ts");
+  const updater = await PostMan.create("./frameUpdater.ts", import.meta.url);
+  state.updater = updater
   const webxr = await PostMan.create("./webUpdater.ts", import.meta.url);
   const vraggles = await PostMan.create("./genericoverlay.ts", import.meta.url)
 
@@ -273,10 +282,13 @@ async function main() {
 
       if (message.type === 'uiState') {
         if (message.layersActive) {
-          CustomLogger.log("actor", "Menu requested overlay spawn via layersActive=true");
-          spawnOvelay(`menu_layer_overlay@${crypto.randomUUID()}`);
+          if (!state.desktopOverlay.overlay) {
+            spawnDesktopOvelay(`desktopoverlay`);
+          } else {
+            setDesktopOverlayEnabled(true)
+          }
         } else {
-          CustomLogger.log("actor", "Menu layersActive is false (despawn logic needed here)");
+          setDesktopOverlayEnabled(false)
         }
       }
     } catch (error) {
@@ -288,7 +300,26 @@ async function main() {
 
 }
 
-async function spawnOvelay(name:string): Promise<ToAddress> {
+function setDesktopOverlayEnabled(enabled: boolean) {
+  // Only update and react if the value actually changes
+  console.log("set", enabled)
+  if (state.desktopOverlay.enabled !== enabled) {
+    state.desktopOverlay.enabled = enabled;
+    CustomLogger.log("info", `Desktop overlay enabled state changed to: ${enabled}`);
+
+    // --- Add your reactive logic here ---
+    // For example, show/hide the overlay actor, send a message, etc.
+    if (state.desktopOverlay.frameupdater) {
+      PostMan.PostMessage({
+        target: state.desktopOverlay.frameupdater,
+        type: "TOGGLE",
+        payload: state.desktopOverlay.enabled
+      })
+    }
+  }
+}
+
+async function spawnOvelay(name: string): Promise<ToAddress> {
   CustomLogger.log("actor", `Attempting to spawn overlay with name: ${name}`);
   const overlay = await PostMan.create("./genericoverlay.ts", import.meta.url);
   PostMan.PostMessage({
@@ -322,6 +353,28 @@ async function spawnOvelay(name:string): Promise<ToAddress> {
 
   //state.overlays.push(overlay);
   return overlay
+}
+
+async function spawnDesktopOvelay(name: string){
+  const overlay = await spawnOvelay(name)
+  const handle = await PostMan.PostMessage({
+    target: overlay,
+    type: "GETOVERLAYHANDLE",
+    payload: null
+  }, true);
+  if (!state.updater) throw new Error("no frame updater")
+  PostMan.PostMessage({
+    target: state.updater,
+    type: "STARTUPDATER",
+    payload: {
+      overlayclass: state.ivroverlay,
+      overlayhandle: handle,
+    }
+  })
+  state.overlays.push(overlay)
+  state.desktopOverlay.frameupdater = state.updater
+  state.desktopOverlay.overlay = overlay
+  setDesktopOverlayEnabled(true)
 }
 
 async function assignFrame(source: string, overlay: string, remote?:string) {
@@ -358,69 +411,66 @@ async function assignFrame(source: string, overlay: string, remote?:string) {
 async function inputloop(inputactor: string) {
 
   while (true) {
+    const inputstate = await PostMan.PostMessage({
+      target: inputactor,
+      type: "GETCONTROLLERDATA",
+      payload: null,
+    }, true) as actionData
+    state.inputstate = inputstate
 
+    if (state.overlays.length > 0) {
 
-  const inputstate = await PostMan.PostMessage({
-    target: inputactor,
-    type: "GETCONTROLLERDATA",
-    payload: null,
-  }, true) as actionData
-  state.inputstate = inputstate
+      if (inputstate[2].bState == 1) {
+      PostMan.PostMessage({
+        target: state.overlays,
+        type: "SETOVERLAYLOCATION",
+        payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
+      });
+      } else if (inputstate[3].bState == 1) {
+      PostMan.PostMessage({
+        target: state.overlays,
+        type: "SETOVERLAYLOCATION",
+        payload: inputstate[1].pose.mDeviceToAbsoluteTracking,
+      });
+      }
 
-
-  if (state.overlays.length > 0) {
-
-    if (inputstate[2].bState == 1) {
-    PostMan.PostMessage({
-      target: state.overlays,
-      type: "SETOVERLAYLOCATION",
-      payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
-    });
-    } else if (inputstate[3].bState == 1) {
-    PostMan.PostMessage({
-      target: state.overlays,
-      type: "SETOVERLAYLOCATION",
-      payload: inputstate[1].pose.mDeviceToAbsoluteTracking,
-    });
+      await wait(10);
     }
 
-    await wait(10);
-  }
+    //#region JANK
+    const transformer: OpenVR.HmdMatrix34 = {
+      m: [
+        [1.0000000,  0.0000000,  0.0000000, 0],
+        [0.0000000,  0.7071068,  0.7071068, 0],
+        [0.0000000, -0.7071068, 0.7071068, 0]
+      ]
+    };
 
-  //#region JANK
-  const transformer: OpenVR.HmdMatrix34 = {
-    m: [
-      [1.0000000,  0.0000000,  0.0000000, 0],
-      [0.0000000,  0.7071068,  0.7071068, 0],
-      [0.0000000, -0.7071068, 0.7071068, 0]
-    ]
-  };
+    const controller1: OpenVR.HmdMatrix34 = {
+      m: [
+        [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[0]],
+        [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[1]],
+        [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[2]]
+      ]
+    };
+    const controller2: OpenVR.HmdMatrix34 = {
+      m: [
+        [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[0]],
+        [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[1]],
+        [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[2]]
+      ]
+    };
 
-  const controller1: OpenVR.HmdMatrix34 = {
-    m: [
-      [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[0]],
-      [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[1]],
-      [...inputstate[0].pose.mDeviceToAbsoluteTracking.m[2]]
-    ]
-  };
-  const controller2: OpenVR.HmdMatrix34 = {
-    m: [
-      [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[0]],
-      [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[1]],
-      [...inputstate[1].pose.mDeviceToAbsoluteTracking.m[2]]
-    ]
-  };
+    const controller1mod = multiplyMatrix(controller1, transformer)
+    const controller2mod = multiplyMatrix(controller2, transformer)
 
-  const controller1mod = multiplyMatrix(controller1, transformer)
-  const controller2mod = multiplyMatrix(controller2, transformer)
+    inputstate[0].pose.mDeviceToAbsoluteTracking = controller1mod
+    inputstate[1].pose.mDeviceToAbsoluteTracking = controller2mod
+    //#endregion
 
-  inputstate[0].pose.mDeviceToAbsoluteTracking = controller1mod
-  inputstate[1].pose.mDeviceToAbsoluteTracking = controller2mod
-  //#endregion
+    sendcontroller(inputstate)
 
-  sendcontroller(inputstate)
-
-  await wait(10)
+    await wait(10)
   }
 }
 
