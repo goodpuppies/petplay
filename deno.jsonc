@@ -13,7 +13,7 @@
       ]
     },
     "dev": {
-      "command":"deno run -A petplay/petplay.ts dev",
+    "command": "deno run -A utils/watcher.ts --watch ./petplay/ --ext ts --verbose --exec \"deno run -A petplay/petplay.ts dev\"",
       "dependencies": [
         "cefbuild"
       ]
