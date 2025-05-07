@@ -1,7 +1,7 @@
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
-import { CustomLogger } from "./customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel"
 
 /**
  * Set overlay transform in absolute coordinates

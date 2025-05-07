@@ -1,6 +1,7 @@
 {
   "imports": {
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
+    "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
     "@number0/iroh": "npm:@number0/iroh@^0.31.0"
   },
   "tasks": {
@@ -12,8 +13,14 @@
         "vitebuild", "cefbuild"
       ]
     },
+    "devw": {
+    "command": "deno run -A --env-file utils/watcher.ts --watch ./petplay/ --ext ts --verbose --exec \"deno run -A petplay/petplay.ts dev\"",
+      "dependencies": [
+        "cefbuild"
+      ]
+    },
     "dev": {
-    "command": "deno run -A utils/watcher.ts --watch ./petplay/ --ext ts --verbose --exec \"deno run -A petplay/petplay.ts dev\"",
+      "command": "deno run -A --env-file petplay/petplay.ts dev",
       "dependencies": [
         "cefbuild"
       ]

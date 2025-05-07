@@ -21,7 +21,7 @@ postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 const mainAddress = await postalservice.add("./main.ts", import.meta.url);
 
 postalservice.PostMessage({
-  address: { fm: "system", to: mainAddress },
+  target:  mainAddress,
   type: "MAIN",
   payload: null,
 });
@@ -31,7 +31,7 @@ if (import.meta.main) {
     const msgD = await asyncPrompt() ?? "";
     const msg = msgD.replace(/\r/g, "");
     postalservice.PostMessage({
-      address: { fm: "system", to: mainAddress },
+      target: mainAddress,
       type: "STDIN",
       payload: msg,
     });

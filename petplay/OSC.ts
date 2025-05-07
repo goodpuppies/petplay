@@ -1,6 +1,6 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import { OscSubscriber } from "../classes/getvrcpos.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 
 //vrchat integration
 
@@ -8,14 +8,14 @@ interface coord {
     [key: string]: number;
 }
 
-const state = {
+const state = actorState({
     name: "vrccoordinate",
     coordinate: {} as coord,
     oscSubscriber: null as OscSubscriber | null,
-};
+});
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload) => {
+    __INIT__: (_payload) => {
         main();
     },
     GETCOORDINATE: (_payloa) => {
@@ -63,7 +63,7 @@ function main() {
     if (state.oscSubscriber) {
         state.oscSubscriber.subscribe(handleOscMessage.bind(state));
         state.oscSubscriber.listenForOscMessages().then(() => {
-            CustomLogger.log("actor", "Finished listening for OSC messages.");
+            LogChannel.log("actor", "Finished listening for OSC messages.");
         });
     }
 

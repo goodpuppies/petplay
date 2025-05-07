@@ -1,5 +1,5 @@
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { CustomLogger } from "./customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel"
 
 export interface Position {
     x: number;
@@ -129,14 +129,14 @@ export class TransformStabilizer {
         const threshold = Math.max(movementThreshold, rotationThreshold);
         
         if (this.shouldLog()) {
-            CustomLogger.log("origin", `Threshold calculation:`);
-            CustomLogger.log("origin", `- Moving Significantly: ${isMovingSignificantly}`);
-            CustomLogger.log("origin", `- Exceeded Deadzone: ${this.hasExceededDeadzone}`);
-            CustomLogger.log("origin", `- Head Velocity: ${this.currentHmdVelocity.toFixed(6)} m/s`);
-            CustomLogger.log("origin", `- Head Rotation: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)}°/s`);
-            CustomLogger.log("origin", `- Movement Threshold: ${movementThreshold.toFixed(6)}`);
-            CustomLogger.log("origin", `- Rotation Threshold: ${rotationThreshold.toFixed(6)}`);
-            CustomLogger.log("origin", `- Final Threshold: ${threshold.toFixed(6)}`);
+            LogChannel.log("origin", `Threshold calculation:`);
+            LogChannel.log("origin", `- Moving Significantly: ${isMovingSignificantly}`);
+            LogChannel.log("origin", `- Exceeded Deadzone: ${this.hasExceededDeadzone}`);
+            LogChannel.log("origin", `- Head Velocity: ${this.currentHmdVelocity.toFixed(6)} m/s`);
+            LogChannel.log("origin", `- Head Rotation: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)}°/s`);
+            LogChannel.log("origin", `- Movement Threshold: ${movementThreshold.toFixed(6)}`);
+            LogChannel.log("origin", `- Rotation Threshold: ${rotationThreshold.toFixed(6)}`);
+            LogChannel.log("origin", `- Final Threshold: ${threshold.toFixed(6)}`);
         }
         
         return threshold;
@@ -198,28 +198,28 @@ export class TransformStabilizer {
         const assumedStationary = !hasSignificantMovement;
         
         if (this.shouldLogAssumed()) {
-            CustomLogger.log("origin", `Assumed not moving in VRChat: ${assumedStationary}`);
+            LogChannel.log("origin", `Assumed not moving in VRChat: ${assumedStationary}`);
             if (assumedStationary) {
-                CustomLogger.log("origin", `Distance from stable: ${distanceFromStable.toFixed(6)} (threshold: ${currentThreshold.toFixed(6)})`);
-                CustomLogger.log("origin", `HMD Velocity: ${this.currentHmdVelocity.toFixed(2)} m/s`);
-                CustomLogger.log("origin", `HMD Rotation Velocity: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)} deg/s`);
-                CustomLogger.log("origin", `Moving Significantly: ${isMovingSignificantly}`);
-                CustomLogger.log("origin", `Very Stable: ${isVeryStable}`);
-                CustomLogger.log("origin", `Exceeded Deadzone: ${this.hasExceededDeadzone}`);
+                LogChannel.log("origin", `Distance from stable: ${distanceFromStable.toFixed(6)} (threshold: ${currentThreshold.toFixed(6)})`);
+                LogChannel.log("origin", `HMD Velocity: ${this.currentHmdVelocity.toFixed(2)} m/s`);
+                LogChannel.log("origin", `HMD Rotation Velocity: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)} deg/s`);
+                LogChannel.log("origin", `Moving Significantly: ${isMovingSignificantly}`);
+                LogChannel.log("origin", `Very Stable: ${isVeryStable}`);
+                LogChannel.log("origin", `Exceeded Deadzone: ${this.hasExceededDeadzone}`);
             }
         }
 
         // If movement is below thresholds, don't update
         if (assumedStationary) {
             if (this.shouldLog()) {
-                CustomLogger.log("origin", `Movement details (below threshold):`);
-                CustomLogger.log("origin", `- Current Position: (${currentPos.x.toFixed(6)}, ${currentPos.y.toFixed(6)}, ${currentPos.z.toFixed(6)})`);
-                CustomLogger.log("origin", `- Stable Position: (${this.stablePosition!.x.toFixed(6)}, ${this.stablePosition!.y.toFixed(6)}, ${this.stablePosition!.z.toFixed(6)})`);
-                CustomLogger.log("origin", `- Distance: ${distanceFromStable.toFixed(6)}`);
-                CustomLogger.log("origin", `- Current Threshold: ${currentThreshold.toFixed(6)}`);
-                CustomLogger.log("origin", `- HMD Velocity: ${this.currentHmdVelocity.toFixed(2)} m/s`);
-                CustomLogger.log("origin", `- HMD Rotation Velocity: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)} deg/s`);
-                CustomLogger.log("origin", `- Rotation Delta: ${rotationDelta.toFixed(6)}`);
+                LogChannel.log("origin", `Movement details (below threshold):`);
+                LogChannel.log("origin", `- Current Position: (${currentPos.x.toFixed(6)}, ${currentPos.y.toFixed(6)}, ${currentPos.z.toFixed(6)})`);
+                LogChannel.log("origin", `- Stable Position: (${this.stablePosition!.x.toFixed(6)}, ${this.stablePosition!.y.toFixed(6)}, ${this.stablePosition!.z.toFixed(6)})`);
+                LogChannel.log("origin", `- Distance: ${distanceFromStable.toFixed(6)}`);
+                LogChannel.log("origin", `- Current Threshold: ${currentThreshold.toFixed(6)}`);
+                LogChannel.log("origin", `- HMD Velocity: ${this.currentHmdVelocity.toFixed(2)} m/s`);
+                LogChannel.log("origin", `- HMD Rotation Velocity: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)} deg/s`);
+                LogChannel.log("origin", `- Rotation Delta: ${rotationDelta.toFixed(6)}`);
             }
             return false;
         }
@@ -228,13 +228,13 @@ export class TransformStabilizer {
         this.stablePosition = currentPos;
 
         if (this.shouldLog()) {
-            CustomLogger.log("origin", `Movement details (above threshold):`);
-            CustomLogger.log("origin", `- Distance from stable: ${distanceFromStable.toFixed(6)}`);
-            CustomLogger.log("origin", `- Current Threshold: ${currentThreshold.toFixed(6)}`);
-            CustomLogger.log("origin", `- HMD Velocity: ${this.currentHmdVelocity.toFixed(2)} m/s`);
-            CustomLogger.log("origin", `- HMD Rotation Velocity: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)} deg/s`);
-            CustomLogger.log("origin", `- Rotation delta: ${rotationDelta.toFixed(6)}`);
-            CustomLogger.log("origin", `- Updating stable position to: (${currentPos.x.toFixed(6)}, ${currentPos.y.toFixed(6)}, ${currentPos.z.toFixed(6)})`);
+            LogChannel.log("origin", `Movement details (above threshold):`);
+            LogChannel.log("origin", `- Distance from stable: ${distanceFromStable.toFixed(6)}`);
+            LogChannel.log("origin", `- Current Threshold: ${currentThreshold.toFixed(6)}`);
+            LogChannel.log("origin", `- HMD Velocity: ${this.currentHmdVelocity.toFixed(2)} m/s`);
+            LogChannel.log("origin", `- HMD Rotation Velocity: ${(this.currentHmdRotationVelocity * 180 / Math.PI).toFixed(2)} deg/s`);
+            LogChannel.log("origin", `- Rotation delta: ${rotationDelta.toFixed(6)}`);
+            LogChannel.log("origin", `- Updating stable position to: (${currentPos.x.toFixed(6)}, ${currentPos.y.toFixed(6)}, ${currentPos.z.toFixed(6)})`);
         }
 
         return true;

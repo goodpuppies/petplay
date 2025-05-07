@@ -1,14 +1,14 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import { wait, tempFile } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { multiplyMatrix, invertMatrix } from "../classes/matrixutils.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 
-const state = {
+const state = actorState({
   name: "genericoverlay",
   sync: false,
   isRunning: false,
@@ -23,10 +23,10 @@ const state = {
       [0, 0, 1, 0]
     ]
   } as OpenVR.HmdMatrix34,
-};
+});
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => {
+  __INIT__: (_payload: void) => {
     PostMan.setTopic("muffin")
   },
   GETOVERLAYHANDLE: (_payload: void) => { return state.overlayHandle },
@@ -36,7 +36,7 @@ new PostMan(state, {
   INITOVROVERLAY: (payload: bigint) => {
     const systemPtr = Deno.UnsafePointer.create(payload);
     state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-    console.log(PostMan.state.id, "ovr ready")
+    console.log(state.id, "ovr ready")
   },
   GETOVERLAYLOCATION: (_payload: void) => {
     if (!state.overlayClass || !state.overlayHandle) { throw new Error("Overlay not initialized"); }
@@ -102,7 +102,7 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
 
   //get overlayhandle
   const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-  if (!state.overlayClass) throw new Error(`${PostMan.state.id} openvr not ready`)
+  if (!state.overlayClass) throw new Error(`${state.id} openvr not ready`)
   const error = state.overlayClass.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
   if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
   state.overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
@@ -137,7 +137,7 @@ function main(overlayname: string, overlaytexture: string, sync: boolean) {
   //throw new Error("a")
 
 
-  CustomLogger.log("overlay", "Generic Overlay initialized and shown");
+  LogChannel.log("overlay", "Generic Overlay initialized and shown");
   state.isRunning = true;
 
   updateLoop();
@@ -156,11 +156,11 @@ async function updateLoop() {
       (now - lastSyncTime > syncInterval) &&
       (!lastSyncedRelativePosition || JSON.stringify(lastSyncedRelativePosition) !== JSON.stringify(state.relativePosition))
     ) {
-      const dogOverlayActors = Array.from(PostMan.state.addressBook)
-        .filter((addr): addr is string => typeof addr === 'string' && addr.startsWith('dogoverlay@') && addr !== PostMan.state.id);
+      const dogOverlayActors = Array.from(state.addressBook)
+        .filter((addr) => addr.startsWith('dogoverlay@') && addr !== state.id);
 
       if (dogOverlayActors.length > 0) {
-        CustomLogger.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
+        LogChannel.log("overlay", `Syncing position to ${dogOverlayActors.length} remote actors`);
 
         if (state.sync) {
           PostMan.PostMessage({

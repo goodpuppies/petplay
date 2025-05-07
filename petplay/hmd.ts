@@ -1,26 +1,26 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { wait } from "../classes/utils.ts";
 import { setImmediate } from "node:timers";
 
 
-const state = {
+const state = actorState({
   name: "hmd_position_actor",
   vrSystem: null as OpenVR.IVRSystem | null,
   web: null as string | null,
   socket: null as WebSocket | null
-};
+});
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload) => { },
+  __INIT__: (_payload) => { },
   GETHMDPOSITION: (_payload) => { return getHMDPose(); },
   INITOPENVR: (payload) => {
     const ptrn = payload;
     const systemPtr = Deno.UnsafePointer.create(ptrn); 
     state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
 
-    CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
+    LogChannel.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     main() 
   },
   ASSIGNWEB: (payload: string) => {

@@ -1,16 +1,16 @@
-import { PostMan, wait } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 
 import { dirname, join, extname } from "jsr:@std/path";
 
-const state = {
+const state = actorState({
 
-};
+});
 
 let cefProcess: Deno.ChildProcess | null = null;
 let devProcess: Deno.ChildProcess | null = null;
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload) => { main() },
+  __INIT__: (_payload) => { main() },
 } as const);
 
 let BUILD: boolean

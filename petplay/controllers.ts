@@ -1,4 +1,4 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct, stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
@@ -9,7 +9,7 @@ import { dirname, join, extname } from "jsr:@std/path";
 
 //steamvr input handling
 
-const state = {
+const state = actorState({
   name: "ovrinput",
   TrackingUniverseOriginPTR: null,
   inputerror: OpenVR.InputError.VRInputError_None,
@@ -22,10 +22,10 @@ const state = {
   rightWasGrabbing: false,
   overlayActor: "",
   laser: ""
-};
+});
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => {},
+  __INIT__: (_payload: void) => {},
   SETOVERLAYHANDLE: (payload: bigint) => { state.targetOverlayHandle = payload },
   SETOVERLAYACTOR: (payload: string) => {state.overlayActor = payload},
   SETLASER: (payload: string) => { state.laser = payload },

@@ -1,19 +1,19 @@
-import { ToAddress } from "../../submodules/stageforge/src/lib/types.ts";
-import { PostMan } from "../../submodules/stageforge/mod.ts";
+import { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
+import { actorState, PostMan } from "../../submodules/stageforge/mod.ts";
 import { wait } from "../../classes/utils.ts";
 import * as OpenVR from "../../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { CustomLogger } from "../../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel"
 
 //main process
 
-const state = {
+const state = actorState({
   name: "main",
   id: "",
   db: {},
   socket: null,
   numbah: 0,
   addressBook: new Set()
-};
+});
 
 
 new PostMan(state, {
@@ -23,7 +23,7 @@ new PostMan(state, {
 } as const);
 
 async function main() {
-  CustomLogger.log("default", "main actor started");
+  LogChannel.log("default", "main actor started");
 
   const ivr = await PostMan.create("./OpenVR.ts")
   const ivrsystem = await PostMan.PostMessage({
@@ -95,8 +95,8 @@ async function main() {
 
 }
 
-async function inputloop(inputactor: ToAddress, overlayactor: ToAddress) {
-  CustomLogger.log("default", "inputloop started");
+async function inputloop(inputactor: ActorId, overlayactor: ActorId) {
+  LogChannel.log("default", "inputloop started");
   while (true) {
 
     const inputstate = await PostMan.PostMessage({

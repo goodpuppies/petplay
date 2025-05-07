@@ -1,19 +1,19 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 
-const state = {
+const state = actorState({
     name: "openvr",
     sync: false,
     vrSystemPTR: null as Deno.PointerValue | null,
     overlayPTR: null as Deno.PointerValue | null,
     inputPTR: null as Deno.PointerValue | null
-};
+});
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload) => {
+    __INIT__: (_payload) => {
         initializeOpenVR();
     },
     GETOPENVRPTR: (_payload) => {
@@ -61,6 +61,6 @@ function initializeOpenVR() {
     state.overlayPTR = overlayPtr
     state.inputPTR = inputPtr
 
-    CustomLogger.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
+    LogChannel.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
 }
 

@@ -1,12 +1,13 @@
-import { PostMan, wait } from "../../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../../submodules/stageforge/mod.ts";
 import * as OpenVR from "../../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
-import { CustomLogger } from "../../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel"
 import { ScreenCapturer } from "../../classes/ScreenCapturer/scclass.ts";
 import { OpenGLManager } from "../../classes/openglManager.ts";
 import { setOverlayTransformAbsolute, getOverlayTransformAbsolute} from "../../classes/openvrTransform.ts";
 import { Buffer } from "node:buffer";
+import { wait } from "../../classes/utils.ts";
 
 function setTransform(transform: OpenVR.HmdMatrix34) {
   if (!state.overlayClass || !state.overlayHandle) return;
@@ -18,9 +19,10 @@ function getTransform() {
     getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
 }
 
-const state = {
+
+const state = actorState({
     id: "",
-    name: "vrcoverlay",
+    name: "videoOverlay",
     sync: false,
     overlayClass: null as OpenVR.IVROverlay | null,
     overlayHandle: 0n,
@@ -29,11 +31,11 @@ const state = {
     screenCapturer: null as ScreenCapturer | null,
     glManager: null as OpenGLManager | null,
     textureStructPtr: null as Deno.PointerValue<OpenVR.Texture> | null,
-};
+});
 type SerializedBigInt = { __bigint__: string };
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload: void) => {
+    __INIT__: (_payload: void) => {
         PostMan.setTopic("muffin")
     },
     STARTOVERLAY: (payload: { name: string, texture: string, sync: boolean, frames?: number }) => {
@@ -57,7 +59,7 @@ new PostMan(state, {
         const systemPtr = Deno.UnsafePointer.create(ptrn);
         state.vrSystem = new OpenVR.IVRSystem(systemPtr);
         state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-        CustomLogger.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
+        LogChannel.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
     },
     STOP: async (_payload: void) => {
         state.isRunning = false;
@@ -113,7 +115,7 @@ function INITSCREENCAP(): ScreenCapturer {
     const capturer = new ScreenCapturer({
         debug: false,
         onStats: ({ fps, avgLatency }) => {
-            CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+            LogChannel.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
         },
         executablePath: "../../resources/screen-streamer"
     });
@@ -138,44 +140,44 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
     const continuousMode = framesToSend === 0;
 
     if (continuousMode) {
-        CustomLogger.log("overlay", "Starting DeskCapLoop in continuous streaming mode");
+        LogChannel.log("overlay", "Starting DeskCapLoop in continuous streaming mode");
     } else {
-        CustomLogger.log("overlay", `Starting DeskCapLoop, will capture ${framesToSend} frames`);
+        LogChannel.log("overlay", `Starting DeskCapLoop, will capture ${framesToSend} frames`);
     }
 
     // Process frames until we've sent the requested number or indefinitely if framesToSend is 0
     while (state.isRunning && (continuousMode || frameCount < framesToSend)) {
         if (continuousMode) {
-            //CustomLogger.log("overlay", `Waiting for frame in continuous mode (frame #${frameCount + 1})...`);
+            //LogChannel.log("overlay", `Waiting for frame in continuous mode (frame #${frameCount + 1})...`);
         } else {
-            CustomLogger.log("overlay", `Waiting for frame ${frameCount + 1}/${framesToSend}...`);
+            LogChannel.log("overlay", `Waiting for frame ${frameCount + 1}/${framesToSend}...`);
         }
 
         const frame = await capturer.getLatestFrame();
 
         if (!frame) {
-            CustomLogger.log("overlay", "No frame received from capturer");
+            LogChannel.log("overlay", "No frame received from capturer");
             await wait(100);
             continue;
         }
 
         frameCount++;
-        //CustomLogger.log("overlay", `Received frame ${frameCount}: ${frame.width}x${frame.height}, size: ${frame.data.length} bytes`);
+        //LogChannel.log("overlay", `Received frame ${frameCount}: ${frame.width}x${frame.height}, size: ${frame.data.length} bytes`);
 
         createTextureFromScreenshot(frame.data, frame.width, frame.height);
-        //CustomLogger.log("overlay", "Texture created from screenshot");
+        //LogChannel.log("overlay", "Texture created from screenshot");
 
         // Set overlay texture
         const error = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
         if (error !== OpenVR.OverlayError.VROverlayError_None) {
-            CustomLogger.error("overlay", `SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
+            LogChannel.error("overlay", `SetOverlayTexture error: ${OpenVR.OverlayError[error]}`);
         }
 
-        if (PostMan.state.addressBook && PostMan.state.addressBook.size > 0) {
-            //CustomLogger.log("overlay", `Found ${PostMan.state.addressBook.size} actors in address book`);
+        if (state.addressBook && state.addressBook.size > 0) {
+            //LogChannel.log("overlay", `Found ${PostMan.state.addressBook.size} actors in address book`);
             let sentCount = 0;
 
-            for (const actorId of PostMan.state.addressBook) {
+            for (const actorId of state.addressBook) {
                 if (actorId === state.id) continue;
                 sentCount++;
 
@@ -184,7 +186,7 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
                 const scaledWidth = Math.floor(frame.width * scaleFactor);
                 const scaledHeight = Math.floor(frame.height * scaleFactor);
 
-                //CustomLogger.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight} (ratio: ${DOWNSCALE_RATIO})`);
+                //LogChannel.log("overlay", `Scaling frame from ${frame.width}x${frame.height} to ${scaledWidth}x${scaledHeight} (ratio: ${DOWNSCALE_RATIO})`);
 
                 // Skip scaling if ratio is 1.0 (full resolution)
                 let pixelsToSend: Uint8Array;
@@ -216,7 +218,7 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
 
                 const frameMsg = continuousMode ? `streaming frame #${frameCount}` : `frame ${frameCount}/${framesToSend}`;
                 const scalingInfo = scaleFactor === 1.0 ? "full resolution" : `${DOWNSCALE_RATIO * 100}% scale`;
-                //CustomLogger.log("overlay", `Sending ${frameMsg} to actor ${actorId} (${scalingInfo}, base64 size: ${base64Data.length} bytes)`);
+                //LogChannel.log("overlay", `Sending ${frameMsg} to actor ${actorId} (${scalingInfo}, base64 size: ${base64Data.length} bytes)`);
 
                 PostMan.PostMessage({
                     target: actorId,
@@ -232,13 +234,13 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
 
             }
 
-            //CustomLogger.log("overlay", `Sent frame to ${sentCount} actors`);
+            //LogChannel.log("overlay", `Sent frame to ${sentCount} actors`);
         } else {
-            CustomLogger.log("overlay", "No actors in address book to send frames to");
+            LogChannel.log("overlay", "No actors in address book to send frames to");
         }
 
         overlay.WaitFrameSync(100);
-        //CustomLogger.log("overlay", "Frame sync completed");
+        //LogChannel.log("overlay", "Frame sync completed");
 
         // Add a small delay between frames to avoid overloading the system
         if (continuousMode || frameCount < framesToSend) {
@@ -251,17 +253,17 @@ async function DeskCapLoop(capturer: ScreenCapturer, overlay: OpenVR.IVROverlay,
     if (!continuousMode) {
         // Keep the overlay active but don't continue capturing frames
         state.isRunning = false;
-        CustomLogger.log("overlay", "Setting isRunning to false");
+        LogChannel.log("overlay", "Setting isRunning to false");
 
         if (state.screenCapturer) {
-            CustomLogger.log("overlay", "Disposing screen capturer");
+            LogChannel.log("overlay", "Disposing screen capturer");
             await state.screenCapturer.dispose();
             state.screenCapturer = null;
         }
 
-        CustomLogger.log("overlay", `DeskCapLoop complete - sent ${frameCount} frames - screen capture stopped`);
+        LogChannel.log("overlay", `DeskCapLoop complete - sent ${frameCount} frames - screen capture stopped`);
     } else {
-        CustomLogger.log("overlay", `Continuous streaming mode ended after ${frameCount} frames`);
+        LogChannel.log("overlay", `Continuous streaming mode ended after ${frameCount} frames`);
     }
 }
 
@@ -279,7 +281,7 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         INITGL(overlayname);
 
 
-        CustomLogger.log("overlay", "Creating overlay...");
+        LogChannel.log("overlay", "Creating overlay...");
         const overlay = state.overlayClass as OpenVR.IVROverlay;
         const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
         const error = overlay.CreateOverlay(overlayname, overlayname, overlayHandlePTR);
@@ -289,7 +291,7 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         }
         const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
         state.overlayHandle = overlayHandle;
-        CustomLogger.log("overlay", `Overlay created with handle: ${overlayHandle}`);
+        LogChannel.log("overlay", `Overlay created with handle: ${overlayHandle}`);
 
 
         overlay.SetOverlayWidthInMeters(overlayHandle, 0.7);
@@ -310,7 +312,7 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         setTransform(initialTransform)
 
         overlay.ShowOverlay(overlayHandle);
-        CustomLogger.log("overlay", "Overlay initialized and shown");
+        LogChannel.log("overlay", "Overlay initialized and shown");
 
 
 
@@ -327,25 +329,25 @@ function main(overlayname: string, sync: boolean, frames: number = 15) {
         state.textureStructPtr = textureStructPtr;
 
         state.isRunning = true;
-        console.log("isRunning", PostMan.state.id, state.isRunning)
+        console.log("isRunning", state.id, state.isRunning)
 
 
         if (sync) {
             state.screenCapturer = INITSCREENCAP();
             if (frames === 0) {
-                CustomLogger.log("overlay", `Screen capture initialized, continuous streaming mode`);
+                LogChannel.log("overlay", `Screen capture initialized, continuous streaming mode`);
             } else {
-                CustomLogger.log("overlay", `Screen capture initialized, will send ${frames} frames`);
+                LogChannel.log("overlay", `Screen capture initialized, will send ${frames} frames`);
             }
 
             DeskCapLoop(state.screenCapturer, overlay, textureStructPtr, frames);
         } else {
-            CustomLogger.log("overlay", "Running in sub mode, waiting for frame data");
+            LogChannel.log("overlay", "Running in sub mode, waiting for frame data");
         }
     } catch (error) {
-        CustomLogger.error("overlay", "Error in main:", error);
+        LogChannel.error("overlay", "Error in main:", error);
         if (error instanceof Error) {
-            CustomLogger.error("overlay", "Stack:", error.stack);
+            LogChannel.error("overlay", "Stack:", error.stack);
         }
     }
 }

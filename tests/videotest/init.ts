@@ -3,7 +3,7 @@ import { IrohWebWorker, setupIrohDebugMode } from "../../submodules/irohworker/I
 
 import { wait } from "../../classes/utils.ts";
 // Enable debug mode for Iroh WebWorker
-setupIrohDebugMode(false);
+setupIrohDebugMode(true);
 const postalservice = new PostalService(IrohWebWorker);
 // Enable debug mode for PostalService
 PostalService.debugMode = true;
@@ -20,7 +20,7 @@ console.log("mainAddress", mainAddress);
 await wait(1000)
 
 postalservice.PostMessage({
-  address: { fm: "system", to: mainAddress },
+  target: mainAddress,
   type: "MAIN",
   payload: null,
 });

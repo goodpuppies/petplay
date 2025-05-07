@@ -1,14 +1,14 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 
 const LASER_POINTER_WIDTH = 0.002; // 2mm wide
 const LASER_POINTER_LENGTH = 0.2; // 20cm long
 
-const state = {
+const state = actorState({
     name: "laserpointer",
     overlayClass: null as OpenVR.IVROverlay | null,
     intersectionOverlayHandle: null as bigint | null,
@@ -17,10 +17,10 @@ const state = {
     rightLaserHandle: 0n as OpenVR.OverlayHandle,
     inputActor: null as string | null,
     isRunning: false
-};
+});
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload: void) => { },
+    __INIT__: (_payload: void) => { },
     ASSIGNINPUT: (payload: string) => { state.inputActor = payload },
     INITOVROVERLAY: (payload: bigint) => {
         const systemPtr = Deno.UnsafePointer.create(payload);
@@ -41,7 +41,7 @@ async function updateLoop() {
     while (state.isRunning) {
         try {
             if (!state.inputActor) {
-                CustomLogger.log("actor", "No input actor set");
+                LogChannel.log("actor", "No input actor set");
                 continue;
             }
 
@@ -64,7 +64,7 @@ async function updateLoop() {
 
             await new Promise(resolve => setTimeout(resolve, 1000 / 90)); // 90hz update rate
         } catch (error) {
-            CustomLogger.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
+            LogChannel.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
         }
     }
 }
@@ -72,7 +72,7 @@ async function updateLoop() {
 function createLaserOverlays() {
 
     if (!state.overlayClass) {
-        CustomLogger.error("actor", "Overlay class not initialized");
+        LogChannel.error("actor", "Overlay class not initialized");
         return;
     }
 

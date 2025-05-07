@@ -1,12 +1,12 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { ActorId, PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import { tempFile, wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { getOverlayTransformAbsolute, setOverlayTransformAbsolute } from "../classes/openvrTransform.ts";
 import { TransformStabilizer2 } from "../classes/transformStabilizer2.ts";
 
-const state = {
+const state = actorState({
   origin: null as OpenVR.HmdMatrix34 | null,
   name: "origin",
   vrc: "",
@@ -17,13 +17,13 @@ const state = {
   originChangeCount: 0,
   transformStabilizer: null as TransformStabilizer2 | null,
   overlays: [] as string[],
-};
+});
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => {},
+  __INIT__: (_payload: void) => {},
   ASSIGNVRC: (payload: string) => { state.vrc = payload; },
   ASSIGNHMD: (payload: string) => { state.hmd = payload; },
-  ADDADDRESS: (payload: string) => { PostMan.state.addressBook.add(payload); },
+  ADDADDRESS: (payload: ActorId) => { state.addressBook.add(payload); },
   GETVRCORIGIN: (_payload: void) => { return state.origin },
   STARTORIGIN: (payload: { name: string, texture: string }) => {
     main(payload.name, payload.texture);
@@ -64,7 +64,7 @@ function originReaction() {
 async function main(overlaymame: string, overlaytexture: string) {
   try {
     state.transformStabilizer = new TransformStabilizer2();  
-    CustomLogger.log("vrcorigin", "Creating origin...");
+    LogChannel.log("vrcorigin", "Creating origin...");
     const overlay = state.overlayClass as OpenVR.IVROverlay;
     const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
     const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
@@ -126,7 +126,7 @@ async function main(overlaymame: string, overlaytexture: string) {
         }  
         const currentTime = Date.now();
         if (currentTime - lastLogTime >= 1000) {
-          CustomLogger.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
+          LogChannel.log("origin", `Origin changed ${state.originChangeCount} times in the last second`);
           state.originChangeCount = 0;
           lastLogTime = currentTime;
         }  
@@ -135,7 +135,7 @@ async function main(overlaymame: string, overlaytexture: string) {
       await wait(11);
     }
   } catch (e) {
-    CustomLogger.error("vrcorigin", `Error in origin: ${(e as Error).message}`);
+    LogChannel.error("vrcorigin", `Error in origin: ${(e as Error).message}`);
   }
 }
 

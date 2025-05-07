@@ -1,11 +1,13 @@
-import { PostMan, wait } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
 import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { setImmediate } from "node:timers";
 import { Buffer } from "node:buffer";
+import { wait } from "../classes/utils.ts";
+
 
 //takes an overlay handle and a frame source, updates overlay texture continuously
 interface frame {
@@ -14,7 +16,7 @@ interface frame {
   height: number
 }
 
-const state = {
+const state = actorState({
   name: "updater",
   overlayHandle: null as bigint | null,
   overlayClass: null as OpenVR.IVROverlay | null,
@@ -25,10 +27,10 @@ const state = {
   currentFrame: null as frame | null,
   framesource: null as string | null,
   textureStructPtr: null as Deno.PointerValue<OpenVR.Texture> | null // Store texture pointer
-};
+});
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => {
+  __INIT__: (_payload: void) => {
     PostMan.setTopic("muffin")
   },
   STARTUPDATER: (payload: { overlayclass: bigint, overlayhandle: bigint, framesource?: string }) => {
@@ -67,7 +69,7 @@ function INITSCREENCAP(): ScreenCapturer {
   const capturer = new ScreenCapturer({
     debug: false,
     onStats: ({ fps, avgLatency }) => {
-      CustomLogger.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+      LogChannel.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
     },
     executablePath: "./resources/screen-streamer"
   });

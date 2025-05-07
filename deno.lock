@@ -2,14 +2,27 @@
   "version": "5",
   "specifiers": {
     "jsr:@denosaurs/cache@0.2.15": "0.2.15",
+    "jsr:@denosaurs/plug@1.0.5": "1.0.5",
     "jsr:@gfx/build-glfw@0.1.0": "0.1.0",
+    "jsr:@gfx/canvas@0.5.8": "0.5.8",
     "jsr:@gfx/dwm@~0.3.9": "0.3.9",
     "jsr:@milly/namedpipe@*": "1.1.0",
+    "jsr:@mommysgoodpuppy/logchannel@0.1": "0.1.0",
+    "jsr:@std/assert@0.214": "0.214.0",
+    "jsr:@std/assert@0.217": "0.217.0",
     "jsr:@std/async@*": "1.0.12",
     "jsr:@std/cli@*": "1.0.17",
+    "jsr:@std/encoding@0.214": "0.214.0",
+    "jsr:@std/encoding@0.217.0": "0.217.0",
+    "jsr:@std/fmt@0.214": "0.214.0",
     "jsr:@std/fs@*": "1.0.4",
+    "jsr:@std/fs@0.214": "0.214.0",
+    "jsr:@std/fs@0.217.0": "0.217.0",
     "jsr:@std/fs@1.0.4": "1.0.4",
     "jsr:@std/path@*": "1.0.9",
+    "jsr:@std/path@0.214": "0.214.0",
+    "jsr:@std/path@0.217": "0.217.0",
+    "jsr:@std/path@0.217.0": "0.217.0",
     "jsr:@std/path@1.0.6": "1.0.6",
     "jsr:@std/path@^1.0.6": "1.0.9",
     "npm:@number0/iroh@*": "0.31.0",
@@ -24,18 +37,46 @@
         "jsr:@std/path@1.0.6"
       ]
     },
+    "@denosaurs/plug@1.0.5": {
+      "integrity": "04cd988da558adc226202d88c3a434d5fcc08146eaf4baf0cea0c2284b16d2bf",
+      "dependencies": [
+        "jsr:@std/encoding@0.214",
+        "jsr:@std/fmt",
+        "jsr:@std/fs@0.214",
+        "jsr:@std/path@0.214"
+      ]
+    },
     "@gfx/build-glfw@0.1.0": {
       "integrity": "dfe046f585cacbe0aa6d696e9f8fa33c0b5411121c6de58b14073c85252110fe"
+    },
+    "@gfx/canvas@0.5.8": {
+      "integrity": "a61c80292528e7433d428556b494a0ea496dd8e6abd4a338b8b25fc04e46ea3e",
+      "dependencies": [
+        "jsr:@denosaurs/plug",
+        "jsr:@std/encoding@0.217.0",
+        "jsr:@std/fs@0.217.0",
+        "jsr:@std/path@0.217.0"
+      ]
     },
     "@gfx/dwm@0.3.9": {
       "integrity": "867204194394a80679c6edd33916c8d3f4e08c33371bf07477d537cef17d4cb0",
       "dependencies": [
         "jsr:@denosaurs/cache",
-        "jsr:@gfx/build-glfw"
+        "jsr:@gfx/build-glfw",
+        "jsr:@gfx/canvas"
       ]
     },
     "@milly/namedpipe@1.1.0": {
       "integrity": "b0123e3a0b88e67d6cb3e2c11345541f97fc0ff7aeb5abbcb2aa3b1785daf09a"
+    },
+    "@mommysgoodpuppy/logchannel@0.1.0": {
+      "integrity": "4001c4ece26bb332d511c6a3e3b0383d4f39d476d375b0dda32a6e42a9259c67"
+    },
+    "@std/assert@0.214.0": {
+      "integrity": "55d398de76a9828fd3b1aa653f4dba3eee4c6985d90c514865d2be9bd082b140"
+    },
+    "@std/assert@0.217.0": {
+      "integrity": "c98e279362ca6982d5285c3b89517b757c1e3477ee9f14eb2fdf80a45aaa9642"
     },
     "@std/async@1.0.12": {
       "integrity": "d1bfcec459e8012846fe4e38dfc4241ab23240ecda3d8d6dfcf6d81a632e803d"
@@ -43,10 +84,45 @@
     "@std/cli@1.0.17": {
       "integrity": "e15b9abe629e17be90cc6216327f03a29eae613365f1353837fa749aad29ce7b"
     },
+    "@std/encoding@0.214.0": {
+      "integrity": "30a8713e1db22986c7e780555ffd2fefd1d4f9374d734bb41f5970f6c3352af5"
+    },
+    "@std/encoding@0.217.0": {
+      "integrity": "b03e8ff94c98d6b6a02c02c5cf8e5d203400155516248964fc4559abc04669dc"
+    },
+    "@std/fmt@0.214.0": {
+      "integrity": "40382cff88a0783b347b4d69b94cf931ab8e549a733916718cb866c08efac4d4"
+    },
+    "@std/fs@0.214.0": {
+      "integrity": "bc880fea0be120cb1550b1ed7faf92fe071003d83f2456a1e129b39193d85bea",
+      "dependencies": [
+        "jsr:@std/assert@0.214",
+        "jsr:@std/path@0.214"
+      ]
+    },
+    "@std/fs@0.217.0": {
+      "integrity": "0bfff5f3618d68c385b28b4ffbf3a15c98293a0f1186444458b62e0111ce77b2",
+      "dependencies": [
+        "jsr:@std/assert@0.217",
+        "jsr:@std/path@0.217"
+      ]
+    },
     "@std/fs@1.0.4": {
       "integrity": "2907d32d8d1d9e540588fd5fe0ec21ee638134bd51df327ad4e443aaef07123c",
       "dependencies": [
         "jsr:@std/path@^1.0.6"
+      ]
+    },
+    "@std/path@0.214.0": {
+      "integrity": "d5577c0b8d66f7e8e3586d864ebdf178bb326145a3611da5a51c961740300285",
+      "dependencies": [
+        "jsr:@std/assert@0.214"
+      ]
+    },
+    "@std/path@0.217.0": {
+      "integrity": "1217cc25534bca9a2f672d7fe7c6f356e4027df400c0e85c0ef3e4343bc67d11",
+      "dependencies": [
+        "jsr:@std/assert@0.217"
       ]
     },
     "@std/path@1.0.6": {
@@ -338,6 +414,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@gfx/dwm@~0.3.9",
+      "jsr:@mommysgoodpuppy/logchannel@0.1",
       "npm:@number0/iroh@0.31"
     ]
   }

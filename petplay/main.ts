@@ -1,14 +1,14 @@
-import { PostMan } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import { wait, assignActorHierarchy } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { stat } from "node:fs";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createWebSocketServer, WebSocketServerController } from "../classes/sock.ts";
-import { ToAddress } from "../submodules/stageforge/src/lib/types.ts";
+import { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 
-const state = {
+const state = actorState({
   name: "main",
   ivroverlay: null as null | string,
   origin: null as null | string,
@@ -18,7 +18,7 @@ const state = {
   inputstate: null as actionData | null,
   desktopOverlay: {} as desktopoverlay,
   updater: null as string | null
-};
+});
 
 interface desktopoverlay {
   overlay: string;
@@ -42,7 +42,7 @@ new PostMan(state, {
       switch (command) {
         case '/spawn':{
           if (parts.length < 3) {
-            CustomLogger.log("error", "Usage: /spawn [type] [name]");
+            LogChannel.log("error", "Usage: /spawn [type] [name]");
             return;
           }
 
@@ -51,15 +51,15 @@ new PostMan(state, {
 
           if (spawnType === 'overlay') {
             spawnOvelay(spawnName);
-            CustomLogger.log("actor", `Spawning overlay: ${spawnName}`);
+            LogChannel.log("actor", `Spawning overlay: ${spawnName}`);
           } else {
-            CustomLogger.log("error", `Unknown spawn type: ${spawnType}`);
+            LogChannel.log("error", `Unknown spawn type: ${spawnType}`);
           }
           break;
         }
         case '/localframe': {
           if (parts.length < 3) {
-            CustomLogger.log("error", "Usage: /assignframe [updater] [overlay]");
+            LogChannel.log("error", "Usage: /assignframe [updater] [overlay]");
             return;
           }
 
@@ -67,12 +67,12 @@ new PostMan(state, {
           const overlay = parts[2];
 
           assignFrame(source, overlay);
-          CustomLogger.log("actor", `Assigning frame from ${source} to overlay ${overlay}`);
+          LogChannel.log("actor", `Assigning frame from ${source} to overlay ${overlay}`);
           break;
         }
         case '/remoteframe': {
           if (parts.length < 4) {
-            CustomLogger.log("error", "Usage: /remoteframe [updater] [source] [overlay]");
+            LogChannel.log("error", "Usage: /remoteframe [updater] [source] [overlay]");
             return;
           }
 
@@ -81,18 +81,18 @@ new PostMan(state, {
           const overlay = parts[3];
 
           assignFrame(updater, overlay, source);
-          CustomLogger.log("actor", `Assigning frame from ${source} to overlay ${overlay}`);
+          LogChannel.log("actor", `Assigning frame from ${source} to overlay ${overlay}`);
           break;
         }
         case '/inspect': {
-          console.log(PostMan.state.addressBook);
+          console.log(state.addressBook);
           break;
         }
         default:
-          CustomLogger.log("error", `Unknown command: ${command}`);
+          LogChannel.log("error", `Unknown command: ${command}`);
       }
     } else {
-      CustomLogger.log("actor", "stdin:", payload);
+      LogChannel.log("actor", "stdin:", payload);
     }
   },
 } as const);
@@ -100,7 +100,7 @@ new PostMan(state, {
 async function main() {
 
   const startTime = performance.now();
-  CustomLogger.log("default", "creating scene");
+  LogChannel.log("default", "creating scene");
 
   await PostMan.create("./frontend.ts", import.meta.url)
 
@@ -265,7 +265,7 @@ async function main() {
 
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
-  CustomLogger.log("default", `scene created in ${timeElapsed} ms`);
+  LogChannel.log("default", `scene created in ${timeElapsed} ms`);
   //state.overlays.push(vraggles)
   //state.overlays.push(dogoverlay2)
   inputloop(input);
@@ -278,7 +278,7 @@ async function main() {
   state.menusocket.onmessage = (socket, event) => {
     try {
       const message = JSON.parse(event.data);
-      CustomLogger.log("network", `Received menu state: ${JSON.stringify(message)}`);
+      LogChannel.log("network", `Received menu state: ${JSON.stringify(message)}`);
 
       if (message.type === 'uiState') {
         if (message.layersActive) {
@@ -292,8 +292,8 @@ async function main() {
         }
       }
     } catch (error) {
-      CustomLogger.log("error", `Failed to parse or handle menu message: ${error}`);
-      CustomLogger.log("error", `Raw message data: ${event.data}`);
+      LogChannel.log("error", `Failed to parse or handle menu message: ${error}`);
+      LogChannel.log("error", `Raw message data: ${event.data}`);
     }
   };
   }
@@ -305,7 +305,7 @@ function setDesktopOverlayEnabled(enabled: boolean) {
   console.log("set", enabled)
   if (state.desktopOverlay.enabled !== enabled) {
     state.desktopOverlay.enabled = enabled;
-    CustomLogger.log("info", `Desktop overlay enabled state changed to: ${enabled}`);
+    LogChannel.log("info", `Desktop overlay enabled state changed to: ${enabled}`);
 
     // --- Add your reactive logic here ---
     // For example, show/hide the overlay actor, send a message, etc.
@@ -319,8 +319,8 @@ function setDesktopOverlayEnabled(enabled: boolean) {
   }
 }
 
-async function spawnOvelay(name: string): Promise<ToAddress> {
-  CustomLogger.log("actor", `Attempting to spawn overlay with name: ${name}`);
+async function spawnOvelay(name: string): Promise<ActorId> {
+  LogChannel.log("actor", `Attempting to spawn overlay with name: ${name}`);
   const overlay = await PostMan.create("./genericoverlay.ts", import.meta.url);
   PostMan.PostMessage({
     target: overlay,
@@ -440,9 +440,9 @@ async function inputloop(inputactor: string) {
     //#region JANK
     const transformer: OpenVR.HmdMatrix34 = {
       m: [
-        [1.0000000,  0.0000000,  0.0000000, 0],
+        [1.0000000,  0.0000000,  0.0000000, 0.01],
         [0.0000000,  0.7071068,  0.7071068, -0.05],
-        [0.0000000, -0.7071068, 0.7071068, 0]
+        [0.0000000, -0.7071068, 0.7071068, 0.01]
       ]
     };
 
@@ -477,7 +477,7 @@ async function inputloop(inputactor: string) {
 function sendcontroller(pose: actionData) {
   if (state.socket && state.socket.hasClients()) {
   try {
-    const replacer = (key: string, value: any) =>
+    const replacer = (key: string, value: unknown) =>
     typeof value === 'bigint'
       ? value.toString()
       : value;

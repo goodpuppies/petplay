@@ -1,14 +1,14 @@
-import { PostMan, wait } from "../submodules/stageforge/mod.ts";
+import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
 import { ScreenCapturer, type CapturedFrame } from "../classes/CefCap/frame_receiver.ts";
-import { CustomLogger } from "../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { invertMatrix4, scaleMatrix4 } from "../classes/matrixutils.ts";
 import { splitSBSTexture } from "../classes/extrautils.ts";
 import { setImmediate } from "node:timers";
 
-const state = {
+const state = actorState({
   name: "updater",
   overlayHandle: null as bigint | null,
   overlayClass: null as OpenVR.IVROverlay | null,
@@ -88,10 +88,10 @@ const state = {
     // If no exact match, fall back to closest pose
     return this.getClosestPose(poseTimestamp);
   }
-};
+});
 
 new PostMan(state, {
-  CUSTOMINIT: (_payload: void) => {
+  __INIT__: (_payload: void) => {
     PostMan.setTopic("muffin")
   },
   STARTUPDATER: (payload: { overlayclass: bigint, overlayhandle: bigint, framesource?: string }) => {
@@ -105,7 +105,7 @@ new PostMan(state, {
     const systemPtr = Deno.UnsafePointer.create(ptrn); 
     state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
 
-    CustomLogger.log("actor", `OpenVR system initialized in actor ${PostMan.state.id} with pointer ${ptrn}`);
+    LogChannel.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
   }
 } as const);
 
@@ -113,7 +113,7 @@ function INITIPCCAP(): ScreenCapturer {
   const capturer = new ScreenCapturer ({
     debug: false, 
     onStats: ({ fps, avgLatency }) => {
-      CustomLogger.log("screencap", `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+      LogChannel.log("screencap", `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
     },
   });
   
@@ -318,6 +318,7 @@ function main() {
   state.overlayClass.SetOverlayTextureBounds(state.overlayHandle, boundsPtr);
   state.overlayClass.SetOverlayFlag(state.overlayHandle, OpenVR.OverlayFlags.VROverlayFlags_Panorama, false)
   state.overlayClass.SetOverlayFlag(state.overlayHandle, OpenVR.OverlayFlags.VROverlayFlags_StereoPanorama, true)
+  state.overlayClass.SetOverlaySortOrder(state.overlayHandle, 9999) //we are privileged
 
 
   state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 3)

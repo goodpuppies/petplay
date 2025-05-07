@@ -1,15 +1,14 @@
 import {
     BaseState,
     worker,
-    MessageAddressReal,
 } from "../../submodules/stageforge/src/lib/types.ts";
-import { PostMan } from "../../submodules/stageforge/mod.ts";
+import { actorState, PostMan } from "../../submodules/stageforge/mod.ts";
 import * as OpenVR from "../../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { stringToPointer } from "../../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
-import { CustomLogger } from "../../classes/customlogger.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel"
 
-const state = {
+const state = actorState({
     id: "",
     db: {},
     name: "openvr",
@@ -18,22 +17,22 @@ const state = {
     vrSystemPTR: null as Deno.PointerValue | null,
     overlayPTR: null as Deno.PointerValue | null,
     addressBook: new Set(),
-};
+});
 
 new PostMan(state, {
-    CUSTOMINIT: (_payload) => {
+    __INIT__: (_payload) => {
         //PostMan.setTopic("muffin")
         initializeOpenVR();
     },
     LOG: (_payload) => {
-        CustomLogger.log("actor", state.id);
+        LogChannel.log("actor", state.id);
     },
     GETID: (_payload) => {
         return state.id
     },
     GETOPENVRPTR: (_payload) => {
         if (!state.vrSystemPTR) {
-            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
+            LogChannel.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
             return;
         }
 
@@ -45,7 +44,7 @@ new PostMan(state, {
     },
     GETOVERLAYPTR: (_payload) => {
         if (!state.overlayPTR) {
-            CustomLogger.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
+            LogChannel.error("actorerr", `OpenVR system not initialized in actor ${state.id}`);
             return;
         }
         const overlay = state.overlayPTR
@@ -69,7 +68,7 @@ async function initializeOpenVR() {
     const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
 
     if (initError !== OpenVR.InitError.VRInitError_None) {
-        CustomLogger.error("actorerr", `Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`);
+        LogChannel.error("actorerr", `Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`);
         throw new Error("Failed to initialize OpenVR");
     }
 
@@ -79,7 +78,7 @@ async function initializeOpenVR() {
     const interfaceError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
 
     if (interfaceError !== OpenVR.InitError.VRInitError_None) {
-        CustomLogger.error("actorerr", `Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError]}`);
+        LogChannel.error("actorerr", `Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError]}`);
         throw new Error("Failed to get IVRSystem interface");
     }
 
@@ -95,6 +94,6 @@ async function initializeOpenVR() {
 
 
 
-    CustomLogger.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
+    LogChannel.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
 }
 
