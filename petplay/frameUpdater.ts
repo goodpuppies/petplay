@@ -125,6 +125,7 @@ async function DeskCapLoop() {
           continue;
       }
       // Optional: Reduce sync frequency if needed, but 100ms might be okay
+      await wait(10)
       state.overlayClass.WaitFrameSync(100)
     }
   } catch (error) {

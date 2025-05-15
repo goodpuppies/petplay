@@ -2,7 +2,6 @@ import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { wait } from "../classes/utils.ts";
-import { setImmediate } from "node:timers";
 
 
 const state = actorState({
@@ -12,22 +11,24 @@ const state = actorState({
   socket: null as WebSocket | null
 });
 
-new PostMan(state, {
-  __INIT__: (_payload) => { },
-  GETHMDPOSITION: (_payload) => { return getHMDPose(); },
-  INITOPENVR: (payload) => {
+export const api = {
+  __INIT__: (_payload: void) => { },
+  GETHMDPOSITION: (_payload: void) => { return getHMDPose(); },
+  INITOPENVR: (payload: bigint) => {
     const ptrn = payload;
-    const systemPtr = Deno.UnsafePointer.create(ptrn); 
-    state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
+    const systemPtr = Deno.UnsafePointer.create(ptrn);
+    state.vrSystem = new OpenVR.IVRSystem(systemPtr);
 
     LogChannel.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
-    main() 
+    main()
   },
   ASSIGNWEB: (payload: string) => {
     //state.web = payload
     //webloop()
   },
-} as const);
+} as const
+
+new PostMan(state, api);
 
 async function webloop() {
   while (true) {
@@ -115,7 +116,7 @@ async function dwebloop() {
   while (true) {
     const pose = getHMDPoseX()
     sendpose(pose)
-    await wait(0)
+    await wait(10)
   }
 }
 

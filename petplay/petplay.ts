@@ -35,6 +35,6 @@ if (import.meta.main) {
       type: "STDIN",
       payload: msg,
     });
-    await wait(1)
+    await wait(10)
   }
 }
