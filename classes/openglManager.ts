@@ -10,6 +10,11 @@ export class OpenGLManager {
     private texture: Uint32Array | null = null;
     private leftEyeTexture: Uint32Array | null = null; // Texture for Left Eye
     private rightEyeTexture: Uint32Array | null = null; // Texture for Right Eye
+    private leftEyePbo: gl.GLuint | null = null;
+    private rightEyePbo: gl.GLuint | null = null;
+    private pboEyeWidth: number = 0;
+    private pboEyeHeight: number = 0;
+    private pboEyeBufferSize: number = 0; // To store size of one eye's pixel data for PBO
     private window: DwmWindow | null = null;
     private uniqueId: string;
     private shaderProgram: gl.GLuint | null = null; // Adjust type based on gluten bindings if needed
@@ -460,6 +465,25 @@ export class OpenGLManager {
             gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             this.checkGLError("TexParameteri right eye");
 
+            // --- PBO Setup (Handles Only) ---
+            const pboIds = new Uint32Array(2);
+            gl.GenBuffers(2, pboIds);
+            this.leftEyePbo = pboIds[0];
+            this.rightEyePbo = pboIds[1];
+            if (!this.leftEyePbo || !this.rightEyePbo) {
+                console.error("Failed to generate PBOs");
+                this.checkGLError("GenBuffers for PBOs");
+                // Clean up if one was created and the other failed (though GenBuffers usually creates all or none)
+                if (this.leftEyePbo) gl.DeleteBuffers(1, new Uint32Array([this.leftEyePbo]));
+                if (this.rightEyePbo) gl.DeleteBuffers(1, new Uint32Array([this.rightEyePbo]));
+                this.leftEyePbo = null;
+                this.rightEyePbo = null;
+                throw new Error("Failed to generate PBOs");
+            }
+            //console.log(`Generated PBO IDs: Left=${this.leftEyePbo}, Right=${this.rightEyePbo}`);
+            // PBO storage (gl.BufferData) will be allocated in renderPanoramaFromData
+            // when eye dimensions are known.
+
             //console.log("Unbinding textures.");
             gl.BindTexture(gl.TEXTURE_2D, 0);
             this.checkGLError("Unbind textures");
@@ -578,9 +602,31 @@ export class OpenGLManager {
         const activeUniforms = useReprojection ? this.reprojectionUniformLocations : this.uniformLocations;
 
         // --- 1. Check Resources ---
-        if (!this.fbo || !activeShaderProgram || !this.vao || !this.leftEyeTexture || !this.rightEyeTexture || !this.outputTexture) {
-            console.error(`Render call failed (${useReprojection ? 'Reprojection' : 'Standard'}): Essential OpenGL resources not initialized.`);
-            throw new Error("OpenGL resources not initialized.");
+        if (!this.fbo || !activeShaderProgram || !this.vao || 
+            !this.leftEyeTexture || !this.rightEyeTexture || !this.outputTexture ||
+            !this.leftEyePbo || !this.rightEyePbo) { // Added PBO check
+            console.error(`Render call failed (${useReprojection ? 'Reprojection' : 'Standard'}): Essential OpenGL resources not initialized (including PBOs).`);
+            throw new Error("OpenGL resources not initialized (including PBOs).");
+        }
+
+        // --- 1.5. (Re)Allocate PBO storage if necessary ---
+        const requiredBufferSize = eyeWidth * eyeHeight * 4; // 4 bytes for RGBA/BGRA
+        if (this.pboEyeWidth !== eyeWidth || this.pboEyeHeight !== eyeHeight || this.pboEyeBufferSize !== requiredBufferSize) {
+            //console.log(`Reallocating PBOs for ${eyeWidth}x${eyeHeight}. Old size: ${this.pboEyeBufferSize}, New size: ${requiredBufferSize}`);
+            this.pboEyeWidth = eyeWidth;
+            this.pboEyeHeight = eyeHeight;
+            this.pboEyeBufferSize = requiredBufferSize;
+
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, this.leftEyePbo!);
+            gl.BufferData(gl.PIXEL_UNPACK_BUFFER, Deno.UnsafePointer.create(BigInt(this.pboEyeBufferSize)), null, gl.STREAM_DRAW);
+            this.checkGLError("BufferData left PBO");
+
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, this.rightEyePbo!);
+            gl.BufferData(gl.PIXEL_UNPACK_BUFFER, Deno.UnsafePointer.create(BigInt(this.pboEyeBufferSize)), null, gl.STREAM_DRAW);
+            this.checkGLError("BufferData right PBO");
+
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0); // Unbind PBO
+            //console.log("PBOs reallocated.");
         }
 
         // --- 2. Check Required Uniform Locations for the *Chosen* Shader ---
@@ -614,43 +660,92 @@ export class OpenGLManager {
         }
         //console.log(`Using ${useReprojection ? 'Reprojection' : 'Standard'} shader program: ID ${activeShaderProgram}`);
 
-        // --- 3. Upload Pixel Data to Separate Eye Textures ---
-        // (No changes needed here, just ensure texture units match shader expectations)
-        // Left Eye Texture
-        gl.ActiveTexture(gl.TEXTURE0); // Activate texture unit 0 for left eye (eyeLeft uniform)
-        this.checkGLError("active texture 0");
-        gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
-        this.checkGLError("bind left texture");
-        gl.TexImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            eyeWidth,
-            eyeHeight,
-            0,
-            gl.BGRA,
-            gl.UNSIGNED_BYTE,
-            leftPixels
-        );
-        if (!this.checkGLError("upload left eye texture data")) return;
+        // --- 3. Upload Pixel Data to Separate Eye Textures via PBOs ---
 
-        // Right Eye Texture
-        gl.ActiveTexture(gl.TEXTURE1); // Activate texture unit 1 for right eye (eyeRight uniform)
-        this.checkGLError("active texture 1");
-        gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
-        this.checkGLError("bind right texture");
+        // Left Eye Texture via PBO
+        gl.ActiveTexture(gl.TEXTURE0); // Activate texture unit 0
+        this.checkGLError("active texture 0 for PBO");
+        gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
+        this.checkGLError("bind left texture for PBO");
+
+        gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, this.leftEyePbo!);
+        this.checkGLError("bind left PBO");
+        
+        // Map buffer, copy data, unmap buffer
+        // Using gl.bufferSubData is generally preferred over mapping if the full buffer content is being replaced
+        // and might offer better performance by avoiding CPU-GPU sync for map/unmap.
+        // However, gl.mapBufferRange gives more control if only partial updates were needed (not our case here).
+        // For full replacement, gl.bufferData(null) then gl.bufferSubData could also be an option.
+        // Let's stick to mapBufferRange as per initial plan, can be benchmarked against gl.bufferSubData later.
+
+        // Option A: MapBufferRange (Ensure Deno/Gluten supports this well)
+        const leftPboPtr = gl.MapBufferRange(gl.PIXEL_UNPACK_BUFFER, null, Deno.UnsafePointer.create(BigInt(this.pboEyeBufferSize)), gl.MAP_WRITE_BIT | gl.MAP_INVALIDATE_BUFFER_BIT);
+        if (!leftPboPtr) {
+            this.checkGLError("MapBufferRange left PBO");
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0); // Unbind PBO before throwing
+            throw new Error("Failed to map left PBO");
+        }
+        const leftPboView = new Uint8Array(Deno.UnsafePointerView.getArrayBuffer(leftPboPtr as Deno.PointerObject<unknown>, this.pboEyeBufferSize));
+        leftPboView.set(leftPixels);
+        gl.UnmapBuffer(gl.PIXEL_UNPACK_BUFFER);
+        this.checkGLError("UnmapBuffer left PBO");
+
+        // Upload data from PBO to texture
         gl.TexImage2D(
             gl.TEXTURE_2D,
             0,
-            gl.RGBA,
-            eyeWidth,
-            eyeHeight,
+            gl.RGBA, // Internal format
+            this.pboEyeWidth,
+            this.pboEyeHeight,
             0,
-            gl.BGRA,
-            gl.UNSIGNED_BYTE,
-            rightPixels
+            gl.BGRA, // Format of data in PBO
+            gl.UNSIGNED_BYTE, // Type of data in PBO
+            null // Data pointer is null because data comes from PIXEL_UNPACK_BUFFER
         );
-        if (!this.checkGLError("upload right eye texture data")) return;
+        if (!this.checkGLError("upload left eye texture data from PBO")) {
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0); // Ensure PBO is unbound on error
+            return;
+        }
+
+        // Right Eye Texture via PBO
+        gl.ActiveTexture(gl.TEXTURE1); // Activate texture unit 1
+        this.checkGLError("active texture 1 for PBO");
+        gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
+        this.checkGLError("bind right texture for PBO");
+
+        gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, this.rightEyePbo!);
+        this.checkGLError("bind right PBO");
+
+        // Map buffer, copy data, unmap buffer (Option A: MapBufferRange)
+        const rightPboPtr = gl.MapBufferRange(gl.PIXEL_UNPACK_BUFFER, null, Deno.UnsafePointer.create(BigInt(this.pboEyeBufferSize)), gl.MAP_WRITE_BIT | gl.MAP_INVALIDATE_BUFFER_BIT);
+        if (!rightPboPtr) {
+            this.checkGLError("MapBufferRange right PBO");
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0); // Unbind PBO before throwing
+            throw new Error("Failed to map right PBO");
+        }
+        const rightPboView = new Uint8Array(Deno.UnsafePointerView.getArrayBuffer(rightPboPtr as Deno.PointerObject<unknown>, this.pboEyeBufferSize));
+        rightPboView.set(rightPixels);
+        gl.UnmapBuffer(gl.PIXEL_UNPACK_BUFFER);
+        this.checkGLError("UnmapBuffer right PBO");
+
+        // Upload data from PBO to texture
+        gl.TexImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA, // Internal format
+            this.pboEyeWidth,
+            this.pboEyeHeight,
+            0,
+            gl.BGRA, // Format of data in PBO
+            gl.UNSIGNED_BYTE, // Type of data in PBO
+            null // Data pointer is null
+        );
+        if (!this.checkGLError("upload right eye texture data from PBO")) {
+            gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0); // Ensure PBO is unbound on error
+            return;
+        }
+
+        gl.BindBuffer(gl.PIXEL_UNPACK_BUFFER, 0); // Unbind PBO from PIXEL_UNPACK_BUFFER target
 
         // --- 4. Bind FBO, Set Viewport ---
         gl.BindFramebuffer(gl.FRAMEBUFFER, this.fbo);
@@ -765,6 +860,19 @@ export class OpenGLManager {
             gl.DeleteProgram(this.reprojectionShaderProgram);
             this.reprojectionShaderProgram = null;
         }
+
+        if (this.leftEyePbo) {
+            gl.DeleteBuffers(1, new Uint32Array([this.leftEyePbo]));
+            this.leftEyePbo = null;
+        }
+        if (this.rightEyePbo) {
+            gl.DeleteBuffers(1, new Uint32Array([this.rightEyePbo]));
+            this.rightEyePbo = null;
+        }
+        this.pboEyeWidth = 0;
+        this.pboEyeHeight = 0;
+        this.pboEyeBufferSize = 0;
+
         if (this.leftEyeTexture) {
             console.log(`Deleting Left Eye Texture ID: ${this.leftEyeTexture[0]}`);
             gl.DeleteTextures(1, this.leftEyeTexture);
