@@ -4,6 +4,7 @@ import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
+import { wait } from "../classes/utils.ts";
 
 const LASER_POINTER_WIDTH = 0.002; // 2mm wide
 const LASER_POINTER_LENGTH = 0.2; // 20cm long
@@ -62,7 +63,7 @@ async function updateLoop() {
                 }
             }
 
-            await new Promise(resolve => setTimeout(resolve, 1000 / 90)); // 90hz update rate
+            await wait(10)
         } catch (error) {
             LogChannel.error("updateLoop", `Error in update loop: ${(error as Error).message}`);
         }

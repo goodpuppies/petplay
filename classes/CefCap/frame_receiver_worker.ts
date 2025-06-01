@@ -1,10 +1,10 @@
 // Frame receiver worker (named pipe version)
 
-import { connect, NamedPipeConn } from "jsr:@milly/namedpipe";
+import { connect } from "jsr:@milly/namedpipe";
 (async () => {
   try {
 
-    let conn: NamedPipeConn | null = null;
+    let conn: Deno.Conn | null = null;
     let isConnected = false;
     let stopRequested = false; // Flag to signal stop during connection attempts
 

@@ -120,7 +120,7 @@ async function cefspawn() {
 
     // Consider waiting for the process to exit or handling its output/errors
     const status = await cefProcess.status;
-   console.log(`CEF process exited with code: ${status.code}`);
+    console.log(`CEF process exited with code: ${status.code}`);
 
   } catch (error) {
     console.error("Error during CEF setup or execution:", error);

@@ -6,7 +6,7 @@ import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { setImmediate } from "node:timers";
 import { Buffer } from "node:buffer";
-import { wait } from "../classes/utils.ts";
+import { tempFile, wait } from "../classes/utils.ts";
 
 
 //takes an overlay handle and a frame source, updates overlay texture continuously
@@ -66,12 +66,13 @@ new PostMan(state, {
 } as const);
 
 function INITSCREENCAP(): ScreenCapturer {
+  const exePath = tempFile("./resources/screen-streamer.exe", import.meta.dirname!)
   const capturer = new ScreenCapturer({
     debug: false,
     onStats: ({ fps, avgLatency }) => {
       LogChannel.log("screencap", `Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
     },
-    executablePath: "./resources/screen-streamer"
+    executablePath: exePath
   });
   return capturer;
 }

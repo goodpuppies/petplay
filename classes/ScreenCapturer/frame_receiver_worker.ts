@@ -1,3 +1,5 @@
+import { wait } from "../utils.ts";
+
 // Frame receiver worker
 let conn: Deno.Conn | null = null;
 let listener: Deno.Listener | null = null;
@@ -20,6 +22,11 @@ async function readExactly(size: number): Promise<Uint8Array | null> {
     }
     return buffer;
   } catch (err) {
+    // Check for connection reset errors and mark as disconnected
+    if (err instanceof Error && (err.name === "ConnectionReset" || err.message.includes("ECONNRESET"))) {
+      isConnected = false;
+      return null;
+    }
     console.error("Error reading from connection:", err);
     return null;
   }
@@ -63,13 +70,20 @@ async function startReceiving() {
     const frame = await receiveFrame();
     if (frame) {
       const receiveTime = performance.now() - frameStart;
-      worker.postMessage({ 
-        type: 'frame', 
+      worker.postMessage({
+        type: 'frame',
         data: frame.data,
         width: frame.width,
         height: frame.height,
-        receiveTime 
+        receiveTime
       });
+    } else {
+      // If receiveFrame returns null, connection is likely closed
+      if (isConnected) {
+        isConnected = false;
+        worker.postMessage({ type: 'disconnected' });
+      }
+      break;
     }
     // Small delay to prevent tight loop
     await new Promise(resolve => setTimeout(resolve, 1));

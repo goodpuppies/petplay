@@ -2,7 +2,7 @@ import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
-import { ScreenCapturer, type CapturedFrame } from "../classes/CefCap/frame_receiver.ts";
+import { CefCapturer, type WebxrFrame } from "../classes/CefCap/frame_receiver.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { invertMatrix4, scaleMatrix4 } from "../classes/matrixutils.ts";
 import { splitSBSTexture } from "../classes/extrautils.ts";
@@ -14,8 +14,8 @@ const state = actorState({
   overlayClass: null as OpenVR.IVROverlay | null,
   glManager: null as OpenGLManager | null,
   isRunning: false as boolean,
-  Capturer: null as ScreenCapturer | null,
-  currentFrame: null as CapturedFrame | null,
+  Capturer: null as CefCapturer | null,
+  currentFrame: null as WebxrFrame | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
   vrSystem: null as OpenVR.IVRSystem | null,
   socket: null as WebSocket | null, 
@@ -109,8 +109,8 @@ new PostMan(state, {
   }
 } as const);
 
-function INITIPCCAP(): ScreenCapturer {
-  const capturer = new ScreenCapturer ({
+function INITIPCCAP(): CefCapturer {
+  const capturer = new CefCapturer ({
     debug: false, 
     onStats: ({ fps, avgLatency }) => {
       LogChannel.log("screencap", `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);

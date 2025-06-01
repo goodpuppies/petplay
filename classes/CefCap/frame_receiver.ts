@@ -1,4 +1,4 @@
-export interface CapturedFrame {
+export interface WebxrFrame {
   data: Uint8Array;/** Raw RGBA pixel data */
   width: number;/** Frame width in pixels */
   height: number;/** Frame height in pixels */
@@ -17,14 +17,14 @@ export interface ScreenCapturerOptions {
  * ScreenCapturer provides a high-level interface for capturing screen content.
  * It manages the screen capture process and provides easy access to the latest frame.
  */
-export class ScreenCapturer {
+export class CefCapturer {
 //#region privates
   private process: Deno.ChildProcess | null = null;
   private worker: Worker | null = null;
   private sabs: SharedArrayBuffer[] = [];
   private sabViews: Uint8Array[] = [];
-  private frameData: CapturedFrame | null = null;
-  private onFrameCallback: ((frame: CapturedFrame) => void) | null = null; // Push model callback
+  private frameData: WebxrFrame | null = null;
+  private onFrameCallback: ((frame: WebxrFrame) => void) | null = null; // Push model callback
   private frameCount = 0;
   private totalReceiveTime = 0;
   private lastStatsTime = 0;
@@ -167,7 +167,7 @@ export class ScreenCapturer {
   /**
    * Register a callback to be invoked on each new frame.
    */
-  public onNewFrame(callback: (frame: CapturedFrame) => void): void {
+  public onNewFrame(callback: (frame: WebxrFrame) => void): void {
     this.onFrameCallback = callback;
   }
 }
