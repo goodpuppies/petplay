@@ -249,8 +249,6 @@ function IpcCapLoop(
   }
 }
 
-
-
 function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null) {
   if (!state.overlayClass || !state.overlayHandle) throw new Error("Missing required state properties for texture creation");
   if (!state.vrSystem) throw new Error("no vr system")
@@ -292,10 +290,6 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
   return [pixels, width, height, finalCurrentPose ]
 
 }
-
-
-
-
 
 function main() {
   if (!state.overlayClass) throw new Error("no overlayclass")

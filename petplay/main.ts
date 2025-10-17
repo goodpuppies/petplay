@@ -2,8 +2,6 @@ import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
 import { wait, assignActorHierarchy } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
-import { stat } from "node:fs";
-import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createWebSocketServer, WebSocketServerController } from "../classes/sock.ts";
 import { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
@@ -11,13 +9,14 @@ import { multiplyMatrix } from "../classes/matrixutils.ts";
 const state = actorState({
   name: "main",
   ivroverlay: null as null | string,
-  origin: null as null | string,
+  origin: null as null | ActorId,
   overlays: [] as string[],
   socket: null as WebSocketServerController | null,
   menusocket: null as WebSocketServerController | null,
   inputstate: null as actionData | null,
   desktopOverlay: {} as desktopoverlay,
-  updater: null as string | null
+  updater: null as string | null,
+  frontend: null as string | null
 });
 
 interface desktopoverlay {
@@ -102,7 +101,7 @@ async function main() {
   const startTime = performance.now();
   LogChannel.log("default", "creating scene");
 
-  await PostMan.create("./frontend.ts", import.meta.url)
+  state.frontend = await PostMan.create("./frontend.ts", import.meta.url)
 
   const ivr = await PostMan.create("./OpenVR.ts", import.meta.url)
   const ivrsystem = await PostMan.PostMessage({
@@ -125,13 +124,14 @@ async function main() {
   const hmd = await PostMan.create("./hmd.ts", import.meta.url);
   const input = await PostMan.create("./controllers.ts", import.meta.url);
   const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
-  state.origin = origin as string
+  state.origin = origin
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   const osc = await PostMan.create("./OSC.ts", import.meta.url);
   const updater = await PostMan.create("./frameUpdater.ts", import.meta.url);
   state.updater = updater
-  const webxr = await PostMan.create("./webUpdater.ts", import.meta.url);
-  const vraggles = await PostMan.create("./genericoverlay.ts", import.meta.url)
+  const webxr = await PostMan.create("./webUpdaterDirect.ts", import.meta.url);
+
+
 
   PostMan.PostMessage({
     target: input,
@@ -139,17 +139,22 @@ async function main() {
     payload: [ivrinput, ivroverlay]
   })
   PostMan.PostMessage({
-    target: [hmd, webxr],
+    target: [hmd],
     type: "INITOPENVR",
     payload: ivrsystem
   })
 
   PostMan.PostMessage({
-    target: [origin, laser, vraggles], //
+    target: [origin, laser, webxr],
     type: "INITOVROVERLAY",
     payload: ivroverlay
   })
-  //await wait(1000)
+  PostMan.PostMessage({
+    target: webxr,
+    type: "STARTWEBUPDATER",
+    payload: { url: "http://localhost:5173" }
+  })
+
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNVRC",
@@ -179,95 +184,12 @@ async function main() {
     payload: null
   });
 
-  /* PostMan.PostMessage({
-  target: origin,
-  type: "ADDOVERLAY",
-  payload: dogoverlay1,
-  });
-  /* PostMan.PostMessage({
-    target: dogoverlay1,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "pet1",
-      texture: "../resources/P1.png",
-      sync: true,
-    },
-  });
-  PostMan.PostMessage({
-    target: dogoverlay2,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "pet2",
-      texture: "../resources/P2.png",
-      sync: true,
-    },
-  });
-  const handle = await PostMan.PostMessage({
-    target: dogoverlay1,
-    type: "GETOVERLAYHANDLE",
-    payload: null
-  }, true);
-  PostMan.PostMessage({
-    target: updater,
-    type: "STARTUPDATER",
-    payload: {
-      overlayclass: ivroverlay,
-      overlayhandle: handle,
-    }
-  })
-  await wait(3000)
-
-  const handle2 = await PostMan.PostMessage({
-    target: dogoverlay2,
-    type: "GETOVERLAYHANDLE",
-    payload: null
-  }, true);
-  PostMan.PostMessage({
-    target: updater2,
-    type: "STARTUPDATER",
-    payload: {
-      overlayclass: ivroverlay,
-      overlayhandle: handle2,
-      framesource: updater
-    }
-  }) */
-
-
-  PostMan.PostMessage({
-    target: vraggles,
-    type: "STARTOVERLAY",
-    payload: {
-      name: "pet1",
-      texture: "./resources/P1.png",
-      sync: true,
-    },
-  });
-  const handle = await PostMan.PostMessage({
-    target: vraggles,
-    type: "GETOVERLAYHANDLE",
-    payload: null
-  }, true);
-  PostMan.PostMessage({
-    target: webxr,
-    type: "STARTUPDATER",
-    payload: {
-      overlayclass: ivroverlay,
-      overlayhandle: handle,
-    }
-  })
-  /* PostMan.PostMessage({
-    target: hmd,
-    type: "ASSIGNWEB",
-    payload: webupdater
-  }) */
-
 
 
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
   LogChannel.log("default", `scene created in ${timeElapsed} ms`);
-  //state.overlays.push(vraggles)
-  //state.overlays.push(dogoverlay2)
+
   inputloop(input);
 
   state.socket = createWebSocketServer(8888);
@@ -468,30 +390,7 @@ async function inputloop(inputactor: string) {
     inputstate[1].pose.mDeviceToAbsoluteTracking = controller2mod
     //#endregion
 
-    sendcontroller(inputstate)
-
     await wait(10)
-  }
-}
-
-function sendcontroller(pose: actionData) {
-  if (state.socket && state.socket.hasClients()) {
-  try {
-    const replacer = (key: string, value: unknown) =>
-    typeof value === 'bigint'
-      ? value.toString()
-      : value;
-
-    state.socket.send(JSON.stringify(pose, replacer));
-
-  } catch (error) {
-    console.error("Error sending controller data:", error);
-    // Decide if re-throwing is necessary or just log the error
-    // throw new Error("wtf" ) 
-  }
-  } else {
-  // Optional: Log if the socket is not open or available
-  // console.warn("WebSocket not open, cannot send controller data.");
   }
 }
 

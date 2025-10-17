@@ -128,6 +128,8 @@ async function cefspawn() {
 }
 
 function main() {
+
+  //const frontendproxy = PostMan.create("PROXY")
   
 
   if (BUILD) {
@@ -198,7 +200,7 @@ function main() {
     devProcess = command.spawn();
   }
 
-  cefspawn()
+  //cefspawn()
 
   
 

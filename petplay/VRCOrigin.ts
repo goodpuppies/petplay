@@ -156,11 +156,14 @@ async function extractOrigin() {
   }, true) as OpenVR.TrackedDevicePose;
   const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m;
   const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[0][0]);
+
   const coordinate = await PostMan.PostMessage({
     target: state.vrc,
     type: "GETCOORDINATE",
     payload: null,
   }, true) as coord;
+
+  
   if (coordinate[PositionX] !== undefined) lastKnownPosition.x = coordinate[PositionX];
   if (coordinate[PositionY] !== undefined) lastKnownPosition.y = coordinate[PositionY];
   if (coordinate[PositionZ] !== undefined) lastKnownPosition.z = coordinate[PositionZ];

@@ -22,3 +22,7 @@
 	path = submodules/cefpuppy
 	url = https://github.com/goodpuppies/cefpuppy.git
 	branch = main
+[submodule "submodules/chromedirect"]
+	path = submodules/chromedirect
+	url = https://github.com/mommysgoodpuppy/chromedirect.git
+	branch = renderbridge

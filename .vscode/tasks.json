@@ -1,0 +1,178 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    // ========================================
+    // ChromeDirect Tasks
+    // ========================================
+    {
+      "label": "ChromeDirect: CMake Configure (Console Subsystem)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "build",
+        "-G",
+        "Visual Studio 17 2022",
+        "-A",
+        "x64",
+        "-DUSE_SUBSYSTEM_WINDOWS=OFF"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: CMake Configure (Windows Subsystem)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "build",
+        "-G",
+        "Visual Studio 17 2022",
+        "-A",
+        "x64",
+        "-DUSE_SUBSYSTEM_WINDOWS=ON"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: Build Debug",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build",
+        "--config",
+        "Debug",
+        "--target",
+        "chromedirect_demo"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect"
+      },
+      "problemMatcher": "$msCompile",
+      "group": "build",
+      "dependsOn": [
+        "ChromeDirect: CMake Configure (Console Subsystem)"
+      ],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: Clean Debug",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build",
+        "--config",
+        "Debug",
+        "--target",
+        "clean"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: Build Release",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build",
+        "--config",
+        "Release",
+        "--target",
+        "chromedirect_demo"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect"
+      },
+      "problemMatcher": "$msCompile",
+      "group": "build",
+      "dependsOn": [
+        "ChromeDirect: CMake Configure (Windows Subsystem)"
+      ],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: Run Demo (Debug)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\submodules\\chromedirect\\build\\bin\\chromedirect_demo.exe",
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect/build/bin",
+        "env": {
+          "CEF_ROOT": "${env:CEF_ROOT}"
+        }
+      },
+      "dependsOn": [
+        "ChromeDirect: Build Debug"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: Run Demo (Release)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\submodules\\chromedirect\\build\\bin\\chromedirect_demo.exe",
+      "options": {
+        "cwd": "${workspaceFolder}/submodules/chromedirect/build/bin",
+        "env": {
+          "CEF_ROOT": "${env:CEF_ROOT}"
+        }
+      },
+      "dependsOn": [
+        "ChromeDirect: Build Release"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    },
+    {
+      "label": "ChromeDirect: Open Build Folder",
+      "type": "shell",
+      "command": "explorer",
+      "args": [
+        "${workspaceFolder}\\submodules\\chromedirect\\build\\bin"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "group": "chromedirect"
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "cefRootPath",
+      "type": "promptString",
+      "description": "Path to extracted CEF binary (folder containing cmake/cef_variables.cmake)",
+      "default": "${workspaceFolder}\\submodules\\chromedirect\\SDK\\cef_binary_139.0.28+g55ab8a8+chromium-139.0.7258.139_windows64_minimal"
+    }
+  ]
+}
