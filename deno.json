@@ -20,10 +20,7 @@
       ]
     },
     "dev": {
-      "command": "deno run -A --env-file petplay/petplay.ts dev",
-      "dependencies": [
-        "cefbuild"
-      ]
+      "command": "deno run -A --env-file petplay/petplay.ts dev"
     }
   },
   "unstable": [

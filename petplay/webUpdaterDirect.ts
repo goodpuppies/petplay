@@ -47,8 +47,8 @@ new PostMan(
       // Build config with defaults
       const config: ChromeDirectConfig = {
         key: payload.key || "cef.web.overlay",
-        width: payload.width || 8000,
-        height: payload.height || 8000,
+        width: payload.width || 4000,
+        height: payload.height || 4000,
         scale: payload.scale || 3.0,
         url: payload.url || getDefaultUrl(),
         exe: payload.exe || getDefaultExePath(),
