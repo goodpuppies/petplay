@@ -96,8 +96,8 @@ function getDefaultUrl(): string {
 
 function getDefaultExePath(): string {
   return Deno.build.os === "windows"
-    ? ".\\submodules\\chromedirect\\build\\bin\\chromedirect_demo.exe"
-    : "./submodules/chromedirect/build/bin/chromedirect_demo";
+    ? ".\\submodules\\chromedirect\\zig-out\\bin\\chromedirect_demo.exe"
+    : "./submodules/chromedirect/zig-out/bin/chromedirect_demo";
 }
 
 function initializeOverlay() {
@@ -191,8 +191,12 @@ function spawnChromeDirect() {
     `--scale=${config.scale}`,
     `--overlay-key=${config.key}`,
     `--url=${config.url}`,
-    `--fps=${config.fps}`,
-    `--iwer-apply-pose=0`
+    `--fps=${30}`,
+    `--iwer-apply-pose=0`,
+    `--warp-follow-head`,
+    `--freeze-warp-pose`,
+    `--vr-debug`,
+    `--shared-textures=0`
   ];
 
   LogChannel.log("actor", `Spawning chromedirect: ${config.exe} ${args.join(" ")}`);
