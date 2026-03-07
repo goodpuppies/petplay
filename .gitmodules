@@ -25,10 +25,6 @@
 [submodule "submodules/immersive-web-emulation-runtime"]
 	path = submodules/immersive-web-emulation-runtime
 	url = https://github.com/meta-quest/immersive-web-emulation-runtime/
-[submodule "submodules/three.js"]
-	path = submodules/three.js
-	url = https://github.com/mommysgoodpuppy/three.js.git
-	branch = wgpuwebxrsupport
 [submodule "submodules/threewebxrwebgpudeno"]
 	path = submodules/threewebxrwebgpudeno
 	url = https://github.com/mommysgoodpuppy/threewebxrwebgpudeno.git
