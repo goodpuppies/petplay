@@ -247,6 +247,11 @@ export class WebXROverlayGl {
   private readonly syncMode = getOverlayGlSyncMode();
   private uploadStateInitialized = false;
   private lastUnpackRowLength = -1;
+  private currentFramebuffer: number | null = null;
+  private currentProgram: number | null = null;
+  private currentVertexArray: number | null = null;
+  private currentActiveTextureUnit = gl.TEXTURE0;
+  private readonly currentTexturesByUnit = new Map<number, number | null>();
 
   initialize(name = "WebXR Overlay") {
     if (this.window) {
@@ -363,9 +368,15 @@ export class WebXROverlayGl {
   private uploadEyeTexture(texture: number, frame: MappedTextureReadback) {
     const sourceFormat = frame.format === "bgra" ? gl.BGRA : gl.RGBA;
     const unpackRowLength = Math.floor(frame.bytesPerRow / 4);
-    gl.BindTexture(gl.TEXTURE_2D, texture);
-    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.PixelStorei(gl.UNPACK_ROW_LENGTH, unpackRowLength);
+    this.bindTexture(this.currentActiveTextureUnit, texture);
+    if (!this.uploadStateInitialized) {
+      gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      this.uploadStateInitialized = true;
+    }
+    if (this.lastUnpackRowLength !== unpackRowLength) {
+      gl.PixelStorei(gl.UNPACK_ROW_LENGTH, unpackRowLength);
+      this.lastUnpackRowLength = unpackRowLength;
+    }
     gl.TexSubImage2D(
       gl.TEXTURE_2D,
       0,
@@ -377,8 +388,6 @@ export class WebXROverlayGl {
       gl.UNSIGNED_BYTE,
       frame.rawPointer,
     );
-    gl.PixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-    gl.BindTexture(gl.TEXTURE_2D, 0);
   }
 
   private applyFrameSync() {
@@ -392,6 +401,47 @@ export class WebXROverlayGl {
       case "none":
         break;
     }
+  }
+
+  private bindFramebuffer(framebuffer: number | null) {
+    if (this.currentFramebuffer === framebuffer) {
+      return;
+    }
+    gl.BindFramebuffer(gl.FRAMEBUFFER, framebuffer ?? 0);
+    this.currentFramebuffer = framebuffer;
+  }
+
+  private useProgram(program: number | null) {
+    if (this.currentProgram === program) {
+      return;
+    }
+    gl.UseProgram(program ?? 0);
+    this.currentProgram = program;
+  }
+
+  private bindVertexArray(vertexArray: number | null) {
+    if (this.currentVertexArray === vertexArray) {
+      return;
+    }
+    gl.BindVertexArray(vertexArray ?? 0);
+    this.currentVertexArray = vertexArray;
+  }
+
+  private activeTexture(textureUnit: number) {
+    if (this.currentActiveTextureUnit === textureUnit) {
+      return;
+    }
+    gl.ActiveTexture(textureUnit);
+    this.currentActiveTextureUnit = textureUnit;
+  }
+
+  private bindTexture(textureUnit: number, texture: number | null) {
+    this.activeTexture(textureUnit);
+    if (this.currentTexturesByUnit.get(textureUnit) === texture) {
+      return;
+    }
+    gl.BindTexture(gl.TEXTURE_2D, texture ?? 0);
+    this.currentTexturesByUnit.set(textureUnit, texture);
   }
 
   uploadStereoFrame(frame: StereoMappedTextureReadback) {
@@ -414,13 +464,12 @@ export class WebXROverlayGl {
       frame.right,
     );
 
-    gl.BindFramebuffer(
-      gl.FRAMEBUFFER,
+    this.bindFramebuffer(
       assertPointer(this.framebufferHandle, "OpenGL framebuffer not initialized"),
     );
     gl.Viewport(0, 0, this.outputWidth, this.outputHeight);
-    gl.UseProgram(assertPointer(this.shaderProgram, "OpenGL shader program not initialized"));
-    gl.BindVertexArray(assertPointer(this.vaoHandle, "OpenGL VAO not initialized"));
+    this.useProgram(assertPointer(this.shaderProgram, "OpenGL shader program not initialized"));
+    this.bindVertexArray(assertPointer(this.vaoHandle, "OpenGL VAO not initialized"));
 
     if (this.lookRotationUniform !== null && this.lookRotationUniform !== -1) {
       gl.UniformMatrix4fv(this.lookRotationUniform, 1, 0, frame.lookRotation);
@@ -429,17 +478,9 @@ export class WebXROverlayGl {
       gl.Uniform1f(this.halfFovUniform, frame.halfFovInRadians);
     }
 
-    gl.ActiveTexture(gl.TEXTURE0);
-    gl.BindTexture(gl.TEXTURE_2D, assertPointer(this.leftTextureHandle, "Left texture missing"));
-    gl.ActiveTexture(gl.TEXTURE1);
-    gl.BindTexture(gl.TEXTURE_2D, assertPointer(this.rightTextureHandle, "Right texture missing"));
+    this.bindTexture(gl.TEXTURE0, assertPointer(this.leftTextureHandle, "Left texture missing"));
+    this.bindTexture(gl.TEXTURE1, assertPointer(this.rightTextureHandle, "Right texture missing"));
     gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.BindTexture(gl.TEXTURE_2D, 0);
-    gl.ActiveTexture(gl.TEXTURE0);
-    gl.BindTexture(gl.TEXTURE_2D, 0);
-    gl.BindVertexArray(0);
-    gl.UseProgram(0);
-    gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
     this.applyFrameSync();
   }
 
@@ -512,5 +553,12 @@ export class WebXROverlayGl {
     this.outputHeight = 0;
     this.eyeWidth = 0;
     this.eyeHeight = 0;
+    this.uploadStateInitialized = false;
+    this.lastUnpackRowLength = -1;
+    this.currentFramebuffer = null;
+    this.currentProgram = null;
+    this.currentVertexArray = null;
+    this.currentActiveTextureUnit = gl.TEXTURE0;
+    this.currentTexturesByUnit.clear();
   }
 }

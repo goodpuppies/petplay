@@ -32,6 +32,7 @@
   "tasks": {
     "vitebuild": "cd submodules/frontend && deno task build",
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
+    "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
     "build": {
       "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./cef/ --icon resources/petplay.ico petplay/petplay.ts",
       "dependencies": [
@@ -45,7 +46,10 @@
       ]
     },
     "dev": {
-      "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev"
+      "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev",
+      "dependencies": [
+        "iwerbuild"
+      ]
     }
   },
   "unstable": [
