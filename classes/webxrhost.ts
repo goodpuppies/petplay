@@ -354,6 +354,7 @@ export class WebXRHost {
             device,
             antialias: false,
             alpha: this.alphaEnabled,
+            premultipliedAlpha: false,
           };
           if (context) {
             rendererOptions.context = context;
@@ -530,7 +531,7 @@ export class WebXRHost {
 
     this.lastLayerInfo =
       `${label} frame=${this.frameCount} eyeWidth=${layer.textureWidth} eyeHeight=${layer.textureHeight} ` +
-      `format=${captureFormat} layers=2`;
+      `format=${captureFormat} colorFormat=${layer.colorFormat ?? "unknown"} layers=2`;
 
     const stereoReadback = await (stereoReadbackRing?.capture(
       layer.colorTexture,
@@ -589,7 +590,7 @@ export class WebXRHost {
 
     this.lastLayerInfo =
       `${label} frame=${this.frameCount} eyeWidth=${layer.textureWidth} eyeHeight=${layer.textureHeight} ` +
-      `format=${captureFormat} layers=2`;
+      `format=${captureFormat} colorFormat=${layer.colorFormat ?? "unknown"} layers=2`;
 
     let leftReadback: MappedTextureReadback | null;
     let rightReadback: MappedTextureReadback | null;

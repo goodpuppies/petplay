@@ -4,6 +4,7 @@ export type CaptureLayer = {
   colorTexture?: GPUTexture;
   textureWidth?: number;
   textureHeight?: number;
+  colorFormat?: string;
   format?: OverlayUploadFormat;
   source: string;
 };
@@ -39,13 +40,14 @@ function findInternalSessionState(session: XRSessionLike): SessionStateLike | nu
 function makeCaptureLayer(
   layer:
     | {
-      colorTexture?: GPUTexture;
-      processedColorTexture?: GPUTexture;
-      textureWidth?: number;
-      textureHeight?: number;
-      processedTextureWidth?: number;
-      processedTextureHeight?: number;
-    }
+        colorTexture?: GPUTexture;
+        processedColorTexture?: GPUTexture;
+        textureWidth?: number;
+        textureHeight?: number;
+        processedTextureWidth?: number;
+        processedTextureHeight?: number;
+        colorFormat?: string;
+      }
     | null,
   sourcePrefix: string,
   preference: ProjectionLayerCapturePreference,
@@ -59,16 +61,22 @@ function makeCaptureLayer(
       colorTexture: layer.processedColorTexture,
       textureWidth: layer.processedTextureWidth ?? layer.textureWidth,
       textureHeight: layer.processedTextureHeight ?? layer.textureHeight,
+      colorFormat: "rgba8unorm",
       format: "rgba",
       source: `${sourcePrefix}.processedColorTexture`,
     };
   }
 
   if (layer.colorTexture) {
+    const colorFormat = layer.colorFormat;
     return {
       colorTexture: layer.colorTexture,
       textureWidth: layer.textureWidth,
       textureHeight: layer.textureHeight,
+      colorFormat,
+      format: colorFormat
+        ? (colorFormat.toLowerCase().startsWith("bgra") ? "bgra" : "rgba")
+        : undefined,
       source: sourcePrefix,
     };
   }
@@ -92,6 +100,7 @@ export function getProjectionLayer(
     textureHeight?: number;
     processedTextureWidth?: number;
     processedTextureHeight?: number;
+    colorFormat?: string;
   } | null;
   const renderStateCapture = makeCaptureLayer(
     renderStateLayer,
@@ -110,6 +119,7 @@ export function getProjectionLayer(
     textureHeight?: number;
     processedTextureWidth?: number;
     processedTextureHeight?: number;
+    colorFormat?: string;
   } | null;
   const internalCapture = makeCaptureLayer(
     internalLayer,
@@ -130,6 +140,7 @@ export function getProjectionLayer(
         textureHeight?: number;
         framebufferWidth?: number;
         framebufferHeight?: number;
+        colorFormat?: string;
       } | null;
 
   if (baseLayerCandidate?.colorTexture) {
@@ -137,6 +148,10 @@ export function getProjectionLayer(
       colorTexture: baseLayerCandidate.colorTexture,
       textureWidth: baseLayerCandidate.textureWidth ?? baseLayerCandidate.framebufferWidth,
       textureHeight: baseLayerCandidate.textureHeight ?? baseLayerCandidate.framebufferHeight,
+      colorFormat: baseLayerCandidate.colorFormat,
+      format: baseLayerCandidate.colorFormat
+        ? (baseLayerCandidate.colorFormat.toLowerCase().startsWith("bgra") ? "bgra" : "rgba")
+        : undefined,
       source: "baseLayer.colorTexture",
     };
   }
@@ -146,6 +161,10 @@ export function getProjectionLayer(
       colorTexture: baseLayerCandidate.colorTextures[0],
       textureWidth: baseLayerCandidate.textureWidth ?? baseLayerCandidate.framebufferWidth,
       textureHeight: baseLayerCandidate.textureHeight ?? baseLayerCandidate.framebufferHeight,
+      colorFormat: baseLayerCandidate.colorFormat,
+      format: baseLayerCandidate.colorFormat
+        ? (baseLayerCandidate.colorFormat.toLowerCase().startsWith("bgra") ? "bgra" : "rgba")
+        : undefined,
       source: "baseLayer.colorTextures[0]",
     };
   }
