@@ -15,6 +15,7 @@ import {
   StereoTextureReadbackRing,
   TextureReadbackRing,
 } from "./webgpu.ts";
+import { NativeControllerHud } from "./nativeFrontend.tsx";
 import { WebXRScene } from "./scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
 import { IntervalMetric } from "./intervalMetric.ts";
@@ -49,6 +50,9 @@ const POLL_INTERVAL_MS = 16;
 const XR_CONNECT_RETRY_MS = 16;
 const XR_CONNECT_TIMEOUT_MS = 1000;
 const XR_CONNECT_ERROR_FRAGMENT = "not connected to three.js";
+const CONTROLLER_ROTATION_OFFSET = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(-0.7, 0, 0, "XYZ"),
+);
 
 type SupportedSessionMode = "immersive-vr" | "immersive-ar";
 
@@ -425,6 +429,10 @@ export class WebXRHost {
         domOverlay: false,
         webgpu: "required",
         bounded: this.sessionMode === "immersive-ar" ? false : undefined,
+        controller: {
+          right: NativeControllerHud,
+          left: { rayPointer: { minDistance: -1 }, model: false },
+        },
       });
 
       this.root = createRoot(canvas);
@@ -1033,12 +1041,14 @@ export class WebXRHost {
 
     this.updateControllerState(
       this.xrDevice.controllers.left,
+      "left",
       data[0],
       data[2],
       data[4],
     );
     this.updateControllerState(
       this.xrDevice.controllers.right,
+      "right",
       data[1],
       data[3],
       data[5],
@@ -1078,12 +1088,14 @@ export class WebXRHost {
 
       this.updateControllerState(
         this.xrDevice.controllers.left,
+        "left",
         leftPoseData,
         leftTriggerData,
         leftGrabData,
       );
       this.updateControllerState(
         this.xrDevice.controllers.right,
+        "right",
         rightPoseData,
         rightTriggerData,
         rightGrabData,
@@ -1270,6 +1282,7 @@ export class WebXRHost {
 
   private updateControllerState(
     controller: XrControllerBridge | undefined,
+    handedness: "left" | "right",
     poseData: OpenVrPoseActionData,
     triggerData: OpenVrDigitalActionData,
     grabData: OpenVrDigitalActionData,
@@ -1278,22 +1291,31 @@ export class WebXRHost {
       return;
     }
 
-    const isConnected = Boolean(poseData.bActive) && Boolean(poseData.pose.bPoseIsValid);
+    const pose = poseData?.pose;
+    const tracking = pose?.mDeviceToAbsoluteTracking?.m;
+    const isConnected = Boolean(poseData?.bActive) && Boolean(pose?.bPoseIsValid) && Array.isArray(tracking);
     controller.connected = isConnected;
-    controller.updateButtonValue?.("trigger", triggerData.bState ? 1 : 0);
-    controller.updateButtonValue?.("squeeze", grabData.bState ? 1 : 0);
+    controller.updateButtonValue?.("trigger", triggerData?.bState ? 1 : 0);
+    controller.updateButtonValue?.("squeeze", grabData?.bState ? 1 : 0);
     if (!isConnected) {
       return;
     }
 
-    const m = poseData.pose.mDeviceToAbsoluteTracking.m;
-    const quaternion = this.matrix3x4ToQuaternion(m);
+    const m = tracking;
+    const baseQuaternion = this.matrix3x4ToQuaternion(m);
+    const correctedQuaternion = new THREE.Quaternion(
+      baseQuaternion[0],
+      baseQuaternion[1],
+      baseQuaternion[2],
+      baseQuaternion[3],
+    );
+    correctedQuaternion.multiply(CONTROLLER_ROTATION_OFFSET);
     controller.position?.set?.(m[0][3], m[1][3], m[2][3]);
     controller.quaternion?.set?.(
-      quaternion[0],
-      quaternion[1],
-      quaternion[2],
-      quaternion[3],
+      correctedQuaternion.x,
+      correctedQuaternion.y,
+      correctedQuaternion.z,
+      correctedQuaternion.w,
     );
   }
 

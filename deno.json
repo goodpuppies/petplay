@@ -6,25 +6,45 @@
   "imports": {
     //main deps
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
+    "@iwer/devui": "npm:@iwer/devui@^1.1.1",
+    "@iwer/sem": "npm:@iwer/sem@~0.2.5",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
     "@number0/iroh": "npm:@number0/iroh@^0.31.0",
+    "@pmndrs/msdfonts": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/msdfonts/src/index.ts",
+    "@pmndrs/uikit": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/index.ts",
+    "@pmndrs/uikit-pub-sub": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/pub-sub/src/index.ts",
     "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/dist/index.js",
+    "@pmndrs/xr/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/src/",
+    "@preact/signals-core": "npm:@preact/signals-core@^1.12.1",
+    "@react-three/uikit": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/react/src/index.tsx",
+    "@react-three/xr": "npm:@react-three/xr@^6.6.29",
     "three": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
     "three/webgpu": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
     //dep hacks
+    "fs": "node:fs",
     "three/examples/jsm/": "./submodules/threewebxrwebgpudeno/submodules/three.js/examples/jsm/",
     "three/src/": "./submodules/threewebxrwebgpudeno/submodules/three.js/src/",
+    "three/addons/": "./submodules/threewebxrwebgpudeno/submodules/three.js/examples/jsm/",
     "three/tsl": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.tsl.js",
     "@pmndrs/pointer-events": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/dist/index.js",
     "@pmndrs/pointer-events/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/dist/",
     "@pmndrs/xr/internals": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/dist/internals.js",
     //deps of deps
     "@react-three/fiber": "npm:@react-three/fiber@^9.5.0",
+    "@react-three/handle": "npm:@react-three/handle@^6.6.16",
     "@types/react": "npm:@types/react@^19.2.8",
     "@types/three": "npm:@types/three@^0.182.0",
     "meshline": "npm:meshline@^3.3.1",
+    "quad-indices": "npm:quad-indices@^2.0.1",
     "react": "npm:react@^19.2.3",
+    "react-dom/client": "npm:react-dom@^19.2.3/client",
     "suspend-react": "npm:suspend-react@^0.1.3",
+    "three-msdf-text-utils": "npm:three-msdf-text-utils@^1.4.1",
+    "tunnel-rat": "npm:tunnel-rat@^0.1.2",
+    "word-wrapper": "npm:word-wrapper@^1.0.7",
+    "yoga-layout": "npm:yoga-layout@^3.2.1",
+    "yoga-layout/load": "npm:yoga-layout@^3.2.1/load",
+    "@zappar/msdf-generator": "npm:@zappar/msdf-generator@^1.2.4",
     "zustand": "npm:zustand@^4.5.2",
     "zustand/shallow": "npm:zustand@^4.5.2/shallow",
     "zustand/vanilla": "npm:zustand@^4.5.2/vanilla"
@@ -54,7 +74,8 @@
   },
   "unstable": [
     "net",
-    "worker-options"
+    "worker-options",
+    "sloppy-imports"
   ],
   "fmt": {
     "semiColons": true,

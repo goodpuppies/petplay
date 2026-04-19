@@ -18,10 +18,6 @@
 	path = submodules/frontend
 	url = https://github.com/goodpuppies/frontend.git
 	branch = main
-[submodule "submodules/chromedirect"]
-	path = submodules/chromedirect
-	url = https://github.com/mommysgoodpuppy/chromedirect.git
-	branch = renderbridge
 [submodule "submodules/immersive-web-emulation-runtime"]
 	path = submodules/immersive-web-emulation-runtime
 	url = https://github.com/meta-quest/immersive-web-emulation-runtime/

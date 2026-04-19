@@ -16,37 +16,24 @@ type WebXRSceneProps = {
 };
 
 export function WebXRScene({ XROrigin }: WebXRSceneProps) {
-  const cubeRef = useRef<THREE.Mesh>(null!);
-  const orbRef = useRef<THREE.Mesh>(null!);
+  const accentRef = useRef<THREE.Mesh>(null!);
 
   useFrame((_state, delta) => {
-    cubeRef.current.rotation.x += delta * 0.6;
-    cubeRef.current.rotation.y += delta * 1.1;
-    orbRef.current.position.x = Math.sin(performance.now() * 0.001) * 0.35;
-    orbRef.current.position.y = 1.55 + Math.cos(performance.now() * 0.0014) * 0.15;
+    accentRef.current.rotation.y += delta * 0.25;
   });
 
   return (
     <>
-      <color attach="background" args={[0xff0033]} />
-      <ambientLight intensity={0.9} />
-      <directionalLight intensity={3.5} position={[2, 3, 2]} />
-      <pointLight intensity={12} position={[0, 1.8, -1.5]} color="#ffb347" />
+      <color attach="background" args={[0x091018]} />
+      <fog attach="fog" args={["#091018", 1.5, 5]} />
+      <ambientLight intensity={0.8} />
+      <directionalLight intensity={2.8} position={[2, 3, 2]} />
+      <pointLight intensity={8} position={[0, 1.9, -1.25]} color="#ffb347" />
       <XROrigin />
 
-      {/* <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -1]}>
-        <planeGeometry args={[8, 8]} />
-        <meshBasicNodeMaterial colorNode={TSL.color(0x00ff88)} />
-      </mesh> */}
-
-      <mesh ref={cubeRef} position={[0, 1.6, -2]}>
-        <boxGeometry args={[0.5, 0.5, 0.5]} />
-        <meshBasicNodeMaterial colorNode={TSL.color(0x0033ff)} />
-      </mesh>
-
-      <mesh ref={orbRef} position={[0.4, 1.55, -1.2]}>
-        <sphereGeometry args={[0.18, 24, 24]} />
-        <meshBasicNodeMaterial colorNode={TSL.color(0xffff00)} />
+      <mesh ref={accentRef} position={[0, 1.45, -1.8]}>
+        <torusGeometry args={[0.12, 0.012, 16, 48]} />
+        <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
       </mesh>
     </>
   );
