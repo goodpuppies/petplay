@@ -22,23 +22,24 @@ type StartWebXRPayload = {
 
 type OverlayConfig = {
   overlayPointer: number | bigint;
-  vrSystemPointer?: number | bigint;
   overlayKey?: string;
   overlayName?: string;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
   overlayMode?: "quad" | "stereo-panorama";
+  attachToHmd?: boolean;
 };
 
 const state = actorState({
   name: "webxr",
   host: null as WebXRHost | null,
   startup: null as Promise<void> | null,
-  overlay: null as OpenVrOverlayTexture | null,
-  overlayGl: null as WebXROverlayGl | null,
-  overlayConfig: null as OverlayConfig | null,
+  outputOverlay: null as OpenVrOverlayTexture | null,
+  outputOverlayGl: null as WebXROverlayGl | null,
+  outputOverlayConfig: null as OverlayConfig | null,
   overlayLoop: null as Promise<void> | null,
   overlayRunning: false,
+  lastUploadedHostFrameCount: -1,
   uploadedFrames: 0,
   waitLogCounter: 0,
   overlayFpsCounter: new FpsCounter(),
@@ -73,7 +74,7 @@ new PostMan(
           throw error;
         });
       }
-      if (state.overlayGl && !state.overlayLoop) {
+      if (state.outputOverlayGl && !state.overlayLoop) {
         state.overlayRunning = true;
         state.overlayLoop = pumpOverlayFrames().finally(() => {
           state.overlayLoop = null;
@@ -104,11 +105,13 @@ new PostMan(
         await state.host.stop();
         state.startup = null;
       }
-      state.overlay?.cleanup();
-      state.overlay = null;
-      state.overlayGl?.cleanup();
-      state.overlayGl = null;
-      state.overlayConfig = null;
+      state.outputOverlay?.cleanup();
+      state.outputOverlay = null;
+      state.outputOverlayGl?.cleanup();
+      state.outputOverlayGl = null;
+      state.outputOverlayConfig = null;
+      state.lastUploadedHostFrameCount = -1;
+      state.uploadedFrames = 0;
       state.overlayFpsCounter.reset();
       state.lastOverlayFpsLogAt = 0;
       state.lastPerfLogAt = 0;
@@ -121,54 +124,61 @@ new PostMan(
 
 globalThis.addEventListener("unload", () => {
   state.overlayRunning = false;
-  state.overlay?.cleanup();
-  state.overlayGl?.cleanup();
-  state.overlayConfig = null;
+  state.outputOverlay?.cleanup();
+  state.outputOverlayGl?.cleanup();
+  state.outputOverlayConfig = null;
   void state.host?.stop();
 });
 
 function initializeOverlay(payload: StartWebXRPayload | null) {
-  if (!payload?.overlayPointer || state.overlayGl) {
+  if (!payload?.overlayPointer || state.outputOverlayGl) {
     return;
   }
 
   const overlayGl = new WebXROverlayGl();
   overlayGl.initialize(payload.overlayName ?? "PetPlay WebXR Overlay");
 
-  state.overlayGl = overlayGl;
-  state.overlayConfig = {
+  state.outputOverlayGl = overlayGl;
+  state.outputOverlayConfig = {
     overlayPointer: payload.overlayPointer,
-    vrSystemPointer: payload.vrSystemPointer ?? undefined,
     overlayKey: payload.overlayKey,
     overlayName: payload.overlayName,
     overlayWidthInMeters: payload.overlayWidthInMeters,
     overlayDistance: payload.overlayDistance,
     overlayMode: "stereo-panorama",
+    attachToHmd: true,
   };
 }
 
-function ensureOpenVrOverlayForFrame(frameWidth: number, frameHeight: number) {
-  if (state.overlay || !state.overlayGl || !state.overlayConfig) {
+function ensureOverlayForFrame(eyeWidth: number, eyeHeight: number) {
+  if (state.outputOverlay || !state.outputOverlayGl || !state.outputOverlayConfig) {
     return;
   }
 
-  state.overlayGl.ensureTexture(frameWidth, frameHeight);
+  state.outputOverlayGl.ensureTexture(eyeWidth, eyeHeight);
 
-  const overlay = new OpenVrOverlayTexture(state.overlayConfig.overlayPointer);
-  overlay.initialize(state.overlayGl.getTextureHandle(), {
-    key: state.overlayConfig.overlayKey,
-    name: state.overlayConfig.overlayName,
-    widthInMeters: state.overlayConfig.overlayWidthInMeters,
-    distance: state.overlayConfig.overlayDistance,
-    mode: state.overlayConfig.overlayMode ?? "quad",
+  const nextOverlay = new OpenVrOverlayTexture(state.outputOverlayConfig.overlayPointer);
+  nextOverlay.initialize(state.outputOverlayGl.getTextureHandle(), {
+    key: state.outputOverlayConfig.overlayKey,
+    name: state.outputOverlayConfig.overlayName,
+    widthInMeters: state.outputOverlayConfig.overlayWidthInMeters,
+    distance: state.outputOverlayConfig.overlayDistance,
+    mode: state.outputOverlayConfig.overlayMode ?? "quad",
+    attachToHmd: state.outputOverlayConfig.attachToHmd,
   });
-  state.overlay = overlay;
+  state.outputOverlay = nextOverlay;
 }
 
 async function pumpOverlayFrames() {
   while (state.overlayRunning) {
-    if (!state.host || !state.overlayGl) {
+    if (!state.host || !state.outputOverlayGl) {
       await wait(10);
+      continue;
+    }
+
+    const hostStatus = state.host.getStatus();
+    if (hostStatus.frameCount <= state.lastUploadedHostFrameCount) {
+      await wait(1);
       continue;
     }
 
@@ -189,13 +199,15 @@ async function pumpOverlayFrames() {
     }
 
     try {
-      const frameStartedAt = performance.now();
       state.waitLogCounter = 0;
-      ensureOpenVrOverlayForFrame(sourceFrame.width, sourceFrame.height);
-      if (!state.overlay) {
-        throw new Error("OpenVR overlay not initialized for captured frame");
+      const frameStartedAt = performance.now();
+      ensureOverlayForFrame(sourceFrame.left.width, sourceFrame.left.height);
+      if (!state.outputOverlay || !state.outputOverlayGl) {
+        throw new Error("OpenVR output overlay not initialized for captured frame");
       }
+
       state.uploadedFrames++;
+      state.lastUploadedHostFrameCount = hostStatus.frameCount;
       state.overlayFpsCounter.mark();
       const now = performance.now();
       if (now - state.lastOverlayFpsLogAt >= 1000) {
@@ -205,15 +217,17 @@ async function pumpOverlayFrames() {
       if (state.uploadedFrames === 1) {
         LogChannel.log(
           "webxrv2",
-          `[webxr] overlay upload started ${sourceFrame.width}x${sourceFrame.height} ` +
-            `stride=${sourceFrame.bytesPerRow} format=${sourceFrame.format}`,
+          `[webxr] overlay upload started eye=${sourceFrame.left.width}x${sourceFrame.left.height} ` +
+            `output=${sourceFrame.outputWidth}x${sourceFrame.outputHeight} ` +
+            `stride=${sourceFrame.left.bytesPerRow} format=${sourceFrame.left.format}`,
         );
       }
+
       const uploadStartedAt = performance.now();
-      state.overlayGl.uploadMappedFrame(sourceFrame);
+      state.outputOverlayGl.uploadStereoFrame(sourceFrame);
       state.uploadMetric.record(performance.now() - uploadStartedAt);
       if (state.uploadedFrames === 1) {
-        const textureInfo = state.overlayGl.describeTexture();
+        const textureInfo = state.outputOverlayGl.describeTexture();
         LogChannel.log(
           "webxrv2",
           `[webxr] gl texture handle=${textureInfo.handle} isTexture=${textureInfo.isTexture} ` +
@@ -221,10 +235,12 @@ async function pumpOverlayFrames() {
             `glError=${textureInfo.glErrorLabel}`,
         );
       }
+
       const presentStartedAt = performance.now();
-      state.overlay.present();
+      state.outputOverlay.present();
       state.presentMetric.record(performance.now() - presentStartedAt);
       state.frameMetric.record(performance.now() - frameStartedAt);
+
       maybeLogOverlayPerf();
     } catch (error) {
       LogChannel.log("webxrv2", `[webxr] overlay frame upload failed: ${error}`);

@@ -1,11 +1,69 @@
 import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
-import {
-  createWindow,
-  DwmWindow,
-  getProcAddress,
-} from "@gfx/dwm";
+import { createWindow, DwmWindow, getProcAddress } from "@gfx/dwm";
+import { cstr } from "https://deno.land/x/dwm@0.3.4/src/platform/glfw/ffi.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
-import type { MappedTextureReadback } from "./webgpu.ts";
+import type { MappedTextureReadback, StereoMappedTextureReadback } from "./webgpu.ts";
+
+const VARGGLES_VERTEX_SHADER = `#version 450
+layout (location = 0) out vec2 uv;
+
+const vec2 positions[4] = vec2[](
+    vec2(-1.0, -1.0), vec2( 1.0, -1.0),
+    vec2(-1.0,  1.0), vec2( 1.0,  1.0)
+);
+const vec2 uvs_in[4] = vec2[](
+    vec2(0.0, 0.0), vec2(1.0, 0.0),
+    vec2(0.0, 1.0), vec2(1.0, 1.0)
+);
+
+out gl_PerVertex { vec4 gl_Position; };
+
+void main() {
+    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+    uv = vec2(uvs_in[gl_VertexID].x, 1.0 - uvs_in[gl_VertexID].y);
+}
+`;
+
+const VARGGLES_FRAGMENT_SHADER = `#version 450
+layout (location = 0) in vec2 uv;
+layout (binding = 0) uniform sampler2D eyeLeft;
+layout (binding = 1) uniform sampler2D eyeRight;
+uniform mat4 lookRotation;
+uniform float halfFOVInRadians;
+layout (location = 0) out vec4 outColor;
+
+const float PI = 3.141592653589793;
+const float HALF_PI = 0.5 * PI;
+const float QUARTER_PI = 0.25 * PI;
+
+void main() {
+    vec2 xy = vec2(uv.x, 1.0 - uv.y);
+    vec2 angles = (2.0 * xy - vec2(1.0, 1.0)) * vec2(PI, HALF_PI);
+    angles.y *= 2.0;
+
+    bool renderTopHalf = angles.y >= 0.0;
+    if (renderTopHalf) {
+        angles.y -= HALF_PI;
+    } else {
+        angles.y += HALF_PI;
+    }
+
+    float fovScalar = tan(halfFOVInRadians) / tan(QUARTER_PI);
+    vec3 lookupDirection = vec3(sin(angles.x), 1.0, cos(angles.x)) *
+        vec3(cos(angles.y), sin(angles.y), cos(angles.y));
+    lookupDirection = (lookRotation * vec4(lookupDirection, 0.0)).xyz;
+
+    float u = (((lookupDirection.x / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5;
+    float v = 1.0 - ((((lookupDirection.y / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5);
+    vec2 eyeUv = clamp(vec2(u, v), 0.0, 1.0);
+
+    if (renderTopHalf) {
+        outColor = texture(eyeLeft, eyeUv);
+    } else {
+        outColor = texture(eyeRight, eyeUv);
+    }
+}
+`;
 
 function assertPointer<T>(value: T | null | undefined, message: string): T {
   if (value == null) {
@@ -34,7 +92,33 @@ function getGlErrorLabel(error: number): string {
 }
 
 function normalizeU32(value: number): number {
-  return (Math.trunc(value) >>> 0);
+  return Math.trunc(value) >>> 0;
+}
+
+type OverlayGlSyncMode = "finish" | "flush" | "none";
+
+function getOverlayGlSyncMode(): OverlayGlSyncMode {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-gl-sync="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  switch (configured) {
+    case "flush":
+      return "flush";
+    case "none":
+      return "none";
+    case "finish":
+    case undefined:
+    case "":
+      return "flush";
+    default:
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] unknown --webxr-gl-sync=${configured}, defaulting to flush`,
+      );
+      return "flush";
+  }
 }
 
 function readGlString(pointer: Deno.PointerValue | null, maxBytes = 128): string {
@@ -54,12 +138,115 @@ function readGlString(pointer: Deno.PointerValue | null, maxBytes = 128): string
   }
 }
 
+function compileShader(source: string, type: gl.GLenum): number {
+  const shader = gl.CreateShader(type);
+  if (!shader || shader === 0) {
+    throw new Error(`CreateShader failed for type=${type}`);
+  }
+
+  const encodedSource = new TextEncoder().encode(source);
+  const sourcePtr = Deno.UnsafePointer.of(encodedSource);
+  if (!sourcePtr) {
+    gl.DeleteShader(shader);
+    throw new Error("Failed to create shader source pointer");
+  }
+  const sourcePointerArray = new BigUint64Array([BigInt(Deno.UnsafePointer.value(sourcePtr))]);
+  gl.ShaderSource(
+    shader,
+    1,
+    new Uint8Array(sourcePointerArray.buffer),
+    new Int32Array([source.length]),
+  );
+  gl.CompileShader(shader);
+
+  const compileStatus = new Int32Array(1);
+  gl.GetShaderiv(shader, gl.COMPILE_STATUS, compileStatus);
+  if (compileStatus[0] === gl.FALSE) {
+    const infoLogLength = new Int32Array(1);
+    gl.GetShaderiv(shader, gl.INFO_LOG_LENGTH, infoLogLength);
+    const infoLog = new Uint8Array(Math.max(1, infoLogLength[0]));
+    const writtenLength = new Int32Array(1);
+    gl.GetShaderInfoLog(shader, infoLog.length, writtenLength, infoLog);
+    gl.DeleteShader(shader);
+    throw new Error(
+      `Shader compile failed: ${new TextDecoder().decode(infoLog.slice(0, writtenLength[0]))}`,
+    );
+  }
+
+  return normalizeU32(shader);
+}
+
+function linkProgram(vertexShader: number, fragmentShader: number): number {
+  const program = gl.CreateProgram();
+  if (!program || program === 0) {
+    throw new Error("CreateProgram failed");
+  }
+
+  gl.AttachShader(program, vertexShader);
+  gl.AttachShader(program, fragmentShader);
+  gl.LinkProgram(program);
+
+  const linkStatus = new Int32Array(1);
+  gl.GetProgramiv(program, gl.LINK_STATUS, linkStatus);
+  if (linkStatus[0] === gl.FALSE) {
+    const infoLogLength = new Int32Array(1);
+    gl.GetProgramiv(program, gl.INFO_LOG_LENGTH, infoLogLength);
+    const infoLog = new Uint8Array(Math.max(1, infoLogLength[0]));
+    const writtenLength = new Int32Array(1);
+    gl.GetProgramInfoLog(program, infoLog.length, writtenLength, infoLog);
+    gl.DeleteProgram(program);
+    throw new Error(
+      `Program link failed: ${new TextDecoder().decode(infoLog.slice(0, writtenLength[0]))}`,
+    );
+  }
+
+  gl.DetachShader(program, vertexShader);
+  gl.DetachShader(program, fragmentShader);
+  return normalizeU32(program);
+}
+
+function allocateTexture(width: number, height: number, filter: number): number {
+  const texture = new Uint32Array(1);
+  gl.GenTextures(1, texture);
+  const textureHandle = normalizeU32(texture[0]);
+  gl.BindTexture(gl.TEXTURE_2D, textureHandle);
+  gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.TexImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA8,
+    width,
+    height,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null,
+  );
+  gl.BindTexture(gl.TEXTURE_2D, 0);
+  return textureHandle;
+}
+
 export class WebXROverlayGl {
   private window: DwmWindow | null = null;
-  private textureHandle: number | null = null;
-  private textureWidth = 0;
-  private textureHeight = 0;
+  private outputTextureHandle: number | null = null;
+  private leftTextureHandle: number | null = null;
+  private rightTextureHandle: number | null = null;
+  private framebufferHandle: number | null = null;
+  private vaoHandle: number | null = null;
+  private shaderProgram: number | null = null;
+  private lookRotationUniform: number | null = null;
+  private halfFovUniform: number | null = null;
+  private outputWidth = 0;
+  private outputHeight = 0;
+  private eyeWidth = 0;
+  private eyeHeight = 0;
   private readonly uniqueId = crypto.randomUUID().slice(0, 8);
+  private readonly syncMode = getOverlayGlSyncMode();
+  private uploadStateInitialized = false;
+  private lastUnpackRowLength = -1;
 
   initialize(name = "WebXR Overlay") {
     if (this.window) {
@@ -78,70 +265,104 @@ export class WebXROverlayGl {
 
     gl.load(getProcAddress);
     this.makeCurrent();
+    this.initializeProgram();
     const versionPtr = gl.GetString(gl.VERSION) as Deno.PointerValue | null;
     const vendorPtr = gl.GetString(gl.VENDOR) as Deno.PointerValue | null;
     LogChannel.log(
       "webxrv2",
-      `[webxr] gl init version=${readGlString(versionPtr)} vendor=${readGlString(vendorPtr)}`,
+      `[webxr] gl init version=${readGlString(versionPtr)} vendor=${
+        readGlString(vendorPtr)
+      } sync=${this.syncMode}`,
     );
   }
 
   getTextureHandle(): number {
-    return assertPointer(this.textureHandle, "OpenGL texture not initialized");
+    return assertPointer(this.outputTextureHandle, "OpenGL output texture not initialized");
   }
 
   private makeCurrent() {
     assertPointer(this.window, "OpenGL window not initialized").makeContextCurrent();
   }
 
-  hasTexture(): boolean {
-    return this.textureHandle != null;
-  }
-
-  ensureTexture(width: number, height: number) {
-    this.makeCurrent();
-    if (this.textureHandle != null) {
+  private initializeProgram() {
+    if (this.shaderProgram != null) {
       return;
     }
 
-    const texture = new Uint32Array(1);
-    gl.GenTextures(1, texture);
-    this.textureHandle = normalizeU32(texture[0]);
-    gl.BindTexture(gl.TEXTURE_2D, this.textureHandle);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.TexImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      width,
-      height,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      null,
-    );
-    gl.BindTexture(gl.TEXTURE_2D, 0);
-    gl.Finish();
-    this.textureWidth = width;
-    this.textureHeight = height;
-  }
-
-  uploadMappedFrame(frame: MappedTextureReadback) {
-    this.makeCurrent();
-    this.ensureTexture(frame.width, frame.height);
-    if (this.textureWidth !== frame.width || this.textureHeight !== frame.height) {
-      throw new Error(
-        `Live overlay texture size changed from ${this.textureWidth}x${this.textureHeight} to ${frame.width}x${frame.height}`,
-      );
+    const vertexShader = compileShader(VARGGLES_VERTEX_SHADER, gl.VERTEX_SHADER);
+    const fragmentShader = compileShader(VARGGLES_FRAGMENT_SHADER, gl.FRAGMENT_SHADER);
+    try {
+      this.shaderProgram = linkProgram(vertexShader, fragmentShader);
+    } finally {
+      gl.DeleteShader(vertexShader);
+      gl.DeleteShader(fragmentShader);
     }
 
+    const vao = new Uint32Array(1);
+    gl.GenVertexArrays(1, vao);
+    this.vaoHandle = normalizeU32(vao[0]);
+    this.lookRotationUniform = gl.GetUniformLocation(this.shaderProgram, cstr("lookRotation"));
+    this.halfFovUniform = gl.GetUniformLocation(this.shaderProgram, cstr("halfFOVInRadians"));
+
+    gl.UseProgram(this.shaderProgram);
+    gl.Uniform1i(gl.GetUniformLocation(this.shaderProgram, cstr("eyeLeft")), 0);
+    gl.Uniform1i(gl.GetUniformLocation(this.shaderProgram, cstr("eyeRight")), 1);
+    gl.UseProgram(0);
+  }
+
+  hasTexture(): boolean {
+    return this.outputTextureHandle != null;
+  }
+
+  ensureTexture(eyeWidth: number, eyeHeight: number) {
+    this.makeCurrent();
+    if (this.outputTextureHandle != null) {
+      if (this.eyeWidth !== eyeWidth || this.eyeHeight !== eyeHeight) {
+        throw new Error(
+          `Live overlay eye size changed from ${this.eyeWidth}x${this.eyeHeight} to ${eyeWidth}x${eyeHeight}`,
+        );
+      }
+      return;
+    }
+
+    if (eyeWidth !== eyeHeight) {
+      throw new Error(`Varggles path expects square eye textures, got ${eyeWidth}x${eyeHeight}`);
+    }
+
+    this.eyeWidth = eyeWidth;
+    this.eyeHeight = eyeHeight;
+    this.outputWidth = eyeWidth * 2;
+    this.outputHeight = eyeWidth * 2;
+    this.leftTextureHandle = allocateTexture(eyeWidth, eyeHeight, gl.LINEAR);
+    this.rightTextureHandle = allocateTexture(eyeWidth, eyeHeight, gl.LINEAR);
+    this.outputTextureHandle = allocateTexture(this.outputWidth, this.outputHeight, gl.LINEAR);
+
+    const framebuffer = new Uint32Array(1);
+    gl.GenFramebuffers(1, framebuffer);
+    this.framebufferHandle = normalizeU32(framebuffer[0]);
+    gl.BindFramebuffer(gl.FRAMEBUFFER, this.framebufferHandle);
+    gl.FramebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      this.outputTextureHandle,
+      0,
+    );
+    const status = gl.CheckFramebufferStatus(gl.FRAMEBUFFER);
+    gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error(`OpenGL framebuffer incomplete: ${status}`);
+    }
+
+    gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    this.uploadStateInitialized = true;
+    this.lastUnpackRowLength = -1;
+    gl.Finish();
+  }
+
+  private uploadEyeTexture(texture: number, frame: MappedTextureReadback) {
     const sourceFormat = frame.format === "bgra" ? gl.BGRA : gl.RGBA;
     const unpackRowLength = Math.floor(frame.bytesPerRow / 4);
-    const texture = assertPointer(this.textureHandle, "OpenGL texture not initialized");
     gl.BindTexture(gl.TEXTURE_2D, texture);
     gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.PixelStorei(gl.UNPACK_ROW_LENGTH, unpackRowLength);
@@ -158,19 +379,80 @@ export class WebXROverlayGl {
     );
     gl.PixelStorei(gl.UNPACK_ROW_LENGTH, 0);
     gl.BindTexture(gl.TEXTURE_2D, 0);
-    gl.Finish();
+  }
+
+  private applyFrameSync() {
+    switch (this.syncMode) {
+      case "finish":
+        gl.Finish();
+        break;
+      case "flush":
+        gl.Flush();
+        break;
+      case "none":
+        break;
+    }
+  }
+
+  uploadStereoFrame(frame: StereoMappedTextureReadback) {
+    this.makeCurrent();
+    this.ensureTexture(frame.left.width, frame.left.height);
+
+    if (
+      frame.left.width !== frame.right.width ||
+      frame.left.height !== frame.right.height
+    ) {
+      throw new Error("Stereo eye sizes do not match");
+    }
+
+    this.uploadEyeTexture(
+      assertPointer(this.leftTextureHandle, "Left texture not initialized"),
+      frame.left,
+    );
+    this.uploadEyeTexture(
+      assertPointer(this.rightTextureHandle, "Right texture not initialized"),
+      frame.right,
+    );
+
+    gl.BindFramebuffer(
+      gl.FRAMEBUFFER,
+      assertPointer(this.framebufferHandle, "OpenGL framebuffer not initialized"),
+    );
+    gl.Viewport(0, 0, this.outputWidth, this.outputHeight);
+    gl.UseProgram(assertPointer(this.shaderProgram, "OpenGL shader program not initialized"));
+    gl.BindVertexArray(assertPointer(this.vaoHandle, "OpenGL VAO not initialized"));
+
+    if (this.lookRotationUniform !== null && this.lookRotationUniform !== -1) {
+      gl.UniformMatrix4fv(this.lookRotationUniform, 1, 0, frame.lookRotation);
+    }
+    if (this.halfFovUniform !== null && this.halfFovUniform !== -1) {
+      gl.Uniform1f(this.halfFovUniform, frame.halfFovInRadians);
+    }
+
+    gl.ActiveTexture(gl.TEXTURE0);
+    gl.BindTexture(gl.TEXTURE_2D, assertPointer(this.leftTextureHandle, "Left texture missing"));
+    gl.ActiveTexture(gl.TEXTURE1);
+    gl.BindTexture(gl.TEXTURE_2D, assertPointer(this.rightTextureHandle, "Right texture missing"));
+    gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.BindTexture(gl.TEXTURE_2D, 0);
+    gl.ActiveTexture(gl.TEXTURE0);
+    gl.BindTexture(gl.TEXTURE_2D, 0);
+    gl.BindVertexArray(0);
+    gl.UseProgram(0);
+    gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
+    this.applyFrameSync();
   }
 
   getTextureSize() {
     return {
-      width: this.textureWidth,
-      height: this.textureHeight,
+      width: this.outputWidth,
+      height: this.outputHeight,
     };
   }
 
   describeTexture() {
     this.makeCurrent();
-    const texture = assertPointer(this.textureHandle, "OpenGL texture not initialized");
+    const texture = assertPointer(this.outputTextureHandle, "OpenGL texture not initialized");
     const isTexture = gl.IsTexture(texture);
     gl.BindTexture(gl.TEXTURE_2D, texture);
     const width = new Int32Array(1);
@@ -196,15 +478,39 @@ export class WebXROverlayGl {
     if (this.window) {
       this.makeCurrent();
     }
-    if (this.textureHandle != null) {
-      gl.DeleteTextures(1, new Uint32Array([this.textureHandle]));
-      this.textureHandle = null;
+    if (this.framebufferHandle != null) {
+      gl.DeleteFramebuffers(1, new Uint32Array([this.framebufferHandle]));
+      this.framebufferHandle = null;
+    }
+    if (this.outputTextureHandle != null) {
+      gl.DeleteTextures(1, new Uint32Array([this.outputTextureHandle]));
+      this.outputTextureHandle = null;
+    }
+    if (this.leftTextureHandle != null) {
+      gl.DeleteTextures(1, new Uint32Array([this.leftTextureHandle]));
+      this.leftTextureHandle = null;
+    }
+    if (this.rightTextureHandle != null) {
+      gl.DeleteTextures(1, new Uint32Array([this.rightTextureHandle]));
+      this.rightTextureHandle = null;
+    }
+    if (this.vaoHandle != null) {
+      gl.DeleteVertexArrays(1, new Uint32Array([this.vaoHandle]));
+      this.vaoHandle = null;
+    }
+    if (this.shaderProgram != null) {
+      gl.DeleteProgram(this.shaderProgram);
+      this.shaderProgram = null;
     }
     if (this.window) {
       this.window.close();
       this.window = null;
     }
-    this.textureWidth = 0;
-    this.textureHeight = 0;
+    this.lookRotationUniform = null;
+    this.halfFovUniform = null;
+    this.outputWidth = 0;
+    this.outputHeight = 0;
+    this.eyeWidth = 0;
+    this.eyeHeight = 0;
   }
 }

@@ -36,6 +36,17 @@ export type MappedTextureReadback = {
   destroy: () => void;
 };
 
+export type StereoMappedTextureReadback = {
+  left: MappedTextureReadback;
+  right: MappedTextureReadback;
+  lookRotation: Float32Array;
+  halfFovInRadians: number;
+  outputWidth: number;
+  outputHeight: number;
+  unmap: () => void;
+  destroy: () => void;
+};
+
 export function combineStereoReadbacksToSbs(
   left: MappedTextureReadback,
   right: MappedTextureReadback,

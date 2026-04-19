@@ -6,9 +6,9 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import {
   assert,
   inspectTextureForNonBlackPixels,
-  type MappedTextureReadback,
   type NonBlackPixelReport,
   type OverlayUploadFormat,
+  type StereoMappedTextureReadback,
   TextureReadbackRing,
 } from "./webgpu.ts";
 import { WebXRScene } from "./scene.tsx";
@@ -78,7 +78,8 @@ export class WebXRHost {
   private vrSystemPointer: number | bigint | null = null;
   private layerReadyLogged = false;
   private debugWindowEnabled = false;
-  private readbackRing: TextureReadbackRing | null = null;
+  private outputLeftReadbackRing: TextureReadbackRing | null = null;
+  private outputRightReadbackRing: TextureReadbackRing | null = null;
   private xrFpsCounter = new FpsCounter();
   private lastFpsLogAt = 0;
   private lastPerfLogAt = 0;
@@ -125,7 +126,8 @@ export class WebXRHost {
       const device = await adapter.requestDevice();
       const preferredFormat = navigator.gpu.getPreferredCanvasFormat();
       this.device = device;
-      this.readbackRing = new TextureReadbackRing(device, 3);
+      this.outputLeftReadbackRing = new TextureReadbackRing(device, 3);
+      this.outputRightReadbackRing = new TextureReadbackRing(device, 3);
       this.overlayUploadFormat = preferredFormat.startsWith("bgra") ? "bgra" : "rgba";
       device.addEventListener("uncapturederror", (event: Event) => {
         const gpuEvent = event as Event & {
@@ -199,6 +201,7 @@ export class WebXRHost {
       this.xrDevice = new XRDevice(metaQuest3, {
         stereoEnabled: true,
         fovy: 1.9,
+        //ipd: 0.068,
         webgpu: {
           canvas,
           context,
@@ -242,7 +245,7 @@ export class WebXRHost {
         size: { width: this.width, height: this.height, top: 0, left: 0 },
         dpr: 1,
         frameloop: "never",
-        camera: { position: [0, 1.6, 0], fov: 75, near: 0.1, far: 100 },
+        //camera: { position: [0, 0, 0], fov: 75, near: 0.1, far: 100 },
       });
 
       const rootStore = this.root.render(
@@ -313,10 +316,6 @@ export class WebXRHost {
     return this.device;
   }
 
-  getReadbackRing(): TextureReadbackRing | null {
-    return this.readbackRing;
-  }
-
   async stop() {
     this.running = false;
 
@@ -344,8 +343,10 @@ export class WebXRHost {
     this.surfaceHost = null;
 
     this.device = null;
-    this.readbackRing?.cleanup();
-    this.readbackRing = null;
+    this.outputLeftReadbackRing?.cleanup();
+    this.outputLeftReadbackRing = null;
+    this.outputRightReadbackRing?.cleanup();
+    this.outputRightReadbackRing = null;
     this.xrFrameRequestActive = false;
     this.xrFpsCounter.reset();
     this.lastFpsLogAt = 0;
@@ -361,45 +362,86 @@ export class WebXRHost {
     this.vrSystemPointer = null;
   }
 
-  async captureOverlayFrame(): Promise<MappedTextureReadback | null> {
+  async captureOverlayFrame(): Promise<StereoMappedTextureReadback | null> {
+    return await this.captureProjectionLayerFrame(
+      "output",
+      this.outputLeftReadbackRing,
+      this.outputRightReadbackRing,
+    );
+  }
+
+  private async captureProjectionLayerFrame(
+    label: string,
+    leftReadbackRing: TextureReadbackRing | null,
+    rightReadbackRing: TextureReadbackRing | null,
+  ): Promise<StereoMappedTextureReadback | null> {
     const captureStartedAt = performance.now();
     const device = this.device;
     if (!device) {
-      this.lastLayerInfo = "capture skipped: no GPU device";
+      this.lastLayerInfo = `${label} capture skipped: no GPU device`;
       return null;
     }
 
-    const layer = getProjectionLayer(this.session);
+    const layer = getProjectionLayer(this.session, "color");
 
     const captureFormat = layer?.format ?? this.overlayUploadFormat;
     if (!layer?.colorTexture || !layer.textureWidth || !layer.textureHeight) {
-      this.lastLayerInfo = describeProjectionLayer(
-        this.session,
-        this.overlayUploadFormat,
-      );
+      this.lastLayerInfo = `${label} ` +
+        describeProjectionLayer(this.session, this.overlayUploadFormat);
       return null;
     }
 
     this.lastLayerInfo =
-      `capture frame=${this.frameCount} width=${layer.textureWidth} height=${layer.textureHeight} ` +
-      `format=${captureFormat}`;
+      `${label} frame=${this.frameCount} eyeWidth=${layer.textureWidth} eyeHeight=${layer.textureHeight} ` +
+      `format=${captureFormat} layers=2`;
 
-    const readback = await this.readbackRing?.capture(
+    const leftReadback = await leftReadbackRing?.capture(
       layer.colorTexture,
       layer.textureWidth,
       layer.textureHeight,
       0,
       captureFormat,
     ) ?? null;
-    if (readback) {
-      this.readySignalMetric.record(readback.readySignalWaitMs);
-      this.readbackMetric.record(readback.readbackWaitMs);
-      this.queueAgeMetric.record(readback.queueAgeMs);
-      this.mapRangeMetric.record(readback.mapRangeMs);
-      this.captureMetric.record(performance.now() - captureStartedAt);
+    const rightReadback = await rightReadbackRing?.capture(
+      layer.colorTexture,
+      layer.textureWidth,
+      layer.textureHeight,
+      1,
+      captureFormat,
+    ) ?? null;
+
+    if (!leftReadback || !rightReadback) {
+      leftReadback?.destroy();
+      rightReadback?.destroy();
+      this.maybeLogPerf();
+      return null;
     }
+
+    this.readySignalMetric.record(
+      Math.max(leftReadback.readySignalWaitMs, rightReadback.readySignalWaitMs),
+    );
+    this.readbackMetric.record(
+      Math.max(leftReadback.readbackWaitMs, rightReadback.readbackWaitMs),
+    );
+    this.queueAgeMetric.record(Math.max(leftReadback.queueAgeMs, rightReadback.queueAgeMs));
+    this.mapRangeMetric.record(Math.max(leftReadback.mapRangeMs, rightReadback.mapRangeMs));
+    this.captureMetric.record(performance.now() - captureStartedAt);
     this.maybeLogPerf();
-    return readback;
+    const release = () => {
+      leftReadback.destroy();
+      rightReadback.destroy();
+    };
+
+    return {
+      left: leftReadback,
+      right: rightReadback,
+      lookRotation: this.getOverlayLookRotationMatrix(),
+      halfFovInRadians: (112 / 2) * (Math.PI / 180),
+      outputWidth: layer.textureWidth * 2,
+      outputHeight: layer.textureWidth * 2,
+      unmap: release,
+      destroy: release,
+    };
   }
 
   private startManualXrFrameLoop(
@@ -466,7 +508,7 @@ export class WebXRHost {
   }
 
   private async inspectProjectionLayer(device: GPUDevice) {
-    const layer = getProjectionLayer(this.session);
+    const layer = getProjectionLayer(this.session, "color");
 
     if (!layer?.colorTexture || !layer.textureWidth || !layer.textureHeight) {
       this.lastError = new Error(
@@ -682,5 +724,74 @@ export class WebXRHost {
       0.25 * s,
       (m10 - m01) / s,
     ];
+  }
+
+  private getOverlayLookRotationMatrix(): Float32Array {
+    const quaternion = (this.xrDevice as {
+      quaternion?: {
+        quat?: ArrayLike<number>;
+        x?: number;
+        y?: number;
+        z?: number;
+        w?: number;
+      };
+    } | null)?.quaternion;
+
+    const quatValues = quaternion?.quat
+      ? [
+        Number(quaternion.quat[0] ?? 0),
+        Number(quaternion.quat[1] ?? 0),
+        Number(quaternion.quat[2] ?? 0),
+        Number(quaternion.quat[3] ?? 1),
+      ] as const
+      : quaternion
+      ? [
+        Number(quaternion.x ?? 0),
+        Number(quaternion.y ?? 0),
+        Number(quaternion.z ?? 0),
+        Number(quaternion.w ?? 1),
+      ] as const
+      : null;
+
+    const inverseRotation = new Float32Array(16);
+    inverseRotation[15] = 1;
+
+    if (quatValues) {
+      const x = -quatValues[0];
+      const y = -quatValues[1];
+      const z = -quatValues[2];
+      const w = quatValues[3];
+      const x2 = x + x;
+      const y2 = y + y;
+      const z2 = z + z;
+      const xx = x * x2;
+      const xy = x * y2;
+      const xz = x * z2;
+      const yy = y * y2;
+      const yz = y * z2;
+      const zz = z * z2;
+      const wx = w * x2;
+      const wy = w * y2;
+      const wz = w * z2;
+
+      inverseRotation[0] = 1 - (yy + zz);
+      inverseRotation[1] = xy + wz;
+      inverseRotation[2] = xz - wy;
+      inverseRotation[4] = xy - wz;
+      inverseRotation[5] = 1 - (xx + zz);
+      inverseRotation[6] = yz + wx;
+      inverseRotation[8] = xz + wy;
+      inverseRotation[9] = yz - wx;
+      inverseRotation[10] = 1 - (xx + yy);
+    } else {
+      inverseRotation[0] = 1;
+      inverseRotation[5] = 1;
+      inverseRotation[10] = 1;
+    }
+
+    inverseRotation[8] *= -1;
+    inverseRotation[9] *= -1;
+    inverseRotation[10] *= -1;
+    return inverseRotation;
   }
 }

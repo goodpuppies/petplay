@@ -8,6 +8,11 @@ export type CaptureLayer = {
   source: string;
 };
 
+export type ProjectionLayerCapturePreference =
+  | "processed"
+  | "color"
+  | "auto";
+
 type XRSessionLike = {
   renderState?: { layers?: unknown[]; baseLayer?: unknown };
   getBaseLayer?: () => unknown;
@@ -31,7 +36,50 @@ function findInternalSessionState(session: XRSessionLike): SessionStateLike | nu
   return null;
 }
 
-export function getProjectionLayer(session: XRSessionLike | null): CaptureLayer | null {
+function makeCaptureLayer(
+  layer:
+    | {
+      colorTexture?: GPUTexture;
+      processedColorTexture?: GPUTexture;
+      textureWidth?: number;
+      textureHeight?: number;
+      processedTextureWidth?: number;
+      processedTextureHeight?: number;
+    }
+    | null,
+  sourcePrefix: string,
+  preference: ProjectionLayerCapturePreference,
+): CaptureLayer | null {
+  if (!layer) {
+    return null;
+  }
+
+  if ((preference === "processed" || preference === "auto") && layer.processedColorTexture) {
+    return {
+      colorTexture: layer.processedColorTexture,
+      textureWidth: layer.processedTextureWidth ?? layer.textureWidth,
+      textureHeight: layer.processedTextureHeight ?? layer.textureHeight,
+      format: "rgba",
+      source: `${sourcePrefix}.processedColorTexture`,
+    };
+  }
+
+  if (layer.colorTexture) {
+    return {
+      colorTexture: layer.colorTexture,
+      textureWidth: layer.textureWidth,
+      textureHeight: layer.textureHeight,
+      source: sourcePrefix,
+    };
+  }
+
+  return null;
+}
+
+export function getProjectionLayer(
+  session: XRSessionLike | null,
+  preference: ProjectionLayerCapturePreference = "auto",
+): CaptureLayer | null {
   const sessionAny = session;
   if (!sessionAny) {
     return null;
@@ -40,76 +88,36 @@ export function getProjectionLayer(session: XRSessionLike | null): CaptureLayer 
   const renderStateLayer = (sessionAny.renderState?.layers?.[0] ?? null) as {
     colorTexture?: GPUTexture;
     processedColorTexture?: GPUTexture;
-    packedColorTexture?: GPUTexture;
     textureWidth?: number;
     textureHeight?: number;
     processedTextureWidth?: number;
     processedTextureHeight?: number;
-    packedTextureWidth?: number;
-    packedTextureHeight?: number;
   } | null;
-  if (renderStateLayer?.processedColorTexture) {
-    return {
-      colorTexture: renderStateLayer.processedColorTexture,
-      textureWidth: renderStateLayer.processedTextureWidth ?? renderStateLayer.textureWidth,
-      textureHeight: renderStateLayer.processedTextureHeight ?? renderStateLayer.textureHeight,
-      format: "rgba",
-      source: "renderState.layers[0].processedColorTexture",
-    };
-  }
-  if (renderStateLayer?.packedColorTexture) {
-    return {
-      colorTexture: renderStateLayer.packedColorTexture,
-      textureWidth: renderStateLayer.packedTextureWidth ?? renderStateLayer.textureWidth,
-      textureHeight: renderStateLayer.packedTextureHeight ?? renderStateLayer.textureHeight,
-      source: "renderState.layers[0].packedColorTexture",
-    };
-  }
-  if (renderStateLayer?.colorTexture) {
-    return {
-      colorTexture: renderStateLayer.colorTexture,
-      textureWidth: renderStateLayer.textureWidth,
-      textureHeight: renderStateLayer.textureHeight,
-      source: "renderState.layers[0]",
-    };
+  const renderStateCapture = makeCaptureLayer(
+    renderStateLayer,
+    "renderState.layers[0]",
+    preference,
+  );
+  if (renderStateCapture) {
+    return renderStateCapture;
   }
 
   const internalState = findInternalSessionState(sessionAny);
   const internalLayer = (internalState?.renderState?.layers?.[0] ?? null) as {
     colorTexture?: GPUTexture;
     processedColorTexture?: GPUTexture;
-    packedColorTexture?: GPUTexture;
     textureWidth?: number;
     textureHeight?: number;
     processedTextureWidth?: number;
     processedTextureHeight?: number;
-    packedTextureWidth?: number;
-    packedTextureHeight?: number;
   } | null;
-  if (internalLayer?.processedColorTexture) {
-    return {
-      colorTexture: internalLayer.processedColorTexture,
-      textureWidth: internalLayer.processedTextureWidth ?? internalLayer.textureWidth,
-      textureHeight: internalLayer.processedTextureHeight ?? internalLayer.textureHeight,
-      format: "rgba",
-      source: "session[symbol].renderState.layers[0].processedColorTexture",
-    };
-  }
-  if (internalLayer?.packedColorTexture) {
-    return {
-      colorTexture: internalLayer.packedColorTexture,
-      textureWidth: internalLayer.packedTextureWidth ?? internalLayer.textureWidth,
-      textureHeight: internalLayer.packedTextureHeight ?? internalLayer.textureHeight,
-      source: "session[symbol].renderState.layers[0].packedColorTexture",
-    };
-  }
-  if (internalLayer?.colorTexture) {
-    return {
-      colorTexture: internalLayer.colorTexture,
-      textureWidth: internalLayer.textureWidth,
-      textureHeight: internalLayer.textureHeight,
-      source: "session[symbol].renderState.layers[0]",
-    };
+  const internalCapture = makeCaptureLayer(
+    internalLayer,
+    "session[symbol].renderState.layers[0]",
+    preference,
+  );
+  if (internalCapture) {
+    return internalCapture;
   }
 
   const baseLayerCandidate =

@@ -9,6 +9,7 @@ type OverlayOptions = {
   distance?: number;
   mode?: "quad" | "stereo-panorama";
   sortOrder?: number;
+  attachToHmd?: boolean;
 };
 
 export class OpenVrOverlayTexture {
@@ -78,29 +79,31 @@ export class OpenVrOverlayTexture {
       );
     }
 
-    const distance = -(options.distance ?? 1);
-    const transform: OpenVR.HmdMatrix34 = {
-      m: [
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, distance],
-      ],
-    };
-    const [transformPtr, transformView] = createStruct<OpenVR.HmdMatrix34>(
-      transform,
-      OpenVR.HmdMatrix34Struct,
-    );
-    this.transformView = transformView;
-    this.assertOverlayOk(
-      this.overlayClass.SetOverlayTransformTrackedDeviceRelative(
-        this.overlayHandle,
-        OpenVR.k_unTrackedDeviceIndex_Hmd,
-        transformPtr,
-      ),
-      "SetOverlayTransformTrackedDeviceRelative",
-    );
+    if (options.attachToHmd ?? true) {
+      const distance = -(options.distance ?? 1);
+      const transform: OpenVR.HmdMatrix34 = {
+        m: [
+          [1, 0, 0, 0],
+          [0, 1, 0, 0],
+          [0, 0, 1, distance],
+        ],
+      };
+      const [transformPtr, transformView] = createStruct<OpenVR.HmdMatrix34>(
+        transform,
+        OpenVR.HmdMatrix34Struct,
+      );
+      this.transformView = transformView;
+      this.assertOverlayOk(
+        this.overlayClass.SetOverlayTransformTrackedDeviceRelative(
+          this.overlayHandle,
+          OpenVR.k_unTrackedDeviceIndex_Hmd,
+          transformPtr,
+        ),
+        "SetOverlayTransformTrackedDeviceRelative",
+      );
+    }
 
-    const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
+    const bounds = { uMin: 0, uMax: 1, vMin: 1, vMax: 0 };
     const [boundsPtr, boundsView] = createStruct<OpenVR.TextureBounds>(
       bounds,
       OpenVR.TextureBoundsStruct,
