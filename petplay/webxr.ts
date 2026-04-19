@@ -13,6 +13,7 @@ type StartWebXRPayload = {
   title?: string;
   debugWindow?: boolean;
   overlayPointer?: number | bigint | null;
+  vrSystemPointer?: number | bigint | null;
   overlayKey?: string;
   overlayName?: string;
   overlayWidthInMeters?: number;
@@ -21,10 +22,12 @@ type StartWebXRPayload = {
 
 type OverlayConfig = {
   overlayPointer: number | bigint;
+  vrSystemPointer?: number | bigint;
   overlayKey?: string;
   overlayName?: string;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
+  overlayMode?: "quad" | "stereo-panorama";
 };
 
 const state = actorState({
@@ -63,6 +66,7 @@ new PostMan(
           height: payload?.height,
           title: payload?.title,
           debugWindow: payload?.debugWindow,
+          vrSystemPointer: payload?.vrSystemPointer,
         }).catch((error) => {
           LogChannel.log("webxrv2", `[webxr] startup failed: ${error}`);
           state.startup = null;
@@ -134,10 +138,12 @@ function initializeOverlay(payload: StartWebXRPayload | null) {
   state.overlayGl = overlayGl;
   state.overlayConfig = {
     overlayPointer: payload.overlayPointer,
+    vrSystemPointer: payload.vrSystemPointer ?? undefined,
     overlayKey: payload.overlayKey,
     overlayName: payload.overlayName,
     overlayWidthInMeters: payload.overlayWidthInMeters,
     overlayDistance: payload.overlayDistance,
+    overlayMode: "stereo-panorama",
   };
 }
 
@@ -154,6 +160,7 @@ function ensureOpenVrOverlayForFrame(frameWidth: number, frameHeight: number) {
     name: state.overlayConfig.overlayName,
     widthInMeters: state.overlayConfig.overlayWidthInMeters,
     distance: state.overlayConfig.overlayDistance,
+    mode: state.overlayConfig.overlayMode ?? "quad",
   });
   state.overlay = overlay;
 }
@@ -165,14 +172,16 @@ async function pumpOverlayFrames() {
       continue;
     }
 
-    const frame = await state.host.captureOverlayFrame();
-    if (!frame) {
+    const sourceFrame = await state.host.captureOverlayFrame();
+    if (!sourceFrame) {
       state.waitLogCounter++;
       if (state.waitLogCounter % 120 === 0) {
         const status = state.host.getStatus();
         LogChannel.log(
           "webxrv2",
-          `[webxr] waiting for frameCount=${status.frameCount}: ${status.lastLayerInfo ?? "no layer info"}`,
+          `[webxr] waiting for frameCount=${status.frameCount}: ${
+            status.lastLayerInfo ?? "no layer info"
+          }`,
         );
       }
       await wait(1);
@@ -182,7 +191,7 @@ async function pumpOverlayFrames() {
     try {
       const frameStartedAt = performance.now();
       state.waitLogCounter = 0;
-      ensureOpenVrOverlayForFrame(frame.width, frame.height);
+      ensureOpenVrOverlayForFrame(sourceFrame.width, sourceFrame.height);
       if (!state.overlay) {
         throw new Error("OpenVR overlay not initialized for captured frame");
       }
@@ -196,11 +205,12 @@ async function pumpOverlayFrames() {
       if (state.uploadedFrames === 1) {
         LogChannel.log(
           "webxrv2",
-          `[webxr] overlay upload started ${frame.width}x${frame.height} stride=${frame.bytesPerRow} format=${frame.format}`,
+          `[webxr] overlay upload started ${sourceFrame.width}x${sourceFrame.height} ` +
+            `stride=${sourceFrame.bytesPerRow} format=${sourceFrame.format}`,
         );
       }
       const uploadStartedAt = performance.now();
-      state.overlayGl.uploadMappedFrame(frame);
+      state.overlayGl.uploadMappedFrame(sourceFrame);
       state.uploadMetric.record(performance.now() - uploadStartedAt);
       if (state.uploadedFrames === 1) {
         const textureInfo = state.overlayGl.describeTexture();
@@ -221,7 +231,7 @@ async function pumpOverlayFrames() {
       state.overlayRunning = false;
       throw error;
     } finally {
-      frame.destroy();
+      sourceFrame.destroy();
     }
   }
 }
@@ -242,10 +252,14 @@ function maybeLogOverlayPerf() {
 
   const parts: string[] = [];
   if (uploadSample) {
-    parts.push(`upload=${uploadSample.avgMs.toFixed(2)}ms avg ${uploadSample.maxMs.toFixed(2)}ms max`);
+    parts.push(
+      `upload=${uploadSample.avgMs.toFixed(2)}ms avg ${uploadSample.maxMs.toFixed(2)}ms max`,
+    );
   }
   if (presentSample) {
-    parts.push(`present=${presentSample.avgMs.toFixed(2)}ms avg ${presentSample.maxMs.toFixed(2)}ms max`);
+    parts.push(
+      `present=${presentSample.avgMs.toFixed(2)}ms avg ${presentSample.maxMs.toFixed(2)}ms max`,
+    );
   }
   if (frameSample) {
     parts.push(`frame=${frameSample.avgMs.toFixed(2)}ms avg ${frameSample.maxMs.toFixed(2)}ms max`);

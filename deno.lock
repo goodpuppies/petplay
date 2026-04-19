@@ -546,6 +546,7 @@
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/mod.ts": "2e6eaa208bbd7a39be9ca80d51ce1f660c69c60f38db3aa49cd8feadce4ca604",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/sized_array.ts": "b2de484087076c08b76d3a399ff5f550fc04932ee3e015929776788f381702ab",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/typed_array.ts": "d966cb09bc0bf80ded4c738a0970582c06f34d59e760dd69ae56dd97f2a402c0",
+    "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/_common.ts": "0b6bbfa1a39e9301f157c4f552c55d28128e49429d71e6b1c4a270429346b703",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/bitflags16.ts": "1ebd50d376db22cdfaece2ac48505360d34fbf8b207844eaa07ab5d52d1a0856",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/bitflags32.ts": "8e8c9d7ff79d3b19d9e08a37a21887a9b0778eb21d602bbd54cb73d74262e05a",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/bitflags/bitflags64.ts": "51c89f3836146b534294b28808a3d7744d9b635707eee702f5057733d83e8f2e",

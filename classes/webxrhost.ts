@@ -17,12 +17,14 @@ import { IntervalMetric } from "./intervalMetric.ts";
 import { installWebXRHostPolyfills } from "./webxrPolyfills.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 
 type StartOptions = {
   width?: number;
   height?: number;
   title?: string;
   debugWindow?: boolean;
+  vrSystemPointer?: number | bigint | null;
 };
 
 type WebXRStatus = {
@@ -37,9 +39,16 @@ type WebXRStatus = {
 
 const POLL_INTERVAL_MS = 16;
 const XR_REFERENCE_SPACE = "local-floor";
+const XR_CONNECT_RETRY_MS = 16;
+const XR_CONNECT_TIMEOUT_MS = 1000;
+const XR_CONNECT_ERROR_FRAGMENT = "not connected to three.js";
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isXrConnectionRace(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(XR_CONNECT_ERROR_FRAGMENT);
 }
 
 export class WebXRHost {
@@ -51,7 +60,11 @@ export class WebXRHost {
   private lastError: Error | null = null;
   private root: ReturnType<typeof createRoot> | null = null;
   private renderer: THREE.WebGPURenderer | null = null;
-  private xrDevice: { installRuntime: (options: unknown) => void } | null = null;
+  private xrDevice: {
+    installRuntime: (options: unknown) => void;
+    position?: { set?: (x: number, y: number, z: number) => void };
+    quaternion?: { set?: (x: number, y: number, z: number, w: number) => void };
+  } | null = null;
   private session: XRSession | null = null;
   private surfaceHost: WebXRSurfaceHost | null = null;
   private device: GPUDevice | null = null;
@@ -62,6 +75,7 @@ export class WebXRHost {
   private xrFrameRequestActive = false;
   private width = 1600;
   private height = 900;
+  private vrSystemPointer: number | bigint | null = null;
   private layerReadyLogged = false;
   private debugWindowEnabled = false;
   private readbackRing: TextureReadbackRing | null = null;
@@ -101,6 +115,7 @@ export class WebXRHost {
     this.width = options.width ?? 1600;
     this.height = options.height ?? 900;
     this.debugWindowEnabled = options.debugWindow ?? false;
+    this.vrSystemPointer = options.vrSystemPointer ?? null;
     installWebXRHostPolyfills(this.width, this.height, POLL_INTERVAL_MS);
 
     try {
@@ -113,9 +128,12 @@ export class WebXRHost {
       this.readbackRing = new TextureReadbackRing(device, 3);
       this.overlayUploadFormat = preferredFormat.startsWith("bgra") ? "bgra" : "rgba";
       device.addEventListener("uncapturederror", (event: Event) => {
-        const gpuEvent = event as Event & { error?: { message?: string } };
+        const gpuEvent = event as Event & {
+          error?: { message?: string; constructor?: { name?: string } };
+        };
+        const errorName = gpuEvent.error?.constructor?.name ?? "GPUError";
         this.lastError = new Error(
-          `Uncaptured WebGPU error: ${gpuEvent.error?.message ?? "unknown"}`,
+          `Uncaptured WebGPU error (${errorName}): ${gpuEvent.error?.message ?? "unknown"}`,
         );
       });
 
@@ -125,6 +143,12 @@ export class WebXRHost {
         this.width,
         this.height,
         this.debugWindowEnabled,
+      );
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] surface=${this.width}x${this.height} debugWindow=${
+          this.debugWindowEnabled ? "yes" : "no"
+        }`,
       );
       const canvas = this.surfaceHost.getCanvas();
       const context = this.surfaceHost.getContext();
@@ -150,13 +174,21 @@ export class WebXRHost {
         import.meta.url,
       ).href;
       const iwerModule = await import(iwerModulePath);
-      const createXRStore = xrRuntimeModule.createXRStore as (options: Record<string, unknown>) => {
+      const createXRStore = xrRuntimeModule.createXRStore as (
+        options: Record<string, unknown>,
+      ) => {
         enterVR: () => Promise<XRSession>;
         getState: () => { xr: { disconnect: () => void } };
         onBeforeRender?: () => void;
-        onBeforeFrame?: (scene: THREE.Scene, camera: THREE.Camera, frame?: XRFrame) => void;
+        onBeforeFrame?: (
+          scene: THREE.Scene,
+          camera: THREE.Camera,
+          frame?: XRFrame,
+        ) => void;
       };
-      const XR = xrRuntimeModule.XR as React.ComponentType<{ store: unknown; children?: React.ReactNode }>;
+      const XR = xrRuntimeModule.XR as React.ComponentType<
+        { store: unknown; children?: React.ReactNode }
+      >;
       const XROrigin = xrOriginModule.XROrigin as React.ComponentType;
       const XRDevice = iwerModule.XRDevice as new (
         device: unknown,
@@ -166,6 +198,7 @@ export class WebXRHost {
 
       this.xrDevice = new XRDevice(metaQuest3, {
         stereoEnabled: true,
+        fovy: 1.9,
         webgpu: {
           canvas,
           context,
@@ -174,7 +207,10 @@ export class WebXRHost {
           present: () => this.surfaceHost?.present(),
         },
       });
-      this.xrDevice.installRuntime({ globalObject: globalThis, polyfillLayers: false });
+      this.xrDevice.installRuntime({
+        globalObject: globalThis,
+        polyfillLayers: false,
+      });
       assert(navigator.xr, "navigator.xr was not installed");
 
       const store = createXRStore({
@@ -222,11 +258,14 @@ export class WebXRHost {
       advance(performance.now(), true, rootStore.getState());
       this.surfaceHost.present();
 
-      this.session = await store.enterVR();
+      this.session = await this.enterVrWhenReady(store);
       assert(this.session, "Failed to enter immersive VR session");
       this.running = true;
       this.lastHeartbeatAt = performance.now();
-      LogChannel.log("webxrv2", `[webxrhost] entered VR presenting=${this.renderer?.xr.isPresenting ? "yes" : "no"}`);
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] entered VR presenting=${this.renderer?.xr.isPresenting ? "yes" : "no"}`,
+      );
       this.startManualXrFrameLoop(rootStore, device);
 
       while (this.running) {
@@ -236,12 +275,16 @@ export class WebXRHost {
         const now = performance.now();
         if (now - this.lastHeartbeatAt >= 1000 && this.frameCount === 0) {
           this.lastHeartbeatAt = now;
-          const sinceCallback = this.lastXrCallbackAt === 0 ? -1 : Math.round(now - this.lastXrCallbackAt);
+          const sinceCallback = this.lastXrCallbackAt === 0
+            ? -1
+            : Math.round(now - this.lastXrCallbackAt);
           LogChannel.log(
             "webxrv2",
             `[webxrhost] heartbeat frameCount=${this.frameCount} presenting=${
               this.renderer?.xr.isPresenting ? "yes" : "no"
-            } sinceCallbackMs=${sinceCallback} ${describeProjectionLayer(this.session, this.overlayUploadFormat)}`,
+            } sinceCallbackMs=${sinceCallback} ${
+              describeProjectionLayer(this.session, this.overlayUploadFormat)
+            }`,
           );
         }
         await wait(POLL_INTERVAL_MS);
@@ -261,8 +304,17 @@ export class WebXRHost {
       inspected: this.inspected,
       lastInspection: this.lastInspection,
       error: this.lastError?.message ?? null,
-      lastLayerInfo: this.lastLayerInfo ?? describeProjectionLayer(this.session, this.overlayUploadFormat),
+      lastLayerInfo: this.lastLayerInfo ??
+        describeProjectionLayer(this.session, this.overlayUploadFormat),
     };
+  }
+
+  getDevice(): GPUDevice | null {
+    return this.device;
+  }
+
+  getReadbackRing(): TextureReadbackRing | null {
+    return this.readbackRing;
   }
 
   async stop() {
@@ -306,6 +358,7 @@ export class WebXRHost {
     this.mapRangeMetric.reset();
     this.layerReadyLogged = false;
     this.debugWindowEnabled = false;
+    this.vrSystemPointer = null;
   }
 
   async captureOverlayFrame(): Promise<MappedTextureReadback | null> {
@@ -318,21 +371,25 @@ export class WebXRHost {
 
     const layer = getProjectionLayer(this.session);
 
+    const captureFormat = layer?.format ?? this.overlayUploadFormat;
     if (!layer?.colorTexture || !layer.textureWidth || !layer.textureHeight) {
-      this.lastLayerInfo = describeProjectionLayer(this.session, this.overlayUploadFormat);
+      this.lastLayerInfo = describeProjectionLayer(
+        this.session,
+        this.overlayUploadFormat,
+      );
       return null;
     }
 
     this.lastLayerInfo =
       `capture frame=${this.frameCount} width=${layer.textureWidth} height=${layer.textureHeight} ` +
-      `format=${this.overlayUploadFormat}`;
+      `format=${captureFormat}`;
 
     const readback = await this.readbackRing?.capture(
       layer.colorTexture,
       layer.textureWidth,
       layer.textureHeight,
       0,
-      this.overlayUploadFormat,
+      captureFormat,
     ) ?? null;
     if (readback) {
       this.readySignalMetric.record(readback.readySignalWaitMs);
@@ -364,20 +421,35 @@ export class WebXRHost {
 
       this.lastXrCallbackAt = performance.now();
       const advanceStartedAt = this.lastXrCallbackAt;
-      advance(time, true, rootStore.getState() as Parameters<typeof advance>[2], frame);
+      this.updateEmulatedHeadsetFromOpenVr();
+      advance(
+        time,
+        true,
+        rootStore.getState() as Parameters<typeof advance>[2],
+        frame,
+      );
       this.frameCount++;
       this.xrFpsCounter.mark(this.lastXrCallbackAt);
       this.xrAdvanceMetric.record(performance.now() - advanceStartedAt);
       if (this.lastXrCallbackAt - this.lastFpsLogAt >= 1000) {
         this.lastFpsLogAt = this.lastXrCallbackAt;
-        LogChannel.log("fps", `[webxrhost] xr=${this.xrFpsCounter.getFps().toFixed(1)}`);
+        LogChannel.log(
+          "fps",
+          `[webxrhost] xr=${this.xrFpsCounter.getFps().toFixed(1)}`,
+        );
       }
       this.maybeLogPerf();
 
       if (!this.layerReadyLogged && this.frameCount >= 1) {
-        this.lastLayerInfo = describeProjectionLayer(this.session, this.overlayUploadFormat);
+        this.lastLayerInfo = describeProjectionLayer(
+          this.session,
+          this.overlayUploadFormat,
+        );
         this.layerReadyLogged = true;
-        LogChannel.log("webxrv2", `[webxrhost] frame source ready ${this.lastLayerInfo}`);
+        LogChannel.log(
+          "webxrv2",
+          `[webxrhost] frame source ready ${this.lastLayerInfo}`,
+        );
       }
 
       if (!this.inspected && !this.inspectionPending && this.frameCount >= 3) {
@@ -397,7 +469,9 @@ export class WebXRHost {
     const layer = getProjectionLayer(this.session);
 
     if (!layer?.colorTexture || !layer.textureWidth || !layer.textureHeight) {
-      this.lastError = new Error("XR projection layer was not available for inspection");
+      this.lastError = new Error(
+        "XR projection layer was not available for inspection",
+      );
       return;
     }
 
@@ -414,7 +488,9 @@ export class WebXRHost {
     LogChannel.log(
       "webxrv2",
       `[webxrhost] inspected frame nonZero=${report.nonZeroSamples}/${report.sampleCount} ` +
-        `avgLuma=${report.avgLuma.toFixed(2)} max=${report.maxChannel} nonBlack=${report.isNonBlack}`,
+        `avgLuma=${
+          report.avgLuma.toFixed(2)
+        } max=${report.maxChannel} nonBlack=${report.isNonBlack}`,
     );
   }
 
@@ -431,7 +507,11 @@ export class WebXRHost {
     const queueAgeSample = this.queueAgeMetric.flush();
     const mapRangeSample = this.mapRangeMetric.flush();
     const captureSample = this.captureMetric.flush();
-    if (!advanceSample && !readySignalSample && !readbackSample && !queueAgeSample && !mapRangeSample && !captureSample) {
+    if (
+      !advanceSample && !readySignalSample && !readbackSample &&
+      !queueAgeSample &&
+      !mapRangeSample && !captureSample
+    ) {
       return;
     }
 
@@ -443,12 +523,16 @@ export class WebXRHost {
     }
     if (readySignalSample) {
       parts.push(
-        `ready=${readySignalSample.avgMs.toFixed(2)}ms avg ${readySignalSample.maxMs.toFixed(2)}ms max`,
+        `ready=${readySignalSample.avgMs.toFixed(2)}ms avg ${
+          readySignalSample.maxMs.toFixed(2)
+        }ms max`,
       );
     }
     if (readbackSample) {
       parts.push(
-        `readback=${readbackSample.avgMs.toFixed(2)}ms avg ${readbackSample.maxMs.toFixed(2)}ms max`,
+        `readback=${readbackSample.avgMs.toFixed(2)}ms avg ${
+          readbackSample.maxMs.toFixed(2)
+        }ms max`,
       );
     }
     if (queueAgeSample) {
@@ -458,7 +542,9 @@ export class WebXRHost {
     }
     if (mapRangeSample) {
       parts.push(
-        `mapRange=${mapRangeSample.avgMs.toFixed(2)}ms avg ${mapRangeSample.maxMs.toFixed(2)}ms max`,
+        `mapRange=${mapRangeSample.avgMs.toFixed(2)}ms avg ${
+          mapRangeSample.maxMs.toFixed(2)
+        }ms max`,
       );
     }
     if (captureSample) {
@@ -467,5 +553,134 @@ export class WebXRHost {
       );
     }
     LogChannel.log("perf", `[webxrhost] ${parts.join(" | ")}`);
+  }
+
+  private async enterVrWhenReady(store: { enterVR: () => Promise<XRSession> }) {
+    const deadline = performance.now() + XR_CONNECT_TIMEOUT_MS;
+    let attempts = 0;
+    let lastError: Error | null = null;
+
+    while (performance.now() < deadline) {
+      try {
+        return await store.enterVR();
+      } catch (error) {
+        if (!isXrConnectionRace(error)) {
+          throw error;
+        }
+        lastError = error instanceof Error ? error : new Error(String(error));
+        attempts++;
+        await wait(XR_CONNECT_RETRY_MS);
+      }
+    }
+
+    if (attempts > 0) {
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] XR connection retry timed out after ${attempts} attempts`,
+      );
+    }
+    throw lastError ?? new Error("Timed out waiting for XR store to connect");
+  }
+
+  private updateEmulatedHeadsetFromOpenVr() {
+    if (!this.xrDevice || !this.vrSystemPointer) {
+      return;
+    }
+
+    const systemPointer = Deno.UnsafePointer.create(
+      typeof this.vrSystemPointer === "bigint"
+        ? this.vrSystemPointer
+        : BigInt(this.vrSystemPointer),
+    );
+    if (!systemPointer) {
+      return;
+    }
+
+    const vrSystem = new OpenVR.IVRSystem(systemPointer);
+    const poseArrayBuffer = new ArrayBuffer(
+      OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount,
+    );
+    const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<
+      OpenVR.TrackedDevicePose
+    >;
+    vrSystem.GetDeviceToAbsoluteTrackingPose(
+      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      0.0,
+      posePtr,
+      OpenVR.k_unMaxTrackedDeviceCount,
+    );
+    const poseView = new DataView(
+      poseArrayBuffer,
+      OpenVR.k_unTrackedDeviceIndex_Hmd * OpenVR.TrackedDevicePoseStruct.byteSize,
+      OpenVR.TrackedDevicePoseStruct.byteSize,
+    );
+    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+    if (!hmdPose.bPoseIsValid) {
+      return;
+    }
+
+    const m = hmdPose.mDeviceToAbsoluteTracking.m;
+    const quaternion = this.matrix3x4ToQuaternion(m);
+    this.xrDevice.position?.set?.(m[0][3], m[1][3], m[2][3]);
+    this.xrDevice.quaternion?.set?.(
+      quaternion[0],
+      quaternion[1],
+      quaternion[2],
+      quaternion[3],
+    );
+  }
+
+  private matrix3x4ToQuaternion(
+    matrix: [
+      [number, number, number, number],
+      [number, number, number, number],
+      [number, number, number, number],
+    ],
+  ): [number, number, number, number] {
+    const m00 = matrix[0][0];
+    const m01 = matrix[0][1];
+    const m02 = matrix[0][2];
+    const m10 = matrix[1][0];
+    const m11 = matrix[1][1];
+    const m12 = matrix[1][2];
+    const m20 = matrix[2][0];
+    const m21 = matrix[2][1];
+    const m22 = matrix[2][2];
+    const trace = m00 + m11 + m22;
+
+    if (trace > 0) {
+      const s = Math.sqrt(trace + 1.0) * 2;
+      return [
+        (m21 - m12) / s,
+        (m02 - m20) / s,
+        (m10 - m01) / s,
+        0.25 * s,
+      ];
+    }
+    if (m00 > m11 && m00 > m22) {
+      const s = Math.sqrt(1.0 + m00 - m11 - m22) * 2;
+      return [
+        0.25 * s,
+        (m01 + m10) / s,
+        (m02 + m20) / s,
+        (m21 - m12) / s,
+      ];
+    }
+    if (m11 > m22) {
+      const s = Math.sqrt(1.0 + m11 - m00 - m22) * 2;
+      return [
+        (m01 + m10) / s,
+        0.25 * s,
+        (m12 + m21) / s,
+        (m02 - m20) / s,
+      ];
+    }
+    const s = Math.sqrt(1.0 + m22 - m00 - m11) * 2;
+    return [
+      (m02 + m20) / s,
+      (m12 + m21) / s,
+      0.25 * s,
+      (m10 - m01) / s,
+    ];
   }
 }

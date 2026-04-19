@@ -14,8 +14,8 @@ const state = actorState({
   inputstate: null as actionData | null,
 });
 
-const WEBXR_RENDER_WIDTH = 4048;
-const WEBXR_RENDER_HEIGHT = 4048;
+const WEBXR_RENDER_HEIGHT = 800;
+const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
 
 const stdinHandler = new MainStdinHandler({
   spawnOverlay: (name) => {
@@ -95,10 +95,12 @@ async function main() {
       width: WEBXR_RENDER_WIDTH,
       height: WEBXR_RENDER_HEIGHT,
       title: "PetPlay WebXR",
+      debugWindow: true,
       overlayPointer: ivroverlay as number,
+      vrSystemPointer: ivrsystem as number,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
-      overlayWidthInMeters: 1.4,
+      overlayWidthInMeters: 3,
       overlayDistance: 1,
     },
   });

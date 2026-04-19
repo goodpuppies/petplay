@@ -1,4 +1,5 @@
 import { createWindow, DwmWindow } from "@gfx/dwm";
+import { WebXRSdlDebugWindow } from "./webxrSdlDebugWindow.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -28,6 +29,7 @@ export type WebXRSurfaceCanvas = {
 
 export class WebXRSurfaceHost {
   private window: DwmWindow | null = null;
+  private debugWindow: WebXRSdlDebugWindow | null = null;
   private surface: Deno.UnsafeWindowSurface | null = null;
   private context: GPUCanvasContext | null = null;
   private canvas: WebXRSurfaceCanvas | null = null;
@@ -37,16 +39,24 @@ export class WebXRSurfaceHost {
       return;
     }
 
-    this.window = createWindow({
-      title,
-      width,
-      height,
-      visible,
-      resizable: visible,
-    });
+    let surface: Deno.UnsafeWindowSurface;
 
-    const surface = this.window.windowSurface();
-    surface.resize(width, height);
+    if (visible) {
+      this.debugWindow = new WebXRSdlDebugWindow();
+      this.debugWindow.initialize(title, width, height);
+      surface = this.debugWindow.getSurface();
+    } else {
+      this.window = createWindow({
+        title,
+        width,
+        height,
+        visible: false,
+        resizable: false,
+      });
+      surface = this.window.windowSurface();
+      surface.resize(width, height);
+    }
+
     const context = surface.getContext("webgpu");
     assert(context, "Failed to obtain GPUCanvasContext from UnsafeWindowSurface");
 
@@ -96,6 +106,8 @@ export class WebXRSurfaceHost {
     this.context = null;
     this.canvas = null;
     this.surface = null;
+    this.debugWindow?.cleanup();
+    this.debugWindow = null;
     this.window?.close();
     this.window = null;
   }

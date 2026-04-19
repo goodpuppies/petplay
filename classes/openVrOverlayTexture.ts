@@ -7,6 +7,8 @@ type OverlayOptions = {
   name?: string;
   widthInMeters?: number;
   distance?: number;
+  mode?: "quad" | "stereo-panorama";
+  sortOrder?: number;
 };
 
 export class OpenVrOverlayTexture {
@@ -19,7 +21,9 @@ export class OpenVrOverlayTexture {
 
   constructor(overlayPointerNumeric: number | bigint) {
     const overlayPointer = Deno.UnsafePointer.create(
-      typeof overlayPointerNumeric === "bigint" ? overlayPointerNumeric : BigInt(overlayPointerNumeric),
+      typeof overlayPointerNumeric === "bigint"
+        ? overlayPointerNumeric
+        : BigInt(overlayPointerNumeric),
     );
     if (!overlayPointer) {
       throw new Error("Invalid IVROverlay pointer");
@@ -37,12 +41,42 @@ export class OpenVrOverlayTexture {
     const name = options.name ?? "PetPlay WebXR";
     const createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
 
-    if (createError !== OpenVR.OverlayError.VROverlayError_None) {
-      throw new Error(`CreateOverlay failed: ${OpenVR.OverlayError[createError]}`);
-    }
+    this.assertOverlayOk(createError, "CreateOverlay");
 
     this.overlayHandle = new Deno.UnsafePointerView(overlayHandlePtr).getBigUint64();
-    this.overlayClass.SetOverlayWidthInMeters(this.overlayHandle, options.widthInMeters ?? 1.4);
+    const mode = options.mode ?? "quad";
+    const widthInMeters = mode === "stereo-panorama"
+      ? Math.max(options.widthInMeters ?? 3, 3)
+      : (options.widthInMeters ?? 1.4);
+    this.assertOverlayOk(
+      this.overlayClass.SetOverlayWidthInMeters(
+        this.overlayHandle,
+        widthInMeters,
+      ),
+      "SetOverlayWidthInMeters",
+    );
+    if (mode === "stereo-panorama") {
+      this.assertOverlayOk(
+        this.overlayClass.SetOverlayFlag(
+          this.overlayHandle,
+          OpenVR.OverlayFlags.VROverlayFlags_Panorama,
+          false,
+        ),
+        "SetOverlayFlag(Panorama=false)",
+      );
+      this.assertOverlayOk(
+        this.overlayClass.SetOverlayFlag(
+          this.overlayHandle,
+          OpenVR.OverlayFlags.VROverlayFlags_StereoPanorama,
+          true,
+        ),
+        "SetOverlayFlag(StereoPanorama=true)",
+      );
+      this.assertOverlayOk(
+        this.overlayClass.SetOverlaySortOrder(this.overlayHandle, options.sortOrder ?? 0),
+        "SetOverlaySortOrder",
+      );
+    }
 
     const distance = -(options.distance ?? 1);
     const transform: OpenVR.HmdMatrix34 = {
@@ -57,10 +91,13 @@ export class OpenVrOverlayTexture {
       OpenVR.HmdMatrix34Struct,
     );
     this.transformView = transformView;
-    this.overlayClass.SetOverlayTransformTrackedDeviceRelative(
-      this.overlayHandle,
-      OpenVR.k_unTrackedDeviceIndex_Hmd,
-      transformPtr,
+    this.assertOverlayOk(
+      this.overlayClass.SetOverlayTransformTrackedDeviceRelative(
+        this.overlayHandle,
+        OpenVR.k_unTrackedDeviceIndex_Hmd,
+        transformPtr,
+      ),
+      "SetOverlayTransformTrackedDeviceRelative",
     );
 
     const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
@@ -69,11 +106,14 @@ export class OpenVrOverlayTexture {
       OpenVR.TextureBoundsStruct,
     );
     this.boundsView = boundsView;
-    this.overlayClass.SetOverlayTextureBounds(this.overlayHandle, boundsPtr);
+    this.assertOverlayOk(
+      this.overlayClass.SetOverlayTextureBounds(this.overlayHandle, boundsPtr),
+      "SetOverlayTextureBounds",
+    );
 
     this.setTextureHandle(textureHandle);
 
-    this.overlayClass.ShowOverlay(this.overlayHandle);
+    this.assertOverlayOk(this.overlayClass.ShowOverlay(this.overlayHandle), "ShowOverlay");
   }
 
   setTextureHandle(textureHandle: number) {
@@ -116,5 +156,11 @@ export class OpenVrOverlayTexture {
     this.textureStructView = null;
     this.boundsView = null;
     this.transformView = null;
+  }
+
+  private assertOverlayOk(error: OpenVR.OverlayError, operation: string) {
+    if (error !== OpenVR.OverlayError.VROverlayError_None) {
+      throw new Error(`${operation} failed: ${OpenVR.OverlayError[error]}`);
+    }
   }
 }

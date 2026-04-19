@@ -36,6 +36,64 @@ export type MappedTextureReadback = {
   destroy: () => void;
 };
 
+export function combineStereoReadbacksToSbs(
+  left: MappedTextureReadback,
+  right: MappedTextureReadback,
+  format: OverlayUploadFormat = left.format,
+): MappedTextureReadback {
+  assert(left.width === right.width, "Stereo readback widths do not match");
+  assert(left.height === right.height, "Stereo readback heights do not match");
+
+  const width = left.width + right.width;
+  const height = left.height;
+  const bytesPerPixel = 4;
+  const bytesPerRow = width * bytesPerPixel;
+  const arrayBuffer = new ArrayBuffer(bytesPerRow * height);
+  const destination = new Uint8Array(arrayBuffer);
+  const leftBytes = new Uint8Array(left.arrayBuffer);
+  const rightBytes = new Uint8Array(right.arrayBuffer);
+  const halfRowBytes = left.width * bytesPerPixel;
+
+  for (let y = 0; y < height; y++) {
+    const dstOffset = y * bytesPerRow;
+    const leftOffset = y * left.bytesPerRow;
+    const rightOffset = y * right.bytesPerRow;
+    destination.set(leftBytes.subarray(leftOffset, leftOffset + halfRowBytes), dstOffset);
+    destination.set(
+      rightBytes.subarray(rightOffset, rightOffset + halfRowBytes),
+      dstOffset + halfRowBytes,
+    );
+  }
+
+  const rawPointer = Deno.UnsafePointer.of(arrayBuffer);
+  assert(rawPointer, "Failed to obtain pointer for combined stereo readback");
+
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    left.destroy();
+    right.destroy();
+  };
+
+  return {
+    width,
+    height,
+    bytesPerRow,
+    format,
+    readySignalWaitMs: Math.max(left.readySignalWaitMs, right.readySignalWaitMs),
+    readbackWaitMs: Math.max(left.readbackWaitMs, right.readbackWaitMs),
+    queueAgeMs: Math.max(left.queueAgeMs, right.queueAgeMs),
+    mapRangeMs: Math.max(left.mapRangeMs, right.mapRangeMs),
+    arrayBuffer,
+    rawPointer,
+    unmap: release,
+    destroy: release,
+  };
+}
+
 type ReadbackSlot = {
   buffer: GPUBuffer;
   size: number;
@@ -161,7 +219,9 @@ export class TextureReadbackRing {
   ): Promise<MappedTextureReadback | null> {
     const slot = this.acquireFreeSlot(width, height);
     if (!slot) {
-      const readySlot = this.selectNewestReadySlot(this.slots.filter((candidate) => candidate.inFlight));
+      const readySlot = this.selectNewestReadySlot(
+        this.slots.filter((candidate) => candidate.inFlight),
+      );
       return readySlot ? await this.mapSlot(readySlot, format, 0) : null;
     }
 
@@ -222,7 +282,9 @@ export class TextureReadbackRing {
       if (!slot) {
         slot = this.createSlot(width, height, bytesPerRow, size);
         this.slots[slotIndex] = slot;
-      } else if (!slot.inFlight && (slot.size !== size || slot.width !== width || slot.height !== height)) {
+      } else if (
+        !slot.inFlight && (slot.size !== size || slot.width !== width || slot.height !== height)
+      ) {
         slot.buffer.destroy();
         slot = this.createSlot(width, height, bytesPerRow, size);
         this.slots[slotIndex] = slot;
@@ -326,7 +388,11 @@ export class TextureReadbackRing {
         return;
       }
       released = true;
-      slot.buffer.unmap();
+      try {
+        slot.buffer.unmap();
+      } catch {
+        // Another release path may have already unmapped this buffer.
+      }
       slot.inFlight = false;
       slot.readyPromise = null;
       slot.ready = false;
