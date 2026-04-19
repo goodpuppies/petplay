@@ -1,4 +1,3 @@
-import { createWindow, DwmWindow } from "@gfx/dwm";
 import { WebXRSdlDebugWindow } from "./webxrSdlDebugWindow.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -27,43 +26,82 @@ export type WebXRSurfaceCanvas = {
   getContext: (type: string) => GPUCanvasContext | null;
 };
 
+type GPUCanvasConfigurationLike = {
+  device: GPUDevice;
+  format: GPUTextureFormat;
+  usage?: GPUTextureUsageFlags;
+  viewFormats?: GPUTextureFormat[];
+  colorSpace?: PredefinedColorSpace;
+  alphaMode?: GPUCanvasAlphaMode;
+};
+
+class OffscreenCanvasContext {
+  readonly canvas: WebXRSurfaceCanvas;
+  private configuration: GPUCanvasConfigurationLike | null = null;
+  private texture: GPUTexture | null = null;
+  private textureWidth = 0;
+  private textureHeight = 0;
+
+  constructor(canvas: WebXRSurfaceCanvas) {
+    this.canvas = canvas;
+  }
+
+  configure(configuration: GPUCanvasConfigurationLike) {
+    this.configuration = configuration;
+    this.releaseTexture();
+  }
+
+  unconfigure() {
+    this.configuration = null;
+    this.releaseTexture();
+  }
+
+  getCurrentTexture(): GPUTexture {
+    const configuration = this.configuration;
+    assert(configuration, "Offscreen GPU canvas context was not configured");
+
+    const width = Math.max(1, Math.floor(this.canvas.width));
+    const height = Math.max(1, Math.floor(this.canvas.height));
+    if (!this.texture || this.textureWidth !== width || this.textureHeight !== height) {
+      this.releaseTexture();
+      this.texture = configuration.device.createTexture({
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: configuration.format,
+        usage: configuration.usage ?? GPUTextureUsage.RENDER_ATTACHMENT,
+        viewFormats: configuration.viewFormats,
+      });
+      this.textureWidth = width;
+      this.textureHeight = height;
+    }
+
+    return this.texture;
+  }
+
+  private releaseTexture() {
+    try {
+      this.texture?.destroy();
+    } catch {
+    }
+    this.texture = null;
+    this.textureWidth = 0;
+    this.textureHeight = 0;
+  }
+}
+
 export class WebXRSurfaceHost {
-  private window: DwmWindow | null = null;
   private debugWindow: WebXRSdlDebugWindow | null = null;
   private surface: Deno.UnsafeWindowSurface | null = null;
   private context: GPUCanvasContext | null = null;
   private canvas: WebXRSurfaceCanvas | null = null;
 
   initialize(title: string, width: number, height: number, visible = false) {
-    if (this.window) {
+    if (this.canvas) {
       return;
     }
 
-    let surface: Deno.UnsafeWindowSurface;
-
-    if (visible) {
-      this.debugWindow = new WebXRSdlDebugWindow();
-      this.debugWindow.initialize(title, width, height);
-      surface = this.debugWindow.getSurface();
-    } else {
-      this.window = createWindow({
-        title,
-        width,
-        height,
-        visible: false,
-        resizable: false,
-      });
-      surface = this.window.windowSurface();
-      surface.resize(width, height);
-    }
-
-    const context = surface.getContext("webgpu");
-    assert(context, "Failed to obtain GPUCanvasContext from UnsafeWindowSurface");
-
     const ownerDocument = (globalThis as unknown as { document: unknown }).document;
-    this.surface = surface;
-    this.context = context;
-    this.canvas = {
+    let context: GPUCanvasContext | null = null;
+    const canvas: WebXRSurfaceCanvas = {
       width,
       height,
       style: { width: `${width}px`, height: `${height}px` },
@@ -86,6 +124,20 @@ export class WebXRSurfaceHost {
         return type === "webgpu" ? context : null;
       },
     };
+
+    if (visible) {
+      this.debugWindow = new WebXRSdlDebugWindow();
+      this.debugWindow.initialize(title, width, height);
+      this.surface = this.debugWindow.getSurface();
+      this.surface.resize(width, height);
+      context = this.surface.getContext("webgpu");
+      assert(context, "Failed to obtain GPUCanvasContext from UnsafeWindowSurface");
+    } else {
+      context = new OffscreenCanvasContext(canvas) as unknown as GPUCanvasContext;
+    }
+
+    this.context = context;
+    this.canvas = canvas;
   }
 
   getContext(): GPUCanvasContext {
@@ -103,12 +155,12 @@ export class WebXRSurfaceHost {
   }
 
   cleanup() {
+    const context = this.context as unknown as { unconfigure?: () => void } | null;
+    context?.unconfigure?.();
     this.context = null;
     this.canvas = null;
     this.surface = null;
     this.debugWindow?.cleanup();
     this.debugWindow = null;
-    this.window?.close();
-    this.window = null;
   }
 }

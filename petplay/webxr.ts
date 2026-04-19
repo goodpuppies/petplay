@@ -7,6 +7,8 @@ import { WebXRHost } from "../classes/webxrhost.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric } from "../classes/intervalMetric.ts";
 
+type SupportedSessionMode = "immersive-vr" | "immersive-ar";
+
 type StartWebXRPayload = {
   width?: number;
   height?: number;
@@ -14,6 +16,8 @@ type StartWebXRPayload = {
   debugWindow?: boolean;
   overlayPointer?: number | bigint | null;
   vrSystemPointer?: number | bigint | null;
+  sessionMode?: SupportedSessionMode;
+  alpha?: boolean;
   overlayKey?: string;
   overlayName?: string;
   overlayWidthInMeters?: number;
@@ -68,6 +72,8 @@ new PostMan(
           title: payload?.title,
           debugWindow: payload?.debugWindow,
           vrSystemPointer: payload?.vrSystemPointer,
+          sessionMode: payload?.sessionMode,
+          alpha: payload?.alpha,
         }).catch((error) => {
           LogChannel.log("webxrv2", `[webxr] startup failed: ${error}`);
           state.startup = null;

@@ -27,6 +27,8 @@ type StartOptions = {
   title?: string;
   debugWindow?: boolean;
   vrSystemPointer?: number | bigint | null;
+  sessionMode?: "immersive-vr" | "immersive-ar";
+  alpha?: boolean;
 };
 
 type WebXRStatus = {
@@ -40,10 +42,15 @@ type WebXRStatus = {
 };
 
 const POLL_INTERVAL_MS = 16;
-const XR_REFERENCE_SPACE = "local-floor";
 const XR_CONNECT_RETRY_MS = 16;
 const XR_CONNECT_TIMEOUT_MS = 1000;
 const XR_CONNECT_ERROR_FRAGMENT = "not connected to three.js";
+
+type SupportedSessionMode = "immersive-vr" | "immersive-ar";
+
+function getReferenceSpaceType(sessionMode: SupportedSessionMode): XRReferenceSpaceType {
+  return sessionMode === "immersive-ar" ? "local" : "local-floor";
+}
 
 type CaptureMode = "serial" | "parallel";
 
@@ -171,6 +178,8 @@ export class WebXRHost {
   private width = 1600;
   private height = 900;
   private vrSystemPointer: number | bigint | null = null;
+  private sessionMode: SupportedSessionMode = "immersive-vr";
+  private alphaEnabled = false;
   private layerReadyLogged = false;
   private debugWindowEnabled = false;
   private outputLeftReadbackRing: TextureReadbackRing | null = null;
@@ -221,6 +230,8 @@ export class WebXRHost {
     this.height = options.height ?? 900;
     this.debugWindowEnabled = options.debugWindow ?? false;
     this.vrSystemPointer = options.vrSystemPointer ?? null;
+    this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
+    this.alphaEnabled = options.alpha ?? this.sessionMode === "immersive-ar";
     installWebXRHostPolyfills(this.width, this.height, POLL_INTERVAL_MS);
 
     try {
@@ -258,16 +269,10 @@ export class WebXRHost {
         "webxrv2",
         `[webxrhost] surface=${this.width}x${this.height} debugWindow=${
           this.debugWindowEnabled ? "yes" : "no"
-        } capture=${this.captureMode} readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
+        } session=${this.sessionMode} alpha=${this.alphaEnabled ? "yes" : "no"} capture=${this.captureMode} readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
       );
       const canvas = this.surfaceHost.getCanvas();
       const context = this.surfaceHost.getContext();
-      context.configure({
-        device,
-        format: preferredFormat,
-        alphaMode: "opaque",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-      });
 
       const xrRuntimeModulePath = new URL(
         "../submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/dist/xr.js",
@@ -287,6 +292,7 @@ export class WebXRHost {
       const createXRStore = xrRuntimeModule.createXRStore as (
         options: Record<string, unknown>,
       ) => {
+        enterAR: () => Promise<XRSession>;
         enterVR: () => Promise<XRSession>;
         getState: () => { xr: { disconnect: () => void } };
         onBeforeRender?: () => void;
@@ -312,10 +318,16 @@ export class WebXRHost {
         //ipd: 0.068,
         webgpu: {
           canvas,
-          context,
           device,
           format: preferredFormat,
-          present: () => this.surfaceHost?.present(),
+          width: this.width,
+          height: this.height,
+          ...(this.debugWindowEnabled
+            ? {
+              context,
+              present: () => this.surfaceHost?.present(),
+            }
+            : {}),
         },
       });
       this.xrDevice.installRuntime({
@@ -330,21 +342,25 @@ export class WebXRHost {
         emulate: false,
         domOverlay: false,
         webgpu: "required",
+        bounded: this.sessionMode === "immersive-ar" ? false : undefined,
       });
 
       this.root = createRoot(canvas);
       await this.root.configure({
         gl: (async (props: Record<string, unknown>) => {
-          const renderer = new THREE.WebGPURenderer({
+          const rendererOptions: Record<string, unknown> = {
             ...props,
             canvas,
-            context,
             device,
             antialias: false,
-            alpha: false,
-          });
+            alpha: this.alphaEnabled,
+          };
+          if (context) {
+            rendererOptions.context = context;
+          }
+          const renderer = new THREE.WebGPURenderer(rendererOptions);
           renderer.xr.enabled = true;
-          renderer.xr.setReferenceSpaceType(XR_REFERENCE_SPACE);
+          renderer.xr.setReferenceSpaceType(getReferenceSpaceType(this.sessionMode));
           renderer.setSize(this.width, this.height);
           await renderer.init();
           this.renderer = renderer;
@@ -367,15 +383,17 @@ export class WebXRHost {
 
       await wait(0);
       advance(performance.now(), true, rootStore.getState());
-      this.surfaceHost.present();
+      if (this.debugWindowEnabled) {
+        this.surfaceHost.present();
+      }
 
-      this.session = await this.enterVrWhenReady(store);
-      assert(this.session, "Failed to enter immersive VR session");
+      this.session = await this.enterXrWhenReady(store, this.sessionMode);
+      assert(this.session, `Failed to enter ${this.sessionMode} session`);
       this.running = true;
       this.lastHeartbeatAt = performance.now();
       LogChannel.log(
         "webxrv2",
-        `[webxrhost] entered VR presenting=${this.renderer?.xr.isPresenting ? "yes" : "no"}`,
+        `[webxrhost] entered ${this.sessionMode} presenting=${this.renderer?.xr.isPresenting ? "yes" : "no"} alpha=${this.alphaEnabled ? "yes" : "no"}`,
       );
       this.startManualXrFrameLoop(rootStore, device);
 
@@ -472,6 +490,8 @@ export class WebXRHost {
     this.layerReadyLogged = false;
     this.debugWindowEnabled = false;
     this.vrSystemPointer = null;
+    this.sessionMode = "immersive-vr";
+    this.alphaEnabled = false;
   }
 
   async captureOverlayFrame(): Promise<StereoMappedTextureReadback | null> {
@@ -813,14 +833,17 @@ export class WebXRHost {
     LogChannel.log("perf", `[webxrhost] ${parts.join(" | ")}`);
   }
 
-  private async enterVrWhenReady(store: { enterVR: () => Promise<XRSession> }) {
+  private async enterXrWhenReady(
+    store: { enterAR: () => Promise<XRSession>; enterVR: () => Promise<XRSession> },
+    sessionMode: SupportedSessionMode,
+  ) {
     const deadline = performance.now() + XR_CONNECT_TIMEOUT_MS;
     let attempts = 0;
     let lastError: Error | null = null;
 
     while (performance.now() < deadline) {
       try {
-        return await store.enterVR();
+        return await (sessionMode === "immersive-ar" ? store.enterAR() : store.enterVR());
       } catch (error) {
         if (!isXrConnectionRace(error)) {
           throw error;
