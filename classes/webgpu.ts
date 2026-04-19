@@ -29,6 +29,8 @@ export type MappedTextureReadback = {
   readySignalWaitMs: number;
   readbackWaitMs: number;
   queueAgeMs: number;
+  gpuReadyMs: number;
+  shelfMs: number;
   mapRangeMs: number;
   arrayBuffer: ArrayBuffer;
   rawPointer: Deno.PointerValue;
@@ -97,6 +99,8 @@ export function combineStereoReadbacksToSbs(
     readySignalWaitMs: Math.max(left.readySignalWaitMs, right.readySignalWaitMs),
     readbackWaitMs: Math.max(left.readbackWaitMs, right.readbackWaitMs),
     queueAgeMs: Math.max(left.queueAgeMs, right.queueAgeMs),
+    gpuReadyMs: Math.max(left.gpuReadyMs, right.gpuReadyMs),
+    shelfMs: Math.max(left.shelfMs, right.shelfMs),
     mapRangeMs: Math.max(left.mapRangeMs, right.mapRangeMs),
     arrayBuffer,
     rawPointer,
@@ -115,6 +119,7 @@ type ReadbackSlot = {
   readyPromise: Promise<void> | null;
   ready: boolean;
   submittedAt: number;
+  readyAt: number;
   submissionId: number;
 };
 
@@ -230,38 +235,44 @@ export class TextureReadbackRing {
   ): Promise<MappedTextureReadback | null> {
     const slot = this.acquireFreeSlot(width, height);
     if (!slot) {
-      const readySlot = this.selectNewestReadySlot(
-        this.slots.filter((candidate) => candidate.inFlight),
-      );
+      const readySlot = this.selectNewestReadyInFlightSlot();
       return readySlot ? await this.mapSlot(readySlot, format, 0) : null;
     }
 
     this.enqueueCopy(slot, texture, width, height, layer);
 
-    const pendingSlots = this.slots.filter((candidate) => candidate.inFlight);
-    if (pendingSlots.length < Math.min(this.ringSize, 2)) {
+    const minimumPendingSlots = Math.min(this.ringSize, 2);
+    let pendingSlotCount = 0;
+    for (const candidate of this.slots) {
+      if (candidate?.inFlight) {
+        pendingSlotCount++;
+      }
+    }
+    if (pendingSlotCount < minimumPendingSlots) {
       return null;
     }
 
-    const readyCandidates = pendingSlots.filter((candidate) => candidate !== slot);
-    if (readyCandidates.length === 0) {
-      return null;
-    }
-
-    const immediatelyReadySlot = this.selectNewestReadySlot(readyCandidates);
+    const immediatelyReadySlot = this.selectNewestReadyInFlightSlot(slot);
     if (immediatelyReadySlot) {
       return await this.mapSlot(immediatelyReadySlot, format, 0);
     }
 
+    const readyPromises: Promise<void>[] = [];
+    for (const candidate of this.slots) {
+      if (!candidate || candidate === slot || !candidate.inFlight || candidate.readyPromise === null) {
+        continue;
+      }
+      readyPromises.push(candidate.readyPromise);
+    }
+    if (readyPromises.length === 0) {
+      return null;
+    }
+
     const readySignalStartedAt = performance.now();
-    await Promise.race(
-      readyCandidates
-        .map((candidate) => candidate.readyPromise)
-        .filter((promise): promise is Promise<void> => promise !== null),
-    );
+    await Promise.race(readyPromises);
     const readySignalWaitMs = performance.now() - readySignalStartedAt;
 
-    const newestReadySlot = this.selectNewestReadySlot(readyCandidates);
+    const newestReadySlot = this.selectNewestReadyInFlightSlot(slot);
     if (!newestReadySlot) {
       return null;
     }
@@ -329,14 +340,24 @@ export class TextureReadbackRing {
       readyPromise: null,
       ready: false,
       submittedAt: 0,
+      readyAt: 0,
       submissionId: 0,
     };
   }
 
-  private selectNewestReadySlot(candidates: ReadbackSlot[]): ReadbackSlot | null {
-    return candidates
-      .filter((candidate) => candidate.ready)
-      .sort((left, right) => right.submissionId - left.submissionId)[0] ?? null;
+  private selectNewestReadyInFlightSlot(excludedSlot?: ReadbackSlot): ReadbackSlot | null {
+    let newestReadySlot: ReadbackSlot | null = null;
+    for (const candidate of this.slots) {
+      if (
+        !candidate || candidate === excludedSlot || !candidate.inFlight || !candidate.ready
+      ) {
+        continue;
+      }
+      if (!newestReadySlot || candidate.submissionId > newestReadySlot.submissionId) {
+        newestReadySlot = candidate;
+      }
+    }
+    return newestReadySlot;
   }
 
   private enqueueCopy(
@@ -369,11 +390,28 @@ export class TextureReadbackRing {
     slot.width = width;
     slot.height = height;
     slot.submittedAt = performance.now();
+    slot.readyAt = 0;
     slot.submissionId = this.nextSubmissionId++;
     this.device.queue.submit([encoder.finish()]);
-    slot.readyPromise = slot.buffer.mapAsync(GPUMapMode.READ).then(() => {
-      slot.ready = true;
-    });
+    slot.readyPromise = slot.buffer.mapAsync(GPUMapMode.READ)
+      .then(() => {
+        slot.readyAt = performance.now();
+        slot.ready = true;
+      })
+      .catch((err) => {
+        console.warn("[WEBGPU] [readback] mapAsync rejected, poisoning slot:", err);
+        slot.inFlight = false;
+        slot.ready = false;
+        slot.readyPromise = null;
+        // Force recreation on next acquireFreeSlot by invalidating size.
+        slot.size = -1;
+        try {
+          slot.buffer.destroy();
+        } catch (_) {
+          // Already destroyed or unusable; acquireFreeSlot will replace it.
+        }
+        throw err;
+      });
   }
 
   private async mapSlot(
@@ -385,7 +423,10 @@ export class TextureReadbackRing {
     const waitStartedAt = performance.now();
     await slot.readyPromise;
     const readbackWaitMs = performance.now() - waitStartedAt;
-    const queueAgeMs = performance.now() - slot.submittedAt;
+    const now = performance.now();
+    const queueAgeMs = now - slot.submittedAt;
+    const gpuReadyMs = slot.readyAt > 0 ? slot.readyAt - slot.submittedAt : queueAgeMs;
+    const shelfMs = slot.readyAt > 0 ? Math.max(0, now - slot.readyAt) : 0;
 
     const mapRangeStartedAt = performance.now();
     const arrayBuffer = slot.buffer.getMappedRange();
@@ -419,9 +460,351 @@ export class TextureReadbackRing {
       readySignalWaitMs,
       readbackWaitMs,
       queueAgeMs,
+      gpuReadyMs,
+      shelfMs,
       mapRangeMs,
       arrayBuffer,
       rawPointer,
+      unmap: release,
+      destroy: release,
+    };
+  }
+}
+
+type StereoReadbackSlot = {
+  buffer: GPUBuffer;
+  perEyeBytes: number;
+  totalBytes: number;
+  bytesPerRow: number;
+  width: number;
+  height: number;
+  inFlight: boolean;
+  readyPromise: Promise<void> | null;
+  ready: boolean;
+  submittedAt: number;
+  readyAt: number;
+  submissionId: number;
+};
+
+export class StereoTextureReadbackRing {
+  private readonly slots: StereoReadbackSlot[] = [];
+  private nextSlotIndex = 0;
+  private nextSubmissionId = 1;
+
+  constructor(
+    private readonly device: GPUDevice,
+    private readonly ringSize = 3,
+  ) {}
+
+  async capture(
+    texture: GPUTexture,
+    width: number,
+    height: number,
+    format: OverlayUploadFormat = "rgba",
+    syncAwaitSelf = false,
+  ): Promise<StereoMappedTextureReadback | null> {
+    const slot = this.acquireFreeSlot(width, height);
+    if (!slot) {
+      const readySlot = this.selectNewestReadyInFlightSlot();
+      return readySlot ? await this.mapSlot(readySlot, format, 0) : null;
+    }
+
+    this.enqueueCopy(slot, texture, width, height);
+
+    if (syncAwaitSelf) {
+      // Debug: await THIS submission's own mapAsync to measure the true
+      // submit -> ready latency of a freshly submitted copy, bypassing the
+      // newest-ready ring policy.
+      return await this.mapSlot(slot, format, 0);
+    }
+
+    const minimumPendingSlots = Math.min(this.ringSize, 2);
+    let pendingSlotCount = 0;
+    for (const candidate of this.slots) {
+      if (candidate?.inFlight) {
+        pendingSlotCount++;
+      }
+    }
+    if (pendingSlotCount < minimumPendingSlots) {
+      return null;
+    }
+
+    const immediatelyReadySlot = this.selectNewestReadyInFlightSlot(slot);
+    if (immediatelyReadySlot) {
+      return await this.mapSlot(immediatelyReadySlot, format, 0);
+    }
+
+    const readyPromises: Promise<void>[] = [];
+    for (const candidate of this.slots) {
+      if (
+        !candidate || candidate === slot || !candidate.inFlight ||
+        candidate.readyPromise === null
+      ) {
+        continue;
+      }
+      readyPromises.push(candidate.readyPromise);
+    }
+    if (readyPromises.length === 0) {
+      return null;
+    }
+
+    const readySignalStartedAt = performance.now();
+    await Promise.race(readyPromises);
+    const readySignalWaitMs = performance.now() - readySignalStartedAt;
+
+    const newestReadySlot = this.selectNewestReadyInFlightSlot(slot);
+    if (!newestReadySlot) {
+      return null;
+    }
+
+    return await this.mapSlot(newestReadySlot, format, readySignalWaitMs);
+  }
+
+  cleanup() {
+    for (const slot of this.slots) {
+      try {
+        slot.buffer.unmap();
+      } catch {
+        // Ignore already-unmapped buffers.
+      }
+      slot.buffer.destroy();
+    }
+    this.slots.length = 0;
+    this.nextSlotIndex = 0;
+  }
+
+  private acquireFreeSlot(width: number, height: number): StereoReadbackSlot | null {
+    const bytesPerRow = alignTo256(width * 4);
+    const perEyeBytes = bytesPerRow * height;
+    const totalBytes = perEyeBytes * 2;
+
+    for (let attempt = 0; attempt < this.ringSize; attempt++) {
+      const slotIndex = (this.nextSlotIndex + attempt) % this.ringSize;
+      let slot = this.slots[slotIndex];
+
+      if (!slot) {
+        slot = this.createSlot(width, height, bytesPerRow, perEyeBytes, totalBytes);
+        this.slots[slotIndex] = slot;
+      } else if (
+        !slot.inFlight &&
+        (slot.totalBytes !== totalBytes || slot.width !== width || slot.height !== height)
+      ) {
+        slot.buffer.destroy();
+        slot = this.createSlot(width, height, bytesPerRow, perEyeBytes, totalBytes);
+        this.slots[slotIndex] = slot;
+      }
+
+      if (!slot.inFlight) {
+        this.nextSlotIndex = (slotIndex + 1) % this.ringSize;
+        return slot;
+      }
+    }
+
+    return null;
+  }
+
+  private createSlot(
+    width: number,
+    height: number,
+    bytesPerRow: number,
+    perEyeBytes: number,
+    totalBytes: number,
+  ): StereoReadbackSlot {
+    return {
+      buffer: this.device.createBuffer({
+        size: totalBytes,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      }),
+      perEyeBytes,
+      totalBytes,
+      bytesPerRow,
+      width,
+      height,
+      inFlight: false,
+      readyPromise: null,
+      ready: false,
+      submittedAt: 0,
+      readyAt: 0,
+      submissionId: 0,
+    };
+  }
+
+  private selectNewestReadyInFlightSlot(
+    excludedSlot?: StereoReadbackSlot,
+  ): StereoReadbackSlot | null {
+    let newestReadySlot: StereoReadbackSlot | null = null;
+    for (const candidate of this.slots) {
+      if (
+        !candidate || candidate === excludedSlot || !candidate.inFlight || !candidate.ready
+      ) {
+        continue;
+      }
+      if (!newestReadySlot || candidate.submissionId > newestReadySlot.submissionId) {
+        newestReadySlot = candidate;
+      }
+    }
+    return newestReadySlot;
+  }
+
+  private enqueueCopy(
+    slot: StereoReadbackSlot,
+    texture: GPUTexture,
+    width: number,
+    height: number,
+  ) {
+    const encoder = this.device.createCommandEncoder();
+    encoder.copyTextureToBuffer(
+      {
+        texture,
+        origin: { x: 0, y: 0, z: 0 },
+      },
+      {
+        buffer: slot.buffer,
+        offset: 0,
+        bytesPerRow: slot.bytesPerRow,
+        rowsPerImage: height,
+      },
+      {
+        width,
+        height,
+        depthOrArrayLayers: 1,
+      },
+    );
+    encoder.copyTextureToBuffer(
+      {
+        texture,
+        origin: { x: 0, y: 0, z: 1 },
+      },
+      {
+        buffer: slot.buffer,
+        offset: slot.perEyeBytes,
+        bytesPerRow: slot.bytesPerRow,
+        rowsPerImage: height,
+      },
+      {
+        width,
+        height,
+        depthOrArrayLayers: 1,
+      },
+    );
+
+    slot.inFlight = true;
+    slot.ready = false;
+    slot.width = width;
+    slot.height = height;
+    slot.submittedAt = performance.now();
+    slot.readyAt = 0;
+    slot.submissionId = this.nextSubmissionId++;
+    this.device.queue.submit([encoder.finish()]);
+    slot.readyPromise = slot.buffer.mapAsync(GPUMapMode.READ)
+      .then(() => {
+        slot.readyAt = performance.now();
+        slot.ready = true;
+      })
+      .catch((err) => {
+        console.warn("[WEBGPU] [stereo-readback] mapAsync rejected, poisoning slot:", err);
+        slot.inFlight = false;
+        slot.ready = false;
+        slot.readyPromise = null;
+        // Force recreation on next acquireFreeSlot by invalidating totalBytes.
+        slot.totalBytes = -1;
+        try {
+          slot.buffer.destroy();
+        } catch (_) {
+          // Already destroyed or unusable; acquireFreeSlot will replace it.
+        }
+        throw err;
+      });
+  }
+
+  private async mapSlot(
+    slot: StereoReadbackSlot,
+    format: OverlayUploadFormat,
+    readySignalWaitMs: number,
+  ): Promise<StereoMappedTextureReadback> {
+    assert(slot.readyPromise, "Stereo readback slot was not scheduled");
+    const waitStartedAt = performance.now();
+    await slot.readyPromise;
+    const readbackWaitMs = performance.now() - waitStartedAt;
+    const nowAfterReady = performance.now();
+    const queueAgeMs = nowAfterReady - slot.submittedAt;
+    const gpuReadyMs = slot.readyAt > 0 ? slot.readyAt - slot.submittedAt : queueAgeMs;
+    const shelfMs = slot.readyAt > 0 ? Math.max(0, nowAfterReady - slot.readyAt) : 0;
+
+    const mapRangeStartedAt = performance.now();
+    // Use sub-range getMappedRange() per eye so the returned ArrayBuffers are
+    // aliased to exact left/right regions. This removes the need for manual
+    // pointer arithmetic (Deno.UnsafePointer.create(value + perEyeBytes)) and
+    // lets Deno.UnsafePointer.of() produce eye-local pointers directly.
+    const leftArrayBuffer = slot.buffer.getMappedRange(0, slot.perEyeBytes);
+    const rightArrayBuffer = slot.buffer.getMappedRange(
+      slot.perEyeBytes,
+      slot.perEyeBytes,
+    );
+    const leftPointer = Deno.UnsafePointer.of(leftArrayBuffer);
+    const rightPointer = Deno.UnsafePointer.of(rightArrayBuffer);
+    assert(leftPointer, "Failed to obtain pointer for left-eye mapped range");
+    assert(rightPointer, "Failed to obtain pointer for right-eye mapped range");
+    const mapRangeMs = performance.now() - mapRangeStartedAt;
+
+    let released = false;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      try {
+        slot.buffer.unmap();
+      } catch {
+        // Another release path may have already unmapped this buffer.
+      }
+      slot.inFlight = false;
+      slot.readyPromise = null;
+      slot.ready = false;
+      slot.submittedAt = 0;
+      slot.submissionId = 0;
+    };
+
+    const leftReadback: MappedTextureReadback = {
+      width: slot.width,
+      height: slot.height,
+      bytesPerRow: slot.bytesPerRow,
+      format,
+      readySignalWaitMs,
+      readbackWaitMs,
+      queueAgeMs,
+      gpuReadyMs,
+      shelfMs,
+      mapRangeMs,
+      arrayBuffer: leftArrayBuffer,
+      rawPointer: leftPointer,
+      unmap: release,
+      destroy: release,
+    };
+    const rightReadback: MappedTextureReadback = {
+      width: slot.width,
+      height: slot.height,
+      bytesPerRow: slot.bytesPerRow,
+      format,
+      readySignalWaitMs,
+      readbackWaitMs,
+      queueAgeMs,
+      gpuReadyMs,
+      shelfMs,
+      mapRangeMs: 0,
+      arrayBuffer: rightArrayBuffer,
+      rawPointer: rightPointer,
+      unmap: release,
+      destroy: release,
+    };
+
+    return {
+      left: leftReadback,
+      right: rightReadback,
+      lookRotation: new Float32Array(16),
+      halfFovInRadians: 0,
+      outputWidth: slot.width * 2,
+      outputHeight: slot.width * 2,
       unmap: release,
       destroy: release,
     };

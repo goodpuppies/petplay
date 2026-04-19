@@ -20,7 +20,7 @@ out gl_PerVertex { vec4 gl_Position; };
 
 void main() {
     gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
-    uv = vec2(uvs_in[gl_VertexID].x, 1.0 - uvs_in[gl_VertexID].y);
+    uv = uvs_in[gl_VertexID];
 }
 `;
 
@@ -252,6 +252,8 @@ export class WebXROverlayGl {
   private currentVertexArray: number | null = null;
   private currentActiveTextureUnit = gl.TEXTURE0;
   private readonly currentTexturesByUnit = new Map<number, number | null>();
+  private viewportWidth = -1;
+  private viewportHeight = -1;
 
   initialize(name = "WebXR Overlay") {
     if (this.window) {
@@ -444,6 +446,15 @@ export class WebXROverlayGl {
     this.currentTexturesByUnit.set(textureUnit, texture);
   }
 
+  private setViewport(width: number, height: number) {
+    if (this.viewportWidth === width && this.viewportHeight === height) {
+      return;
+    }
+    gl.Viewport(0, 0, width, height);
+    this.viewportWidth = width;
+    this.viewportHeight = height;
+  }
+
   uploadStereoFrame(frame: StereoMappedTextureReadback) {
     this.makeCurrent();
     this.ensureTexture(frame.left.width, frame.left.height);
@@ -467,7 +478,7 @@ export class WebXROverlayGl {
     this.bindFramebuffer(
       assertPointer(this.framebufferHandle, "OpenGL framebuffer not initialized"),
     );
-    gl.Viewport(0, 0, this.outputWidth, this.outputHeight);
+    this.setViewport(this.outputWidth, this.outputHeight);
     this.useProgram(assertPointer(this.shaderProgram, "OpenGL shader program not initialized"));
     this.bindVertexArray(assertPointer(this.vaoHandle, "OpenGL VAO not initialized"));
 
@@ -560,5 +571,7 @@ export class WebXROverlayGl {
     this.currentVertexArray = null;
     this.currentActiveTextureUnit = gl.TEXTURE0;
     this.currentTexturesByUnit.clear();
+    this.viewportWidth = -1;
+    this.viewportHeight = -1;
   }
 }

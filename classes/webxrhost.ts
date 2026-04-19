@@ -6,9 +6,11 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import {
   assert,
   inspectTextureForNonBlackPixels,
+  type MappedTextureReadback,
   type NonBlackPixelReport,
   type OverlayUploadFormat,
   type StereoMappedTextureReadback,
+  StereoTextureReadbackRing,
   TextureReadbackRing,
 } from "./webgpu.ts";
 import { WebXRScene } from "./scene.tsx";
@@ -42,6 +44,99 @@ const XR_REFERENCE_SPACE = "local-floor";
 const XR_CONNECT_RETRY_MS = 16;
 const XR_CONNECT_TIMEOUT_MS = 1000;
 const XR_CONNECT_ERROR_FRAGMENT = "not connected to three.js";
+
+type CaptureMode = "serial" | "parallel";
+
+function getCaptureMode(): CaptureMode {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-capture="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  switch (configured) {
+    case "parallel":
+      return "parallel";
+    case "serial":
+    case undefined:
+    case "":
+      return "serial";
+    default:
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] unknown --webxr-capture=${configured}, defaulting to serial`,
+      );
+      return "serial";
+  }
+}
+
+type ReadbackMode = "split" | "stereo";
+
+function getReadbackMode(): ReadbackMode {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-readback="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  switch (configured) {
+    case "split":
+      return "split";
+    case "stereo":
+    case undefined:
+    case "":
+      return "stereo";
+    default:
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] unknown --webxr-readback=${configured}, defaulting to stereo`,
+      );
+      return "stereo";
+  }
+}
+
+type QueueDebugMode = "off" | "sync";
+
+function getQueueDebugMode(): QueueDebugMode {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-queue-debug="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  switch (configured) {
+    case "sync":
+      return "sync";
+    case "off":
+    case undefined:
+    case "":
+      return "off";
+    default:
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] unknown --webxr-queue-debug=${configured}, defaulting to off`,
+      );
+      return "off";
+  }
+}
+
+const DEFAULT_READBACK_RING_SIZE = 3;
+
+function getReadbackRingSize(): number {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-ring-size="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (!configured) {
+    return DEFAULT_READBACK_RING_SIZE;
+  }
+  const parsed = Number.parseInt(configured, 10);
+  if (!Number.isFinite(parsed) || parsed < 2 || parsed > 8) {
+    LogChannel.log(
+      "webxrv2",
+      `[webxrhost] invalid --webxr-ring-size=${configured}, defaulting to ${DEFAULT_READBACK_RING_SIZE}`,
+    );
+    return DEFAULT_READBACK_RING_SIZE;
+  }
+  return parsed;
+}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,6 +175,7 @@ export class WebXRHost {
   private debugWindowEnabled = false;
   private outputLeftReadbackRing: TextureReadbackRing | null = null;
   private outputRightReadbackRing: TextureReadbackRing | null = null;
+  private outputStereoReadbackRing: StereoTextureReadbackRing | null = null;
   private xrFpsCounter = new FpsCounter();
   private lastFpsLogAt = 0;
   private lastPerfLogAt = 0;
@@ -88,7 +184,13 @@ export class WebXRHost {
   private readySignalMetric = new IntervalMetric();
   private readbackMetric = new IntervalMetric();
   private queueAgeMetric = new IntervalMetric();
+  private gpuReadyMetric = new IntervalMetric();
+  private shelfMetric = new IntervalMetric();
   private mapRangeMetric = new IntervalMetric();
+  private readonly captureMode: CaptureMode = getCaptureMode();
+  private readonly readbackMode: ReadbackMode = getReadbackMode();
+  private readonly queueDebugMode: QueueDebugMode = getQueueDebugMode();
+  private readonly ringSize: number = getReadbackRingSize();
 
   async start(options: StartOptions = {}) {
     if (this.running) {
@@ -112,6 +214,8 @@ export class WebXRHost {
     this.readySignalMetric.reset();
     this.readbackMetric.reset();
     this.queueAgeMetric.reset();
+    this.gpuReadyMetric.reset();
+    this.shelfMetric.reset();
     this.mapRangeMetric.reset();
     this.width = options.width ?? 1600;
     this.height = options.height ?? 900;
@@ -126,8 +230,12 @@ export class WebXRHost {
       const device = await adapter.requestDevice();
       const preferredFormat = navigator.gpu.getPreferredCanvasFormat();
       this.device = device;
-      this.outputLeftReadbackRing = new TextureReadbackRing(device, 3);
-      this.outputRightReadbackRing = new TextureReadbackRing(device, 3);
+      if (this.readbackMode === "stereo") {
+        this.outputStereoReadbackRing = new StereoTextureReadbackRing(device, this.ringSize);
+      } else {
+        this.outputLeftReadbackRing = new TextureReadbackRing(device, this.ringSize);
+        this.outputRightReadbackRing = new TextureReadbackRing(device, this.ringSize);
+      }
       this.overlayUploadFormat = preferredFormat.startsWith("bgra") ? "bgra" : "rgba";
       device.addEventListener("uncapturederror", (event: Event) => {
         const gpuEvent = event as Event & {
@@ -150,7 +258,7 @@ export class WebXRHost {
         "webxrv2",
         `[webxrhost] surface=${this.width}x${this.height} debugWindow=${
           this.debugWindowEnabled ? "yes" : "no"
-        }`,
+        } capture=${this.captureMode} readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
       );
       const canvas = this.surfaceHost.getCanvas();
       const context = this.surfaceHost.getContext();
@@ -347,6 +455,8 @@ export class WebXRHost {
     this.outputLeftReadbackRing = null;
     this.outputRightReadbackRing?.cleanup();
     this.outputRightReadbackRing = null;
+    this.outputStereoReadbackRing?.cleanup();
+    this.outputStereoReadbackRing = null;
     this.xrFrameRequestActive = false;
     this.xrFpsCounter.reset();
     this.lastFpsLogAt = 0;
@@ -356,6 +466,8 @@ export class WebXRHost {
     this.readySignalMetric.reset();
     this.readbackMetric.reset();
     this.queueAgeMetric.reset();
+    this.gpuReadyMetric.reset();
+    this.shelfMetric.reset();
     this.mapRangeMetric.reset();
     this.layerReadyLogged = false;
     this.debugWindowEnabled = false;
@@ -363,11 +475,75 @@ export class WebXRHost {
   }
 
   async captureOverlayFrame(): Promise<StereoMappedTextureReadback | null> {
+    if (this.readbackMode === "stereo") {
+      return await this.captureStereoProjectionLayerFrame(
+        "output",
+        this.outputStereoReadbackRing,
+      );
+    }
     return await this.captureProjectionLayerFrame(
       "output",
       this.outputLeftReadbackRing,
       this.outputRightReadbackRing,
     );
+  }
+
+  private async captureStereoProjectionLayerFrame(
+    label: string,
+    stereoReadbackRing: StereoTextureReadbackRing | null,
+  ): Promise<StereoMappedTextureReadback | null> {
+    const captureStartedAt = performance.now();
+    const device = this.device;
+    if (!device) {
+      this.lastLayerInfo = `${label} capture skipped: no GPU device`;
+      return null;
+    }
+
+    const layer = getProjectionLayer(this.session, "color");
+
+    const captureFormat = layer?.format ?? this.overlayUploadFormat;
+    if (!layer?.colorTexture || !layer.textureWidth || !layer.textureHeight) {
+      this.lastLayerInfo = `${label} ` +
+        describeProjectionLayer(this.session, this.overlayUploadFormat);
+      return null;
+    }
+
+    this.lastLayerInfo =
+      `${label} frame=${this.frameCount} eyeWidth=${layer.textureWidth} eyeHeight=${layer.textureHeight} ` +
+      `format=${captureFormat} layers=2`;
+
+    const stereoReadback = await (stereoReadbackRing?.capture(
+      layer.colorTexture,
+      layer.textureWidth,
+      layer.textureHeight,
+      captureFormat,
+      this.queueDebugMode === "sync",
+    ) ?? Promise.resolve(null));
+
+    if (!stereoReadback) {
+      this.maybeLogPerf();
+      return null;
+    }
+
+    this.readySignalMetric.record(stereoReadback.left.readySignalWaitMs);
+    this.readbackMetric.record(stereoReadback.left.readbackWaitMs);
+    this.queueAgeMetric.record(stereoReadback.left.queueAgeMs);
+    this.gpuReadyMetric.record(stereoReadback.left.gpuReadyMs);
+    this.shelfMetric.record(stereoReadback.left.shelfMs);
+    this.mapRangeMetric.record(stereoReadback.left.mapRangeMs);
+    this.captureMetric.record(performance.now() - captureStartedAt);
+    this.maybeLogPerf();
+
+    return {
+      left: stereoReadback.left,
+      right: stereoReadback.right,
+      lookRotation: this.getOverlayLookRotationMatrix(),
+      halfFovInRadians: (112 / 2) * (Math.PI / 180),
+      outputWidth: layer.textureWidth * 2,
+      outputHeight: layer.textureWidth * 2,
+      unmap: stereoReadback.unmap,
+      destroy: stereoReadback.destroy,
+    };
   }
 
   private async captureProjectionLayerFrame(
@@ -395,20 +571,44 @@ export class WebXRHost {
       `${label} frame=${this.frameCount} eyeWidth=${layer.textureWidth} eyeHeight=${layer.textureHeight} ` +
       `format=${captureFormat} layers=2`;
 
-    const leftReadback = await leftReadbackRing?.capture(
-      layer.colorTexture,
-      layer.textureWidth,
-      layer.textureHeight,
-      0,
-      captureFormat,
-    ) ?? null;
-    const rightReadback = await rightReadbackRing?.capture(
-      layer.colorTexture,
-      layer.textureWidth,
-      layer.textureHeight,
-      1,
-      captureFormat,
-    ) ?? null;
+    let leftReadback: MappedTextureReadback | null;
+    let rightReadback: MappedTextureReadback | null;
+    if (this.captureMode === "parallel") {
+      // Fire both submits back-to-back, then wait for both in parallel.
+      const leftCapturePromise = leftReadbackRing?.capture(
+        layer.colorTexture,
+        layer.textureWidth,
+        layer.textureHeight,
+        0,
+        captureFormat,
+      ) ?? Promise.resolve(null);
+      const rightCapturePromise = rightReadbackRing?.capture(
+        layer.colorTexture,
+        layer.textureWidth,
+        layer.textureHeight,
+        1,
+        captureFormat,
+      ) ?? Promise.resolve(null);
+      [leftReadback, rightReadback] = await Promise.all([
+        leftCapturePromise,
+        rightCapturePromise,
+      ]);
+    } else {
+      leftReadback = await (leftReadbackRing?.capture(
+        layer.colorTexture,
+        layer.textureWidth,
+        layer.textureHeight,
+        0,
+        captureFormat,
+      ) ?? Promise.resolve(null));
+      rightReadback = await (rightReadbackRing?.capture(
+        layer.colorTexture,
+        layer.textureWidth,
+        layer.textureHeight,
+        1,
+        captureFormat,
+      ) ?? Promise.resolve(null));
+    }
 
     if (!leftReadback || !rightReadback) {
       leftReadback?.destroy();
@@ -424,6 +624,8 @@ export class WebXRHost {
       Math.max(leftReadback.readbackWaitMs, rightReadback.readbackWaitMs),
     );
     this.queueAgeMetric.record(Math.max(leftReadback.queueAgeMs, rightReadback.queueAgeMs));
+    this.gpuReadyMetric.record(Math.max(leftReadback.gpuReadyMs, rightReadback.gpuReadyMs));
+    this.shelfMetric.record(Math.max(leftReadback.shelfMs, rightReadback.shelfMs));
     this.mapRangeMetric.record(Math.max(leftReadback.mapRangeMs, rightReadback.mapRangeMs));
     this.captureMetric.record(performance.now() - captureStartedAt);
     this.maybeLogPerf();
@@ -547,11 +749,13 @@ export class WebXRHost {
     const readySignalSample = this.readySignalMetric.flush();
     const readbackSample = this.readbackMetric.flush();
     const queueAgeSample = this.queueAgeMetric.flush();
+    const gpuReadySample = this.gpuReadyMetric.flush();
+    const shelfSample = this.shelfMetric.flush();
     const mapRangeSample = this.mapRangeMetric.flush();
     const captureSample = this.captureMetric.flush();
     if (
       !advanceSample && !readySignalSample && !readbackSample &&
-      !queueAgeSample &&
+      !queueAgeSample && !gpuReadySample && !shelfSample &&
       !mapRangeSample && !captureSample
     ) {
       return;
@@ -580,6 +784,18 @@ export class WebXRHost {
     if (queueAgeSample) {
       parts.push(
         `queue=${queueAgeSample.avgMs.toFixed(2)}ms avg ${queueAgeSample.maxMs.toFixed(2)}ms max`,
+      );
+    }
+    if (gpuReadySample) {
+      parts.push(
+        `gpuReady=${gpuReadySample.avgMs.toFixed(2)}ms avg ${
+          gpuReadySample.maxMs.toFixed(2)
+        }ms max`,
+      );
+    }
+    if (shelfSample) {
+      parts.push(
+        `shelf=${shelfSample.avgMs.toFixed(2)}ms avg ${shelfSample.maxMs.toFixed(2)}ms max`,
       );
     }
     if (mapRangeSample) {

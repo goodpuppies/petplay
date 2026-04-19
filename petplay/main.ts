@@ -14,7 +14,7 @@ const state = actorState({
   inputstate: null as actionData | null,
 });
 
-const WEBXR_RENDER_HEIGHT = 1100;
+const WEBXR_RENDER_HEIGHT = 2000;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
 
 const stdinHandler = new MainStdinHandler({
