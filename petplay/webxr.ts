@@ -1,5 +1,6 @@
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
+import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { wait } from "../classes/utils.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
@@ -16,6 +17,7 @@ type StartWebXRPayload = {
   debugWindow?: boolean;
   overlayPointer?: number | bigint | null;
   vrSystemPointer?: number | bigint | null;
+  controllerActor?: string | null;
   sessionMode?: SupportedSessionMode;
   alpha?: boolean;
   overlayKey?: string;
@@ -23,6 +25,15 @@ type StartWebXRPayload = {
   overlayWidthInMeters?: number;
   overlayDistance?: number;
 };
+
+type ControllerDataPayload = [
+  ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>,
+  ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>,
+  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
+  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
+  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
+  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
+];
 
 type OverlayConfig = {
   overlayPointer: number | bigint;
@@ -42,6 +53,9 @@ const state = actorState({
   outputOverlayGl: null as WebXROverlayGl | null,
   outputOverlayConfig: null as OverlayConfig | null,
   overlayLoop: null as Promise<void> | null,
+  controllerLoop: null as Promise<void> | null,
+  controllerRunning: false,
+  controllerActor: null as string | null,
   overlayRunning: false,
   lastUploadedHostFrameCount: -1,
   uploadedFrames: 0,
@@ -64,6 +78,7 @@ new PostMan(
       if (!state.host) {
         state.host = new WebXRHost();
       }
+      state.controllerActor = payload?.controllerActor ?? null;
       initializeOverlay(payload ?? null);
       if (!state.startup) {
         state.startup = state.host.start({
@@ -78,6 +93,12 @@ new PostMan(
           LogChannel.log("webxrv2", `[webxr] startup failed: ${error}`);
           state.startup = null;
           throw error;
+        });
+      }
+      if (state.controllerActor && !state.controllerLoop) {
+        state.controllerRunning = true;
+        state.controllerLoop = pumpControllerFrames().finally(() => {
+          state.controllerLoop = null;
         });
       }
       if (state.outputOverlayGl && !state.overlayLoop) {
@@ -103,11 +124,16 @@ new PostMan(
       };
     },
     STOPWEBXR: async (_payload: void) => {
+      state.controllerRunning = false;
+      if (state.controllerLoop) {
+        await state.controllerLoop;
+      }
       state.overlayRunning = false;
       if (state.overlayLoop) {
         await state.overlayLoop;
       }
       if (state.host) {
+        state.host.setControllerData(null);
         await state.host.stop();
         state.startup = null;
       }
@@ -116,6 +142,7 @@ new PostMan(
       state.outputOverlayGl?.cleanup();
       state.outputOverlayGl = null;
       state.outputOverlayConfig = null;
+      state.controllerActor = null;
       state.lastUploadedHostFrameCount = -1;
       state.uploadedFrames = 0;
       state.overlayFpsCounter.reset();
@@ -129,12 +156,38 @@ new PostMan(
 );
 
 globalThis.addEventListener("unload", () => {
+  state.controllerRunning = false;
   state.overlayRunning = false;
   state.outputOverlay?.cleanup();
   state.outputOverlayGl?.cleanup();
   state.outputOverlayConfig = null;
   void state.host?.stop();
 });
+
+async function pumpControllerFrames() {
+  while (state.controllerRunning) {
+    if (!state.host || !state.controllerActor) {
+      await wait(10);
+      continue;
+    }
+
+    try {
+      const controllerData = await PostMan.PostMessage({
+        target: state.controllerActor,
+        type: "GETCONTROLLERDATA",
+        payload: null,
+      }, true) as ControllerDataPayload;
+      state.host.setControllerData(controllerData);
+    } catch (error) {
+      state.host.setControllerData(null);
+      LogChannel.log("webxrv2", `[webxr] controller poll failed: ${error}`);
+      await wait(50);
+      continue;
+    }
+
+    await wait(8);
+  }
+}
 
 function initializeOverlay(payload: StartWebXRPayload | null) {
   if (!payload?.overlayPointer || state.outputOverlayGl) {

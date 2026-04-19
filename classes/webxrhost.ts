@@ -3,6 +3,8 @@ import React from "react";
 import * as THREE from "three/webgpu";
 import { advance, createRoot } from "@react-three/fiber";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
+import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import {
   assert,
   inspectTextureForNonBlackPixels,
@@ -16,6 +18,7 @@ import {
 import { WebXRScene } from "./scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
 import { IntervalMetric } from "./intervalMetric.ts";
+import { tempFile } from "./utils.ts";
 import { installWebXRHostPolyfills } from "./webxrPolyfills.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
@@ -27,6 +30,7 @@ type StartOptions = {
   title?: string;
   debugWindow?: boolean;
   vrSystemPointer?: number | bigint | null;
+  vrInputPointer?: number | bigint | null;
   sessionMode?: "immersive-vr" | "immersive-ar";
   alpha?: boolean;
 };
@@ -153,6 +157,45 @@ function isXrConnectionRace(error: unknown): boolean {
   return error instanceof Error && error.message.includes(XR_CONNECT_ERROR_FRAGMENT);
 }
 
+type XrControllerBridge = {
+  position?: { set?: (x: number, y: number, z: number) => void };
+  quaternion?: { set?: (x: number, y: number, z: number, w: number) => void };
+  connected?: boolean;
+  updateButtonValue?: (id: string, value: number) => void;
+};
+
+type XrDeviceBridge = {
+  installRuntime: (options: unknown) => void;
+  position?: { set?: (x: number, y: number, z: number) => void };
+  quaternion?: { set?: (x: number, y: number, z: number, w: number) => void };
+  controllers?: {
+    left?: XrControllerBridge;
+    right?: XrControllerBridge;
+  };
+};
+
+type OpenVrPoseActionData = ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>;
+type OpenVrDigitalActionData = ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>;
+type ExternalControllerData = [
+  OpenVrPoseActionData,
+  OpenVrPoseActionData,
+  OpenVrDigitalActionData,
+  OpenVrDigitalActionData,
+  OpenVrDigitalActionData,
+  OpenVrDigitalActionData,
+];
+
+function createStructBuffer<T>(byteSize: number): {
+  pointer: Deno.PointerValue<T>;
+  view: DataView<ArrayBuffer>;
+} {
+  const buffer = new ArrayBuffer(byteSize);
+  return {
+    pointer: Deno.UnsafePointer.of(buffer) as Deno.PointerValue<T>,
+    view: new DataView(buffer),
+  };
+}
+
 export class WebXRHost {
   private running = false;
   private frameCount = 0;
@@ -162,22 +205,57 @@ export class WebXRHost {
   private lastError: Error | null = null;
   private root: ReturnType<typeof createRoot> | null = null;
   private renderer: THREE.WebGPURenderer | null = null;
-  private xrDevice: {
-    installRuntime: (options: unknown) => void;
-    position?: { set?: (x: number, y: number, z: number) => void };
-    quaternion?: { set?: (x: number, y: number, z: number, w: number) => void };
-  } | null = null;
+  private xrDevice: XrDeviceBridge | null = null;
   private session: XRSession | null = null;
   private surfaceHost: WebXRSurfaceHost | null = null;
   private device: GPUDevice | null = null;
   private overlayUploadFormat: OverlayUploadFormat = "rgba";
   private lastLayerInfo: string | null = null;
+  private latestControllerData: ExternalControllerData | null = null;
   private lastXrCallbackAt = 0;
   private lastHeartbeatAt = 0;
   private xrFrameRequestActive = false;
   private width = 1600;
   private height = 900;
   private vrSystemPointer: number | bigint | null = null;
+  private vrInputPointer: number | bigint | null = null;
+  private vrInput: OpenVR.IVRInput | null = null;
+  private actionManifestPath: string | null = null;
+  private openVrInputInitialized = false;
+  private openVrControllerBridgeDisabled = false;
+  private openVrControllerBridgeError: string | null = null;
+  private actionSetHandle: OpenVR.ActionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
+  private handPoseLeftHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+  private handPoseRightHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+  private triggerLeftHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+  private triggerRightHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+  private grabLeftHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+  private grabRightHandle: OpenVR.ActionHandle = OpenVR.k_ulInvalidActionHandle;
+  private readonly handPoseLeftHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
+  private readonly handPoseRightHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
+  private readonly triggerLeftHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
+  private readonly triggerRightHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
+  private readonly grabLeftHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
+  private readonly grabRightHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
+  private readonly actionSetHandlePtr = P.BigUint64P<OpenVR.ActionSetHandle>();
+  private readonly leftPoseState = createStructBuffer<OpenVR.InputPoseActionData>(
+    OpenVR.InputPoseActionDataStruct.byteSize,
+  );
+  private readonly rightPoseState = createStructBuffer<OpenVR.InputPoseActionData>(
+    OpenVR.InputPoseActionDataStruct.byteSize,
+  );
+  private readonly leftTriggerState = createStructBuffer<OpenVR.InputDigitalActionData>(
+    OpenVR.InputDigitalActionDataStruct.byteSize,
+  );
+  private readonly rightTriggerState = createStructBuffer<OpenVR.InputDigitalActionData>(
+    OpenVR.InputDigitalActionDataStruct.byteSize,
+  );
+  private readonly leftGrabState = createStructBuffer<OpenVR.InputDigitalActionData>(
+    OpenVR.InputDigitalActionDataStruct.byteSize,
+  );
+  private readonly rightGrabState = createStructBuffer<OpenVR.InputDigitalActionData>(
+    OpenVR.InputDigitalActionDataStruct.byteSize,
+  );
   private sessionMode: SupportedSessionMode = "immersive-vr";
   private alphaEnabled = false;
   private layerReadyLogged = false;
@@ -230,8 +308,10 @@ export class WebXRHost {
     this.height = options.height ?? 900;
     this.debugWindowEnabled = options.debugWindow ?? false;
     this.vrSystemPointer = options.vrSystemPointer ?? null;
+    this.vrInputPointer = options.vrInputPointer ?? null;
     this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
     this.alphaEnabled = options.alpha ?? this.sessionMode === "immersive-ar";
+    const POLL_INTERVAL_MS = 16;
     installWebXRHostPolyfills(this.width, this.height, POLL_INTERVAL_MS);
 
     try {
@@ -269,7 +349,9 @@ export class WebXRHost {
         "webxrv2",
         `[webxrhost] surface=${this.width}x${this.height} debugWindow=${
           this.debugWindowEnabled ? "yes" : "no"
-        } session=${this.sessionMode} alpha=${this.alphaEnabled ? "yes" : "no"} capture=${this.captureMode} readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
+        } session=${this.sessionMode} alpha=${this.alphaEnabled ? "yes" : "no"} capture=${
+          this.captureMode
+        } readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
       );
       const canvas = this.surfaceHost.getCanvas();
       const context = this.surfaceHost.getContext();
@@ -309,7 +391,7 @@ export class WebXRHost {
       const XRDevice = iwerModule.XRDevice as new (
         device: unknown,
         options: Record<string, unknown>,
-      ) => { installRuntime: (options: unknown) => void };
+      ) => XrDeviceBridge;
       const metaQuest3 = iwerModule.metaQuest3;
 
       this.xrDevice = new XRDevice(metaQuest3, {
@@ -394,7 +476,9 @@ export class WebXRHost {
       this.lastHeartbeatAt = performance.now();
       LogChannel.log(
         "webxrv2",
-        `[webxrhost] entered ${this.sessionMode} presenting=${this.renderer?.xr.isPresenting ? "yes" : "no"} alpha=${this.alphaEnabled ? "yes" : "no"}`,
+        `[webxrhost] entered ${this.sessionMode} presenting=${
+          this.renderer?.xr.isPresenting ? "yes" : "no"
+        } alpha=${this.alphaEnabled ? "yes" : "no"}`,
       );
       this.startManualXrFrameLoop(rootStore, device);
 
@@ -437,6 +521,10 @@ export class WebXRHost {
       lastLayerInfo: this.lastLayerInfo ??
         describeProjectionLayer(this.session, this.overlayUploadFormat),
     };
+  }
+
+  setControllerData(data: ExternalControllerData | null) {
+    this.latestControllerData = data;
   }
 
   getDevice(): GPUDevice | null {
@@ -491,6 +579,20 @@ export class WebXRHost {
     this.layerReadyLogged = false;
     this.debugWindowEnabled = false;
     this.vrSystemPointer = null;
+    this.vrInputPointer = null;
+    this.vrInput = null;
+    this.actionManifestPath = null;
+    this.openVrInputInitialized = false;
+    this.openVrControllerBridgeDisabled = false;
+    this.openVrControllerBridgeError = null;
+    this.actionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
+    this.handPoseLeftHandle = OpenVR.k_ulInvalidActionHandle;
+    this.handPoseRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.triggerLeftHandle = OpenVR.k_ulInvalidActionHandle;
+    this.triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
+    this.grabRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.xrDevice = null;
     this.sessionMode = "immersive-vr";
     this.alphaEnabled = false;
   }
@@ -687,6 +789,7 @@ export class WebXRHost {
       this.lastXrCallbackAt = performance.now();
       const advanceStartedAt = this.lastXrCallbackAt;
       this.updateEmulatedHeadsetFromOpenVr();
+      this.applyExternalControllerData();
       advance(
         time,
         true,
@@ -912,12 +1015,296 @@ export class WebXRHost {
     );
   }
 
+  private applyExternalControllerData() {
+    if (!this.xrDevice?.controllers) {
+      return;
+    }
+
+    const data = this.latestControllerData;
+    if (!data) {
+      if (this.xrDevice.controllers.left) {
+        this.xrDevice.controllers.left.connected = false;
+      }
+      if (this.xrDevice.controllers.right) {
+        this.xrDevice.controllers.right.connected = false;
+      }
+      return;
+    }
+
+    this.updateControllerState(
+      this.xrDevice.controllers.left,
+      data[0],
+      data[2],
+      data[4],
+    );
+    this.updateControllerState(
+      this.xrDevice.controllers.right,
+      data[1],
+      data[3],
+      data[5],
+    );
+  }
+
+  private updateEmulatedControllersFromOpenVr() {
+    if (
+      !this.xrDevice?.controllers ||
+      !this.vrInputPointer ||
+      this.openVrControllerBridgeDisabled
+    ) {
+      return;
+    }
+
+    try {
+      const vrInput = this.ensureOpenVrInput();
+      if (!vrInput) {
+        return;
+      }
+
+      this.updateOpenVrActionState(vrInput);
+
+      this.readPoseAction(vrInput, this.handPoseLeftHandle, this.leftPoseState);
+      this.readPoseAction(vrInput, this.handPoseRightHandle, this.rightPoseState);
+      this.readDigitalAction(vrInput, this.triggerLeftHandle, this.leftTriggerState);
+      this.readDigitalAction(vrInput, this.triggerRightHandle, this.rightTriggerState);
+      this.readDigitalAction(vrInput, this.grabLeftHandle, this.leftGrabState);
+      this.readDigitalAction(vrInput, this.grabRightHandle, this.rightGrabState);
+
+      const leftPoseData = OpenVR.InputPoseActionDataStruct.read(this.leftPoseState.view);
+      const rightPoseData = OpenVR.InputPoseActionDataStruct.read(this.rightPoseState.view);
+      const leftTriggerData = OpenVR.InputDigitalActionDataStruct.read(this.leftTriggerState.view);
+      const rightTriggerData = OpenVR.InputDigitalActionDataStruct.read(this.rightTriggerState.view);
+      const leftGrabData = OpenVR.InputDigitalActionDataStruct.read(this.leftGrabState.view);
+      const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(this.rightGrabState.view);
+
+      this.updateControllerState(
+        this.xrDevice.controllers.left,
+        leftPoseData,
+        leftTriggerData,
+        leftGrabData,
+      );
+      this.updateControllerState(
+        this.xrDevice.controllers.right,
+        rightPoseData,
+        rightTriggerData,
+        rightGrabData,
+      );
+    } catch (error) {
+      this.openVrControllerBridgeDisabled = true;
+      this.openVrControllerBridgeError = this.describeOpenVrInputError(error);
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] disabling OpenVR controller bridge: ${this.openVrControllerBridgeError}`,
+      );
+    }
+  }
+
+  private ensureOpenVrInput(): OpenVR.IVRInput | null {
+    if (this.vrInput) {
+      return this.vrInput;
+    }
+    if (!this.vrInputPointer) {
+      return null;
+    }
+
+    const inputPointer = Deno.UnsafePointer.create(
+      typeof this.vrInputPointer === "bigint"
+        ? this.vrInputPointer
+        : BigInt(this.vrInputPointer),
+    );
+    if (!inputPointer) {
+      return null;
+    }
+
+    this.vrInput = new OpenVR.IVRInput(inputPointer);
+    this.initializeOpenVrInputHandles(this.vrInput);
+    return this.vrInput;
+  }
+
+  private initializeOpenVrInputHandles(vrInput: OpenVR.IVRInput) {
+    if (this.openVrInputInitialized) {
+      return;
+    }
+
+    this.actionManifestPath ??= tempFile("./resources/actions.json", import.meta.dirname!);
+    let error = vrInput.SetActionManifestPath(this.actionManifestPath);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+      throw new Error(`Failed to set OpenVR action manifest path: ${error}`);
+    }
+
+    this.handPoseLeftHandle = this.getActionHandle(
+      vrInput,
+      "/actions/main/in/HandPoseLeft",
+      this.handPoseLeftHandlePtr,
+    );
+    this.handPoseRightHandle = this.getActionHandle(
+      vrInput,
+      "/actions/main/in/HandPoseRight",
+      this.handPoseRightHandlePtr,
+    );
+    this.triggerLeftHandle = this.getActionHandle(
+      vrInput,
+      "/actions/main/in/TriggerLeft",
+      this.triggerLeftHandlePtr,
+    );
+    this.triggerRightHandle = this.getActionHandle(
+      vrInput,
+      "/actions/main/in/TriggerRight",
+      this.triggerRightHandlePtr,
+    );
+    this.grabLeftHandle = this.getActionHandle(
+      vrInput,
+      "/actions/main/in/GrabLeft",
+      this.grabLeftHandlePtr,
+    );
+    this.grabRightHandle = this.getActionHandle(
+      vrInput,
+      "/actions/main/in/GrabRight",
+      this.grabRightHandlePtr,
+    );
+
+    error = vrInput.GetActionSetHandle("/actions/main", this.actionSetHandlePtr);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+      throw new Error(`Failed to get OpenVR action set handle: ${error}`);
+    }
+    this.actionSetHandle = new Deno.UnsafePointerView(this.actionSetHandlePtr).getBigUint64();
+    this.openVrInputInitialized = true;
+  }
+
+  private getActionHandle(
+    vrInput: OpenVR.IVRInput,
+    path: string,
+    handlePtr: Deno.PointerObject<OpenVR.ActionHandle>,
+  ): OpenVR.ActionHandle {
+    const error = vrInput.GetActionHandle(path, handlePtr);
+    if (error !== OpenVR.InputError.VRInputError_None) {
+      throw new Error(`Failed to get OpenVR action handle for ${path}: ${error}`);
+    }
+    return new Deno.UnsafePointerView(handlePtr).getBigUint64();
+  }
+
+  private updateOpenVrActionState(vrInput: OpenVR.IVRInput) {
+    const [activeActionSetPtr] = createStruct<OpenVR.ActiveActionSet>(
+      {
+        ulActionSet: this.actionSetHandle,
+        ulRestrictedToDevice: OpenVR.k_ulInvalidInputValueHandle,
+        ulSecondaryActionSet: 0n,
+        unPadding: 0,
+        nPriority: 0,
+      },
+      OpenVR.ActiveActionSetStruct,
+    );
+    const error = vrInput.UpdateActionState(
+      activeActionSetPtr,
+      OpenVR.ActiveActionSetStruct.byteSize,
+      1,
+    );
+    if (error !== OpenVR.InputError.VRInputError_None) {
+      throw new Error(`Failed to update OpenVR action state: ${error}`);
+    }
+  }
+
+  private readPoseAction(
+    vrInput: OpenVR.IVRInput,
+    handle: OpenVR.ActionHandle,
+    target: {
+      pointer: Deno.PointerValue<OpenVR.InputPoseActionData>;
+      view: DataView<ArrayBuffer>;
+    },
+  ) {
+    new Uint8Array(target.view.buffer, target.view.byteOffset, target.view.byteLength).fill(0);
+    const error = vrInput.GetPoseActionDataRelativeToNow(
+      handle,
+      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      0,
+      target.pointer,
+      OpenVR.InputPoseActionDataStruct.byteSize,
+      OpenVR.k_ulInvalidInputValueHandle,
+    );
+    if (
+      error !== OpenVR.InputError.VRInputError_None &&
+      error !== OpenVR.InputError.VRInputError_NoData &&
+      error !== OpenVR.InputError.VRInputError_InvalidDevice
+    ) {
+      throw new Error(`Failed to read OpenVR pose action: ${error}`);
+    }
+  }
+
+  private readDigitalAction(
+    vrInput: OpenVR.IVRInput,
+    handle: OpenVR.ActionHandle,
+    target: {
+      pointer: Deno.PointerValue<OpenVR.InputDigitalActionData>;
+      view: DataView<ArrayBuffer>;
+    },
+  ) {
+    new Uint8Array(target.view.buffer, target.view.byteOffset, target.view.byteLength).fill(0);
+    const error = vrInput.GetDigitalActionData(
+      handle,
+      target.pointer,
+      OpenVR.InputDigitalActionDataStruct.byteSize,
+      OpenVR.k_ulInvalidInputValueHandle,
+    );
+    if (
+      error !== OpenVR.InputError.VRInputError_None &&
+      error !== OpenVR.InputError.VRInputError_NoData &&
+      error !== OpenVR.InputError.VRInputError_InvalidDevice
+    ) {
+      throw new Error(`Failed to read OpenVR digital action: ${error}`);
+    }
+  }
+
+  private describeOpenVrInputError(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return String(error);
+    }
+
+    const match = error.message.match(/: (\d+)$/);
+    if (!match) {
+      return error.message;
+    }
+
+    const code = Number(match[1]) as OpenVR.InputError;
+    const codeName = OpenVR.InputError[code];
+    return codeName ? `${error.message} (${codeName})` : error.message;
+  }
+
+  private updateControllerState(
+    controller: XrControllerBridge | undefined,
+    poseData: OpenVrPoseActionData,
+    triggerData: OpenVrDigitalActionData,
+    grabData: OpenVrDigitalActionData,
+  ) {
+    if (!controller) {
+      return;
+    }
+
+    const isConnected = Boolean(poseData.bActive) && Boolean(poseData.pose.bPoseIsValid);
+    controller.connected = isConnected;
+    controller.updateButtonValue?.("trigger", triggerData.bState ? 1 : 0);
+    controller.updateButtonValue?.("squeeze", grabData.bState ? 1 : 0);
+    if (!isConnected) {
+      return;
+    }
+
+    const m = poseData.pose.mDeviceToAbsoluteTracking.m;
+    const quaternion = this.matrix3x4ToQuaternion(m);
+    controller.position?.set?.(m[0][3], m[1][3], m[2][3]);
+    controller.quaternion?.set?.(
+      quaternion[0],
+      quaternion[1],
+      quaternion[2],
+      quaternion[3],
+    );
+  }
+
   private matrix3x4ToQuaternion(
-    matrix: [
-      [number, number, number, number],
-      [number, number, number, number],
-      [number, number, number, number],
-    ],
+    matrix:
+      | [
+          [number, number, number, number],
+          [number, number, number, number],
+          [number, number, number, number],
+        ]
+      | number[][],
   ): [number, number, number, number] {
     const m00 = matrix[0][0];
     const m01 = matrix[0][1];

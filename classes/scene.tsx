@@ -34,10 +34,10 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
       <pointLight intensity={12} position={[0, 1.8, -1.5]} color="#ffb347" />
       <XROrigin />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -1]}>
+      {/* <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -1]}>
         <planeGeometry args={[8, 8]} />
         <meshBasicNodeMaterial colorNode={TSL.color(0x00ff88)} />
-      </mesh>
+      </mesh> */}
 
       <mesh ref={cubeRef} position={[0, 1.6, -2]}>
         <boxGeometry args={[0.5, 0.5, 0.5]} />

@@ -3,7 +3,7 @@ import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/Iroh
 import { asyncPrompt, createTemp, destroyTemp, wait, ensuredenodir } from "../classes/utils.ts";
 
 ensuredenodir()
-createTemp(import.meta.dirname!)
+createTemp(import.meta.dirname!);
 console.log("Press Ctrl-C to close");
 Deno.addSignalListener("SIGINT", async () => {
   await wait(3000)

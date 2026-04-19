@@ -14,7 +14,7 @@ const state = actorState({
   inputstate: null as actionData | null,
 });
 
-const WEBXR_RENDER_HEIGHT = 800;
+const WEBXR_RENDER_HEIGHT = 1100;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
 
 const stdinHandler = new MainStdinHandler({
@@ -100,6 +100,7 @@ async function main() {
       alpha: true,
       overlayPointer: ivroverlay as number,
       vrSystemPointer: ivrsystem as number,
+      controllerActor: input,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,
