@@ -127,33 +127,28 @@ function rotateVectorByQuaternion(
   ];
 }
 
-function createEyeCamera(
-  frame: WebXRShadowFrame,
-  eyeOffset: number,
+function createEyeCameraFromPose(
+  positionValues: Float32Array,
+  quaternionValues: Float32Array,
+  halfFovInRadians: number,
 ): raylib.Camera3D {
   const quaternion = [
-    frame.viewerQuaternion[0] ?? 0,
-    frame.viewerQuaternion[1] ?? 0,
-    frame.viewerQuaternion[2] ?? 0,
-    frame.viewerQuaternion[3] ?? 1,
+    quaternionValues[0] ?? 0,
+    quaternionValues[1] ?? 0,
+    quaternionValues[2] ?? 0,
+    quaternionValues[3] ?? 1,
   ] as [number, number, number, number];
   const position = [
-    frame.viewerPosition[0] ?? 0,
-    frame.viewerPosition[1] ?? 0,
-    frame.viewerPosition[2] ?? 0,
+    positionValues[0] ?? 0,
+    positionValues[1] ?? 0,
+    positionValues[2] ?? 0,
   ] as [number, number, number];
-  const right = normalize(...rotateVectorByQuaternion([1, 0, 0], quaternion));
   const up = normalize(...rotateVectorByQuaternion([0, 1, 0], quaternion));
   const forward = normalize(...rotateVectorByQuaternion([0, 0, -1], quaternion));
-  const eyeDelta: [number, number, number] = [
-    right[0] * eyeOffset,
-    right[1] * eyeOffset,
-    right[2] * eyeOffset,
-  ];
   const eyePosition = {
-    x: position[0] + eyeDelta[0],
-    y: position[1] + eyeDelta[1],
-    z: position[2] + eyeDelta[2],
+    x: position[0],
+    y: position[1],
+    z: position[2],
   };
 
   return {
@@ -164,7 +159,7 @@ function createEyeCamera(
       z: eyePosition.z + forward[2],
     },
     up: { x: up[0], y: up[1], z: up[2] },
-    fovy: frame.halfFovInRadians * (360 / Math.PI),
+    fovy: halfFovInRadians * (360 / Math.PI),
     projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
   };
 }
@@ -270,8 +265,22 @@ export class WebXROverlayRaylib {
       throw new Error("raylib compositor not initialized");
     }
 
-    this.renderEye(leftTarget, createEyeCamera(frame, -frame.ipdMeters * 0.5));
-    this.renderEye(rightTarget, createEyeCamera(frame, frame.ipdMeters * 0.5));
+    this.renderEye(
+      leftTarget,
+      createEyeCameraFromPose(
+        frame.leftEyePosition,
+        frame.leftEyeQuaternion,
+        frame.halfFovInRadians,
+      ),
+    );
+    this.renderEye(
+      rightTarget,
+      createEyeCameraFromPose(
+        frame.rightEyePosition,
+        frame.rightEyeQuaternion,
+        frame.halfFovInRadians,
+      ),
+    );
 
     raylib.H.SetShaderValueMatrix(shader, this.lookRotationLocation, toRaylibMatrix(frame.lookRotation));
     const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);

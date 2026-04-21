@@ -52,10 +52,13 @@ export type WebXRShadowFrame = {
   eyeHeight: number;
   outputWidth: number;
   outputHeight: number;
-  hmdMatrix: Float32Array;
   lookRotation: Float32Array;
   viewerPosition: Float32Array;
   viewerQuaternion: Float32Array;
+  leftEyePosition: Float32Array;
+  leftEyeQuaternion: Float32Array;
+  rightEyePosition: Float32Array;
+  rightEyeQuaternion: Float32Array;
   halfFovInRadians: number;
   ipdMeters: number;
 };
@@ -296,6 +299,16 @@ export class WebXRHost {
   private readonly readbackMode: ReadbackMode = getReadbackMode();
   private readonly queueDebugMode: QueueDebugMode = getQueueDebugMode();
   private readonly ringSize: number = getReadbackRingSize();
+  private latestShadowPose: {
+    viewerPosition: Float32Array;
+    viewerQuaternion: Float32Array;
+    leftEyePosition: Float32Array;
+    leftEyeQuaternion: Float32Array;
+    rightEyePosition: Float32Array;
+    rightEyeQuaternion: Float32Array;
+    halfFovInRadians: number;
+    ipdMeters: number;
+  } | null = null;
 
   async start(options: StartOptions = {}) {
     if (this.running) {
@@ -600,6 +613,7 @@ export class WebXRHost {
     this.mapRangeMetric.reset();
     this.layerReadyLogged = false;
     this.debugWindowEnabled = false;
+    this.latestShadowPose = null;
     this.vrSystemPointer = null;
     this.vrInputPointer = null;
     this.vrInput = null;
@@ -638,8 +652,8 @@ export class WebXRHost {
       return null;
     }
 
-    const hmdPose = this.getCurrentOpenVrHmdPose();
-    if (!hmdPose) {
+    const pose = this.latestShadowPose;
+    if (!pose) {
       return null;
     }
 
@@ -655,17 +669,15 @@ export class WebXRHost {
       eyeHeight,
       outputWidth: eyeWidth * 2,
       outputHeight: eyeWidth * 2,
-      hmdMatrix: hmdPose.matrix,
       lookRotation: this.getOverlayLookRotationMatrix(),
-      viewerPosition: new Float32Array([hmdPose.position[0], hmdPose.position[1], hmdPose.position[2]]),
-      viewerQuaternion: new Float32Array([
-        hmdPose.quaternion[0],
-        hmdPose.quaternion[1],
-        hmdPose.quaternion[2],
-        hmdPose.quaternion[3],
-      ]),
-      halfFovInRadians: (112 / 2) * (Math.PI / 180),
-      ipdMeters: 0.064,
+      viewerPosition: new Float32Array(pose.viewerPosition),
+      viewerQuaternion: new Float32Array(pose.viewerQuaternion),
+      leftEyePosition: new Float32Array(pose.leftEyePosition),
+      leftEyeQuaternion: new Float32Array(pose.leftEyeQuaternion),
+      rightEyePosition: new Float32Array(pose.rightEyePosition),
+      rightEyeQuaternion: new Float32Array(pose.rightEyeQuaternion),
+      halfFovInRadians: pose.halfFovInRadians,
+      ipdMeters: pose.ipdMeters,
     };
   }
 
@@ -854,6 +866,7 @@ export class WebXRHost {
         rootStore.getState() as Parameters<typeof advance>[2],
         frame,
       );
+      this.captureShadowPoseFromRenderer();
       this.frameCount++;
       this.xrFpsCounter.mark(this.lastXrCallbackAt);
       this.xrAdvanceMetric.record(performance.now() - advanceStartedAt);
@@ -1100,6 +1113,60 @@ export class WebXRHost {
       position: [m[0][3], m[1][3], m[2][3]],
       quaternion: this.matrix3x4ToQuaternion(m),
     };
+  }
+
+  private captureShadowPoseFromRenderer() {
+    const xrCamera = this.renderer?.xr?.getCamera?.() as
+      | (THREE.Camera & { cameras?: THREE.PerspectiveCamera[] })
+      | null
+      | undefined;
+    const leftCamera = xrCamera?.cameras?.[0] ?? null;
+    const rightCamera = xrCamera?.cameras?.[1] ?? null;
+    if (!xrCamera || !leftCamera || !rightCamera) {
+      this.latestShadowPose = null;
+      return;
+    }
+
+    const viewer = this.objectWorldTransformToPose(xrCamera);
+    const left = this.objectWorldTransformToPose(leftCamera);
+    const right = this.objectWorldTransformToPose(rightCamera);
+    const ipdMeters = Math.hypot(
+      right.position[0] - left.position[0],
+      right.position[1] - left.position[1],
+      right.position[2] - left.position[2],
+    );
+
+    this.latestShadowPose = {
+      viewerPosition: viewer.position,
+      viewerQuaternion: viewer.quaternion,
+      leftEyePosition: left.position,
+      leftEyeQuaternion: left.quaternion,
+      rightEyePosition: right.position,
+      rightEyeQuaternion: right.quaternion,
+      halfFovInRadians: this.projectionMatrixToHalfFovInRadians(leftCamera.projectionMatrix.elements),
+      ipdMeters,
+    };
+  }
+
+  private objectWorldTransformToPose(object: THREE.Object3D) {
+    object.updateMatrixWorld(true);
+    const matrix = object.matrixWorld;
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    matrix.decompose(position, quaternion, scale);
+    return {
+      position: new Float32Array([position.x, position.y, position.z]),
+      quaternion: new Float32Array([quaternion.x, quaternion.y, quaternion.z, quaternion.w]),
+    };
+  }
+
+  private projectionMatrixToHalfFovInRadians(matrixValues: ArrayLike<number>): number {
+    const m5 = Number(matrixValues[5] ?? 0);
+    if (!Number.isFinite(m5) || m5 === 0) {
+      return (112 / 2) * (Math.PI / 180);
+    }
+    return Math.atan(1 / m5);
   }
 
   private applyExternalControllerData() {
@@ -1455,7 +1522,8 @@ export class WebXRHost {
   }
 
   private getOverlayLookRotationMatrix(): Float32Array {
-    const quaternion = (this.xrDevice as {
+    const poseQuaternion = this.latestShadowPose?.viewerQuaternion;
+    const deviceQuaternion = (this.xrDevice as {
       quaternion?: {
         quat?: ArrayLike<number>;
         x?: number;
@@ -1465,19 +1533,26 @@ export class WebXRHost {
       };
     } | null)?.quaternion;
 
-    const quatValues = quaternion?.quat
+    const quatValues = poseQuaternion
       ? [
-        Number(quaternion.quat[0] ?? 0),
-        Number(quaternion.quat[1] ?? 0),
-        Number(quaternion.quat[2] ?? 0),
-        Number(quaternion.quat[3] ?? 1),
+        Number(poseQuaternion[0] ?? 0),
+        Number(poseQuaternion[1] ?? 0),
+        Number(poseQuaternion[2] ?? 0),
+        Number(poseQuaternion[3] ?? 1),
       ] as const
-      : quaternion
+      : deviceQuaternion?.quat
       ? [
-        Number(quaternion.x ?? 0),
-        Number(quaternion.y ?? 0),
-        Number(quaternion.z ?? 0),
-        Number(quaternion.w ?? 1),
+        Number(deviceQuaternion.quat[0] ?? 0),
+        Number(deviceQuaternion.quat[1] ?? 0),
+        Number(deviceQuaternion.quat[2] ?? 0),
+        Number(deviceQuaternion.quat[3] ?? 1),
+      ] as const
+      : deviceQuaternion
+      ? [
+        Number(deviceQuaternion.x ?? 0),
+        Number(deviceQuaternion.y ?? 0),
+        Number(deviceQuaternion.z ?? 0),
+        Number(deviceQuaternion.w ?? 1),
       ] as const
       : null;
 
