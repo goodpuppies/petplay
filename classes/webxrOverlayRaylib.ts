@@ -1,62 +1,10 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import type { WebXRShadowFrame } from "./webxrhost.ts";
+import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
 import { getWebXRShadowSceneSnapshot } from "./webxrShadowScene.ts";
 
-const VARGGLES_VERTEX_SHADER = `#version 330
-in vec3 vertexPosition;
-in vec2 vertexTexCoord;
-in vec4 vertexColor;
-out vec2 fragTexCoord;
-out vec4 fragColor;
-uniform mat4 mvp;
-
-void main() {
-    fragTexCoord = vertexTexCoord;
-    fragColor = vertexColor;
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
-}
-`;
-
-const VARGGLES_FRAGMENT_SHADER = `#version 330
-in vec2 fragTexCoord;
-in vec4 fragColor;
-uniform sampler2D texture0;
-uniform mat4 lookRotation;
-uniform float halfFOVInRadians;
-uniform vec2 outputUvScale;
-uniform vec2 outputUvOffset;
-out vec4 finalColor;
-
-const float PI = 3.141592653589793;
-const float HALF_PI = 0.5 * PI;
-const float QUARTER_PI = 0.25 * PI;
-
-void main() {
-    vec2 outputUv = fragTexCoord * outputUvScale + outputUvOffset;
-    vec2 xy = vec2(outputUv.x, 1.0 - outputUv.y);
-    vec2 angles = (2.0 * xy - vec2(1.0, 1.0)) * vec2(PI, HALF_PI);
-    angles.y *= 2.0;
-
-    bool renderTopHalf = angles.y >= 0.0;
-    if (renderTopHalf) {
-        angles.y -= HALF_PI;
-    } else {
-        angles.y += HALF_PI;
-    }
-
-    float fovScalar = tan(halfFOVInRadians) / tan(QUARTER_PI);
-    vec3 lookupDirection = vec3(sin(angles.x), 1.0, cos(angles.x)) *
-        vec3(cos(angles.y), sin(angles.y), cos(angles.y));
-    lookupDirection = (lookRotation * vec4(lookupDirection, 0.0)).xyz;
-
-    float u = (((lookupDirection.x / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5;
-    float v = 1.0 - ((((lookupDirection.y / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5);
-    vec2 eyeUv = clamp(vec2(u, v), 0.0, 1.0);
-
-    finalColor = texture(texture0, eyeUv) * fragColor;
-}
-`;
+const VARGGLES_FRAGMENT_SHADER = WEBXR_VARGGLES_GLSL330_FRAGMENT;
 const TRANSPARENT_BLACK = { r: 0, g: 0, b: 0, a: 0 } as raylib.Color;
 const RAYLIB_NATIVE_EYE_SIZE = 2560;
 
@@ -100,91 +48,37 @@ function toRaylibMatrix(values: Float32Array): raylib.Matrix {
   };
 }
 
-function normalize(
-  x: number,
-  y: number,
-  z: number,
-): [number, number, number] {
-  const length = Math.hypot(x, y, z) || 1;
-  return [x / length, y / length, z / length];
-}
-
-function rotateVectorByQuaternion(
-  vector: [number, number, number],
-  quaternion: [number, number, number, number],
-): [number, number, number] {
-  const [vx, vy, vz] = vector;
-  const [qx, qy, qz, qw] = quaternion;
-  const ix = qw * vx + qy * vz - qz * vy;
-  const iy = qw * vy + qz * vx - qx * vz;
-  const iz = qw * vz + qx * vy - qy * vx;
-  const iw = -qx * vx - qy * vy - qz * vz;
-
-  return [
-    ix * qw + iw * -qx + iy * -qz - iz * -qy,
-    iy * qw + iw * -qy + iz * -qx - ix * -qz,
-    iz * qw + iw * -qz + ix * -qy - iy * -qx,
-  ];
-}
-
-function createHorizontalLookRotationMatrix(
-  quaternionValues: Float32Array,
-): Float32Array {
-  const quaternion = [
-    quaternionValues[0] ?? 0,
-    quaternionValues[1] ?? 0,
-    quaternionValues[2] ?? 0,
-    quaternionValues[3] ?? 1,
-  ] as [number, number, number, number];
-  const forward = rotateVectorByQuaternion([0, 0, -1], quaternion);
-  const horizontalForward = normalize(forward[0], 0, forward[2]);
-  const yaw = Math.atan2(-horizontalForward[0], -horizontalForward[2]);
-  const cosYaw = Math.cos(-yaw);
-  const sinYaw = Math.sin(-yaw);
-
-  return new Float32Array([
-    cosYaw, 0, sinYaw, 0,
-    0, 1, 0, 0,
-    -sinYaw, 0, cosYaw, 0,
-    0, 0, 0, 1,
-  ]);
-}
-
-function createEyeCameraFromPose(
-  positionValues: Float32Array,
-  quaternionValues: Float32Array,
-  halfFovInRadians: number,
-): raylib.Camera3D {
-  const quaternion = [
-    quaternionValues[0] ?? 0,
-    quaternionValues[1] ?? 0,
-    quaternionValues[2] ?? 0,
-    quaternionValues[3] ?? 1,
-  ] as [number, number, number, number];
-  const position = [
-    positionValues[0] ?? 0,
-    positionValues[1] ?? 0,
-    positionValues[2] ?? 0,
-  ] as [number, number, number];
-  const up = normalize(...rotateVectorByQuaternion([0, 1, 0], quaternion));
-  const forward = normalize(...rotateVectorByQuaternion([0, 0, -1], quaternion));
-  const eyePosition = {
-    x: position[0],
-    y: position[1],
-    z: position[2],
-  };
-
+function createIdentityRaylibMatrix(): raylib.Matrix {
   return {
-    position: eyePosition,
-    target: {
-      x: eyePosition.x + forward[0],
-      y: eyePosition.y + forward[1],
-      z: eyePosition.z + forward[2],
-    },
-    up: { x: up[0], y: up[1], z: up[2] },
-    fovy: halfFovInRadians * (360 / Math.PI),
-    projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
+    m0: 1,
+    m4: 0,
+    m8: 0,
+    m12: 0,
+    m1: 0,
+    m5: 1,
+    m9: 0,
+    m13: 0,
+    m2: 0,
+    m6: 0,
+    m10: 1,
+    m14: 0,
+    m3: 0,
+    m7: 0,
+    m11: 0,
+    m15: 1,
   };
+}
+
+function pointerValueOf(buffer: BufferSource): NonNullable<Deno.PointerValue> {
+  const pointer = Deno.UnsafePointer.of(buffer);
+  if (!pointer) {
+    throw new Error("Failed to allocate native buffer pointer");
+  }
+  const value = Deno.UnsafePointer.value(pointer);
+  if (value === null) {
+    throw new Error("Failed to read native buffer pointer value");
+  }
+  return value;
 }
 
 const DEFAULT_RAYLIB_CAMERA: raylib.Camera3D = {
@@ -222,7 +116,7 @@ export class WebXROverlayRaylib {
     this.windowInitialized = true;
 
     this.combineShader = raylib.H.LoadShaderFromMemory(
-      VARGGLES_VERTEX_SHADER,
+      null,
       VARGGLES_FRAGMENT_SHADER,
     );
     if (!raylib.H.IsShaderValid(this.combineShader)) {
@@ -241,6 +135,10 @@ export class WebXROverlayRaylib {
       "webxrv2",
       `[webxr] raylib compositor ready hidden=yes context=${CONTEXT_WINDOW_WIDTH}x${CONTEXT_WINDOW_HEIGHT} eye=${RAYLIB_NATIVE_EYE_SIZE}x${RAYLIB_NATIVE_EYE_SIZE}`,
     );
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] raylib combine shader locs lookRotation=${this.lookRotationLocation} halfFov=${this.halfFovLocation} outputUvScale=${this.outputUvScaleLocation} outputUvOffset=${this.outputUvOffsetLocation}`,
+    );
   }
 
   hasTexture(): boolean {
@@ -252,6 +150,23 @@ export class WebXROverlayRaylib {
       throw new Error("raylib output texture not initialized");
     }
     return this.outputTarget.texture.id;
+  }
+
+  private setShaderVec2(shader: raylib.Shader, location: number, x: number, y: number) {
+    if (location < 0) {
+      return;
+    }
+    const buffer = new Float32Array([x, y]);
+    const pointer = Deno.UnsafePointer.of(buffer);
+    if (!pointer) {
+      throw new Error("Failed to allocate raylib vec2 uniform buffer");
+    }
+    raylib.H.SetShaderValue(
+      shader,
+      location,
+      pointer,
+      raylib.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
+    );
   }
 
   ensureTexture(eyeWidth: number, eyeHeight: number) {
@@ -310,7 +225,7 @@ export class WebXROverlayRaylib {
     raylib.H.SetShaderValueMatrix(
       shader,
       this.lookRotationLocation,
-      toRaylibMatrix(createHorizontalLookRotationMatrix(frame.viewerQuaternion)),
+      toRaylibMatrix(frame.lookRotation),
     );
     const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);
     const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
@@ -414,23 +329,6 @@ export class WebXROverlayRaylib {
     raylib.unloadRaylib();
     this.renderWidth = 0;
     this.renderHeight = 0;
-  }
-
-  private setShaderVec2(shader: raylib.Shader, location: number, x: number, y: number) {
-    if (location < 0) {
-      return;
-    }
-    const buffer = new Float32Array([x, y]);
-    const pointer = Deno.UnsafePointer.of(buffer);
-    if (!pointer) {
-      throw new Error("Failed to allocate raylib vec2 uniform buffer");
-    }
-    raylib.H.SetShaderValue(
-      shader,
-      location,
-      pointer,
-      raylib.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
-    );
   }
 
   private unloadTargets() {

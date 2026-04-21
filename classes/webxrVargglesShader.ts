@@ -47,14 +47,38 @@ export const WEBXR_VARGGLES_GLSL330_FRAGMENT = `#version 330
 in vec2 fragTexCoord;
 in vec4 fragColor;
 uniform sampler2D texture0;
-uniform sampler2D eyeRight;
+uniform vec2 outputUvScale;
+uniform vec2 outputUvOffset;
 uniform mat4 lookRotation;
 uniform float halfFOVInRadians;
 out vec4 finalColor;
 
-${VARGGLES_FRAGMENT_LOGIC}
+const float PI = 3.141592653589793;
+const float HALF_PI = 0.5 * PI;
+const float QUARTER_PI = 0.25 * PI;
 
 void main() {
-    finalColor = sampleVargglesPanorama(fragTexCoord, texture0, eyeRight, lookRotation, halfFOVInRadians) * fragColor;
+    vec2 outputUv = fragTexCoord * outputUvScale + outputUvOffset;
+    vec2 xy = vec2(outputUv.x, 1.0 - outputUv.y);
+    vec2 angles = (2.0 * xy - vec2(1.0, 1.0)) * vec2(PI, HALF_PI);
+    angles.y *= 2.0;
+
+    bool renderTopHalf = angles.y >= 0.0;
+    if (renderTopHalf) {
+        angles.y -= HALF_PI;
+    } else {
+        angles.y += HALF_PI;
+    }
+
+    float fovScalar = tan(halfFOVInRadians) / tan(QUARTER_PI);
+    vec3 lookupDirection = vec3(sin(angles.x), 1.0, cos(angles.x)) *
+        vec3(cos(angles.y), sin(angles.y), cos(angles.y));
+    lookupDirection = (lookRotation * vec4(lookupDirection, 0.0)).xyz;
+
+    float u = (((lookupDirection.x / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5;
+    float v = 1.0 - ((((lookupDirection.y / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5);
+    vec2 eyeUv = clamp(vec2(u, v), 0.0, 1.0);
+
+    finalColor = texture(texture0, eyeUv) * fragColor;
 }
 `;
