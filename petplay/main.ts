@@ -16,6 +16,7 @@ const state = actorState({
 
 const WEBXR_RENDER_HEIGHT = 2000;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
+const WEBXR_OVERLAY_MODE = "both" as const;
 
 const stdinHandler = new MainStdinHandler({
   spawnOverlay: (name) => {
@@ -69,7 +70,7 @@ async function main() {
   const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
   state.origin = origin;
   const laser = await PostMan.create("./laser.ts", import.meta.url);
-  const osc = await PostMan.create("./OSC.ts", import.meta.url);
+  //const osc = await PostMan.create("./OSC.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
 
   PostMan.PostMessage({
@@ -105,14 +106,15 @@ async function main() {
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,
       overlayDistance: 1,
+      overlayRenderMode: WEBXR_OVERLAY_MODE,
     },
   });
 
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: origin,
     type: "ASSIGNVRC",
     payload: osc,
-  });
+  }); */
   PostMan.PostMessage({
     target: origin,
     type: "ASSIGNHMD",

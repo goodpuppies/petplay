@@ -46,6 +46,19 @@ type WebXRStatus = {
   lastLayerInfo: string | null;
 };
 
+export type WebXRShadowFrame = {
+  frameCount: number;
+  eyeWidth: number;
+  eyeHeight: number;
+  outputWidth: number;
+  outputHeight: number;
+  lookRotation: Float32Array;
+  viewerPosition: Float32Array;
+  viewerQuaternion: Float32Array;
+  halfFovInRadians: number;
+  ipdMeters: number;
+};
+
 const POLL_INTERVAL_MS = 16;
 const XR_CONNECT_RETRY_MS = 16;
 const XR_CONNECT_TIMEOUT_MS = 1000;
@@ -617,6 +630,31 @@ export class WebXRHost {
       this.outputLeftReadbackRing,
       this.outputRightReadbackRing,
     );
+  }
+
+  captureShadowFrame(): WebXRShadowFrame | null {
+    if (!this.running || this.frameCount <= 0) {
+      return null;
+    }
+
+    const eyeWidth = Math.max(1, Math.round(this.width / 2));
+    const eyeHeight = Math.max(1, Math.round(this.height));
+    this.lastLayerInfo =
+      `shadow frame=${this.frameCount} eyeWidth=${eyeWidth} eyeHeight=${eyeHeight} ` +
+      `output=${eyeWidth * 2}x${eyeWidth * 2}`;
+
+    return {
+      frameCount: this.frameCount,
+      eyeWidth,
+      eyeHeight,
+      outputWidth: eyeWidth * 2,
+      outputHeight: eyeWidth * 2,
+      lookRotation: this.getOverlayLookRotationMatrix(),
+      viewerPosition: this.getViewerPositionVector(),
+      viewerQuaternion: this.getViewerQuaternionVector(),
+      halfFovInRadians: (112 / 2) * (Math.PI / 180),
+      ipdMeters: 0.064,
+    };
   }
 
   private async captureStereoProjectionLayerFrame(
@@ -1442,5 +1480,58 @@ export class WebXRHost {
     inverseRotation[9] *= -1;
     inverseRotation[10] *= -1;
     return inverseRotation;
+  }
+
+  private getViewerPositionVector(): Float32Array {
+    const position = (this.xrDevice as {
+      position?: {
+        x?: number;
+        y?: number;
+        z?: number;
+        vec3?: ArrayLike<number>;
+      };
+    } | null)?.position;
+
+    if (position?.vec3) {
+      return new Float32Array([
+        Number(position.vec3[0] ?? 0),
+        Number(position.vec3[1] ?? 0),
+        Number(position.vec3[2] ?? 0),
+      ]);
+    }
+
+    return new Float32Array([
+      Number(position?.x ?? 0),
+      Number(position?.y ?? 0),
+      Number(position?.z ?? 0),
+    ]);
+  }
+
+  private getViewerQuaternionVector(): Float32Array {
+    const quaternion = (this.xrDevice as {
+      quaternion?: {
+        x?: number;
+        y?: number;
+        z?: number;
+        w?: number;
+        quat?: ArrayLike<number>;
+      };
+    } | null)?.quaternion;
+
+    if (quaternion?.quat) {
+      return new Float32Array([
+        Number(quaternion.quat[0] ?? 0),
+        Number(quaternion.quat[1] ?? 0),
+        Number(quaternion.quat[2] ?? 0),
+        Number(quaternion.quat[3] ?? 1),
+      ]);
+    }
+
+    return new Float32Array([
+      Number(quaternion?.x ?? 0),
+      Number(quaternion?.y ?? 0),
+      Number(quaternion?.z ?? 0),
+      Number(quaternion?.w ?? 1),
+    ]);
   }
 }

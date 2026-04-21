@@ -3,6 +3,7 @@ import React, { useRef } from "react";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import { extend, ThreeToJSXElements, useFrame } from "@react-three/fiber";
+import { updateShadowSceneMesh } from "./webxrShadowScene.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -20,6 +21,14 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
 
   useFrame((_state, delta) => {
     accentRef.current.rotation.y += delta * 0.25;
+    updateShadowSceneMesh(0, {
+      kind: "torus",
+      position: [0, 1.45, -1.8],
+      rotation: [0, accentRef.current.rotation.y, 0],
+      scale: [1, 1, 1],
+      color: [255, 139, 61, 255],
+      wireColor: [255, 196, 148, 255],
+    });
   });
 
   return (

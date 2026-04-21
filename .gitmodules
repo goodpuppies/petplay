@@ -25,3 +25,6 @@
 	path = submodules/threewebxrwebgpudeno
 	url = https://github.com/mommysgoodpuppy/threewebxrwebgpudeno.git
 	branch = r3fstuff
+[submodule "submodules/raylib_ts_bindings_deno"]
+	path = submodules/raylib_ts_bindings_deno
+	url = https://github.com/mommysgoodpuppy/raylib_ts_bindings_deno.git

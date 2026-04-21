@@ -1,5 +1,3 @@
-import { WebXRSdlDebugWindow } from "./webxrSdlDebugWindow.ts";
-
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
@@ -89,12 +87,10 @@ class OffscreenCanvasContext {
 }
 
 export class WebXRSurfaceHost {
-  private debugWindow: WebXRSdlDebugWindow | null = null;
-  private surface: Deno.UnsafeWindowSurface | null = null;
   private context: GPUCanvasContext | null = null;
   private canvas: WebXRSurfaceCanvas | null = null;
 
-  initialize(title: string, width: number, height: number, visible = false) {
+  initialize(_title: string, width: number, height: number, _visible = false) {
     if (this.canvas) {
       return;
     }
@@ -125,16 +121,7 @@ export class WebXRSurfaceHost {
       },
     };
 
-    if (visible) {
-      this.debugWindow = new WebXRSdlDebugWindow();
-      this.debugWindow.initialize(title, width, height);
-      this.surface = this.debugWindow.getSurface();
-      this.surface.resize(width, height);
-      context = this.surface.getContext("webgpu");
-      assert(context, "Failed to obtain GPUCanvasContext from UnsafeWindowSurface");
-    } else {
-      context = new OffscreenCanvasContext(canvas) as unknown as GPUCanvasContext;
-    }
+    context = new OffscreenCanvasContext(canvas) as unknown as GPUCanvasContext;
 
     this.context = context;
     this.canvas = canvas;
@@ -150,17 +137,12 @@ export class WebXRSurfaceHost {
     return this.canvas;
   }
 
-  present() {
-    this.surface?.present();
-  }
+  present() {}
 
   cleanup() {
     const context = this.context as unknown as { unconfigure?: () => void } | null;
     context?.unconfigure?.();
     this.context = null;
     this.canvas = null;
-    this.surface = null;
-    this.debugWindow?.cleanup();
-    this.debugWindow = null;
   }
 }

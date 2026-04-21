@@ -10,6 +10,7 @@ type OverlayOptions = {
   mode?: "quad" | "stereo-panorama";
   sortOrder?: number;
   attachToHmd?: boolean;
+  flipVertical?: boolean;
 };
 
 export class OpenVrOverlayTexture {
@@ -103,7 +104,10 @@ export class OpenVrOverlayTexture {
       );
     }
 
-    const bounds = { uMin: 0, uMax: 1, vMin: 1, vMax: 0 };
+    const flipVertical = options.flipVertical ?? true;
+    const bounds = flipVertical
+      ? { uMin: 0, uMax: 1, vMin: 1, vMax: 0 }
+      : { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
     const [boundsPtr, boundsView] = createStruct<OpenVR.TextureBounds>(
       bounds,
       OpenVR.TextureBoundsStruct,
