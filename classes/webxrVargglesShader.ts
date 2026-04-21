@@ -77,7 +77,7 @@ void main() {
 
     float u = (((lookupDirection.x / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5;
     float v = 1.0 - ((((lookupDirection.y / abs(lookupDirection.z)) / fovScalar) + 1.0) * 0.5);
-    vec2 eyeUv = clamp(vec2(u, v), 0.0, 1.0);
+    vec2 eyeUv = clamp(vec2(1.0 - u, v), 0.0, 1.0);
 
     finalColor = texture(texture0, eyeUv) * fragColor;
 }

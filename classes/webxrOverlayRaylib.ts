@@ -48,6 +48,27 @@ function toRaylibMatrix(values: Float32Array): raylib.Matrix {
   };
 }
 
+function createRaylibLookRotation(values: Float32Array): raylib.Matrix {
+  return toRaylibMatrix(new Float32Array([
+    -(values[0] ?? 1),
+    -(values[1] ?? 0),
+    -(values[2] ?? 0),
+    -(values[3] ?? 0),
+    values[4] ?? 0,
+    values[5] ?? 1,
+    values[6] ?? 0,
+    values[7] ?? 0,
+    -(values[8] ?? 0),
+    -(values[9] ?? 0),
+    -(values[10] ?? 1),
+    -(values[11] ?? 0),
+    values[12] ?? 0,
+    values[13] ?? 0,
+    values[14] ?? 0,
+    values[15] ?? 1,
+  ]));
+}
+
 function createIdentityRaylibMatrix(): raylib.Matrix {
   return {
     m0: 1,
@@ -225,7 +246,7 @@ export class WebXROverlayRaylib {
     raylib.H.SetShaderValueMatrix(
       shader,
       this.lookRotationLocation,
-      toRaylibMatrix(frame.lookRotation),
+      createRaylibLookRotation(frame.lookRotation),
     );
     const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);
     const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
