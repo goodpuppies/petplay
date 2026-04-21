@@ -127,6 +127,29 @@ function rotateVectorByQuaternion(
   ];
 }
 
+function createHorizontalLookRotationMatrix(
+  quaternionValues: Float32Array,
+): Float32Array {
+  const quaternion = [
+    quaternionValues[0] ?? 0,
+    quaternionValues[1] ?? 0,
+    quaternionValues[2] ?? 0,
+    quaternionValues[3] ?? 1,
+  ] as [number, number, number, number];
+  const forward = rotateVectorByQuaternion([0, 0, -1], quaternion);
+  const horizontalForward = normalize(forward[0], 0, forward[2]);
+  const yaw = Math.atan2(-horizontalForward[0], -horizontalForward[2]);
+  const cosYaw = Math.cos(-yaw);
+  const sinYaw = Math.sin(-yaw);
+
+  return new Float32Array([
+    cosYaw, 0, sinYaw, 0,
+    0, 1, 0, 0,
+    -sinYaw, 0, cosYaw, 0,
+    0, 0, 0, 1,
+  ]);
+}
+
 function createEyeCameraFromPose(
   positionValues: Float32Array,
   quaternionValues: Float32Array,
@@ -163,6 +186,14 @@ function createEyeCameraFromPose(
     projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
   };
 }
+
+const DEFAULT_RAYLIB_CAMERA: raylib.Camera3D = {
+  position: { x: 0, y: 0, z: 0 },
+  target: { x: 0, y: 0, z: -1 },
+  up: { x: 0, y: 1, z: 0 },
+  fovy: 60,
+  projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
+};
 
 export class WebXROverlayRaylib {
   private windowInitialized = false;
@@ -267,22 +298,20 @@ export class WebXROverlayRaylib {
 
     this.renderEye(
       leftTarget,
-      createEyeCameraFromPose(
-        frame.leftEyePosition,
-        frame.leftEyeQuaternion,
-        frame.halfFovInRadians,
-      ),
+      frame.leftEyeProjectionMatrix,
+      frame.leftEyeViewMatrix,
     );
     this.renderEye(
       rightTarget,
-      createEyeCameraFromPose(
-        frame.rightEyePosition,
-        frame.rightEyeQuaternion,
-        frame.halfFovInRadians,
-      ),
+      frame.rightEyeProjectionMatrix,
+      frame.rightEyeViewMatrix,
     );
 
-    raylib.H.SetShaderValueMatrix(shader, this.lookRotationLocation, toRaylibMatrix(frame.lookRotation));
+    raylib.H.SetShaderValueMatrix(
+      shader,
+      this.lookRotationLocation,
+      toRaylibMatrix(createHorizontalLookRotationMatrix(frame.viewerQuaternion)),
+    );
     const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);
     const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
     if (!halfFovPointer) {
@@ -421,13 +450,16 @@ export class WebXROverlayRaylib {
 
   private renderEye(
     target: raylib.RenderTexture2D,
-    camera: raylib.Camera3D,
+    projectionMatrix: Float32Array,
+    viewMatrix: Float32Array,
   ) {
     const scene = getWebXRShadowSceneSnapshot();
     raylib.H.BeginTextureMode(target);
     raylib.H.ClearBackground(toRaylibColor(scene.background));
     raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
-    raylib.H.BeginMode3D(camera);
+    raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
+    raylib.H.rlSetMatrixProjection(toRaylibMatrix(projectionMatrix));
+    raylib.H.rlSetMatrixModelview(toRaylibMatrix(viewMatrix));
     raylib.H.DrawPlane(
       { x: 0, y: 0, z: 0 },
       { x: 16, y: 16 },

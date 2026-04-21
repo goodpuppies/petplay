@@ -57,8 +57,12 @@ export type WebXRShadowFrame = {
   viewerQuaternion: Float32Array;
   leftEyePosition: Float32Array;
   leftEyeQuaternion: Float32Array;
+  leftEyeViewMatrix: Float32Array;
+  leftEyeProjectionMatrix: Float32Array;
   rightEyePosition: Float32Array;
   rightEyeQuaternion: Float32Array;
+  rightEyeViewMatrix: Float32Array;
+  rightEyeProjectionMatrix: Float32Array;
   halfFovInRadians: number;
   ipdMeters: number;
 };
@@ -304,8 +308,12 @@ export class WebXRHost {
     viewerQuaternion: Float32Array;
     leftEyePosition: Float32Array;
     leftEyeQuaternion: Float32Array;
+    leftEyeViewMatrix: Float32Array;
+    leftEyeProjectionMatrix: Float32Array;
     rightEyePosition: Float32Array;
     rightEyeQuaternion: Float32Array;
+    rightEyeViewMatrix: Float32Array;
+    rightEyeProjectionMatrix: Float32Array;
     halfFovInRadians: number;
     ipdMeters: number;
   } | null = null;
@@ -674,8 +682,12 @@ export class WebXRHost {
       viewerQuaternion: new Float32Array(pose.viewerQuaternion),
       leftEyePosition: new Float32Array(pose.leftEyePosition),
       leftEyeQuaternion: new Float32Array(pose.leftEyeQuaternion),
+      leftEyeViewMatrix: new Float32Array(pose.leftEyeViewMatrix),
+      leftEyeProjectionMatrix: new Float32Array(pose.leftEyeProjectionMatrix),
       rightEyePosition: new Float32Array(pose.rightEyePosition),
       rightEyeQuaternion: new Float32Array(pose.rightEyeQuaternion),
+      rightEyeViewMatrix: new Float32Array(pose.rightEyeViewMatrix),
+      rightEyeProjectionMatrix: new Float32Array(pose.rightEyeProjectionMatrix),
       halfFovInRadians: pose.halfFovInRadians,
       ipdMeters: pose.ipdMeters,
     };
@@ -1141,8 +1153,16 @@ export class WebXRHost {
       viewerQuaternion: viewer.quaternion,
       leftEyePosition: left.position,
       leftEyeQuaternion: left.quaternion,
+      leftEyeViewMatrix: new Float32Array(
+        new THREE.Matrix4().copy(leftCamera.matrixWorld).invert().elements,
+      ),
+      leftEyeProjectionMatrix: new Float32Array(leftCamera.projectionMatrix.elements),
       rightEyePosition: right.position,
       rightEyeQuaternion: right.quaternion,
+      rightEyeViewMatrix: new Float32Array(
+        new THREE.Matrix4().copy(rightCamera.matrixWorld).invert().elements,
+      ),
+      rightEyeProjectionMatrix: new Float32Array(rightCamera.projectionMatrix.elements),
       halfFovInRadians: this.projectionMatrixToHalfFovInRadians(leftCamera.projectionMatrix.elements),
       ipdMeters,
     };
@@ -1556,46 +1576,23 @@ export class WebXRHost {
       ] as const
       : null;
 
-    const inverseRotation = new Float32Array(16);
-    inverseRotation[15] = 1;
-
-    if (quatValues) {
-      const x = -quatValues[0];
-      const y = -quatValues[1];
-      const z = -quatValues[2];
-      const w = quatValues[3];
-      const x2 = x + x;
-      const y2 = y + y;
-      const z2 = z + z;
-      const xx = x * x2;
-      const xy = x * y2;
-      const xz = x * z2;
-      const yy = y * y2;
-      const yz = y * z2;
-      const zz = z * z2;
-      const wx = w * x2;
-      const wy = w * y2;
-      const wz = w * z2;
-
-      inverseRotation[0] = 1 - (yy + zz);
-      inverseRotation[1] = xy + wz;
-      inverseRotation[2] = xz - wy;
-      inverseRotation[4] = xy - wz;
-      inverseRotation[5] = 1 - (xx + zz);
-      inverseRotation[6] = yz + wx;
-      inverseRotation[8] = xz + wy;
-      inverseRotation[9] = yz - wx;
-      inverseRotation[10] = 1 - (xx + yy);
-    } else {
-      inverseRotation[0] = 1;
-      inverseRotation[5] = 1;
-      inverseRotation[10] = 1;
+    const lookRotation = new THREE.Matrix4();
+    if (!quatValues) {
+      return new Float32Array(lookRotation.identity().elements);
     }
 
-    inverseRotation[8] *= -1;
-    inverseRotation[9] *= -1;
-    inverseRotation[10] *= -1;
-    return inverseRotation;
+    const worldFromHmd = new THREE.Matrix4().makeRotationFromQuaternion(
+      new THREE.Quaternion(
+        quatValues[0],
+        quatValues[1],
+        quatValues[2],
+        quatValues[3],
+      ),
+    );
+    const hmdFromWorld = worldFromHmd.invert();
+    const zFlip = new THREE.Matrix4().makeScale(1, 1, -1);
+    lookRotation.multiplyMatrices(hmdFromWorld, zFlip);
+    return new Float32Array(lookRotation.elements);
   }
 
   private getViewerPositionVector(): Float32Array {
