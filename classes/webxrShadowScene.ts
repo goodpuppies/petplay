@@ -17,9 +17,9 @@ export type WebXRShadowSceneSnapshot = {
 };
 
 const shadowSceneState: WebXRShadowSceneSnapshot = {
-  background: [9, 16, 24, 255],
-  floorColor: [18, 30, 42, 255],
-  gridColor: [46, 61, 80, 255],
+  background: [0, 0, 0, 0],
+  floorColor: [18, 30, 42, 96],
+  gridColor: [46, 61, 80, 72],
   meshes: [
     {
       kind: "torus",
@@ -28,6 +28,14 @@ const shadowSceneState: WebXRShadowSceneSnapshot = {
       scale: [1, 1, 1],
       color: [255, 139, 61, 255],
       wireColor: [255, 196, 148, 255],
+    },
+    {
+      kind: "cube",
+      position: [0.35, 1.2, -1.45],
+      rotation: [0, 0, 0],
+      scale: [0.18, 0.18, 0.18],
+      color: [84, 214, 44, 220],
+      wireColor: [160, 255, 132, 255],
     },
   ],
 };

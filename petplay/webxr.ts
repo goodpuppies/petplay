@@ -320,19 +320,6 @@ function logFirstOverlayUpload(modeLabel: string, width: number, height: number,
   );
 }
 
-function logFirstWebGpuTextureInfo() {
-  if (!state.webGpuOverlayGl) {
-    return;
-  }
-  const textureInfo = state.webGpuOverlayGl.describeTexture();
-  LogChannel.log(
-    "webxrv2",
-    `[webxr] gl texture handle=${textureInfo.handle} isTexture=${textureInfo.isTexture} ` +
-      `size=${textureInfo.width}x${textureInfo.height} internalFormat=${textureInfo.internalFormat} ` +
-      `glError=${textureInfo.glErrorLabel}`,
-  );
-}
-
 async function uploadWebGpuSceneFrame() {
   if (!state.host || !state.webGpuOverlayGl) {
     return false;
@@ -362,9 +349,6 @@ async function uploadWebGpuSceneFrame() {
     const uploadStartedAt = performance.now();
     state.webGpuOverlayGl.uploadStereoFrame(overlayFrame);
     state.uploadMetric.record(performance.now() - uploadStartedAt);
-    if (state.uploadedFrames === 1) {
-      logFirstWebGpuTextureInfo();
-    }
 
     const presentStartedAt = performance.now();
     state.webGpuOverlay.present();

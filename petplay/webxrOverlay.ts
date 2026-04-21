@@ -1,5 +1,4 @@
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
-import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
 import type { WebXRShadowFrame } from "../classes/webxrhost.ts";
@@ -46,8 +45,9 @@ new PostMan(
         return;
       }
 
+      state.overlayRaylib.renderShadowFrame(frame);
+
       if (!state.overlay) {
-        state.overlayRaylib.ensureTexture(frame.eyeWidth, frame.eyeHeight);
         const overlay = new OpenVrOverlayTexture(state.overlayPointer);
         overlay.initialize(state.overlayRaylib.getTextureHandle(), {
           key: state.overlayKey ?? undefined,
@@ -59,17 +59,12 @@ new PostMan(
           flipVertical: false,
         });
         state.overlay = overlay;
+      } else {
+        state.overlay.setTextureHandle(state.overlayRaylib.getTextureHandle());
       }
 
-      state.overlayRaylib.renderShadowFrame(frame);
       state.overlay.present();
       state.uploadedFrames++;
-      if (state.uploadedFrames === 1) {
-        LogChannel.log(
-          "webxrv2",
-          `[webxrOverlay] first shadow frame eye=${frame.eyeWidth}x${frame.eyeHeight} output=${frame.outputWidth}x${frame.outputHeight}`,
-        );
-      }
     },
     STOPWEBXROVERLAY: (_payload: void) => {
       cleanupOverlay();

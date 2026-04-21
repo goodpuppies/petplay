@@ -14,9 +14,9 @@ const state = actorState({
   inputstate: null as actionData | null,
 });
 
-const WEBXR_RENDER_HEIGHT = 2000;
+const WEBXR_RENDER_HEIGHT = 500;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
-const WEBXR_OVERLAY_MODE = "both" as const;
+const WEBXR_OVERLAY_MODE = "both"  as const;
 
 const stdinHandler = new MainStdinHandler({
   spawnOverlay: (name) => {

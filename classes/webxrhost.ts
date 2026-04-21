@@ -52,6 +52,7 @@ export type WebXRShadowFrame = {
   eyeHeight: number;
   outputWidth: number;
   outputHeight: number;
+  hmdMatrix: Float32Array;
   lookRotation: Float32Array;
   viewerPosition: Float32Array;
   viewerQuaternion: Float32Array;
@@ -637,6 +638,11 @@ export class WebXRHost {
       return null;
     }
 
+    const hmdPose = this.getCurrentOpenVrHmdPose();
+    if (!hmdPose) {
+      return null;
+    }
+
     const eyeWidth = Math.max(1, Math.round(this.width / 2));
     const eyeHeight = Math.max(1, Math.round(this.height));
     this.lastLayerInfo =
@@ -649,9 +655,15 @@ export class WebXRHost {
       eyeHeight,
       outputWidth: eyeWidth * 2,
       outputHeight: eyeWidth * 2,
+      hmdMatrix: hmdPose.matrix,
       lookRotation: this.getOverlayLookRotationMatrix(),
-      viewerPosition: this.getViewerPositionVector(),
-      viewerQuaternion: this.getViewerQuaternionVector(),
+      viewerPosition: new Float32Array([hmdPose.position[0], hmdPose.position[1], hmdPose.position[2]]),
+      viewerQuaternion: new Float32Array([
+        hmdPose.quaternion[0],
+        hmdPose.quaternion[1],
+        hmdPose.quaternion[2],
+        hmdPose.quaternion[3],
+      ]),
       halfFovInRadians: (112 / 2) * (Math.PI / 180),
       ipdMeters: 0.064,
     };
@@ -1014,8 +1026,35 @@ export class WebXRHost {
   }
 
   private updateEmulatedHeadsetFromOpenVr() {
-    if (!this.xrDevice || !this.vrSystemPointer) {
+    if (!this.xrDevice) {
       return;
+    }
+
+    const hmdPose = this.getCurrentOpenVrHmdPose();
+    if (!hmdPose) {
+      return;
+    }
+
+    this.xrDevice.position?.set?.(
+      hmdPose.position[0],
+      hmdPose.position[1],
+      hmdPose.position[2],
+    );
+    this.xrDevice.quaternion?.set?.(
+      hmdPose.quaternion[0],
+      hmdPose.quaternion[1],
+      hmdPose.quaternion[2],
+      hmdPose.quaternion[3],
+    );
+  }
+
+  private getCurrentOpenVrHmdPose(): {
+    matrix: Float32Array;
+    position: [number, number, number];
+    quaternion: [number, number, number, number];
+  } | null {
+    if (!this.vrSystemPointer) {
+      return null;
     }
 
     const systemPointer = Deno.UnsafePointer.create(
@@ -1024,7 +1063,7 @@ export class WebXRHost {
         : BigInt(this.vrSystemPointer),
     );
     if (!systemPointer) {
-      return;
+      return null;
     }
 
     const vrSystem = new OpenVR.IVRSystem(systemPointer);
@@ -1047,18 +1086,20 @@ export class WebXRHost {
     );
     const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
     if (!hmdPose.bPoseIsValid) {
-      return;
+      return null;
     }
 
     const m = hmdPose.mDeviceToAbsoluteTracking.m;
-    const quaternion = this.matrix3x4ToQuaternion(m);
-    this.xrDevice.position?.set?.(m[0][3], m[1][3], m[2][3]);
-    this.xrDevice.quaternion?.set?.(
-      quaternion[0],
-      quaternion[1],
-      quaternion[2],
-      quaternion[3],
-    );
+    return {
+      matrix: new Float32Array([
+        m[0][0], m[1][0], m[2][0], 0,
+        m[0][1], m[1][1], m[2][1], 0,
+        m[0][2], m[1][2], m[2][2], 0,
+        m[0][3], m[1][3], m[2][3], 1,
+      ]),
+      position: [m[0][3], m[1][3], m[2][3]],
+      quaternion: this.matrix3x4ToQuaternion(m),
+    };
   }
 
   private applyExternalControllerData() {

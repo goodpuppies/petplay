@@ -29,6 +29,14 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
       color: [255, 139, 61, 255],
       wireColor: [255, 196, 148, 255],
     });
+    updateShadowSceneMesh(1, {
+      kind: "cube",
+      position: [0.35, 1.2, -1.45],
+      rotation: [0, accentRef.current.rotation.y * 0.6, 0],
+      scale: [0.18, 0.18, 0.18],
+      color: [84, 214, 44, 220],
+      wireColor: [160, 255, 132, 255],
+    });
   });
 
   return (
@@ -43,6 +51,11 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
       <mesh ref={accentRef} position={[0, 1.45, -1.8]}>
         <torusGeometry args={[0.12, 0.012, 16, 48]} />
         <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
+      </mesh>
+
+      <mesh position={[0.35, 1.2, -1.45]}>
+        <boxGeometry args={[0.18, 0.18, 0.18]} />
+        <meshBasicNodeMaterial colorNode={TSL.color(0x54d62c)} />
       </mesh>
     </>
   );
