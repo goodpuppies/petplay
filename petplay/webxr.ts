@@ -7,9 +7,14 @@ import { WebXRHost } from "../classes/webxrhost.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric } from "../classes/intervalMetric.ts";
+import { WebXRRaythreeSceneBridge } from "../classes/webxrRaythreeScene.ts";
+import {
+  setShadowControllerPose,
+  setVRCOriginFromHmdMatrix34,
+} from "../classes/webxrShadowScene.ts";
 
 type SupportedSessionMode = "immersive-vr" | "immersive-ar";
-type OverlayRenderMode = "webgpu-scene" | "raylib-ghost" | "both";
+export type OverlayRenderMode = "webgpu" | "raylib" | "both";
 
 type StartWebXRPayload = {
   width?: number;
@@ -44,6 +49,7 @@ type OverlayConfig = {
   overlayWidthInMeters?: number;
   overlayDistance?: number;
   overlayMode?: "quad" | "stereo-panorama";
+  sortOrder?: number;
   attachToHmd?: boolean;
 };
 
@@ -55,7 +61,7 @@ const state = actorState({
   webGpuOverlayGl: null as WebXROverlayGl | null,
   webGpuOverlayConfig: null as OverlayConfig | null,
   raylibOverlayConfig: null as OverlayConfig | null,
-  overlayRenderMode: "raylib-ghost" as OverlayRenderMode,
+  overlayRenderMode: "raylib" as OverlayRenderMode,
   overlayActor: null as string | null,
   overlayLoop: null as Promise<void> | null,
   controllerLoop: null as Promise<void> | null,
@@ -71,6 +77,7 @@ const state = actorState({
   uploadMetric: new IntervalMetric(),
   presentMetric: new IntervalMetric(),
   frameMetric: new IntervalMetric(),
+  raythreeSceneBridge: new WebXRRaythreeSceneBridge(),
 });
 
 new PostMan(
@@ -84,7 +91,7 @@ new PostMan(
         state.host = new WebXRHost();
       }
       state.controllerActor = payload?.controllerActor ?? null;
-      state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib-ghost";
+      state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib";
       if (!state.startup) {
         state.startup = (async () => {
           await initializeOverlay(payload ?? null);
@@ -130,6 +137,16 @@ new PostMan(
         overlayFps: state.overlayFpsCounter.getFps(),
         uploadedFrames: state.uploadedFrames,
       };
+    },
+    ORIGINUPDATE: (payload: OpenVR.HmdMatrix34 | null) => {
+      if (!payload) return;
+      setVRCOriginFromHmdMatrix34(
+        payload.m as [
+          [number, number, number, number],
+          [number, number, number, number],
+          [number, number, number, number],
+        ],
+      );
     },
     STOPWEBXR: async (_payload: void) => {
       state.controllerRunning = false;
@@ -192,6 +209,41 @@ globalThis.addEventListener("unload", () => {
   void state.host?.stop();
 });
 
+function publishControllerSnapshot(data: ControllerDataPayload | null) {
+  if (!data) {
+    setShadowControllerPose("left", null, false);
+    setShadowControllerPose("right", null, false);
+    return;
+  }
+  const leftPose = data[0];
+  const rightPose = data[1];
+  const leftTrigger = data[2];
+  const rightTrigger = data[3];
+
+  setShadowControllerPose(
+    "left",
+    leftPose?.pose?.bPoseIsValid
+      ? (leftPose.pose.mDeviceToAbsoluteTracking.m as [
+        [number, number, number, number],
+        [number, number, number, number],
+        [number, number, number, number],
+      ])
+      : null,
+    Boolean(leftTrigger?.bState),
+  );
+  setShadowControllerPose(
+    "right",
+    rightPose?.pose?.bPoseIsValid
+      ? (rightPose.pose.mDeviceToAbsoluteTracking.m as [
+        [number, number, number, number],
+        [number, number, number, number],
+        [number, number, number, number],
+      ])
+      : null,
+    Boolean(rightTrigger?.bState),
+  );
+}
+
 async function pumpControllerFrames() {
   while (state.controllerRunning) {
     if (!state.host || !state.controllerActor) {
@@ -206,8 +258,10 @@ async function pumpControllerFrames() {
         payload: null,
       }, true) as ControllerDataPayload;
       state.host.setControllerData(controllerData);
+      publishControllerSnapshot(controllerData);
     } catch (error) {
       state.host.setControllerData(null);
+      publishControllerSnapshot(null);
       LogChannel.log("webxrv2", `[webxr] controller poll failed: ${error}`);
       await wait(50);
       continue;
@@ -218,11 +272,11 @@ async function pumpControllerFrames() {
 }
 
 function includesRaylibOverlay(mode: OverlayRenderMode): boolean {
-  return mode === "raylib-ghost" || mode === "both";
+  return mode === "raylib" || mode === "both";
 }
 
 function includesWebGpuOverlay(mode: OverlayRenderMode): boolean {
-  return mode === "webgpu-scene" || mode === "both";
+  return mode === "webgpu" || mode === "both";
 }
 
 function buildOverlayKey(baseKey: string | undefined, suffix: string): string | undefined {
@@ -238,7 +292,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
     return;
   }
 
-  const overlayMode = payload.overlayRenderMode ?? "raylib-ghost";
+  const overlayMode = payload.overlayRenderMode ?? "raylib";
 
   if (includesWebGpuOverlay(overlayMode) && !state.webGpuOverlayGl) {
     const overlayGl = new WebXROverlayGl();
@@ -251,6 +305,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
+      sortOrder: 10,
       attachToHmd: true,
     };
   }
@@ -265,6 +320,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
+      sortOrder: 20,
       attachToHmd: true,
     };
     PostMan.PostMessage({
@@ -276,6 +332,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
         overlayName: state.raylibOverlayConfig.overlayName,
         overlayWidthInMeters: state.raylibOverlayConfig.overlayWidthInMeters,
         overlayDistance: state.raylibOverlayConfig.overlayDistance,
+        sortOrder: state.raylibOverlayConfig.sortOrder,
       },
     });
   }
@@ -294,6 +351,7 @@ function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
     widthInMeters: state.webGpuOverlayConfig.overlayWidthInMeters,
     distance: state.webGpuOverlayConfig.overlayDistance,
     mode: state.webGpuOverlayConfig.overlayMode ?? "quad",
+    sortOrder: state.webGpuOverlayConfig.sortOrder,
     attachToHmd: state.webGpuOverlayConfig.attachToHmd,
   });
   state.webGpuOverlay = nextOverlay;
@@ -372,6 +430,10 @@ async function uploadRaylibShadowFrame() {
   if (!sourceFrame) {
     return false;
   }
+  const sceneContext = state.host.getRaythreeSceneContext();
+  if (!sceneContext) {
+    return false;
+  }
 
   if (state.uploadedFrames === 1) {
     logFirstOverlayUpload(
@@ -386,8 +448,8 @@ async function uploadRaylibShadowFrame() {
   const uploadStartedAt = performance.now();
   PostMan.PostMessage({
     target: state.overlayActor,
-    type: "RENDERWEBXRSHADOWFRAME",
-    payload: sourceFrame,
+    type: "RENDERWEBXRRAYTHREEFRAME",
+    payload: state.raythreeSceneBridge.buildPayload(sceneContext, sourceFrame),
   });
   state.uploadMetric.record(performance.now() - uploadStartedAt);
   state.presentMetric.record(0);

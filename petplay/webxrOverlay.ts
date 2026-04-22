@@ -1,7 +1,7 @@
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
-import type { WebXRShadowFrame } from "../classes/webxrhost.ts";
+import type { WebXRRaythreeRenderPayload } from "../classes/webxrRaythreeScene.ts";
 
 type StartWebXROverlayPayload = {
   overlayPointer: number | bigint;
@@ -9,6 +9,7 @@ type StartWebXROverlayPayload = {
   overlayName?: string;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
+  sortOrder?: number;
 };
 
 const state = actorState({
@@ -20,6 +21,7 @@ const state = actorState({
   overlayName: null as string | null,
   overlayWidthInMeters: null as number | null,
   overlayDistance: null as number | null,
+  sortOrder: null as number | null,
   uploadedFrames: 0,
 });
 
@@ -35,17 +37,18 @@ new PostMan(
       state.overlayName = payload.overlayName ?? "PetPlay WebXR Overlay";
       state.overlayWidthInMeters = payload.overlayWidthInMeters ?? null;
       state.overlayDistance = payload.overlayDistance ?? null;
+      state.sortOrder = payload.sortOrder ?? null;
       if (!state.overlayRaylib) {
         state.overlayRaylib = new WebXROverlayRaylib();
         state.overlayRaylib.initialize(state.overlayName ?? "PetPlay WebXR Overlay");
       }
     },
-    RENDERWEBXRSHADOWFRAME: (frame: WebXRShadowFrame) => {
+    RENDERWEBXRRAYTHREEFRAME: (payload: WebXRRaythreeRenderPayload) => {
       if (!state.overlayRaylib || !state.overlayPointer) {
         return;
       }
 
-      state.overlayRaylib.renderShadowFrame(frame);
+      state.overlayRaylib.renderRaythreeFrame(payload);
 
       if (!state.overlay) {
         const overlay = new OpenVrOverlayTexture(state.overlayPointer);
@@ -55,6 +58,7 @@ new PostMan(
           widthInMeters: state.overlayWidthInMeters ?? undefined,
           distance: state.overlayDistance ?? undefined,
           mode: "stereo-panorama",
+          sortOrder: state.sortOrder ?? undefined,
           attachToHmd: true,
           flipVertical: false,
         });
@@ -86,5 +90,6 @@ function cleanupOverlay() {
   state.overlayName = null;
   state.overlayWidthInMeters = null;
   state.overlayDistance = null;
+  state.sortOrder = null;
   state.uploadedFrames = 0;
 }

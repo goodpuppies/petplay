@@ -1,15 +1,14 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
-import type { WebXRShadowFrame } from "./webxrhost.ts";
+import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
+import { WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
-import { getWebXRShadowSceneSnapshot } from "./webxrShadowScene.ts";
 
 const VARGGLES_FRAGMENT_SHADER = WEBXR_VARGGLES_GLSL330_FRAGMENT;
 const TRANSPARENT_BLACK = { r: 0, g: 0, b: 0, a: 0 } as raylib.Color;
 const RAYLIB_NATIVE_EYE_SIZE = 2560;
 
-const DEFAULT_WINDOW_FLAGS =
-  raylib.ConfigFlags.FLAG_MSAA_4X_HINT |
+const DEFAULT_WINDOW_FLAGS = raylib.ConfigFlags.FLAG_MSAA_4X_HINT |
   raylib.ConfigFlags.FLAG_WINDOW_HIDDEN;
 const CONTEXT_WINDOW_WIDTH = 1;
 const CONTEXT_WINDOW_HEIGHT = 1;
@@ -19,12 +18,6 @@ function getDefaultRaylibPath(): string {
   return Deno.build.os === "windows"
     ? decodeURIComponent(url.pathname.replace(/^\/+/, ""))
     : decodeURIComponent(url.pathname);
-}
-
-function toRaylibColor(
-  color: [number, number, number, number],
-): raylib.Color {
-  return { r: color[0], g: color[1], b: color[2], a: color[3] };
 }
 
 function toRaylibMatrix(values: Float32Array): raylib.Matrix {
@@ -49,77 +42,39 @@ function toRaylibMatrix(values: Float32Array): raylib.Matrix {
 }
 
 function createRaylibLookRotation(values: Float32Array): raylib.Matrix {
-  return toRaylibMatrix(new Float32Array([
-    -(values[0] ?? 1),
-    -(values[1] ?? 0),
-    -(values[2] ?? 0),
-    -(values[3] ?? 0),
-    values[4] ?? 0,
-    values[5] ?? 1,
-    values[6] ?? 0,
-    values[7] ?? 0,
-    -(values[8] ?? 0),
-    -(values[9] ?? 0),
-    -(values[10] ?? 1),
-    -(values[11] ?? 0),
-    values[12] ?? 0,
-    values[13] ?? 0,
-    values[14] ?? 0,
-    values[15] ?? 1,
-  ]));
+  return toRaylibMatrix(
+    new Float32Array([
+      -(values[0] ?? 1),
+      -(values[1] ?? 0),
+      -(values[2] ?? 0),
+      -(values[3] ?? 0),
+      values[4] ?? 0,
+      values[5] ?? 1,
+      values[6] ?? 0,
+      values[7] ?? 0,
+      -(values[8] ?? 0),
+      -(values[9] ?? 0),
+      -(values[10] ?? 1),
+      -(values[11] ?? 0),
+      values[12] ?? 0,
+      values[13] ?? 0,
+      values[14] ?? 0,
+      values[15] ?? 1,
+    ]),
+  );
 }
-
-function createIdentityRaylibMatrix(): raylib.Matrix {
-  return {
-    m0: 1,
-    m4: 0,
-    m8: 0,
-    m12: 0,
-    m1: 0,
-    m5: 1,
-    m9: 0,
-    m13: 0,
-    m2: 0,
-    m6: 0,
-    m10: 1,
-    m14: 0,
-    m3: 0,
-    m7: 0,
-    m11: 0,
-    m15: 1,
-  };
-}
-
-function pointerValueOf(buffer: BufferSource): NonNullable<Deno.PointerValue> {
-  const pointer = Deno.UnsafePointer.of(buffer);
-  if (!pointer) {
-    throw new Error("Failed to allocate native buffer pointer");
-  }
-  const value = Deno.UnsafePointer.value(pointer);
-  if (value === null) {
-    throw new Error("Failed to read native buffer pointer value");
-  }
-  return value;
-}
-
-const DEFAULT_RAYLIB_CAMERA: raylib.Camera3D = {
-  position: { x: 0, y: 0, z: 0 },
-  target: { x: 0, y: 0, z: -1 },
-  up: { x: 0, y: 1, z: 0 },
-  fovy: 60,
-  projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
-};
 
 export class WebXROverlayRaylib {
   private windowInitialized = false;
   private renderWidth = 0;
   private renderHeight = 0;
+  private outputEyeWidth = 0;
+  private outputEyeHeight = 0;
   private leftEyeTarget: raylib.RenderTexture2D | null = null;
   private rightEyeTarget: raylib.RenderTexture2D | null = null;
   private outputTarget: raylib.RenderTexture2D | null = null;
   private combineShader: raylib.Shader | null = null;
-  private torusModel: raylib.Model | null = null;
-  private cubeModel: raylib.Model | null = null;
+  private sceneRenderer: WebXRRaythreeRaylibRenderer | null = null;
   private lookRotationLocation = -1;
   private halfFovLocation = -1;
   private outputUvScaleLocation = -1;
@@ -144,13 +99,11 @@ export class WebXROverlayRaylib {
       throw new Error("raylib varggles shader failed to load");
     }
 
+    this.sceneRenderer = new WebXRRaythreeRaylibRenderer();
     this.lookRotationLocation = raylib.H.GetShaderLocation(this.combineShader, "lookRotation");
     this.halfFovLocation = raylib.H.GetShaderLocation(this.combineShader, "halfFOVInRadians");
     this.outputUvScaleLocation = raylib.H.GetShaderLocation(this.combineShader, "outputUvScale");
     this.outputUvOffsetLocation = raylib.H.GetShaderLocation(this.combineShader, "outputUvOffset");
-
-    this.torusModel = raylib.H.LoadModelFromMesh(raylib.H.GenMeshTorus(0.12, 0.012, 16, 48));
-    this.cubeModel = raylib.H.LoadModelFromMesh(raylib.H.GenMeshCube(1, 1, 1));
 
     LogChannel.log(
       "webxrv2",
@@ -160,10 +113,6 @@ export class WebXROverlayRaylib {
       "webxrv2",
       `[webxr] raylib combine shader locs lookRotation=${this.lookRotationLocation} halfFov=${this.halfFovLocation} outputUvScale=${this.outputUvScaleLocation} outputUvOffset=${this.outputUvOffsetLocation}`,
     );
-  }
-
-  hasTexture(): boolean {
-    return this.outputTarget !== null;
   }
 
   getTextureHandle(): number {
@@ -190,11 +139,18 @@ export class WebXROverlayRaylib {
     );
   }
 
-  ensureTexture(eyeWidth: number, eyeHeight: number) {
+  ensureTexture(
+    renderEyeWidth: number,
+    renderEyeHeight: number,
+    outputEyeWidth: number,
+    outputEyeHeight: number,
+  ) {
     if (
       this.outputTarget !== null &&
-      this.renderWidth === eyeWidth &&
-      this.renderHeight === eyeHeight
+      this.renderWidth === renderEyeWidth &&
+      this.renderHeight === renderEyeHeight &&
+      this.outputEyeWidth === outputEyeWidth &&
+      this.outputEyeHeight === outputEyeHeight
     ) {
       return;
     }
@@ -203,52 +159,74 @@ export class WebXROverlayRaylib {
       this.unloadTargets();
     }
 
-    this.renderWidth = eyeWidth;
-    this.renderHeight = eyeHeight;
-    this.leftEyeTarget = raylib.H.LoadRenderTexture(eyeWidth, eyeHeight);
-    this.rightEyeTarget = raylib.H.LoadRenderTexture(eyeWidth, eyeHeight);
-    this.outputTarget = raylib.H.LoadRenderTexture(eyeWidth * 2, eyeHeight * 2);
+    this.renderWidth = renderEyeWidth;
+    this.renderHeight = renderEyeHeight;
+    this.outputEyeWidth = outputEyeWidth;
+    this.outputEyeHeight = outputEyeHeight;
+    this.leftEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
+    this.rightEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
+    this.outputTarget = raylib.H.LoadRenderTexture(outputEyeWidth * 2, outputEyeHeight * 2);
 
     for (const target of [this.leftEyeTarget, this.rightEyeTarget, this.outputTarget]) {
       if (!target || !raylib.H.IsRenderTextureValid(target)) {
         throw new Error(
-          `raylib render texture initialization failed eye=${eyeWidth}x${eyeHeight} output=${
-            eyeWidth * 2
-          }x${eyeHeight * 2}`,
+          `raylib render texture initialization failed renderEye=${renderEyeWidth}x${renderEyeHeight} output=${
+            outputEyeWidth * 2
+          }x${outputEyeHeight * 2}`,
         );
       }
       raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_BILINEAR);
     }
   }
 
-  renderShadowFrame(frame: WebXRShadowFrame) {
-    this.ensureTexture(RAYLIB_NATIVE_EYE_SIZE, RAYLIB_NATIVE_EYE_SIZE);
+  renderRaythreeFrame(payload: WebXRRaythreeRenderPayload) {
+    this.ensureTexture(
+      RAYLIB_NATIVE_EYE_SIZE,
+      RAYLIB_NATIVE_EYE_SIZE,
+      RAYLIB_NATIVE_EYE_SIZE,
+      RAYLIB_NATIVE_EYE_SIZE,
+    );
 
     const leftTarget = this.leftEyeTarget;
     const rightTarget = this.rightEyeTarget;
     const outputTarget = this.outputTarget;
     const shader = this.combineShader;
-    if (!leftTarget || !rightTarget || !outputTarget || !shader) {
+    const sceneRenderer = this.sceneRenderer;
+    if (!leftTarget || !rightTarget || !outputTarget || !shader || !sceneRenderer) {
       throw new Error("raylib compositor not initialized");
     }
 
-    this.renderEye(
-      leftTarget,
-      frame.leftEyeProjectionMatrix,
-      frame.leftEyeViewMatrix,
-    );
-    this.renderEye(
-      rightTarget,
-      frame.rightEyeProjectionMatrix,
-      frame.rightEyeViewMatrix,
-    );
+    this.renderEye(leftTarget, () => {
+      sceneRenderer.renderExtraction(
+        payload.leftEye,
+        payload.background,
+        {
+          projectionMatrix: payload.frame.leftEyeProjectionMatrix,
+          viewMatrix: payload.frame.leftEyeViewMatrix,
+        },
+        `frame=${payload.frame.frameCount} eye=left`,
+        payload.ui,
+      );
+    });
+    this.renderEye(rightTarget, () => {
+      sceneRenderer.renderExtraction(
+        payload.rightEye,
+        payload.background,
+        {
+          projectionMatrix: payload.frame.rightEyeProjectionMatrix,
+          viewMatrix: payload.frame.rightEyeViewMatrix,
+        },
+        `frame=${payload.frame.frameCount} eye=right`,
+        payload.ui,
+      );
+    });
 
     raylib.H.SetShaderValueMatrix(
       shader,
       this.lookRotationLocation,
-      createRaylibLookRotation(frame.lookRotation),
+      createRaylibLookRotation(payload.frame.lookRotation),
     );
-    const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);
+    const halfFovBuffer = new Float32Array([payload.frame.halfFovInRadians]);
     const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
     if (!halfFovPointer) {
       throw new Error("Failed to allocate raylib half-FOV uniform buffer");
@@ -306,39 +284,12 @@ export class WebXROverlayRaylib {
     raylib.H.EndShaderMode();
     raylib.H.EndBlendMode();
     raylib.H.EndTextureMode();
-
-  }
-
-  getTextureSize() {
-    return {
-      width: this.outputTarget?.texture.width ?? 0,
-      height: this.outputTarget?.texture.height ?? 0,
-    };
-  }
-
-  describeTexture() {
-    return {
-      handle: this.outputTarget?.texture.id ?? 0,
-      isTexture: Boolean(this.outputTarget),
-      width: this.outputTarget?.texture.width ?? 0,
-      height: this.outputTarget?.texture.height ?? 0,
-      internalFormat: this.outputTarget?.texture.format ?? 0,
-      glError: 0,
-      glErrorLabel: "raylib",
-    };
   }
 
   cleanup() {
     this.unloadTargets();
-
-    if (this.torusModel) {
-      raylib.H.UnloadModel(this.torusModel);
-      this.torusModel = null;
-    }
-    if (this.cubeModel) {
-      raylib.H.UnloadModel(this.cubeModel);
-      this.cubeModel = null;
-    }
+    this.sceneRenderer?.dispose();
+    this.sceneRenderer = null;
     if (this.combineShader) {
       raylib.H.UnloadShader(this.combineShader);
       this.combineShader = null;
@@ -350,6 +301,8 @@ export class WebXROverlayRaylib {
     raylib.unloadRaylib();
     this.renderWidth = 0;
     this.renderHeight = 0;
+    this.outputEyeWidth = 0;
+    this.outputEyeHeight = 0;
   }
 
   private unloadTargets() {
@@ -367,86 +320,9 @@ export class WebXROverlayRaylib {
     }
   }
 
-  private renderEye(
-    target: raylib.RenderTexture2D,
-    projectionMatrix: Float32Array,
-    viewMatrix: Float32Array,
-  ) {
-    const scene = getWebXRShadowSceneSnapshot();
+  private renderEye(target: raylib.RenderTexture2D, draw: () => void) {
     raylib.H.BeginTextureMode(target);
-    raylib.H.ClearBackground(toRaylibColor(scene.background));
-    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
-    raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
-    raylib.H.rlSetMatrixProjection(toRaylibMatrix(projectionMatrix));
-    raylib.H.rlSetMatrixModelview(toRaylibMatrix(viewMatrix));
-    raylib.H.DrawPlane(
-      { x: 0, y: 0, z: 0 },
-      { x: 16, y: 16 },
-      toRaylibColor(scene.floorColor),
-    );
-    raylib.H.DrawGrid(16, 1);
-
-    for (const mesh of scene.meshes) {
-      const position = {
-        x: mesh.position[0],
-        y: mesh.position[1],
-        z: mesh.position[2],
-      };
-      const scale = {
-        x: mesh.scale[0],
-        y: mesh.scale[1],
-        z: mesh.scale[2],
-      };
-      const tint = toRaylibColor(mesh.color);
-      const wireTint = toRaylibColor(mesh.wireColor ?? mesh.color);
-
-      if (mesh.kind === "torus" && this.torusModel) {
-        raylib.H.DrawModelEx(
-          this.torusModel,
-          position,
-          { x: 0, y: 1, z: 0 },
-          mesh.rotation[1] * (180 / Math.PI),
-          scale,
-          tint,
-        );
-        raylib.H.DrawModelWiresEx(
-          this.torusModel,
-          position,
-          { x: 0, y: 1, z: 0 },
-          mesh.rotation[1] * (180 / Math.PI),
-          scale,
-          wireTint,
-        );
-        continue;
-      }
-
-      if (mesh.kind === "cube" && this.cubeModel) {
-        raylib.H.DrawModelEx(
-          this.cubeModel,
-          position,
-          { x: 0, y: 1, z: 0 },
-          mesh.rotation[1] * (180 / Math.PI),
-          scale,
-          tint,
-        );
-        raylib.H.DrawModelWiresEx(
-          this.cubeModel,
-          position,
-          { x: 0, y: 1, z: 0 },
-          mesh.rotation[1] * (180 / Math.PI),
-          scale,
-          wireTint,
-        );
-      }
-    }
-
-    raylib.H.DrawSphere(
-      { x: 0, y: 1.9, z: -1.25 },
-      0.08,
-      { r: 255, g: 179, b: 71, a: 255 },
-    );
-    raylib.H.EndMode3D();
-    raylib.H.EndBlendMode();
+    draw();
     raylib.H.EndTextureMode();
   }
 }

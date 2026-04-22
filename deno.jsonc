@@ -68,7 +68,7 @@
     "dev": {
       "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev",
       "dependencies": [
-        "iwerbuild"
+        //"iwerbuild"
       ]
     }
   },

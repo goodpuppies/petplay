@@ -5,6 +5,7 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 import { MainStdinHandler } from "../classes/mainStdinHandler.ts";
+import { OverlayRenderMode } from "./webxr.ts";
 
 const state = actorState({
   name: "main",
@@ -16,7 +17,7 @@ const state = actorState({
 
 const WEBXR_RENDER_HEIGHT = 500;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
-const WEBXR_OVERLAY_MODE = "both"  as const;
+const WEBXR_OVERLAY_MODE = "both" as OverlayRenderMode;
 
 const stdinHandler = new MainStdinHandler({
   spawnOverlay: (name) => {
@@ -125,6 +126,9 @@ async function main() {
     type: "ASSIGNINPUT",
     payload: input,
   });
+  // Temporarily disable VRC origin updates into the WebXR scene. The
+  // scene will fall back to identity until the raythree-based path
+  // replaces the current ad-hoc ghost renderer/origin plumbing.
   PostMan.PostMessage({
     target: origin,
     type: "STARTORIGIN",

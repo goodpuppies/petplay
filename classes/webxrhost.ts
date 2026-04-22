@@ -229,6 +229,7 @@ export class WebXRHost {
   private lastInspection: NonBlackPixelReport | null = null;
   private lastError: Error | null = null;
   private root: ReturnType<typeof createRoot> | null = null;
+  private rootStore: { getState: () => unknown } | null = null;
   private renderer: THREE.WebGPURenderer | null = null;
   private xrDevice: XrDeviceBridge | null = null;
   private session: XRSession | null = null;
@@ -505,6 +506,7 @@ export class WebXRHost {
           React.createElement(WebXRScene, { XROrigin }),
         ),
       );
+      this.rootStore = rootStore;
       rootStore.getState().xr.disconnect();
 
       await wait(0);
@@ -596,6 +598,7 @@ export class WebXRHost {
       this.root.unmount();
       this.root = null;
     }
+    this.rootStore = null;
 
     this.surfaceHost?.cleanup();
     this.surfaceHost = null;
@@ -693,6 +696,29 @@ export class WebXRHost {
     };
   }
 
+  getRaythreeSceneContext(): {
+    scene: THREE.Scene;
+    leftCamera: THREE.Camera;
+    rightCamera: THREE.Camera;
+  } | null {
+    const state = this.rootStore?.getState() as { scene?: THREE.Scene } | undefined;
+    const scene = state?.scene ?? null;
+    const xrCamera = this.renderer?.xr?.getCamera?.() as
+      | (THREE.Camera & { cameras?: THREE.Camera[] })
+      | null
+      | undefined;
+    const leftCamera = xrCamera?.cameras?.[0] ?? null;
+    const rightCamera = xrCamera?.cameras?.[1] ?? null;
+    if (!scene || !leftCamera || !rightCamera) {
+      return null;
+    }
+    return {
+      scene,
+      leftCamera,
+      rightCamera,
+    };
+  }
+
   private async captureStereoProjectionLayerFrame(
     label: string,
     stereoReadbackRing: StereoTextureReadbackRing | null,
@@ -743,7 +769,7 @@ export class WebXRHost {
       left: stereoReadback.left,
       right: stereoReadback.right,
       lookRotation: this.getOverlayLookRotationMatrix(),
-      halfFovInRadians: (112 / 2) * (Math.PI / 180),
+      halfFovInRadians: this.latestShadowPose?.halfFovInRadians ?? ((112 / 2) * (Math.PI / 180)),
       outputWidth: layer.textureWidth * 2,
       outputHeight: layer.textureWidth * 2,
       unmap: stereoReadback.unmap,
@@ -843,7 +869,7 @@ export class WebXRHost {
       left: leftReadback,
       right: rightReadback,
       lookRotation: this.getOverlayLookRotationMatrix(),
-      halfFovInRadians: (112 / 2) * (Math.PI / 180),
+      halfFovInRadians: this.latestShadowPose?.halfFovInRadians ?? ((112 / 2) * (Math.PI / 180)),
       outputWidth: layer.textureWidth * 2,
       outputHeight: layer.textureWidth * 2,
       unmap: release,

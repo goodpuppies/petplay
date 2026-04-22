@@ -28,3 +28,6 @@
 [submodule "submodules/raylib_ts_bindings_deno"]
 	path = submodules/raylib_ts_bindings_deno
 	url = https://github.com/mommysgoodpuppy/raylib_ts_bindings_deno.git
+[submodule "submodules/raythree"]
+	path = submodules/raythree
+	url = https://github.com/mommysgoodpuppy/raythree.git

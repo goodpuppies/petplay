@@ -1,9 +1,14 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import { extend, ThreeToJSXElements } from "@react-three/fiber";
 import { Handle } from "@react-three/handle";
+import {
+  DefaultXRController,
+  isXRInputSourceState,
+  XRSpace,
+} from "../submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/dist/index.js";
 import { Content } from "../submodules/threewebxrwebgpudeno/uikit-r3f.tsx";
 import { Button, Container, Text } from "../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 
@@ -127,12 +132,21 @@ function ControllerFrame({ children }: { children?: React.ReactNode }) {
   );
 }
 
-function NativeHudPanel() {
+function NativeHudPanel({ ignoredHandedness }: { ignoredHandedness?: "left" | "right" }) {
   const startedAt = useRef(performance.now());
   const [layersActive, setLayersActive] = useState(false);
   const [musicActive, setMusicActive] = useState(false);
   const [signalActive, setSignalActive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const allowPointerEvents = useCallback(
+    (_pointerId: number, _pointerType: string, pointerState: unknown) => {
+      if (!ignoredHandedness || !isXRInputSourceState(pointerState)) {
+        return true;
+      }
+      return pointerState.inputSource.handedness !== ignoredHandedness;
+    },
+    [ignoredHandedness],
+  );
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -145,7 +159,13 @@ function NativeHudPanel() {
   const elapsed = formatElapsed(startedAt.current, now);
 
   return (
-    <group position={CONTROLLER_UI_POSITION} rotation={CONTROLLER_UI_ROTATION} scale={CONTROLLER_UI_SCALE}>
+    <group
+      position={CONTROLLER_UI_POSITION}
+      rotation={CONTROLLER_UI_ROTATION}
+      scale={CONTROLLER_UI_SCALE}
+      pointerEventsType={allowPointerEvents}
+      userData={{ bridge: { kind: "skip" } }}
+    >
       <Handle>
         <ControllerFrame>
           <Container
@@ -189,7 +209,10 @@ function NativeHudPanel() {
                   borderRadius={12}
                   backgroundOpacity={1}
                   backgroundColor={layersActive ? "#a51d1d" : "#f39c12"}
-                  hover={{ backgroundColor: layersActive ? "#8c1818" : "#d35400", backgroundOpacity: 1 }}
+                  hover={{
+                    backgroundColor: layersActive ? "#8c1818" : "#d35400",
+                    backgroundOpacity: 1,
+                  }}
                   onClick={() => setLayersActive((value) => !value)}
                 >
                   <LayersIcon />
@@ -199,7 +222,10 @@ function NativeHudPanel() {
                   borderRadius={12}
                   backgroundOpacity={1}
                   backgroundColor={musicActive ? "#a51d1d" : "#f39c12"}
-                  hover={{ backgroundColor: musicActive ? "#8c1818" : "#d35400", backgroundOpacity: 1 }}
+                  hover={{
+                    backgroundColor: musicActive ? "#8c1818" : "#d35400",
+                    backgroundOpacity: 1,
+                  }}
                   onClick={() => setMusicActive((value) => !value)}
                 >
                   <MusicIcon />
@@ -209,7 +235,10 @@ function NativeHudPanel() {
                   borderRadius={12}
                   backgroundOpacity={1}
                   backgroundColor={signalActive ? "#a51d1d" : "#f39c12"}
-                  hover={{ backgroundColor: signalActive ? "#8c1818" : "#d35400", backgroundOpacity: 1 }}
+                  hover={{
+                    backgroundColor: signalActive ? "#8c1818" : "#d35400",
+                    backgroundOpacity: 1,
+                  }}
                   onClick={() => setSignalActive((value) => !value)}
                 >
                   <SignalHighIcon />
@@ -233,4 +262,13 @@ export function NativeFrontend() {
   return <NativeHudPanel />;
 }
 
-export const NativeControllerHud = NativeFrontend;
+export function NativeControllerHud() {
+  return (
+    <>
+      <DefaultXRController />
+      <XRSpace space="grip-space">
+        <NativeHudPanel ignoredHandedness="right" />
+      </XRSpace>
+    </>
+  );
+}
