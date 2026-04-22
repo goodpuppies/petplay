@@ -10,6 +10,8 @@ import {
   isVRCOriginKnown,
   updateShadowSceneMesh,
 } from "./webxrShadowScene.ts";
+import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
+
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -21,6 +23,105 @@ declare module "@react-three/fiber" {
 type WebXRSceneProps = {
   XROrigin: React.ComponentType;
 };
+
+function RoomWireBox({ color }: { color: THREE.Color }) {
+  const geometry = React.useMemo(
+    () => new BoxLineGeometry(6, 6, 6, 10, 10, 10).translate(0, 3, 0),
+    [],
+  );
+
+  React.useEffect(() => {
+    return () => geometry.dispose();
+  }, [geometry]);
+
+  return (
+    <lineSegments geometry={geometry}>
+      <lineBasicMaterial color={color} />
+    </lineSegments>
+  );
+}
+
+function BouncingCube({ seed }: { seed: CubeSeed }) {
+  const meshRef = React.useRef<THREE.Mesh>(null);
+  const velocity = React.useRef(new THREE.Vector3(...seed.velocity));
+
+  useFrame((_state, deltaSeconds) => {
+    const mesh = meshRef.current;
+    if (mesh === null) {
+      return;
+    }
+
+    const delta = deltaSeconds * 60;
+    velocity.current.multiplyScalar(1 - (0.001 * delta));
+    mesh.position.addScaledVector(velocity.current, delta);
+
+    if (mesh.position.x < -3 || mesh.position.x > 3) {
+      mesh.position.x = THREE.MathUtils.clamp(mesh.position.x, -3, 3);
+      velocity.current.x = -velocity.current.x;
+    }
+
+    if (mesh.position.y < 0 || mesh.position.y > 6) {
+      mesh.position.y = THREE.MathUtils.clamp(mesh.position.y, 0, 6);
+      velocity.current.y = -velocity.current.y;
+    }
+
+    if (mesh.position.z < -3 || mesh.position.z > 3) {
+      mesh.position.z = THREE.MathUtils.clamp(mesh.position.z, -3, 3);
+      velocity.current.z = -velocity.current.z;
+    }
+
+    mesh.rotation.x += velocity.current.x * 2 * delta;
+    mesh.rotation.y += velocity.current.y * 2 * delta;
+    mesh.rotation.z += velocity.current.z * 2 * delta;
+  });
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={seed.position}
+      rotation={seed.rotation}
+      scale={seed.scale}
+    >
+      <boxGeometry args={[0.15, 0.15, 0.15]} />
+      <meshLambertMaterial color={seed.color} />
+    </mesh>
+  );
+}
+
+type CubeSeed = {
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+  color: THREE.Color;
+  velocity: [number, number, number];
+};
+
+function createCubeSeed(): CubeSeed {
+  return {
+    position: [
+      Math.random() * 4 - 2,
+      Math.random() * 4,
+      Math.random() * 4 - 2,
+    ],
+    rotation: [
+      Math.random() * Math.PI * 2,
+      Math.random() * Math.PI * 2,
+      Math.random() * Math.PI * 2,
+    ],
+    scale: [
+      Math.random() + 0.5,
+      Math.random() + 0.5,
+      Math.random() + 0.5,
+    ],
+    color: new THREE.Color(Math.random() * 0xffffff),
+    velocity: [
+      Math.random() * 0.01 - 0.005,
+      Math.random() * 0.01 - 0.005,
+      Math.random() * 0.01 - 0.005,
+    ],
+  };
+}
+const CUBE_COUNT = 200;
 
 export function WebXRScene({ XROrigin }: WebXRSceneProps) {
   const accentRef = useRef<THREE.Mesh>(null!);
@@ -42,6 +143,10 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
   const handAbsMat4Ref = useRef(new THREE.Matrix4());
   const boxLocalMat4Ref = useRef(new THREE.Matrix4());
   const boxLocalPosRef = useRef(new THREE.Vector3());
+  const cubes = React.useMemo(
+    () => Array.from({ length: CUBE_COUNT }, () => createCubeSeed()),
+    [],
+  );
 
   useFrame((_state, delta) => {
     // Pull the latest VRC origin (updated by the webxr actor's ORIGINUPDATE
@@ -121,6 +226,8 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
     });
   });
 
+  const roomLineColor = React.useMemo(() => new THREE.Color(0xbcbcbc), []);
+
   return (
     <>
       <color attach="background" args={[0x091018]} />
@@ -134,6 +241,10 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
         <torusGeometry args={[0.12, 0.012, 16, 48]} />
         <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
       </mesh>
+      <RoomWireBox color={roomLineColor} />
+      {cubes.map((seed, index) => (
+        <BouncingCube key={index} seed={seed} />
+      ))}
 
       {/*
         The cube lives inside the VRC-origin group so its local

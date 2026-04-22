@@ -3,7 +3,7 @@ import { createWindow, DwmWindow, getProcAddress } from "@gfx/dwm";
 import { flipVertical } from "./screenutils.ts";
 
 import { cstr } from "https://deno.land/x/dwm@0.3.4/src/platform/glfw/ffi.ts";
-import { join } from "jsr:@std/path";
+import { join } from "@std/path";
 
 export class OpenGLManager {
     private outputTexture: Uint32Array | null = null; // Renamed for clarity

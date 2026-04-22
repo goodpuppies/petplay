@@ -18,9 +18,6 @@
 	path = submodules/frontend
 	url = https://github.com/goodpuppies/frontend.git
 	branch = main
-[submodule "submodules/immersive-web-emulation-runtime"]
-	path = submodules/immersive-web-emulation-runtime
-	url = https://github.com/meta-quest/immersive-web-emulation-runtime/
 [submodule "submodules/threewebxrwebgpudeno"]
 	path = submodules/threewebxrwebgpudeno
 	url = https://github.com/mommysgoodpuppy/threewebxrwebgpudeno.git
@@ -31,3 +28,10 @@
 [submodule "submodules/raythree"]
 	path = submodules/raythree
 	url = https://github.com/mommysgoodpuppy/raythree.git
+[submodule "submodules/xr"]
+	path = submodules/xr
+	url = https://github.com/mommysgoodpuppy/xr.git
+	branch = petplay
+[submodule "submodules/uikit"]
+	path = submodules/uikit
+	url = https://github.com/pmndrs/uikit.git

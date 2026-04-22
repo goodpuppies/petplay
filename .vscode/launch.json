@@ -1,20 +1,11 @@
 {
   "version": "0.2.0",
-  "compounds": [
-    {
-      "name": "Debug Deno with Workers",
-      "configurations": [
-        "Main thread only",
-        "Attach Worker 1"
-      ]
-    }
-  ],
   "configurations": [
     {
       "request": "launch",
-      "name": "Main thread only",
+      "name": "main",
       "type": "node",
-      "program": "${workspaceFolder}/petplay/init.ts",
+      "program": "${workspaceFolder}/petplay/petplay.ts",
       "cwd": "${workspaceFolder}/petplay",
       "console": "internalConsole",
       "outputCapture": "std",
@@ -26,33 +17,6 @@
         "--inspect-wait",
         "-A",
       ],
-      "attachSimplePort": 9229
-    },
-    {
-      "request": "launch",
-      "name": "test",
-      "type": "node",
-      "program": "${workspaceFolder}/tests/w.ts",
-      "cwd": "${workspaceFolder}",
-      "console": "internalConsole",
-      "outputCapture": "std",
-      "autoAttachChildProcesses": true,
-      "env": {},
-      "runtimeExecutable": "Deno",
-      "runtimeArgs": [
-        "run",
-        "--inspect-wait",
-        "-A",
-      ],
-      "attachSimplePort": 9229
-    },
-    {
-      "name": "Attach Worker 1",
-      "type": "node",
-      "request": "attach",
-      "port": 9229,
-      "address": "127.0.0.1",
-      "restart": false
     }
   ]
 }
