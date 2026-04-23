@@ -1,13 +1,16 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@denosaurs/byte-type@~0.4.1": "0.4.1",
     "jsr:@denosaurs/cache@0.2.15": "0.2.15",
     "jsr:@denosaurs/plug@1": "1.0.5",
     "jsr:@denosaurs/plug@1.0.5": "1.0.5",
+    "jsr:@g9wp/ptr@~0.3.2": "0.3.2",
     "jsr:@gfx/build-glfw@0.1.0": "0.1.0",
     "jsr:@gfx/canvas@0.5.8": "0.5.8",
     "jsr:@gfx/dwm@~0.3.9": "0.3.9",
     "jsr:@mommysgoodpuppy/logchannel@0.1": "0.1.0",
+    "jsr:@sdl3/sdl3-deno@^2.1.0": "2.1.0",
     "jsr:@std/assert@0.214": "0.214.0",
     "jsr:@std/assert@0.217": "0.217.0",
     "jsr:@std/encoding@0.214": "0.214.0",
@@ -16,6 +19,7 @@
     "jsr:@std/fs@0.214": "0.214.0",
     "jsr:@std/fs@0.217.0": "0.217.0",
     "jsr:@std/fs@1.0.4": "1.0.4",
+    "jsr:@std/fs@^1.0.19": "1.0.23",
     "jsr:@std/internal@^1.0.12": "1.0.13",
     "jsr:@std/path@*": "1.1.4",
     "jsr:@std/path@0.214": "0.214.0",
@@ -23,6 +27,7 @@
     "jsr:@std/path@0.217.0": "0.217.0",
     "jsr:@std/path@1.0.6": "1.0.6",
     "jsr:@std/path@^1.0.6": "1.1.4",
+    "jsr:@std/path@^1.1.2": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "npm:@iwer/devui@^1.1.1": "1.1.2_iwer@2.2.1_@types+react@19.2.14",
     "npm:@iwer/sem@~0.2.5": "0.2.5_iwer@2.2.1",
@@ -35,6 +40,7 @@
     "npm:@types/react@^19.2.8": "19.2.14",
     "npm:@types/three@0.182": "0.182.0",
     "npm:@zappar/msdf-generator@^1.2.4": "1.2.4",
+    "npm:gl-matrix@^3.4.4": "3.4.4",
     "npm:meshline@^3.3.1": "3.3.1_three@0.184.0",
     "npm:pngjs@*": "7.0.0",
     "npm:quad-indices@^2.0.1": "2.0.1",
@@ -43,11 +49,15 @@
     "npm:suspend-react@~0.1.3": "0.1.3_react@19.2.5",
     "npm:three-msdf-text-utils@^1.4.1": "1.5.0_three@0.184.0",
     "npm:tunnel-rat@~0.1.2": "0.1.2_@types+react@19.2.14_react@19.2.5",
+    "npm:webxr-layers-polyfill@^1.1.0": "1.1.0",
     "npm:word-wrapper@^1.0.7": "1.0.7",
     "npm:yoga-layout@^3.2.1": "3.2.1",
     "npm:zustand@^4.5.2": "4.5.7_@types+react@19.2.14_react@19.2.5"
   },
   "jsr": {
+    "@denosaurs/byte-type@0.4.1": {
+      "integrity": "bf18e895a057482b21926cecf0a9c5fe57f544cbe535c1419f45b5cd090250d3"
+    },
     "@denosaurs/cache@0.2.15": {
       "integrity": "c5abe7477ef5705ff7d3dbade3380a1b6cf82e3d4cb4755068a525a75cda987b",
       "dependencies": [
@@ -63,6 +73,9 @@
         "jsr:@std/fs@0.214",
         "jsr:@std/path@0.214"
       ]
+    },
+    "@g9wp/ptr@0.3.2": {
+      "integrity": "30123682986f851f6907aaf460c6dde4658ce6715556495f890574ce0a592bed"
     },
     "@gfx/build-glfw@0.1.0": {
       "integrity": "dfe046f585cacbe0aa6d696e9f8fa33c0b5411121c6de58b14073c85252110fe"
@@ -87,6 +100,15 @@
     },
     "@mommysgoodpuppy/logchannel@0.1.0": {
       "integrity": "4001c4ece26bb332d511c6a3e3b0383d4f39d476d375b0dda32a6e42a9259c67"
+    },
+    "@sdl3/sdl3-deno@2.1.0": {
+      "integrity": "44f98e82f9abcfd868a9b0189f2c6a32ffde3d14b453ae7992016e2943bb8e22",
+      "dependencies": [
+        "jsr:@denosaurs/byte-type",
+        "jsr:@g9wp/ptr",
+        "jsr:@std/fs@^1.0.19",
+        "jsr:@std/path@^1.1.2"
+      ]
     },
     "@std/assert@0.214.0": {
       "integrity": "55d398de76a9828fd3b1aa653f4dba3eee4c6985d90c514865d2be9bd082b140"
@@ -121,6 +143,13 @@
       "integrity": "2907d32d8d1d9e540588fd5fe0ec21ee638134bd51df327ad4e443aaef07123c",
       "dependencies": [
         "jsr:@std/path@^1.0.6"
+      ]
+    },
+    "@std/fs@1.0.23": {
+      "integrity": "3ecbae4ce4fee03b180fa710caff36bb5adb66631c46a6460aaad49515565a37",
+      "dependencies": [
+        "jsr:@std/internal",
+        "jsr:@std/path@^1.1.4"
       ]
     },
     "@std/internal@1.0.13": {
@@ -752,25 +781,39 @@
       "jsr:@gfx/dwm@~0.3.9",
       "jsr:@mommysgoodpuppy/logchannel@0.1",
       "jsr:@std/path@^1.1.4",
-      "npm:@iwer/devui@^1.1.1",
-      "npm:@iwer/sem@~0.2.5",
       "npm:@number0/iroh@0.31",
       "npm:@preact/signals-core@^1.12.1",
       "npm:@react-three/fiber@^9.5.0",
       "npm:@react-three/xr@^6.6.29",
       "npm:@types/react@^19.2.8",
       "npm:@types/three@0.182",
-      "npm:@zappar/msdf-generator@^1.2.4",
-      "npm:meshline@^3.3.1",
-      "npm:quad-indices@^2.0.1",
-      "npm:react-dom@^19.2.3",
-      "npm:react@^19.2.3",
-      "npm:suspend-react@~0.1.3",
-      "npm:three-msdf-text-utils@^1.4.1",
-      "npm:tunnel-rat@~0.1.2",
-      "npm:word-wrapper@^1.0.7",
-      "npm:yoga-layout@^3.2.1",
-      "npm:zustand@^4.5.2"
-    ]
+      "npm:react@^19.2.3"
+    ],
+    "members": {
+      "submodules/threewebxrwebgpudeno": {
+        "dependencies": [
+          "jsr:@sdl3/sdl3-deno@^2.1.0",
+          "npm:@iwer/devui@^1.1.1",
+          "npm:@iwer/sem@~0.2.5",
+          "npm:@preact/signals-core@^1.12.1",
+          "npm:@react-three/fiber@^9.5.0",
+          "npm:@types/react@^19.2.8",
+          "npm:@types/three@0.182",
+          "npm:@zappar/msdf-generator@^1.2.4",
+          "npm:gl-matrix@^3.4.4",
+          "npm:meshline@^3.3.1",
+          "npm:quad-indices@^2.0.1",
+          "npm:react-dom@^19.2.3",
+          "npm:react@^19.2.3",
+          "npm:suspend-react@~0.1.3",
+          "npm:three-msdf-text-utils@^1.4.1",
+          "npm:tunnel-rat@~0.1.2",
+          "npm:webxr-layers-polyfill@^1.1.0",
+          "npm:word-wrapper@^1.0.7",
+          "npm:yoga-layout@^3.2.1",
+          "npm:zustand@^4.5.2"
+        ]
+      }
+    }
   }
 }

@@ -2,6 +2,7 @@ import React from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { advance, createRoot } from "@react-three/fiber";
+import { createXRStore, XR, XROrigin } from "@pmndrs/xr";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
@@ -396,38 +397,11 @@ export class WebXRHost {
       const canvas = this.surfaceHost.getCanvas();
       const context = this.surfaceHost.getContext();
 
-      const xrRuntimeModulePath = new URL(
-        "../submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/dist/xr.js",
-        import.meta.url,
-      ).href;
-      const xrOriginModulePath = new URL(
-        "../submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/dist/origin.js",
-        import.meta.url,
-      ).href;
-      const xrRuntimeModule = await import(xrRuntimeModulePath);
-      const xrOriginModule = await import(xrOriginModulePath);
       const iwerModulePath = new URL(
         "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js",
         import.meta.url,
       ).href;
       const iwerModule = await import(iwerModulePath);
-      const createXRStore = xrRuntimeModule.createXRStore as (
-        options: Record<string, unknown>,
-      ) => {
-        enterAR: () => Promise<XRSession>;
-        enterVR: () => Promise<XRSession>;
-        getState: () => { xr: { disconnect: () => void } };
-        onBeforeRender?: () => void;
-        onBeforeFrame?: (
-          scene: THREE.Scene,
-          camera: THREE.Camera,
-          frame?: XRFrame,
-        ) => void;
-      };
-      const XR = xrRuntimeModule.XR as React.ComponentType<
-        { store: unknown; children?: React.ReactNode }
-      >;
-      const XROrigin = xrOriginModule.XROrigin as React.ComponentType;
       const XRDevice = iwerModule.XRDevice as new (
         device: unknown,
         options: Record<string, unknown>,
