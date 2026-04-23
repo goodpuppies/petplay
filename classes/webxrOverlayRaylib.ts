@@ -87,6 +87,7 @@ export class WebXROverlayRaylib {
     }
 
     raylib.loadRaylib(getDefaultRaylibPath());
+    raylib.SetTraceLogLevel(raylib.TraceLogLevel.LOG_WARNING);
     raylib.SetConfigFlags(DEFAULT_WINDOW_FLAGS);
     raylib.H.InitWindow(CONTEXT_WINDOW_WIDTH, CONTEXT_WINDOW_HEIGHT, `${name}_${this.uniqueId}`);
     this.windowInitialized = true;
