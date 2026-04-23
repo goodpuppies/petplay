@@ -1795,7 +1795,7 @@ function setUiBackfaceCullingEnabled(enabled: boolean): void {
   symbols.rlDisableBackfaceCulling();
 }
 
-const LIGHTING_VERTEX_SHADER = `#version 330
+const LIGHTING_VERTEX_SHADER = /*glsl*/`#version 330
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
@@ -1819,7 +1819,7 @@ void main() {
 }
 `;
 
-const LIGHTING_FRAGMENT_SHADER = `#version 330
+const LIGHTING_FRAGMENT_SHADER = /*glsl*/`#version 330
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec2 fragTexCoord;
@@ -1859,7 +1859,7 @@ void main() {
 }
 `;
 
-const UI_PANEL_VERTEX_SHADER = `#version 330
+const UI_PANEL_VERTEX_SHADER = /*glsl*/`#version 330
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
@@ -1875,7 +1875,7 @@ void main() {
 }
 `;
 
-const UI_PANEL_FRAGMENT_SHADER = `#version 330
+const UI_PANEL_FRAGMENT_SHADER = /*glsl*/`#version 330
 in vec2 fragUv;
 out vec4 finalColor;
 
@@ -1997,7 +1997,7 @@ void main() {
 }
 `;
 
-const UI_TEXT_VERTEX_SHADER = `#version 330
+const UI_TEXT_VERTEX_SHADER = /*glsl*/`#version 330
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 
@@ -2011,7 +2011,7 @@ void main() {
 }
 `;
 
-const UI_TEXT_FRAGMENT_SHADER = `#version 330
+const UI_TEXT_FRAGMENT_SHADER = /*glsl*/`#version 330
 in vec2 fragUv;
 out vec4 finalColor;
 
