@@ -10,6 +10,8 @@
     "@iwer/sem": "npm:@iwer/sem@~0.2.5",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
     "@number0/iroh": "npm:@number0/iroh@^0.31.0",
+    "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
+    "@pmndrs/handle/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/",
     "@pmndrs/msdfonts": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/msdfonts/src/index.ts",
     "@pmndrs/uikit": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/index.ts",
     "@pmndrs/uikit-pub-sub": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/pub-sub/src/index.ts",
@@ -33,7 +35,8 @@
     "@pmndrs/xr/internals": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/dist/internals.js",
     //deps of deps
     "@react-three/fiber": "npm:@react-three/fiber@^9.5.0",
-    "@react-three/handle": "npm:@react-three/handle@^6.6.16",
+    "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
+    "@react-three/handle/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/",
     "@types/react": "npm:@types/react@^19.2.8",
     "@types/three": "npm:@types/three@^0.182.0",
     "meshline": "npm:meshline@^3.3.1",

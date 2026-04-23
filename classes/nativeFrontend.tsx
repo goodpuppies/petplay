@@ -27,6 +27,12 @@ const CONTROLLER_UI_ROTATION: [number, number, number] = [
 ];
 const CONTROLLER_UI_SCALE: [number, number, number] = [0.47, 0.47, 0.47];
 
+export type NativeHudTransform = {
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+  scale?: [number, number, number];
+};
+
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
@@ -132,7 +138,12 @@ function ControllerFrame({ children }: { children?: React.ReactNode }) {
   );
 }
 
-function NativeHudPanel({ ignoredHandedness }: { ignoredHandedness?: "left" | "right" }) {
+export function NativeHudPanel(
+  { ignoredHandedness, transform }: {
+    ignoredHandedness?: "left" | "right";
+    transform?: NativeHudTransform;
+  },
+) {
   const startedAt = useRef(performance.now());
   const [layersActive, setLayersActive] = useState(false);
   const [musicActive, setMusicActive] = useState(false);
@@ -157,12 +168,15 @@ function NativeHudPanel({ ignoredHandedness }: { ignoredHandedness?: "left" | "r
   const clock = formatClock(currentDate);
   const dateLabel = formatDate(currentDate);
   const elapsed = formatElapsed(startedAt.current, now);
+  const position = transform?.position ?? CONTROLLER_UI_POSITION;
+  const rotation = transform?.rotation ?? CONTROLLER_UI_ROTATION;
+  const scale = transform?.scale ?? CONTROLLER_UI_SCALE;
 
   return (
     <group
-      position={CONTROLLER_UI_POSITION}
-      rotation={CONTROLLER_UI_ROTATION}
-      scale={CONTROLLER_UI_SCALE}
+      position={position}
+      rotation={rotation}
+      scale={scale}
       pointerEventsType={allowPointerEvents}
       userData={{ bridge: { kind: "skip" } }}
     >

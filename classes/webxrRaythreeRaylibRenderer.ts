@@ -40,6 +40,26 @@ function isWebXrRaythreeDebugEnabled(): boolean {
 }
 
 const WEBXR_RAYTHREE_DEBUG = isWebXrRaythreeDebugEnabled();
+const WEBXR_RAYTHREE_TEXT_FORCE_NON_INDEXED = false;
+
+function isWebXrRaythreeTextAssertEnabled(): boolean {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-raythree-text-assert="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  switch (configured) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    default:
+      return false;
+  }
+}
+
+const WEBXR_RAYTHREE_TEXT_ASSERT = isWebXrRaythreeTextAssertEnabled();
 
 type NativeMesh = {
   mesh: raylibBindings.Mesh;
@@ -110,6 +130,7 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly materials = new Map<number, NativeMaterial>();
   private readonly materialRevisions = new Map<number, number>();
   private readonly uiTextMeshes = new Map<string, UiTextMeshCacheEntry>();
+  private readonly loggedTextGeometryValidation = new Set<string>();
   private uiMsdfAtlas: raylibBindings.Texture2D | null = null;
   private uiMsdfAtlasSize: [number, number] = [0, 0];
   private uiMsdfAtlasLoadFailed = false;
@@ -154,14 +175,19 @@ export class WebXRRaythreeRaylibRenderer {
         ? decodeURIComponent(MSDF_ATLAS_PATH.pathname.replace(/^\/+/, ""))
         : decodeURIComponent(MSDF_ATLAS_PATH.pathname);
       const image = raylib.H.LoadImage(pathname);
-      const texture = raylib.H.LoadTextureFromImage(image);
+      // three-msdf-text-utils uses texture.flipY=true; match that upload convention in raylib.
+      const imageHandle = raylibBindings.Image.createPointer(image);
+      raylib.H.ImageFlipVertical(imageHandle.pointer);
+      const flippedImage = imageHandle.read();
+      const texture = raylib.H.LoadTextureFromImage(flippedImage);
       raylib.H.SetTextureFilter(texture, raylibBindings.TextureFilter.TEXTURE_FILTER_BILINEAR);
-      this.uiMsdfAtlasSize = [image.width, image.height];
-      raylib.H.UnloadImage(image);
+      raylib.H.SetTextureWrap(texture, raylibBindings.TextureWrap.TEXTURE_WRAP_CLAMP);
+      this.uiMsdfAtlasSize = [flippedImage.width, flippedImage.height];
+      raylib.H.UnloadImage(flippedImage);
       this.uiMsdfAtlas = texture;
       LogChannel.log(
         "webxrv2",
-        `[webxr] msdf atlas loaded ${image.width}x${image.height} path=${pathname}`,
+        `[webxr] msdf atlas loaded ${flippedImage.width}x${flippedImage.height} path=${pathname}`,
       );
       return this.uiMsdfAtlas;
     } catch (error) {
@@ -332,9 +358,13 @@ export class WebXRRaythreeRaylibRenderer {
     }
     if (ui !== undefined) {
       setUiDepthMaskEnabled(false);
+      setUiDepthTestEnabled(false);
+      setUiBackfaceCullingEnabled(false);
       try {
         this.drawUiSnapshot(ui, viewMatrix);
       } finally {
+        setUiBackfaceCullingEnabled(true);
+        setUiDepthTestEnabled(true);
         setUiDepthMaskEnabled(true);
       }
     }
@@ -502,7 +532,8 @@ export class WebXRRaythreeRaylibRenderer {
   ): NativeMesh | null {
     const geometry = text.geometry;
     if (geometry === undefined) return null;
-    const key = text.text;
+    const key = createUiTextGeometryKey(text.text, geometry);
+    maybeValidateMsdfGeometry(text.text, geometry, this.loggedTextGeometryValidation);
     const existing = this.uiTextMeshes.get(key);
     if (existing !== undefined && existing.version === geometry.version) {
       return existing.mesh;
@@ -511,7 +542,12 @@ export class WebXRRaythreeRaylibRenderer {
       this.unloadNativeMesh(existing.mesh);
       this.uiTextMeshes.delete(key);
     }
-    const mesh = createNativeMeshFromMsdfBuffers(geometry.positions, geometry.uvs, geometry.indices);
+    const mesh = createNativeMeshFromMsdfBuffers(
+      geometry.positions,
+      geometry.uvs,
+      geometry.indices,
+      text.text,
+    );
     if (mesh === null) return null;
     this.uiTextMeshes.set(key, { mesh, version: geometry.version });
     return mesh;
@@ -615,7 +651,7 @@ private maybeLogProjectionSummary(frame: RenderFrame): void {
       raylib.H.UnloadModel(nativeMesh.model);
       return;
     }
-    raylib.H.UnloadMesh(nativeMesh.mesh);
+    unloadUploadedMeshGpuOnly(nativeMesh.mesh);
   }
 }
 
@@ -997,6 +1033,7 @@ function createNativeMeshFromMsdfBuffers(
   positionsRaw: unknown,
   uvsRaw: unknown,
   indicesRaw: unknown,
+  label?: string,
 ): NativeMesh | null {
   const positions2D = toFloat32ArrayLoose(positionsRaw);
   const uvs = toFloat32ArrayLoose(uvsRaw);
@@ -1013,8 +1050,55 @@ function createNativeMeshFromMsdfBuffers(
   for (let i = 0; i < vertexCount; i++) {
     normals[i * 3 + 2] = 1;
   }
+  const indicesAny = toIndexArrayLoose(indicesRaw);
+  const topology = analyzeMsdfIndexTopology(indicesAny, vertexCount);
+  const useExpandedTriangles = WEBXR_RAYTHREE_TEXT_FORCE_NON_INDEXED || topology.maxIndex > 65535;
+  if (WEBXR_RAYTHREE_TEXT_ASSERT) {
+    assertMsdfTopologyInvariants(topology, label ?? "<text>");
+  }
+  if (useExpandedTriangles) {
+    debugLog(
+      `msdf index expansion text="${label ?? "<text>"}" maxIndex=${topology.maxIndex} ` +
+        `indices=${indicesAny.length} vertices=${vertexCount}`,
+    );
+    const expanded = expandIndexedMsdfTriangles(positions3D, uvs, indicesAny);
+    const expandedNormals = new Float32Array(expanded.vertexCount * 3);
+    for (let i = 0; i < expanded.vertexCount; i++) {
+      expandedNormals[i * 3 + 2] = 1;
+    }
+    const expandedColors = buildOpaqueWhiteColors(expanded.vertexCount);
+    const meshHandle = raylibBindings.Mesh.createPointer({
+      vertexCount: expanded.vertexCount,
+      triangleCount: expanded.vertexCount / 3,
+      vertices: pointerAddress(expanded.positions3D),
+      texcoords: pointerAddress(expanded.uvs),
+      texcoords2: ZERO_POINTER,
+      normals: pointerAddress(expandedNormals),
+      tangents: ZERO_POINTER,
+      colors: pointerAddress(expandedColors),
+      indices: ZERO_POINTER,
+      animVertices: ZERO_POINTER,
+      animNormals: ZERO_POINTER,
+      boneIds: ZERO_POINTER,
+      boneWeights: ZERO_POINTER,
+      boneMatrices: ZERO_POINTER,
+      boneCount: 0,
+      vaoId: 0,
+      vboId: ZERO_POINTER,
+    } as unknown as raylibBindings.Mesh);
+
+    raylib.H.UploadMesh(meshHandle.pointer, false);
+    const uploaded = meshHandle.read();
+    const sanitized = sanitizeUploadedMesh(uploaded);
+    meshHandle.write(sanitized);
+    return { mesh: sanitized };
+  }
+
   const colors = buildOpaqueWhiteColors(vertexCount);
-  const indices = toUint16ArrayLoose(indicesRaw);
+  const indices = toUint16ArrayLoose(indicesAny);
+  if (WEBXR_RAYTHREE_TEXT_ASSERT) {
+    assertMsdfConversionInvariants(positions2D, positions3D, uvs, indices, label ?? "<text>");
+  }
   const triangleCount = indices.length / 3;
   const meshHandle = raylibBindings.Mesh.createPointer({
     vertexCount,
@@ -1041,6 +1125,208 @@ function createNativeMeshFromMsdfBuffers(
   const sanitized = sanitizeUploadedMesh(uploaded);
   meshHandle.write(sanitized);
   return { mesh: sanitized };
+}
+
+function toIndexArrayLoose(value: unknown): Uint16Array | Uint32Array {
+  if (value instanceof Uint16Array) return value.slice();
+  if (value instanceof Uint32Array) return value.slice();
+  if (Array.isArray(value)) {
+    const max = value.reduce((acc, entry) => Math.max(acc, Number(entry) || 0), 0);
+    return max > 65535 ? Uint32Array.from(value as ArrayLike<number>) : Uint16Array.from(value as ArrayLike<number>);
+  }
+  if (value != null && typeof value === "object") {
+    const maybeLength = (value as { length?: number }).length;
+    if (typeof maybeLength === "number") {
+      const materialized = Array.from(value as ArrayLike<number>);
+      const max = materialized.reduce((acc, entry) => Math.max(acc, Number(entry) || 0), 0);
+      return max > 65535 ? Uint32Array.from(materialized) : Uint16Array.from(materialized);
+    }
+    const keys = Object.keys(value as Record<string, number>)
+      .filter((key) => /^\d+$/.test(key))
+      .sort((a, b) => Number(a) - Number(b));
+    const max = keys.reduce((acc, key) => Math.max(acc, Number((value as Record<string, number>)[key]) || 0), 0);
+    if (max > 65535) {
+      const out = new Uint32Array(keys.length);
+      for (let i = 0; i < keys.length; i++) out[i] = Number((value as Record<string, number>)[keys[i]]);
+      return out;
+    }
+    const out = new Uint16Array(keys.length);
+    for (let i = 0; i < keys.length; i++) out[i] = Number((value as Record<string, number>)[keys[i]]);
+    return out;
+  }
+  return new Uint16Array(0);
+}
+
+function analyzeMsdfIndexTopology(
+  indices: Uint16Array | Uint32Array,
+  vertexCount: number,
+): { maxIndex: number; minIndex: number; indexCount: number; vertexCount: number } {
+  let maxIndex = 0;
+  let minIndex = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < indices.length; i++) {
+    const idx = Number(indices[i] ?? 0);
+    if (idx > maxIndex) maxIndex = idx;
+    if (idx < minIndex) minIndex = idx;
+  }
+  if (!Number.isFinite(minIndex)) minIndex = 0;
+  return { maxIndex, minIndex, indexCount: indices.length, vertexCount };
+}
+
+function assertMsdfTopologyInvariants(
+  topology: { maxIndex: number; minIndex: number; indexCount: number; vertexCount: number },
+  label: string,
+): void {
+  if (topology.indexCount === 0) {
+    throw new Error(`[msdf-assert] ${label}: topology has empty index buffer`);
+  }
+  if (topology.indexCount % 3 !== 0) {
+    throw new Error(`[msdf-assert] ${label}: topology index count not multiple of 3: ${topology.indexCount}`);
+  }
+  if (topology.minIndex < 0 || topology.maxIndex >= topology.vertexCount) {
+    throw new Error(
+      `[msdf-assert] ${label}: topology index range invalid min=${topology.minIndex} max=${topology.maxIndex} vertices=${topology.vertexCount}`,
+    );
+  }
+}
+
+function expandIndexedMsdfTriangles(
+  positions3D: Float32Array,
+  uvs: Float32Array,
+  indices: Uint16Array | Uint32Array,
+): { positions3D: Float32Array; uvs: Float32Array; vertexCount: number } {
+  const vertexCount = indices.length;
+  const expandedPositions = new Float32Array(vertexCount * 3);
+  const expandedUvs = new Float32Array(vertexCount * 2);
+  for (let i = 0; i < indices.length; i++) {
+    const srcIndex = Number(indices[i] ?? 0);
+    expandedPositions[i * 3] = positions3D[srcIndex * 3] ?? 0;
+    expandedPositions[i * 3 + 1] = positions3D[srcIndex * 3 + 1] ?? 0;
+    expandedPositions[i * 3 + 2] = positions3D[srcIndex * 3 + 2] ?? 0;
+    expandedUvs[i * 2] = uvs[srcIndex * 2] ?? 0;
+    expandedUvs[i * 2 + 1] = uvs[srcIndex * 2 + 1] ?? 0;
+  }
+  return { positions3D: expandedPositions, uvs: expandedUvs, vertexCount };
+}
+
+function createUiTextGeometryKey(
+  text: string,
+  geometry: WebXRRaythreeUiSnapshot["texts"][number]["geometry"],
+): string {
+  if (geometry == null) {
+    return text;
+  }
+  return `${text}\u241f${geometry.positions.length}\u241f${geometry.uvs.length}\u241f${
+    geometry.indices.length
+  }\u241f${geometry.version}\u241f${quickFloat32Hash(geometry.positions)}\u241f${
+    quickFloat32Hash(geometry.uvs)
+  }\u241f${quickIndexHash(geometry.indices)}`;
+}
+
+function quickFloat32Hash(values: Float32Array): string {
+  let hash = 2166136261 >>> 0;
+  const stride = Math.max(1, Math.floor(values.length / 64));
+  for (let i = 0; i < values.length; i += stride) {
+    const bits = new Uint32Array(new Float32Array([values[i]]).buffer)[0] ?? 0;
+    hash ^= bits;
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  hash ^= values.length;
+  return hash.toString(16);
+}
+
+function quickIndexHash(values: Uint16Array | Uint32Array): string {
+  let hash = 2166136261 >>> 0;
+  const stride = Math.max(1, Math.floor(values.length / 64));
+  for (let i = 0; i < values.length; i += stride) {
+    hash ^= Number(values[i] ?? 0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  hash ^= values.length;
+  return hash.toString(16);
+}
+
+function maybeValidateMsdfGeometry(
+  label: string,
+  geometry: NonNullable<WebXRRaythreeUiSnapshot["texts"][number]["geometry"]>,
+  logged: Set<string>,
+): void {
+  if (!WEBXR_RAYTHREE_TEXT_ASSERT) {
+    return;
+  }
+  const key = createUiTextGeometryKey(label, geometry);
+  if (logged.has(key)) {
+    return;
+  }
+  logged.add(key);
+  const positions = geometry.positions;
+  const uvs = geometry.uvs;
+  const indices = geometry.indices;
+  const vertexCount = Math.floor(positions.length / 2);
+  if (positions.length % 2 !== 0) {
+    throw new Error(`[msdf-assert] ${label}: positions length must be even, got ${positions.length}`);
+  }
+  if (uvs.length !== vertexCount * 2) {
+    throw new Error(
+      `[msdf-assert] ${label}: uv length mismatch expected=${vertexCount * 2} got=${uvs.length}`,
+    );
+  }
+  if (indices.length % 3 !== 0) {
+    throw new Error(`[msdf-assert] ${label}: index length must be multiple of 3, got ${indices.length}`);
+  }
+  let maxIndex = 0;
+  for (let i = 0; i < indices.length; i++) {
+    const idx = Number(indices[i] ?? 0);
+    if (idx > maxIndex) maxIndex = idx;
+  }
+  if (maxIndex >= vertexCount) {
+    throw new Error(
+      `[msdf-assert] ${label}: index out of bounds max=${maxIndex} vertexCount=${vertexCount}`,
+    );
+  }
+  for (let i = 0; i < uvs.length; i += 2) {
+    const u = uvs[i] ?? 0;
+    const v = uvs[i + 1] ?? 0;
+    if (u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001) {
+      throw new Error(`[msdf-assert] ${label}: uv out of range at i=${i / 2} uv=(${u},${v})`);
+    }
+  }
+  debugLog(
+    `msdf-assert ok text="${label}" vertices=${vertexCount} triangles=${indices.length / 3} ` +
+      `uvHash=${quickFloat32Hash(uvs)} posHash=${quickFloat32Hash(positions)}`,
+  );
+}
+
+function assertMsdfConversionInvariants(
+  positions2D: Float32Array,
+  positions3D: Float32Array,
+  uvs: Float32Array,
+  indices: Uint16Array,
+  label: string,
+): void {
+  const vertexCount = Math.floor(positions2D.length / 2);
+  if (positions3D.length !== vertexCount * 3) {
+    throw new Error(
+      `[msdf-assert] ${label}: converted position length mismatch expected=${vertexCount * 3} got=${positions3D.length}`,
+    );
+  }
+  if (uvs.length !== vertexCount * 2) {
+    throw new Error(`[msdf-assert] ${label}: converted uv length mismatch expected=${vertexCount * 2} got=${uvs.length}`);
+  }
+  if (indices.length === 0) {
+    throw new Error(`[msdf-assert] ${label}: converted index buffer is empty`);
+  }
+  for (let i = 0; i < vertexCount; i++) {
+    const px = positions2D[i * 2] ?? 0;
+    const py = positions2D[i * 2 + 1] ?? 0;
+    const rx = positions3D[i * 3] ?? 0;
+    const ry = positions3D[i * 3 + 1] ?? 0;
+    const rz = positions3D[i * 3 + 2] ?? 0;
+    if (Math.abs(px - rx) > 1e-6 || Math.abs(py - ry) > 1e-6 || Math.abs(rz) > 1e-6) {
+      throw new Error(
+        `[msdf-assert] ${label}: position conversion mismatch i=${i} src=(${px},${py}) dst=(${rx},${ry},${rz})`,
+      );
+    }
+  }
 }
 
 function createNativeMesh(asset: GeometryAsset): NativeMesh | null {
@@ -1076,6 +1362,7 @@ function createNativeMesh(asset: GeometryAsset): NativeMesh | null {
 }
 
 function sanitizeUploadedMesh(mesh: raylibBindings.Mesh): raylibBindings.Mesh {
+  const hasIndices = mesh.indices !== ZERO_POINTER;
   return {
     ...mesh,
     vertices: ZERO_POINTER,
@@ -1084,14 +1371,35 @@ function sanitizeUploadedMesh(mesh: raylibBindings.Mesh): raylibBindings.Mesh {
     normals: ZERO_POINTER,
     tangents: ZERO_POINTER,
     colors: ZERO_POINTER,
-    indices: ZERO_POINTER,
+    // DrawMesh() uses mesh.indices != NULL to choose indexed rendering path.
+    indices: hasIndices ? 1n : ZERO_POINTER,
     animVertices: ZERO_POINTER,
     animNormals: ZERO_POINTER,
     boneIds: ZERO_POINTER,
     boneWeights: ZERO_POINTER,
     boneMatrices: ZERO_POINTER,
-    vboId: ZERO_POINTER,
   } as unknown as raylibBindings.Mesh;
+}
+
+const RL_MESH_VBO_COUNT = 7;
+
+function unloadUploadedMeshGpuOnly(mesh: raylibBindings.Mesh): void {
+  const symbols = getUiRlglSymbols();
+  if (mesh.vaoId > 0) {
+    symbols.rlUnloadVertexArray(mesh.vaoId);
+  }
+  const vboPointer = pointerFromAddress(mesh.vboId);
+  if (vboPointer !== null) {
+    const raw = new Deno.UnsafePointerView(vboPointer).getArrayBuffer(RL_MESH_VBO_COUNT * 4);
+    const view = new DataView(raw);
+    for (let i = 0; i < RL_MESH_VBO_COUNT; i++) {
+      const id = view.getUint32(i * 4, true);
+      if (id > 0) {
+        symbols.rlUnloadVertexBuffer(id);
+      }
+    }
+    raylib.H.MemFree(vboPointer);
+  }
 }
 
 type PreparedGeometryBuffers = {
@@ -1383,6 +1691,22 @@ function debugLog(message: string): void {
 }
 
 type UiRlglSymbols = {
+  rlUnloadVertexArray: {
+    parameters: ["u32"];
+    result: "void";
+  };
+  rlUnloadVertexBuffer: {
+    parameters: ["u32"];
+    result: "void";
+  };
+  rlDisableDepthTest: {
+    parameters: [];
+    result: "void";
+  };
+  rlEnableDepthTest: {
+    parameters: [];
+    result: "void";
+  };
   rlDisableDepthMask: {
     parameters: [];
     result: "void";
@@ -1407,6 +1731,22 @@ function getUiRlglSymbols(): Deno.DynamicLibrary<UiRlglSymbols>["symbols"] {
   uiRlglLibrary ??= Deno.dlopen(
     raylibBindings.getDefaultRaylibLibraryName(),
     {
+      rlUnloadVertexArray: {
+        parameters: ["u32"],
+        result: "void",
+      },
+      rlUnloadVertexBuffer: {
+        parameters: ["u32"],
+        result: "void",
+      },
+      rlDisableDepthTest: {
+        parameters: [],
+        result: "void",
+      },
+      rlEnableDepthTest: {
+        parameters: [],
+        result: "void",
+      },
       rlDisableDepthMask: {
         parameters: [],
         result: "void",
@@ -1435,6 +1775,15 @@ function setUiDepthMaskEnabled(enabled: boolean): void {
     return;
   }
   symbols.rlDisableDepthMask();
+}
+
+function setUiDepthTestEnabled(enabled: boolean): void {
+  const symbols = getUiRlglSymbols();
+  if (enabled) {
+    symbols.rlEnableDepthTest();
+    return;
+  }
+  symbols.rlDisableDepthTest();
 }
 
 function setUiBackfaceCullingEnabled(enabled: boolean): void {
@@ -1668,24 +2017,15 @@ out vec4 finalColor;
 
 uniform sampler2D texture0;
 uniform vec4 uTint;
-uniform float uPxRange;
-uniform vec2 uAtlasSize;
 
 float median(float r, float g, float b) {
   return max(min(r, g), min(max(r, g), b));
 }
 
-float screenPxRange() {
-  vec2 unitRange = vec2(uPxRange) / uAtlasSize;
-  vec2 screenTexSize = vec2(1.0) / fwidth(fragUv);
-  return max(0.5 * dot(unitRange, screenTexSize), 1.0);
-}
-
 void main() {
   vec3 msd = texture(texture0, fragUv).rgb;
-  float sd = median(msd.r, msd.g, msd.b);
-  float pxDist = screenPxRange() * (sd - 0.5);
-  float alpha = clamp(pxDist + 0.5, 0.0, 1.0);
+  float sigDist = median(msd.r, msd.g, msd.b) - 0.5;
+  float alpha = clamp(sigDist / fwidth(sigDist) + 0.5, 0.0, 1.0);
   if (alpha < 0.01) discard;
   finalColor = vec4(uTint.rgb, uTint.a * alpha);
 }

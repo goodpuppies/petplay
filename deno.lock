@@ -28,9 +28,9 @@
     "npm:@iwer/sem@~0.2.5": "0.2.5_iwer@2.2.1",
     "npm:@number0/iroh@*": "0.31.0",
     "npm:@number0/iroh@0.31": "0.31.0",
+    "npm:@pmndrs/handle@^6.6.29": "6.6.29_@types+react@19.2.14_react@19.2.5",
     "npm:@preact/signals-core@^1.12.1": "1.14.1",
     "npm:@react-three/fiber@^9.5.0": "9.6.0_react@19.2.5_react-dom@19.2.5__react@19.2.5_three@0.184.0_@types+react@19.2.14",
-    "npm:@react-three/handle@^6.6.16": "6.6.29_@react-three+fiber@9.6.0__react@19.2.5__react-dom@19.2.5___react@19.2.5__three@0.184.0__@types+react@19.2.14_react@19.2.5_@types+react@19.2.14",
     "npm:@react-three/xr@^6.6.29": "6.6.29_@react-three+fiber@9.6.0__react@19.2.5__react-dom@19.2.5___react@19.2.5__three@0.184.0__@types+react@19.2.14_react@19.2.5_react-dom@19.2.5__react@19.2.5_@types+react@19.2.14",
     "npm:@types/react@^19.2.8": "19.2.14",
     "npm:@types/three@0.182": "0.182.0",
@@ -334,17 +334,6 @@
       ],
       "optionalPeers": [
         "react-dom"
-      ]
-    },
-    "@react-three/handle@6.6.29_@react-three+fiber@9.6.0__react@19.2.5__react-dom@19.2.5___react@19.2.5__three@0.184.0__@types+react@19.2.14_react@19.2.5_@types+react@19.2.14": {
-      "integrity": "sha512-WL0cZkxYZw5ItLxSVYi2HsuovQHlquCfL4XgGdSvkSqhgD9WNXR47PYm8I3JLfP+oMhyYcbpJ+bnTsaoP5IHxw==",
-      "dependencies": [
-        "@pmndrs/handle",
-        "@pmndrs/pointer-events",
-        "@react-three/fiber",
-        "react",
-        "three@0.184.0",
-        "zustand@4.5.7_@types+react@19.2.14_react@19.2.5"
       ]
     },
     "@react-three/xr@6.6.29_@react-three+fiber@9.6.0__react@19.2.5__react-dom@19.2.5___react@19.2.5__three@0.184.0__@types+react@19.2.14_react@19.2.5_react-dom@19.2.5__react@19.2.5_@types+react@19.2.14": {
@@ -720,6 +709,7 @@
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/array/mod.ts": "2e6eaa208bbd7a39be9ca80d51ce1f660c69c60f38db3aa49cd8feadce4ca604",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/array/sized_array.ts": "9db10cec75db2f325f30837920316b2d06d3c07def08ca07368ec0701c66b425",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/array/typed_array.ts": "2f16bf26259f3db220881cdb3ec37879d8e947e2c7d0c790660204b2bab036ce",
+    "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/bitflags/_common.ts": "0b6bbfa1a39e9301f157c4f552c55d28128e49429d71e6b1c4a270429346b703",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/bitflags/bitflags16.ts": "1ebd50d376db22cdfaece2ac48505360d34fbf8b207844eaa07ab5d52d1a0856",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/bitflags/bitflags32.ts": "8e8c9d7ff79d3b19d9e08a37a21887a9b0778eb21d602bbd54cb73d74262e05a",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/bitflags/bitflags64.ts": "51c89f3836146b534294b28808a3d7744d9b635707eee702f5057733d83e8f2e",
@@ -767,7 +757,6 @@
       "npm:@number0/iroh@0.31",
       "npm:@preact/signals-core@^1.12.1",
       "npm:@react-three/fiber@^9.5.0",
-      "npm:@react-three/handle@^6.6.16",
       "npm:@react-three/xr@^6.6.29",
       "npm:@types/react@^19.2.8",
       "npm:@types/three@0.182",
