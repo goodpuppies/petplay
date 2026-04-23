@@ -173,7 +173,6 @@ export function NativeHudPanel(
       position={position}
       rotation={rotation}
       scale={scale}
-      pointerEventsType={allowPointerEvents}
       userData={{ bridge: { kind: "skip" } }}
     >
       <Handle>

@@ -1,3 +1,5 @@
+/// <reference no-default-lib="true" />
+/// <reference lib="deno.worker" />
 import { parseArgs, runProbe } from "./raylib_openvr_overlay.ts";
 
 globalThis.onmessage = (event: MessageEvent) => {

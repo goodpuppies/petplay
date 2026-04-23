@@ -24,7 +24,7 @@
     //pmdrs
     "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",
     "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
-    "@pmndrs/pointer-events": "npm:@pmndrs/pointer-events@^6.6.29",
+    "@pmndrs/pointer-events": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/index.ts",
     //r3f
     "@react-three/fiber": "npm:@react-three/fiber@^9.5.0",
     "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
@@ -42,7 +42,7 @@
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
     "check": "deno run -A utils/type-check.ts",
-    "ui":"deno run -A petplay/uiViewer.tsx ",
+    "ui": "deno run -A petplay/uiViewer.tsx ",
     "build": {
       "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./cef/ --icon resources/petplay.ico petplay/petplay.ts",
       "dependencies": [

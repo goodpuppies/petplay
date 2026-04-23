@@ -4,15 +4,29 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitHandles } from "@react-three/handle";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { forwardHtmlEvents } from "@pmndrs/pointer-events";
-import {
-  filterForOnePointerLeftClick,
-  createScreenCameraStore,
-} from "@pmndrs/handle";
+import { createScreenCameraStore, filterForOnePointerLeftClick } from "@pmndrs/handle";
 import { RaythreeExtractor } from "../submodules/raythree/src/extract.ts";
 import { createR3FExtractionRoot } from "../submodules/raythree/src/r3f_runtime.ts";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
 import { extractWebXRRaythreeUi } from "../classes/webxrRaythreeUi.ts";
 import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";
+
+// Log dependency versions
+console.log("[uiViewer] Dependency versions check:");
+console.log("[uiViewer] - THREE version:", THREE.REVISION);
+
+try {
+  console.log(
+    "[uiViewer] - filterForOnePointerLeftClick from @pmndrs/handle:",
+    typeof filterForOnePointerLeftClick,
+  );
+  console.log(
+    "[uiViewer] - createScreenCameraStore from @pmndrs/handle:",
+    typeof createScreenCameraStore,
+  );
+} catch (e) {
+  console.error("[uiViewer] - Error inspecting @pmndrs/handle exports:", e);
+}
 
 const DEFAULT_WIDTH = 1400;
 const DEFAULT_HEIGHT = 900;
@@ -73,8 +87,8 @@ class SyntheticMouseEvent extends Event {
   shiftKey: boolean;
   altKey: boolean;
   metaKey: boolean;
-  currentTarget: EventTarget | null = null;
-  target: EventTarget | null = null;
+  override currentTarget: EventTarget | null = null;
+  override target: EventTarget | null = null;
 
   constructor(init: SyntheticEventInit) {
     super(init.type, { bubbles: true, cancelable: true });
@@ -159,7 +173,7 @@ class SyntheticCanvas extends EventTarget {
     this.style.height = `${height}px`;
   }
 
-  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+  override addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (listener == null) {
       return;
     }
@@ -171,10 +185,16 @@ class SyntheticCanvas extends EventTarget {
       set = new Set();
       this.listeners.set(type, set);
     }
+    const sizeBefore = set.size;
     set.add(fn);
+    console.log(
+      `[uiViewer] addEventListener: ${type}, listeners before: ${sizeBefore}, after: ${set.size}, listener: ${
+        fn.name || "anonymous"
+      }`,
+    );
   }
 
-  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+  override removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
     if (listener == null) {
       return;
     }
@@ -197,11 +217,22 @@ class SyntheticCanvas extends EventTarget {
     event.currentTarget = this;
     event.target = this;
     const listeners = this.listeners.get(init.type);
+    if (init.type === "pointerdown" || init.type === "pointerup") {
+      console.log(
+        `[uiViewer] dispatchSyntheticEvent: ${init.type}, listeners count: ${
+          listeners?.size ?? 0
+        }, button: ${init.button}, buttons: ${init.buttons}`,
+      );
+    }
     if (listeners == null) {
       return;
     }
     for (const listener of listeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (e) {
+        console.error(`[uiViewer] Error in listener for ${init.type}:`, e);
+      }
     }
   }
 
@@ -251,6 +282,14 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
     movementX: number,
     movementY: number,
   ) => {
+    /* console.log(`[uiViewer] Pointer event: ${type}`, {
+      button,
+      buttons,
+      clientX,
+      clientY,
+      movementX,
+      movementY,
+    }); */
     canvas.dispatchSyntheticEvent({
       type,
       pointerId: 1,
@@ -296,7 +335,15 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
 
       const nextRightDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_RIGHT);
       if (nextRightDown !== rightDown) {
-        emitPointer(nextRightDown ? "pointerdown" : "pointerup", 2, buttons, clientX, clientY, 0, 0);
+        emitPointer(
+          nextRightDown ? "pointerdown" : "pointerup",
+          2,
+          buttons,
+          clientX,
+          clientY,
+          0,
+          0,
+        );
         if (nextRightDown) {
           canvas.dispatchSyntheticEvent({
             type: "contextmenu",
@@ -350,15 +397,22 @@ function normalizeThreeCameraInstance(camera: THREE.Camera): void {
 }
 
 async function main() {
+  console.log("[uiViewer] main() starting");
   const width = getNumberArg("width", DEFAULT_WIDTH);
   const height = getNumberArg("height", DEFAULT_HEIGHT);
   const title = getStringArg("title", DEFAULT_TITLE);
+  console.log("[uiViewer] Window config:", { width, height, title });
   installSyntheticDomEventPolyfills();
 
   const extractor = new RaythreeExtractor();
+  console.log("[uiViewer] Creating controlsStore with createScreenCameraStore()");
   const controlsStore = createScreenCameraStore();
+  console.log("[uiViewer] controlsStore created, initial state:", controlsStore.getState());
   controlsStore.getState().setOriginPosition(UI_TARGET.x, UI_TARGET.y, UI_TARGET.z);
   controlsStore.getState().setCameraPosition(0, 1.35, 0.65);
+  console.log("[uiViewer] controlsStore after setting positions:", controlsStore.getState());
+
+  console.log("[uiViewer] Creating R3F extraction root");
   const r3f = await createR3FExtractionRoot({
     width,
     height,
@@ -369,10 +423,15 @@ async function main() {
       far: 100,
     },
   });
+  console.log("[uiViewer] R3F root created");
+
   const inputCanvas = new SyntheticCanvas(width, height);
+  console.log("[uiViewer] SyntheticCanvas created:", { width, height });
   const pointerBridge = createRaylibPointerBridge(inputCanvas);
+  console.log("[uiViewer] RaylibPointerBridge created");
 
   raylib.loadRaylib(getDefaultRaylibPath());
+  console.log("[uiViewer] Raylib loaded");
   let renderer: WebXRRaythreeRaylibRenderer | null = null;
   let windowInitialized = false;
   let forwarded:
@@ -384,9 +443,12 @@ async function main() {
   try {
     raylib.H.InitWindow(width, height, title);
     windowInitialized = true;
+    console.log("[uiViewer] Raylib window initialized");
     raylib.SetTargetFPS(60);
     renderer = new WebXRRaythreeRaylibRenderer();
+    console.log("[uiViewer] WebXRRaythreeRaylibRenderer created");
 
+    console.log("[uiViewer] Rendering UiViewerScene with controlsStore");
     r3f.render(<UiViewerScene controlsStore={controlsStore} />);
 
     while (!raylib.WindowShouldClose()) {
@@ -399,22 +461,31 @@ async function main() {
       normalizeThreeCameraInstance(camera);
       if (camera instanceof THREE.PerspectiveCamera) {
         const expectedAspect = width / height;
-        if (!Number.isFinite(camera.aspect) || camera.aspect === 0 || Math.abs(camera.aspect - expectedAspect) > 1e-6) {
+        if (
+          !Number.isFinite(camera.aspect) || camera.aspect === 0 ||
+          Math.abs(camera.aspect - expectedAspect) > 1e-6
+        ) {
           camera.aspect = expectedAspect;
           camera.updateProjectionMatrix();
         }
       }
       if (forwarded == null) {
+        console.log("[uiViewer] Setting up forwardHtmlEvents");
         forwarded = forwardHtmlEvents(inputCanvas as never, () => camera, scene, {
           batchEvents: false,
         });
+        console.log("[uiViewer] forwardHtmlEvents setup complete");
       }
 
       scene.updateMatrixWorld(true);
       camera.updateMatrixWorld(true);
       camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
       pointerBridge.update();
-      forwarded.update();
+      try {
+        forwarded.update();
+      } catch (e) {
+        console.error("[uiViewer] Error in forwarded.update():", e);
+      }
       camera.updateMatrixWorld(true);
       camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
 
@@ -440,6 +511,9 @@ async function main() {
 
       await wait(1);
     }
+  } catch (error) {
+    console.error("[uiViewer] Error in main loop:", error);
+    throw error;
   } finally {
     forwarded?.destroy();
     r3f.dispose();
@@ -454,22 +528,31 @@ async function main() {
 function UiViewerScene(
   { controlsStore }: { controlsStore: ReturnType<typeof createScreenCameraStore> },
 ) {
+  console.log("[uiViewer] UiViewerScene rendering, controlsStore state:", controlsStore.getState());
+  React.useEffect(() => {
+    console.log("[uiViewer] UiViewerScene mounted");
+    const unsubscribe = controlsStore.subscribe((state) => {
+      console.log("[uiViewer] controlsStore state changed:", state);
+    });
+    return () => {
+      console.log("[uiViewer] UiViewerScene unmounting");
+      unsubscribe();
+    };
+  }, [controlsStore]);
+
   return (
     <>
       <SceneCameraAim controlsStore={controlsStore} />
-      <OrbitHandles
-        store={controlsStore}
-        damping={false}
-        rotate={false}
-        pan={{ filter: filterForOnePointerLeftClick }}
-      />
+      <React.Suspense fallback={null}>
+        <OrbitHandlesWrapper controlsStore={controlsStore} />
+      </React.Suspense>
       <color attach="background" args={[0x0b1018]} />
       <ambientLight intensity={1.25} />
       <directionalLight intensity={2.2} position={[2.5, 4, 2]} />
       <pointLight intensity={10} position={[0, 1.8, -1.2]} color="#ffd08a" />
       <Backdrop />
       <UiStand />
-      <group pointerEvents="none">
+      <group>
         <NativeHudPanel
           transform={{
             position: [0, 1.32, -1.45],
@@ -482,18 +565,44 @@ function UiViewerScene(
   );
 }
 
+function OrbitHandlesWrapper(
+  { controlsStore }: { controlsStore: ReturnType<typeof createScreenCameraStore> },
+) {
+  console.log("[uiViewer] OrbitHandlesWrapper rendering");
+  try {
+    return (
+      <OrbitHandles
+        store={controlsStore}
+        damping={false}
+        rotate={false}
+        pan={{ filter: filterForOnePointerLeftClick }}
+      />
+    );
+  } catch (e) {
+    console.error("[uiViewer] Error rendering OrbitHandles:", e);
+    return null;
+  }
+}
+
 function SceneCameraAim(
   { controlsStore }: { controlsStore: ReturnType<typeof createScreenCameraStore> },
 ) {
   const camera = useThree((state) => state.camera);
 
   React.useLayoutEffect(() => {
+    console.log("[uiViewer] SceneCameraAim setting up camera");
+    console.log("[uiViewer] - Camera before setup:", {
+      position: camera.position.toArray(),
+      type: camera.type,
+    });
     camera.position.set(0, 1.35, 0.65);
-    camera.lookAt(UI_TARGET);
+    console.log("[uiViewer] - Camera after position set:", camera.position.toArray());
     controlsStore.getState().setOriginPosition(UI_TARGET.x, UI_TARGET.y, UI_TARGET.z);
     controlsStore.getState().setCameraPosition(0, 1.35, 0.65);
+    console.log("[uiViewer] - controlsStore after SceneCameraAim setup:", controlsStore.getState());
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true);
+    console.log("[uiViewer] SceneCameraAim setup complete");
   }, [camera, controlsStore]);
 
   return null;
