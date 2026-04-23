@@ -5,8 +5,8 @@ import * as TSL from "three/tsl";
 import { extend, ThreeToJSXElements } from "@react-three/fiber";
 import { Handle } from "@react-three/handle";
 import { DefaultXRController, isXRInputSourceState, XRSpace } from "@pmndrs/xr";
-import { Content } from "../submodules/threewebxrwebgpudeno/uikit-r3f.tsx";
-import { Button, Container, Text } from "../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
+import { Content } from "../../submodules/threewebxrwebgpudeno/uikit-r3f.tsx";
+import { Button, Container, Text } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);

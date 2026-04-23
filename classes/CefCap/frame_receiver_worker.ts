@@ -1,6 +1,6 @@
 // Frame receiver worker (named pipe version)
 
-import { connect } from "jsr:@milly/namedpipe";
+import { connect } from "@milly/namedpipe";
 (async () => {
   try {
 

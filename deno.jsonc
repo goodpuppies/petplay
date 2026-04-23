@@ -6,13 +6,25 @@
     "jsx": "react-jsx",
     "jsxImportSource": "react"
   },
+  "lib": [
+    "deno.window",
+    "deno.unstable",
+    "node",
+    "dom",
+    "dom.iterable",
+    "deno.ns",
+    "dom.asynciterable"
+  ],
   "imports": {
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
+    "@milly/namedpipe": "jsr:@milly/namedpipe@^1.1.0",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
     "@denosaurs/byte-type": "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/mod.ts",
+    "@std/path": "jsr:@std/path@^1.1.4",
     //pmdrs
     "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",
     "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
+    "@pmndrs/pointer-events": "npm:@pmndrs/pointer-events@^6.6.29",
     //r3f
     "@react-three/fiber": "npm:@react-three/fiber@^9.5.0",
     "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
@@ -29,6 +41,8 @@
     "vitebuild": "cd submodules/frontend && deno task build",
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
+    "check": "deno run -A utils/type-check.ts",
+    "ui":"deno run -A petplay/uiViewer.tsx ",
     "build": {
       "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./cef/ --icon resources/petplay.ico petplay/petplay.ts",
       "dependencies": [
@@ -73,6 +87,13 @@
   },
   "exclude": [
     "submodules/",
-    "dist/"
-  ]
+    "dist/",
+    "submodules/threewebxrwebgpudeno/submodules/"
+  ],
+  "scopes": {
+    "./submodules/threewebxrwebgpudeno/": {
+      "iwer": "./submodules/threewebxrwebgpudeno/submodules/iwer/src/index.ts",
+      "iwer/": "./submodules/threewebxrwebgpudeno/submodules/iwer/src/"
+    }
+  }
 }

@@ -10,7 +10,7 @@ import {
 } from "@pmndrs/handle";
 import { RaythreeExtractor } from "../submodules/raythree/src/extract.ts";
 import { createR3FExtractionRoot } from "../submodules/raythree/src/r3f_runtime.ts";
-import { NativeHudPanel } from "../classes/nativeFrontend.tsx";
+import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
 import { extractWebXRRaythreeUi } from "../classes/webxrRaythreeUi.ts";
 import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";
 

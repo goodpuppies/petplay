@@ -16,8 +16,8 @@ import {
   StereoTextureReadbackRing,
   TextureReadbackRing,
 } from "./webgpu.ts";
-import { NativeControllerHud } from "./nativeFrontend.tsx";
-import { WebXRScene } from "./scene.tsx";
+import { NativeControllerHud } from "./environment/nativeFrontend.tsx";
+import { WebXRScene } from "./environment/scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
 import { IntervalMetric } from "./intervalMetric.ts";
 import { tempFile } from "./utils.ts";

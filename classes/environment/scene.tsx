@@ -9,7 +9,7 @@ import {
   getVRCOriginMatrixElements,
   isVRCOriginKnown,
   updateShadowSceneMesh,
-} from "./webxrShadowScene.ts";
+} from "../webxrShadowScene.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 
 
