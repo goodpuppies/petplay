@@ -7,36 +7,23 @@
     "jsxImportSource": "react"
   },
   "imports": {
-    //main deps
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
-    "@number0/iroh": "npm:@number0/iroh@^0.31.0",
-    "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
-    "@pmndrs/handle/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/",
-    "@pmndrs/uikit": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/index.ts",
-    "@pmndrs/uikit-pub-sub": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/pub-sub/src/index.ts",
-    "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",
-    "@pmndrs/xr/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/",
-    "@preact/signals-core": "npm:@preact/signals-core@^1.12.1",
-    "@react-three/uikit": "./submodules/threewebxrwebgpudeno/submodules/uikit/packages/react/src/index.tsx",
-    "@react-three/xr": "npm:@react-three/xr@^6.6.29",
-    "@std/path": "jsr:@std/path@^1.1.4",
-    "three": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
-    "three/webgpu": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
     "@denosaurs/byte-type": "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/mod.ts",
-    //dep hacks
-    "three/addons/": "./submodules/threewebxrwebgpudeno/submodules/three.js/examples/jsm/",
-    "three/tsl": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.tsl.js",
-    "@pmndrs/pointer-events": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/index.ts",
-    "@pmndrs/pointer-events/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/",
-    "@pmndrs/xr/internals": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/src/internals.ts",
-
+    //pmdrs
+    "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",
+    "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
+    //r3f
     "@react-three/fiber": "npm:@react-three/fiber@^9.5.0",
     "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
-    "@react-three/handle/": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/",
-    "@types/react": "npm:@types/react@^19.2.8",
-    "@types/three": "npm:@types/three@^0.182.0",
     "react": "npm:react@^19.2.3",
+    "@types/react": "npm:@types/react@^19.2.8",
+    //three.js
+    "three": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
+    "three/webgpu": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
+    "three/addons/": "./submodules/threewebxrwebgpudeno/submodules/three.js/examples/jsm/",
+    "three/tsl": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.tsl.js",
+    "@types/three": "npm:@types/three@^0.182.0",
   },
   "tasks": {
     "vitebuild": "cd submodules/frontend && deno task build",
