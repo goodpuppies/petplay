@@ -73,7 +73,7 @@ async function main() {
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
-  await PostMan.create("./displayInstance.ts", import.meta.url);
+  const displayInstance = await PostMan.create("./displayInstance.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
 
   PostMan.PostMessage({
@@ -88,7 +88,7 @@ async function main() {
   });
 
   PostMan.PostMessage({
-    target: [origin, laser],
+    target: [origin, laser, displayInstance],
     type: "INITOVROVERLAY",
     payload: ivroverlay,
   });
@@ -106,11 +106,24 @@ async function main() {
       vrSystemPointer: ivrsystem as number,
       controllerActor: input,
       wristMenuActor: wristMenu,
+      displayInstanceActor: displayInstance,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,
       overlayDistance: 1,
       overlayRenderMode: WEBXR_OVERLAY_MODE,
+    },
+  });
+  PostMan.PostMessage({
+    target: displayInstance,
+    type: "STARTDESKTOP",
+    payload: {
+      overlayKey: "petplay.displayInstance.desktop",
+      displayName: "PetPlay display",
+      runScreenCapture: true,
+      captureFrameLimit: 0,
+      initialWidthMeters: (16 / 9) * 0.5,
+      enableMouseInput: true,
     },
   });
 

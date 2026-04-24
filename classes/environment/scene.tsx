@@ -23,6 +23,7 @@ declare module "@react-three/fiber/webgpu" {
 
 type WebXRSceneProps = {
   XROrigin: React.ComponentType;
+  displayInstanceActor?: string | null;
 };
 
 function RoomWireBox({ color }: { color: THREE.Color }) {
@@ -124,7 +125,9 @@ function createCubeSeed(): CubeSeed {
 }
 const CUBE_COUNT = 200;
 
-export function WebXRScene({ XROrigin }: WebXRSceneProps) {
+export function WebXRScene(
+  { XROrigin, displayInstanceActor = null }: WebXRSceneProps,
+) {
   const accentRef = useRef<THREE.Mesh>(null!);
   const boxRef = useRef<THREE.Mesh>(null!);
   // Group that mirrors the VRChat world origin in SteamVR absolute space.
@@ -243,11 +246,14 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
         <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
       </mesh>
       <RoomWireBox color={roomLineColor} />
-      {cubes.map((seed, index) => (
+      {/* {cubes.map((seed, index) => (
         <BouncingCube key={index} seed={seed} />
-      ))}
+      ))} */}
 
-      <DisplayInstance position={[-0.75, 1.2, -1.45]} />
+      <DisplayInstance
+        position={[-0.75, 1.2, -1.45]}
+        displayInstanceActor={displayInstanceActor}
+      />
 
       {/*
         The cube lives inside the VRC-origin group so its local

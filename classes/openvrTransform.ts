@@ -1,7 +1,33 @@
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
-import { LogChannel } from "@mommysgoodpuppy/logchannel"
+
+/**
+ * Converts a column-major 4x4 (Three.js `Matrix4.elements`) to OpenVR HmdMatrix34
+ * (3×4, matching `SetOverlayTransformAbsolute`).
+ */
+export function hmd34FromColumnMajor4x4(e: {
+  0: number;
+  4: number;
+  8: number;
+  12: number;
+  1: number;
+  5: number;
+  9: number;
+  13: number;
+  2: number;
+  6: number;
+  10: number;
+  14: number;
+}): OpenVR.HmdMatrix34 {
+  return {
+    m: [
+      [e[0], e[4], e[8], e[12]],
+      [e[1], e[5], e[9], e[13]],
+      [e[2], e[6], e[10], e[14]],
+    ],
+  };
+}
 
 /**
  * Set overlay transform in absolute coordinates

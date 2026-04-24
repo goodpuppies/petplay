@@ -38,6 +38,8 @@ type StartOptions = {
   sessionMode?: "immersive-vr" | "immersive-ar";
   alpha?: boolean;
   wristMenuActor?: string | null;
+  /** PetPlay `displayInstance` actor id — syncs 16:9 display ↔ OpenVR desktop overlay. */
+  displayInstanceActor?: string | null;
 };
 
 type WebXRStatus = {
@@ -483,7 +485,10 @@ export class WebXRHost {
         React.createElement(
           XR,
           { store },
-          React.createElement(WebXRScene, { XROrigin }),
+          React.createElement(WebXRScene, {
+          XROrigin,
+          displayInstanceActor: options.displayInstanceActor ?? null,
+        }),
         ),
       );
       this.rootStore = rootStore;
