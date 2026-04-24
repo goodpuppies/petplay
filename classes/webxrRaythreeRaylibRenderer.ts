@@ -1,15 +1,15 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as THREE from "three";
 import raylib, * as raylibBindings from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
-import { type ExtractionResult } from "../submodules/raythree/src/ir.ts";
 import type {
+  ExtractionResult,
   GeometryAsset,
   GeometryAttributeAsset,
   InstancedRenderInstance,
   MaterialAsset,
   RenderFrame,
   RenderInstance,
-} from "../submodules/raythree/src/ir.ts";
+} from "../submodules/raythree/src/lib.ts";
 import type { WebXRRaythreeUiOrderInfo, WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";
 
 const MAX_MATERIAL_MAPS = 11;
@@ -73,6 +73,8 @@ type NativeMaterial = {
   usesLighting: boolean;
   transparent: boolean;
   blendMode: raylibBindings.BlendMode;
+  /** When true, draw with `rlEnableWireMode` and the same lighting `DrawMesh` as solid. */
+  wireframe: boolean;
 };
 
 type LightingShader = {
@@ -582,6 +584,35 @@ private maybeLogProjectionSummary(frame: RenderFrame): void {
     material: NativeMaterial,
     worldMatrix: ArrayLike<number>,
   ): void {
+    if (material.wireframe) {
+      if (material.usesLighting) {
+        setShaderVec4(
+          this.lightingShader.shader,
+          this.lightingShader.baseColorLoc,
+          material.baseColor,
+        );
+      }
+      if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+        raylib.H.EndBlendMode();
+        raylib.H.BeginBlendMode(material.blendMode);
+      }
+      setWireModeEnabled(true);
+      try {
+        raylib.H.DrawMesh(
+          nativeMesh.mesh,
+          material.material,
+          toRaylibMatrix(worldMatrix),
+        );
+      } finally {
+        setWireModeEnabled(false);
+      }
+      if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+        raylib.H.EndBlendMode();
+        raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
+      }
+      return;
+    }
+
     if (material.usesLighting) {
       setShaderVec4(
         this.lightingShader.shader,
@@ -660,6 +691,8 @@ function createNativeMaterial(
   baseMaterial: raylibBindings.Material,
   lightingShader: LightingShader,
 ): NativeMaterial {
+  // MaterialAsset.baseColor from raythree extract is sRGB 0-1 per channel (see colorToTriplet in extract).
+  // Raylib map color uses 0-255; multiply here before toRaylibColor.
   const mapsBytes = cloneMaterialMaps(baseMaterial);
   const albedoMap = readMaterialMap(
     mapsBytes,
@@ -693,6 +726,7 @@ function createNativeMaterial(
     usesLighting,
     transparent: asset.state.transparent || asset.opacity < 0.999,
     blendMode: toRaylibBlendMode(asset.state.blendMode),
+    wireframe: asset.state.wireframe === true,
   };
 }
 
@@ -1431,6 +1465,9 @@ function prepareGeometryBuffers(asset: GeometryAsset): PreparedGeometryBuffers |
   }
 
   const vertexCount = position.count;
+  if (vertexCount % 3 !== 0) {
+    return null;
+  }
   const vertices = toFloat32Array(position.array);
   const texcoords = texcoord === undefined
     ? new Float32Array(vertexCount * 2)
@@ -1723,6 +1760,15 @@ type UiRlglSymbols = {
     parameters: [];
     result: "void";
   };
+  /** Sets `glPolygonMode` to `GL_LINE` (desktop GL only; no-op on GLES). */
+  rlEnableWireMode: {
+    parameters: [];
+    result: "void";
+  };
+  rlDisableWireMode: {
+    parameters: [];
+    result: "void";
+  };
 };
 
 let uiRlglLibrary: Deno.DynamicLibrary<UiRlglSymbols> | undefined;
@@ -1763,6 +1809,14 @@ function getUiRlglSymbols(): Deno.DynamicLibrary<UiRlglSymbols>["symbols"] {
         parameters: [],
         result: "void",
       },
+      rlEnableWireMode: {
+        parameters: [],
+        result: "void",
+      },
+      rlDisableWireMode: {
+        parameters: [],
+        result: "void",
+      },
     } satisfies UiRlglSymbols,
   );
   return uiRlglLibrary.symbols;
@@ -1793,6 +1847,16 @@ function setUiBackfaceCullingEnabled(enabled: boolean): void {
     return;
   }
   symbols.rlDisableBackfaceCulling();
+}
+
+/** Toggles `rlEnableWireMode` / `rlDisableWireMode` (desktop GL; no-op on GLES). */
+function setWireModeEnabled(enabled: boolean): void {
+  const symbols = getUiRlglSymbols();
+  if (enabled) {
+    symbols.rlEnableWireMode();
+    return;
+  }
+  symbols.rlDisableWireMode();
 }
 
 const LIGHTING_VERTEX_SHADER = /*glsl*/`#version 330

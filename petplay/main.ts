@@ -73,6 +73,7 @@ async function main() {
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
+  await PostMan.create("./displayInstance.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
 
   PostMan.PostMessage({

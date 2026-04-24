@@ -11,6 +11,7 @@ import {
   updateShadowSceneMesh,
 } from "../webxrShadowScene.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
+import { DisplayInstance } from "./displayInstance/logic.tsx";
 
 
 // deno-lint-ignore no-explicit-any
@@ -245,6 +246,8 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
       {cubes.map((seed, index) => (
         <BouncingCube key={index} seed={seed} />
       ))}
+
+      <DisplayInstance position={[-0.75, 1.2, -1.45]} />
 
       {/*
         The cube lives inside the VRC-origin group so its local

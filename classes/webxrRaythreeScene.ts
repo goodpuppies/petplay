@@ -1,5 +1,4 @@
-import { RaythreeExtractor } from "../submodules/raythree/src/extract.ts";
-import type { ExtractionResult } from "../submodules/raythree/src/ir.ts";
+import { RaythreeExtractor, type ExtractionResult } from "../submodules/raythree/src/lib.ts";
 import type { WebXRShadowFrame } from "./webxrhost.ts";
 import { extractWebXRRaythreeUi, type WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";
 
