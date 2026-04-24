@@ -4,6 +4,7 @@ import {
   useFrame as useFiberFrame,
   useStore,
 } from "npm:@react-three/fiber@10.0.0-alpha.2";
+import { currentXRFrame } from "./xrFrameBridge.ts";
 
 type FrameCallback = Parameters<typeof useFiberFrame>[0];
 type FrameOptions = Parameters<typeof useFiberFrame>[1];
@@ -47,7 +48,10 @@ export function useFrame(
         },
       };
 
-    return callback(rootState, delta, frame);
+    // R3F v10's scheduler drops the XRFrame arg on useFrame callbacks.
+    // Our XR host stashes the current frame in xrFrameBridge around advance()
+    // so consumers (notably @pmndrs/xr) still receive it.
+    return callback(rootState, delta, frame ?? currentXRFrame.value);
   };
 
   if (typeof options === "number") {

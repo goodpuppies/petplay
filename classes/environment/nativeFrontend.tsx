@@ -13,11 +13,9 @@ export type NativeControllerHudProps = {
 export const NativeHudPanel = WristMenuPanel;
 
 export function NativeFrontend() {
-  console.log("[wristMenu] NativeFrontend render");
   return <WristMenuPanel />;
 }
 
 export function NativeControllerHud({ actorId }: NativeControllerHudProps) {
-  console.log("[wristMenu] NativeControllerHud render", { actorId });
   return <WristMenuControllerHud actorId={actorId} />;
 }

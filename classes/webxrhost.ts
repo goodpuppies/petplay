@@ -435,10 +435,6 @@ export class WebXRHost {
       });
       assert(navigator.xr, "navigator.xr was not installed");
 
-      LogChannel.log(
-        "webxrv2",
-        `[webxrhost] creating XR store wristMenuActor=${options.wristMenuActor ?? "null"}`,
-      );
       const store = createXRStore({
         offerSession: false,
         enterGrantedSession: false,
@@ -447,14 +443,10 @@ export class WebXRHost {
         webgpu: "required",
         bounded: this.sessionMode === "immersive-ar" ? false : undefined,
         controller: {
-          right: () => {
-            console.log("[wristMenu] controller.right factory invoked", {
+          right: () =>
+            React.createElement(NativeControllerHud, {
               actorId: options.wristMenuActor ?? null,
-            });
-            return React.createElement(NativeControllerHud, {
-              actorId: options.wristMenuActor ?? null,
-            });
-          },
+            }),
           left: { rayPointer: { minDistance: -1 }, model: false },
         },
       });
@@ -477,9 +469,7 @@ export class WebXRHost {
           renderer.xr.enabled = true;
           renderer.xr.setReferenceSpaceType(getReferenceSpaceType(this.sessionMode));
           renderer.setSize(this.width, this.height);
-          LogChannel.log("webxrv2", `[webxrhost] calling renderer.init()…`);
           await renderer.init();
-          LogChannel.log("webxrv2", `[webxrhost] renderer.init() done`);
           this.renderer = renderer;
           return renderer;
         }) as never,
@@ -489,7 +479,6 @@ export class WebXRHost {
         //camera: { position: [0, 0, 0], fov: 75, near: 0.1, far: 100 },
       });
 
-      LogChannel.log("webxrv2", `[webxrhost] mounting XR + WebXRScene`);
       const rootStore = this.root.render(
         React.createElement(
           XR,
@@ -498,43 +487,16 @@ export class WebXRHost {
         ),
       );
       this.rootStore = rootStore;
-      LogChannel.log("webxrv2", `[webxrhost] xr.disconnect() pre-session`);
       rootStore.getState().xr.disconnect();
 
       await wait(0);
-      advance(performance.now(), true, rootStore.getState());
+      advance(performance.now());
       if (this.debugWindowEnabled) {
         this.surfaceHost.present();
       }
 
-      LogChannel.log("webxrv2", `[webxrhost] entering ${this.sessionMode} session…`);
       this.session = await this.enterXrWhenReady(store, this.sessionMode);
       assert(this.session, `Failed to enter ${this.sessionMode} session`);
-      const describeXrState = (label: string) => {
-        const s = rootStore.getState() as {
-          xr?: {
-            session?: unknown;
-            inputSourceStates?: unknown[];
-            originReferenceSpace?: unknown;
-          };
-        };
-        const rxr = this.renderer?.xr as {
-          getSession?: () => XRSession | null;
-          isPresenting?: boolean;
-        } | undefined;
-        const nativeSession = rxr?.getSession?.() ?? null;
-        const nativeSources = (nativeSession as XRSession | null)?.inputSources;
-        LogChannel.log(
-          "webxrv2",
-          `[webxrhost] ${label} xrSlice.session=${s.xr?.session ? "present" : "absent"} ` +
-            `xrSlice.inputSourceStates=${s.xr?.inputSourceStates?.length ?? "?"} ` +
-            `xrSlice.originRefSpace=${s.xr?.originReferenceSpace ? "yes" : "no"} ` +
-            `renderer.xr.session=${nativeSession ? "present" : "absent"} ` +
-            `renderer.xr.isPresenting=${rxr?.isPresenting ? "yes" : "no"} ` +
-            `nativeSession.inputSources=${nativeSources?.length ?? "?"}`,
-        );
-      };
-      describeXrState("session entered;");
       this.running = true;
       this.lastHeartbeatAt = performance.now();
       LogChannel.log(
@@ -544,20 +506,6 @@ export class WebXRHost {
         } alpha=${this.alphaEnabled ? "yes" : "no"}`,
       );
       this.startManualXrFrameLoop(rootStore, device);
-
-      // Periodic xr-state probe so we can see if the slice ever syncs.
-      let xrProbeCount = 0;
-      const xrProbe = setInterval(() => {
-        if (!this.running) {
-          clearInterval(xrProbe);
-          return;
-        }
-        xrProbeCount++;
-        describeXrState(`xr-probe#${xrProbeCount}`);
-        if (xrProbeCount >= 5) {
-          clearInterval(xrProbe);
-        }
-      }, 1000);
 
       while (this.running) {
         if (this.lastError) {
@@ -930,17 +878,12 @@ export class WebXRHost {
       const advanceStartedAt = this.lastXrCallbackAt;
       this.updateEmulatedHeadsetFromOpenVr();
       this.applyExternalControllerData();
-      // R3F v10's scheduler-based advance() drops the XRFrame arg.
-      // Expose the frame via a global bridge so @pmndrs/xr can read it
-      // from inside its useFrame callbacks.
+      // R3F v10's scheduler-based advance() doesn't forward the XRFrame to
+      // useFrame callbacks; stash it on the bridge so our useFrame shim can
+      // inject it as the third arg downstream.
       currentXRFrame.value = frame;
       try {
-        advance(
-          time,
-          true,
-          rootStore.getState() as Parameters<typeof advance>[2],
-          frame,
-        );
+        advance(time);
       } finally {
         currentXRFrame.value = undefined;
       }
@@ -1257,22 +1200,11 @@ export class WebXRHost {
 
   private applyExternalControllerData() {
     if (!this.xrDevice?.controllers) {
-      if (this.frameCount % 120 === 0) {
-        LogChannel.log("webxrv2", `[webxrhost] applyExternalControllerData: no xrDevice.controllers`);
-      }
       return;
     }
 
     const data = this.latestControllerData;
     if (!data) {
-      if (this.frameCount % 120 === 0) {
-        LogChannel.log(
-          "webxrv2",
-          `[webxrhost] applyExternalControllerData: no controller data (disconnecting both); left=${
-            !!this.xrDevice.controllers.left
-          } right=${!!this.xrDevice.controllers.right}`,
-        );
-      }
       if (this.xrDevice.controllers.left) {
         this.xrDevice.controllers.left.connected = false;
       }
@@ -1280,12 +1212,6 @@ export class WebXRHost {
         this.xrDevice.controllers.right.connected = false;
       }
       return;
-    }
-    if (this.frameCount % 120 === 0) {
-      LogChannel.log(
-        "webxrv2",
-        `[webxrhost] applyExternalControllerData: leftValid=${!!data[0]?.pose?.bPoseIsValid} rightValid=${!!data[1]?.pose?.bPoseIsValid}`,
-      );
     }
 
     this.updateControllerState(
