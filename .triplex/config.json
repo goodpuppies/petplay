@@ -1,0 +1,4 @@
+{
+  "UNSAFE_viteConfig": "./vite.config.ts",
+  "webgpu": true
+}

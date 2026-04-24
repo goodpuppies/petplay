@@ -24,6 +24,7 @@ type StartWebXRPayload = {
   overlayPointer?: number | bigint | null;
   vrSystemPointer?: number | bigint | null;
   controllerActor?: string | null;
+  wristMenuActor?: string | null;
   sessionMode?: SupportedSessionMode;
   alpha?: boolean;
   overlayKey?: string;
@@ -107,6 +108,7 @@ new PostMan(
             title: payload?.title,
             debugWindow: payload?.debugWindow,
             vrSystemPointer: payload?.vrSystemPointer,
+            wristMenuActor: payload?.wristMenuActor,
             sessionMode: payload?.sessionMode,
             alpha: payload?.alpha,
           });

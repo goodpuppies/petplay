@@ -1,7 +1,8 @@
 import React from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
-import { advance, createRoot } from "@react-three/fiber";
+import "./browserStoragePolyfill.ts";
+import { advance, createRoot } from "@react-three/fiber/webgpu";
 import { createXRStore, XR, XROrigin } from "@pmndrs/xr";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
@@ -35,6 +36,7 @@ type StartOptions = {
   vrInputPointer?: number | bigint | null;
   sessionMode?: "immersive-vr" | "immersive-ar";
   alpha?: boolean;
+  wristMenuActor?: string | null;
 };
 
 type WebXRStatus = {
@@ -440,14 +442,17 @@ export class WebXRHost {
         webgpu: "required",
         bounded: this.sessionMode === "immersive-ar" ? false : undefined,
         controller: {
-          right: NativeControllerHud,
+          right: () =>
+            React.createElement(NativeControllerHud, {
+              actorId: options.wristMenuActor ?? null,
+            }),
           left: { rayPointer: { minDistance: -1 }, model: false },
         },
       });
 
       this.root = createRoot(canvas);
       await this.root.configure({
-        gl: (async (props: Record<string, unknown>) => {
+        renderer: ((props: Record<string, unknown>) => {
           const rendererOptions: Record<string, unknown> = {
             ...props,
             canvas,
@@ -463,7 +468,6 @@ export class WebXRHost {
           renderer.xr.enabled = true;
           renderer.xr.setReferenceSpaceType(getReferenceSpaceType(this.sessionMode));
           renderer.setSize(this.width, this.height);
-          await renderer.init();
           this.renderer = renderer;
           return renderer;
         }) as never,

@@ -6,6 +6,7 @@
     "jsx": "react-jsx",
     "jsxImportSource": "react"
   },
+  "nodeModulesDir":"auto",
   "imports": {
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
     "@milly/namedpipe": "jsr:@milly/namedpipe@^1.1.0",
@@ -17,10 +18,12 @@
     "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
     "@pmndrs/pointer-events": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/index.ts",
     //r3f
-    "@react-three/fiber": "npm:@react-three/fiber@^9.5.0",
+    "@react-three/fiber": "./classes/r3fCompat.ts",
+    "@react-three/fiber/webgpu": "./classes/r3fWebgpuCompat.ts",
     "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
-    "react": "npm:react@^19.2.3",
-    "@types/react": "npm:@types/react@^19.2.8",
+    "react": "npm:react@^19.2.5",
+    "@types/react": "npm:@types/react@^19.2.14",
+    "react-dom": "npm:react-dom@^19.2.5",
     //three.js
     "three": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",
     "three/webgpu": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.webgpu.js",

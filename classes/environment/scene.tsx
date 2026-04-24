@@ -2,7 +2,7 @@ import React, { useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
-import { extend, ThreeToJSXElements, useFrame } from "@react-three/fiber";
+import { extend, ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
 import {
   getShadowControllerSnapshot,
@@ -16,7 +16,7 @@ import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
 
-declare module "@react-three/fiber" {
+declare module "@react-three/fiber/webgpu" {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
 
@@ -231,11 +231,11 @@ export function WebXRScene({ XROrigin }: WebXRSceneProps) {
   return (
     <>
       <color attach="background" args={[0x091018]} />
-      <fog attach="fog" args={["#091018", 1.5, 5]} />
+      <fog attach="fog" args={["#091018", 4, 10]} />
       <ambientLight intensity={0.8} />
       <directionalLight intensity={2.8} position={[2, 3, 2]} />
       <pointLight intensity={8} position={[0, 1.9, -1.25]} color="#ffb347" />
-      <XROrigin />
+      {/* <XROrigin /> */}
 
       <mesh ref={accentRef} position={[0, 1.45, -1.8]}>
         <torusGeometry args={[0.12, 0.012, 16, 48]} />

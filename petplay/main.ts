@@ -72,6 +72,7 @@ async function main() {
   state.origin = origin;
   const laser = await PostMan.create("./laser.ts", import.meta.url);
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
+  const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
 
   PostMan.PostMessage({
@@ -103,6 +104,7 @@ async function main() {
       overlayPointer: ivroverlay as number,
       vrSystemPointer: ivrsystem as number,
       controllerActor: input,
+      wristMenuActor: wristMenu,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,

@@ -35,3 +35,6 @@
 [submodule "submodules/uikit"]
 	path = submodules/uikit
 	url = https://github.com/pmndrs/uikit.git
+[submodule "submodules/GOLXROG"]
+	path = submodules/GOLXROG
+	url = https://github.com/mommysgoodpuppy/GOLXROG.git

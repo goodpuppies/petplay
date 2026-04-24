@@ -3,3 +3,4 @@
 dist/
 cef/
 tmp/
+node_modules/
