@@ -139,6 +139,9 @@ export function WristMenuUi(
     onToggle,
   }: WristMenuUiProps,
 ) {
+  /* console.log("[wristMenu] WristMenuUi render", {
+    clock, dateLabel, elapsed, layersActive, musicActive, signalActive,
+  }); */
   return (
     <ControllerFrame>
       <Container

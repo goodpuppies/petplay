@@ -1,6 +1,6 @@
 import React from "react";
 import * as THREE from "three";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber/webgpu";
 import { OrbitHandles } from "@react-three/handle";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { forwardHtmlEvents } from "@pmndrs/pointer-events";

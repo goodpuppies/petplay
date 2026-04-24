@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
-import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
+import { extend, ThreeToJSXElements, useThree } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
 import { DefaultXRController, XRSpace } from "@pmndrs/xr";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
@@ -113,13 +113,18 @@ async function toggleActorState(
 export function WristMenuPanel(
   { ignoredHandedness: _ignoredHandedness, transform, actorId, initialState }: WristMenuPanelProps,
 ) {
+  console.log("[wristMenu] WristMenuPanel render", { actorId, transform, initialState });
   const startedAt = useRef(performance.now());
   const [buttonState, setButtonState] = useState(() => toStateSnapshot(initialState));
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    console.log("[wristMenu] WristMenuPanel mounted");
     const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    return () => {
+      console.log("[wristMenu] WristMenuPanel unmounting");
+      clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -156,8 +161,45 @@ export function WristMenuPanel(
   const rotation = transform?.rotation ?? CONTROLLER_UI_ROTATION;
   const scale = transform?.scale ?? CONTROLLER_UI_SCALE;
 
+  const groupRef = useRef<THREE.Group>(null);
+  const scene = useThree((s) => s.scene);
+  const loggedOnceRef = useRef(false);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const g = groupRef.current;
+      if (!g) {
+        console.log("[wristMenu] groupRef still null");
+        return;
+      }
+      g.updateMatrixWorld(true);
+      const wp = new THREE.Vector3();
+      g.getWorldPosition(wp);
+      const parentChain: string[] = [];
+      let cur: THREE.Object3D | null = g;
+      while (cur) {
+        const ud = cur.userData ? JSON.stringify(cur.userData).slice(0, 80) : "";
+        parentChain.push(
+          `${cur.type}${cur.name ? "#" + cur.name : ""}(visible=${cur.visible},children=${cur.children.length},ud=${ud})`,
+        );
+        cur = cur.parent;
+      }
+      console.log(
+        `[wristMenu] group worldPos=(${wp.x.toFixed(3)},${wp.y.toFixed(3)},${wp.z.toFixed(3)}) children=${g.children.length} inScene=${scene ? "yes" : "no"}`,
+      );
+      console.log(`[wristMenu] parent chain: ${parentChain.join(" <- ")}`);
+      if (!loggedOnceRef.current && scene) {
+        loggedOnceRef.current = true;
+        let count = 0;
+        scene.traverse(() => count++);
+        console.log(`[wristMenu] scene total object count=${count}`);
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [scene]);
+
   return (
     <group
+      ref={groupRef}
       position={position}
       rotation={rotation}
       scale={scale}
@@ -179,6 +221,19 @@ export function WristMenuPanel(
 }
 
 export function WristMenuControllerHud({ actorId }: { actorId?: string | null }) {
+  console.log("[wristMenu] WristMenuControllerHud render", { actorId });
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    console.log("[wristMenu] WristMenuControllerHud mounted; scene children at mount:");
+    if (scene) {
+      for (const child of scene.children) {
+        console.log(
+          `  scene child: ${child.type}${child.name ? "#" + child.name : ""} children=${child.children.length}`,
+        );
+      }
+    }
+    return () => console.log("[wristMenu] WristMenuControllerHud unmounting");
+  }, [scene]);
   return (
     <>
       <DefaultXRController />
