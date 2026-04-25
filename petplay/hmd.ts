@@ -7,19 +7,62 @@ import { wait } from "../classes/utils.ts";
 const state = actorState({
   name: "hmd_position_actor",
   vrSystem: null as OpenVR.IVRSystem | null,
+  /** From `IVRSystem::GetFloatTrackedDeviceProperty(..., Prop_DisplayFrequency_Float, ...)`. */
+  hmdDisplayFrequencyHz: null as number | null,
   web: null as string | null,
   socket: null as WebSocket | null
 });
 
+function readHmdDisplayFrequencyHz(vr: OpenVR.IVRSystem): number | null {
+  const errBuf = new Int32Array(1);
+  const pErr = Deno.UnsafePointer.of(errBuf) as
+    | Deno.PointerValue<OpenVR.TrackedPropertyError>
+    | null;
+  if (pErr == null) {
+    return null;
+  }
+  const hz = vr.GetFloatTrackedDeviceProperty(
+    OpenVR.k_unTrackedDeviceIndex_Hmd,
+    OpenVR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
+    pErr,
+  );
+  if (errBuf[0] !== OpenVR.TrackedPropertyError.TrackedProp_Success) {
+    return null;
+  }
+  if (!Number.isFinite(hz) || hz <= 0) {
+    return null;
+  }
+  return hz;
+}
+
 export const api = {
   __INIT__: (_payload: void) => { },
   GETHMDPOSITION: (_payload: void) => { return getHMDPose(); },
+  /**
+   * OpenVR `Prop_DisplayFrequency_Float` (Hz) for the HMD, or `null` if unavailable.
+   * Reads live from `IVRSystem` when called.
+   */
+  GETHMDDISPLAYFREQUENCY: (_payload: void): number | null => {
+    if (!state.vrSystem) {
+      return null;
+    }
+    const hz = readHmdDisplayFrequencyHz(state.vrSystem);
+    state.hmdDisplayFrequencyHz = hz;
+    return hz;
+  },
   INITOPENVR: (payload: bigint) => {
     const ptrn = payload;
     const systemPtr = Deno.UnsafePointer.create(ptrn);
     state.vrSystem = new OpenVR.IVRSystem(systemPtr);
 
     LogChannel.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
+    const hz = readHmdDisplayFrequencyHz(state.vrSystem);
+    state.hmdDisplayFrequencyHz = hz;
+    if (hz != null) {
+      LogChannel.log("actor", `[hmd] OpenVR HMD nominal display frequency: ${hz.toFixed(0)} Hz`);
+    } else {
+      LogChannel.log("actor", "[hmd] OpenVR HMD display frequency (Prop_DisplayFrequency_Float) not available");
+    }
     main()
   },
   ASSIGNWEB: (payload: string) => {

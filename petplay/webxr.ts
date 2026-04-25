@@ -6,8 +6,11 @@ import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXRHost } from "../classes/webxrhost.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
-import { IntervalMetric } from "../classes/intervalMetric.ts";
-import { WebXRRaythreeSceneBridge } from "../classes/webxrRaythreeScene.ts";
+import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
+import {
+  type WebXRRaythreeRenderPayload,
+  WebXRRaythreeSceneBridge,
+} from "../classes/webxrRaythreeScene.ts";
 import {
   setShadowControllerPose,
   setVRCOriginFromHmdMatrix34,
@@ -33,6 +36,10 @@ type StartWebXRPayload = {
   overlayWidthInMeters?: number;
   overlayDistance?: number;
   overlayRenderMode?: OverlayRenderMode;
+  /** `GETHMDDISPLAYFREQUENCY` from the hmd actor (OpenVR `Prop_DisplayFrequency_Float`). */
+  hmdDisplayFrequencyHz?: number | null;
+  /** `GETCOMPOSITORPTR` from the OpenVR actor; optional for Aardvark-style overlay display pacing. */
+  vrCompositorPointer?: bigint | null;
 };
 
 type ControllerDataPayload = [
@@ -79,6 +86,22 @@ const state = actorState({
   uploadMetric: new IntervalMetric(),
   presentMetric: new IntervalMetric(),
   frameMetric: new IntervalMetric(),
+  /** Full `buildPayload` (sum of raythree parts + small glue). */
+  raythreeExtractMetric: new IntervalMetric(),
+  raythreeSceneMatrixMetric: new IntervalMetric(),
+  raythreeLeftEyeMetric: new IntervalMetric(),
+  raythreeRightEyeMetric: new IntervalMetric(),
+  raythreeUiMetric: new IntervalMetric(),
+  /** `captureShadowFrame` + `getRaythreeSceneContext` in webxr worker. */
+  raylibHostPrepMetric: new IntervalMetric(),
+  /** `PostMessage` to webxrOverlay only (structured clone + queue; coalesced to latest in flight). */
+  raylibPostMsgMetric: new IntervalMetric(),
+  /** True after `RENDERWEBXRRAYTHREEFRAME` until overlay `RAYLIBOVERLAYFRAMEACK`. */
+  raylibFrameInFlight: false,
+  /** Latest built payload; dropped in favor of newer until sent (no message queue buildup). */
+  raylibFramePending: null as WebXRRaythreeRenderPayload | null,
+  /** OpenVR HMD nominal Hz (for fps log context; from `hmd` actor). */
+  nominalHmdDisplayHz: null as number | null,
   raythreeSceneBridge: new WebXRRaythreeSceneBridge(),
 });
 
@@ -88,12 +111,17 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
     },
+    RAYLIBOVERLAYFRAMEACK: (_payload: void) => {
+      state.raylibFrameInFlight = false;
+      tryFlushPendingRaylibFrame();
+    },
     STARTWEBXR: (payload: StartWebXRPayload | null) => {
       if (!state.host) {
         state.host = new WebXRHost();
       }
       state.controllerActor = payload?.controllerActor ?? null;
       state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib";
+      state.nominalHmdDisplayHz = payload?.hmdDisplayFrequencyHz ?? null;
       if (!state.startup) {
         state.startup = (async () => {
           await initializeOverlay(payload ?? null);
@@ -103,16 +131,20 @@ new PostMan(
               state.overlayLoop = null;
             });
           }
+          const overlayMode = payload?.overlayRenderMode ?? "raylib";
           await state.host!.start({
             width: payload?.width,
             height: payload?.height,
             title: payload?.title,
             debugWindow: payload?.debugWindow,
             vrSystemPointer: payload?.vrSystemPointer,
+            vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayInstanceActor: payload?.displayInstanceActor,
             sessionMode: payload?.sessionMode,
             alpha: payload?.alpha,
+            skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
+            nominalHmdDisplayHz: payload?.hmdDisplayFrequencyHz ?? null,
           });
         })().catch((error) => {
           LogChannel.log("webxrv2", `[webxr] startup failed: ${error}`);
@@ -140,6 +172,7 @@ new PostMan(
         ...hostStatus,
         overlayFps: state.overlayFpsCounter.getFps(),
         uploadedFrames: state.uploadedFrames,
+        nominalHmdDisplayHz: state.nominalHmdDisplayHz,
       };
     },
     ORIGINUPDATE: (payload: OpenVR.HmdMatrix34 | null) => {
@@ -189,6 +222,16 @@ new PostMan(
       state.uploadMetric.reset();
       state.presentMetric.reset();
       state.frameMetric.reset();
+      state.raythreeExtractMetric.reset();
+      state.raythreeSceneMatrixMetric.reset();
+      state.raythreeLeftEyeMetric.reset();
+      state.raythreeRightEyeMetric.reset();
+      state.raythreeUiMetric.reset();
+      state.raylibHostPrepMetric.reset();
+      state.raylibPostMsgMetric.reset();
+      state.raylibFrameInFlight = false;
+      state.raylibFramePending = null;
+      state.nominalHmdDisplayHz = null;
     },
   } as const,
 );
@@ -332,6 +375,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       type: "STARTWEBXROVERLAY",
       payload: {
         overlayPointer: payload.overlayPointer,
+        webxrActor: state.id,
         overlayKey: state.raylibOverlayConfig.overlayKey,
         overlayName: state.raylibOverlayConfig.overlayName,
         overlayWidthInMeters: state.raylibOverlayConfig.overlayWidthInMeters,
@@ -340,6 +384,30 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       },
     });
   }
+}
+
+/**
+ * At most one `RENDERWEBXRRAYTHREEFRAME` in the Stageforge queue; newer frames
+ * replace `raylibFramePending` until the overlay acks.
+ */
+function tryFlushPendingRaylibFrame(): void {
+  if (state.raylibFrameInFlight) {
+    return;
+  }
+  if (!state.overlayActor || !state.raylibFramePending) {
+    return;
+  }
+  const toSend = state.raylibFramePending;
+  state.raylibFramePending = null;
+  state.raylibFrameInFlight = true;
+  const postStartedAt = performance.now();
+  PostMan.PostMessage({
+    target: state.overlayActor,
+    type: "RENDERWEBXRRAYTHREEFRAME",
+    payload: toSend,
+  });
+  state.raylibPostMsgMetric.record(performance.now() - postStartedAt);
+  state.presentMetric.record(0);
 }
 
 function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
@@ -430,6 +498,7 @@ async function uploadRaylibShadowFrame() {
     return false;
   }
 
+  const prepStartedAt = performance.now();
   const sourceFrame = state.host.captureShadowFrame();
   if (!sourceFrame) {
     return false;
@@ -438,6 +507,7 @@ async function uploadRaylibShadowFrame() {
   if (!sceneContext) {
     return false;
   }
+  state.raylibHostPrepMetric.record(performance.now() - prepStartedAt);
 
   if (state.uploadedFrames === 1) {
     logFirstOverlayUpload(
@@ -449,14 +519,25 @@ async function uploadRaylibShadowFrame() {
     );
   }
 
-  const uploadStartedAt = performance.now();
-  PostMan.PostMessage({
-    target: state.overlayActor,
-    type: "RENDERWEBXRRAYTHREEFRAME",
-    payload: state.raythreeSceneBridge.buildPayload(sceneContext, sourceFrame),
-  });
-  state.uploadMetric.record(performance.now() - uploadStartedAt);
-  state.presentMetric.record(0);
+  // Timings: Raythree extract must stay in this worker (see webxrRaythreeScene.ts).
+  // `PostMessage` to webxrOverlay is coalesced: at most one in flight; latest payload wins
+  // (see `tryFlushPendingRaylibFrame` + `RAYLIBOVERLAYFRAMEACK`).
+  const extractStartedAt = performance.now();
+  const raythreeProbes = {
+    sceneMatrix: state.raythreeSceneMatrixMetric,
+    leftEye: state.raythreeLeftEyeMetric,
+    rightEye: state.raythreeRightEyeMetric,
+    ui: state.raythreeUiMetric,
+  };
+  const payload = state.raythreeSceneBridge.buildPayload(
+    sceneContext,
+    sourceFrame,
+    undefined,
+    raythreeProbes,
+  );
+  state.raythreeExtractMetric.record(performance.now() - extractStartedAt);
+  state.raylibFramePending = payload;
+  tryFlushPendingRaylibFrame();
   return true;
 }
 
@@ -504,7 +585,14 @@ async function pumpOverlayFrames() {
       const now = performance.now();
       if (now - state.lastOverlayFpsLogAt >= 1000) {
         state.lastOverlayFpsLogAt = now;
-        LogChannel.log("fps", `[webxr] overlay=${state.overlayFpsCounter.getFps().toFixed(1)}`);
+        const nom = state.nominalHmdDisplayHz;
+        const tail = nom != null && Number.isFinite(nom)
+          ? ` (OpenVR ${nom.toFixed(0)} Hz nominal)`
+          : "";
+        LogChannel.log(
+          "fps",
+          `[webxr] overlay=${state.overlayFpsCounter.getFps().toFixed(1)}${tail}`,
+        );
       }
       let renderedAny = false;
       if (canUseWebGpu) {
@@ -529,6 +617,16 @@ async function pumpOverlayFrames() {
   }
 }
 
+function fmtPerfInterval(
+  label: string,
+  sample: IntervalMetricSample | null,
+): string | null {
+  if (!sample) {
+    return null;
+  }
+  return `${label}=${sample.avgMs.toFixed(2)}ms avg ${sample.maxMs.toFixed(2)}ms max`;
+}
+
 function maybeLogOverlayPerf() {
   const now = performance.now();
   if (now - state.lastPerfLogAt < 1000) {
@@ -539,23 +637,38 @@ function maybeLogOverlayPerf() {
   const uploadSample = state.uploadMetric.flush();
   const presentSample = state.presentMetric.flush();
   const frameSample = state.frameMetric.flush();
-  if (!uploadSample && !presentSample && !frameSample) {
+  const raythreeSample = state.raythreeExtractMetric.flush();
+  const sceneMx = state.raythreeSceneMatrixMetric.flush();
+  const rayL = state.raythreeLeftEyeMetric.flush();
+  const rayR = state.raythreeRightEyeMetric.flush();
+  const rayUi = state.raythreeUiMetric.flush();
+  const hostPrep = state.raylibHostPrepMetric.flush();
+  const postMsg = state.raylibPostMsgMetric.flush();
+  if (
+    !uploadSample && !presentSample && !frameSample && !raythreeSample &&
+    !sceneMx && !rayL && !rayR && !rayUi && !hostPrep && !postMsg
+  ) {
     return;
   }
 
   const parts: string[] = [];
-  if (uploadSample) {
-    parts.push(
-      `upload=${uploadSample.avgMs.toFixed(2)}ms avg ${uploadSample.maxMs.toFixed(2)}ms max`,
-    );
-  }
-  if (presentSample) {
-    parts.push(
-      `present=${presentSample.avgMs.toFixed(2)}ms avg ${presentSample.maxMs.toFixed(2)}ms max`,
-    );
-  }
-  if (frameSample) {
-    parts.push(`frame=${frameSample.avgMs.toFixed(2)}ms avg ${frameSample.maxMs.toFixed(2)}ms max`);
+  for (
+    const line of [
+      fmtPerfInterval("host-prep", hostPrep),
+      fmtPerfInterval("raythree-total", raythreeSample),
+      fmtPerfInterval("rt-sceneMx", sceneMx),
+      fmtPerfInterval("rt-left", rayL),
+      fmtPerfInterval("rt-right", rayR),
+      fmtPerfInterval("rt-ui", rayUi),
+      fmtPerfInterval("overlay-post", postMsg),
+      fmtPerfInterval("upload", uploadSample),
+      fmtPerfInterval("present", presentSample),
+      fmtPerfInterval("frame", frameSample),
+    ]
+  ) {
+    if (line) {
+      parts.push(line);
+    }
   }
   LogChannel.log("perf", `[webxr] ${parts.join(" | ")}`);
 }

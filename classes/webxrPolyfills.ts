@@ -1,6 +1,30 @@
 type RafCallback = (time: number) => void;
 
-export function installWebXRHostPolyfills(width: number, height: number, pollIntervalMs: number) {
+/**
+ * Installs a **synthetic** `requestAnimationFrame` (Deno has no real display vsync).
+ * IWER's `XRSession` drives immersive frames with
+ * `globalThis.requestAnimationFrame(this.onDeviceFrame)`; the **interval** here therefore sets
+ * the WebXR `session.requestAnimationFrame` rate — use `1000 / nominalHmdHz` when the OpenVR
+ * HMD display frequency is known, not a fixed `16` (~60Hz).
+ * When `openVrVsyncDrivesRaf` is set, the delay is `0` and `OpenVrOverlayFramePacer` in
+ * `WebXRHost` blocks in `paceToDisplayAndRefreshPoses` before emulated HMD work (Aardvark-style
+ * overlay timing — not `WaitGetPoses`).
+ */
+export type WebXrHostPolyfillOptions = {
+  pollIntervalMs: number;
+  /** @default false */
+  openVrVsyncDrivesRaf?: boolean;
+};
+
+export function installWebXRHostPolyfills(
+  width: number,
+  height: number,
+  pollIntervalMs: number | WebXrHostPolyfillOptions,
+) {
+  const rafOptions: WebXrHostPolyfillOptions = typeof pollIntervalMs === "number"
+    ? { pollIntervalMs, openVrVsyncDrivesRaf: false }
+    : pollIntervalMs;
+  const delayMs = rafOptions.openVrVsyncDrivesRaf ? 0 : rafOptions.pollIntervalMs;
   const globalAny = globalThis as Record<string, unknown>;
   const setGlobalNumber = (name: "innerWidth" | "innerHeight", value: number) => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
@@ -25,7 +49,7 @@ export function installWebXRHostPolyfills(width: number, height: number, pollInt
   };
 
   (globalAny as Record<string, unknown>).requestAnimationFrame = ((cb: RafCallback): number => {
-    return setTimeout(() => cb(performance.now()), pollIntervalMs) as unknown as number;
+    return setTimeout(() => cb(performance.now()), delayMs) as unknown as number;
   }) as unknown;
 
   (globalAny as Record<string, unknown>).cancelAnimationFrame = ((id: number): void => {

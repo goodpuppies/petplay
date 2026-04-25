@@ -1,4 +1,4 @@
-export type ShadowSceneMeshKind = "torus" | "cube";
+export type ShadowSceneMeshKind = "torus";
 
 export type ShadowSceneMesh = {
   kind: ShadowSceneMeshKind;
@@ -53,14 +53,6 @@ const shadowSceneState: WebXRShadowSceneSnapshot = {
       color: [255, 139, 61, 255],
       wireColor: [255, 196, 148, 255],
     },
-    {
-      kind: "cube",
-      position: [0.35, 1.2, -1.45],
-      rotation: [0, 0, 0],
-      scale: [0.18, 0.18, 0.18],
-      color: [84, 214, 44, 220],
-      wireColor: [160, 255, 132, 255],
-    },
   ],
 };
 
@@ -109,8 +101,8 @@ export function updateShadowSceneMesh(
 // --- VRChat origin tracking ---------------------------------------------
 // The VRCOrigin actor publishes an OpenVR HmdMatrix34 (row-major, 3x4) that
 // represents the VRChat world origin in SteamVR absolute tracking space.
-// We stash it here so the r3f scene (scene.tsx) can parent VRC-relative
-// objects (e.g. the cube) to it each frame.
+// We stash it here so the r3f scene can parent VRC-relative objects to it
+// when needed.
 //
 // Matrix layout kept here is a column-major 16-element array so it can be
 // fed directly into THREE.Matrix4.fromArray() / Object3D.matrix.fromArray().

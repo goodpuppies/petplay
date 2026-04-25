@@ -23,7 +23,11 @@ import { WebXRScene } from "./environment/scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
 import { IntervalMetric } from "./intervalMetric.ts";
 import { tempFile } from "./utils.ts";
-import { installWebXRHostPolyfills } from "./webxrPolyfills.ts";
+import { installWebXRHostPolyfills, type WebXrHostPolyfillOptions } from "./webxrPolyfills.ts";
+import {
+  tryCreateOpenVrOverlayFramePacer,
+  type OpenVrOverlayFramePacer,
+} from "./openVrOverlayFramePacing.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
@@ -40,6 +44,28 @@ type StartOptions = {
   wristMenuActor?: string | null;
   /** PetPlay `displayInstance` actor id — syncs 16:9 display ↔ OpenVR desktop overlay. */
   displayInstanceActor?: string | null;
+  /**
+   * When the OpenVR ghost uses only the Raylib path (`overlayRenderMode: "raylib"`), the WebGPU
+   * projection layer does not need a full scene draw — Raythree reads the Three graph and
+   * Raylib composites elsewhere. This skips `WebGPURenderer` GPU submission while still running
+   * the XR camera rig (same as the start of a normal `render` call) so `useFrame` + matrices
+   * stay in sync. Set `overlayRenderMode` to `both` or `webgpu` (or `debugWindow: true`) when you
+   * need a real WebGPU XR framebuffer for comparison.
+   */
+  skipWebGpuXrDraw?: boolean;
+  /** `IVRSystem` HMD `Prop_DisplayFrequency_Float` (Hz) from the hmd actor — for FPS log context only. */
+  nominalHmdDisplayHz?: number | null;
+  /**
+   * `IVRCompositor` (OpenVR). Used with `vrSystemPointer` for overlay-legal frame pacing
+   * (`GetTimeSinceLastVsync` + `CanRenderScene`); omit to skip the compositor gate.
+   */
+  vrCompositorPointer?: number | bigint | null;
+  /**
+   * When `true` (default), drive IWER’s global rAF with OpenVR display timing
+   * (`openVrOverlayFramePacing`) instead of a fixed setTimeout. Set `false` to A/B test
+   * the old synthetic rAF only.
+   */
+  useOpenVrOverlayFramePacing?: boolean;
 };
 
 type WebXRStatus = {
@@ -298,7 +324,19 @@ export class WebXRHost {
   private xrFpsCounter = new FpsCounter();
   private lastFpsLogAt = 0;
   private lastPerfLogAt = 0;
+  /** Time between `session.requestAnimationFrame` invocations (wall clock; reflects compositor rate). */
+  private lastXrSessionRafWallAt = 0;
+  private xrSessionRafWallIntervalMetric = new IntervalMetric();
+  /** Wall time for the full XR rAF tick (after this, `requestAnimationFrame` is scheduled). */
   private xrAdvanceMetric = new IntervalMetric();
+  /** `updateEmulatedHeadsetFromOpenVr` */
+  private xrHmdEmulationMetric = new IntervalMetric();
+  /** `applyExternalControllerData` */
+  private xrControllerApplyMetric = new IntervalMetric();
+  /** R3F `advance(time)` only (useFrame + internal render path). */
+  private xrR3fAdvanceMetric = new IntervalMetric();
+  /** `captureShadowPoseFromRenderer` */
+  private xrShadowPoseMetric = new IntervalMetric();
   private captureMetric = new IntervalMetric();
   private readySignalMetric = new IntervalMetric();
   private readbackMetric = new IntervalMetric();
@@ -310,6 +348,11 @@ export class WebXRHost {
   private readonly readbackMode: ReadbackMode = getReadbackMode();
   private readonly queueDebugMode: QueueDebugMode = getQueueDebugMode();
   private readonly ringSize: number = getReadbackRingSize();
+  private skipWebGpuXrDraw = false;
+  private originalWebGpuRendererRender: THREE.WebGPURenderer["render"] | null = null;
+  private nominalHmdDisplayHz: number | null = null;
+  private openVrOverlayPacer: OpenVrOverlayFramePacer | null = null;
+  private vrCompositorPointer: number | bigint | null = null;
   private latestShadowPose: {
     viewerPosition: Float32Array;
     viewerQuaternion: Float32Array;
@@ -338,11 +381,17 @@ export class WebXRHost {
     this.lastError = null;
     this.lastLayerInfo = null;
     this.lastXrCallbackAt = 0;
+    this.lastXrSessionRafWallAt = 0;
     this.lastHeartbeatAt = 0;
     this.lastFpsLogAt = 0;
     this.lastPerfLogAt = 0;
     this.layerReadyLogged = false;
+    this.xrSessionRafWallIntervalMetric.reset();
     this.xrAdvanceMetric.reset();
+    this.xrHmdEmulationMetric.reset();
+    this.xrControllerApplyMetric.reset();
+    this.xrR3fAdvanceMetric.reset();
+    this.xrShadowPoseMetric.reset();
     this.captureMetric.reset();
     this.readySignalMetric.reset();
     this.readbackMetric.reset();
@@ -353,12 +402,37 @@ export class WebXRHost {
     this.width = options.width ?? 1600;
     this.height = options.height ?? 900;
     this.debugWindowEnabled = options.debugWindow ?? false;
+    this.skipWebGpuXrDraw = Boolean(options.skipWebGpuXrDraw) && !this.debugWindowEnabled;
+    this.nominalHmdDisplayHz = options.nominalHmdDisplayHz ?? null;
     this.vrSystemPointer = options.vrSystemPointer ?? null;
+    this.vrCompositorPointer = options.vrCompositorPointer ?? null;
     this.vrInputPointer = options.vrInputPointer ?? null;
     this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
     this.alphaEnabled = options.alpha ?? this.sessionMode === "immersive-ar";
-    const POLL_INTERVAL_MS = 16;
-    installWebXRHostPolyfills(this.width, this.height, POLL_INTERVAL_MS);
+    const useOverlayPacing = options.useOpenVrOverlayFramePacing !== false;
+    this.openVrOverlayPacer = tryCreateOpenVrOverlayFramePacer(
+      this.vrSystemPointer,
+      this.vrCompositorPointer,
+      useOverlayPacing,
+    );
+    const hostHeartbeatPollMs = 16;
+    const nom = this.nominalHmdDisplayHz;
+    const rafPolyfillIntervalMs = nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
+      ? 1000 / nom
+      : 16;
+    const polyfill: WebXrHostPolyfillOptions = {
+      pollIntervalMs: rafPolyfillIntervalMs,
+      openVrVsyncDrivesRaf: this.openVrOverlayPacer != null,
+    };
+    installWebXRHostPolyfills(this.width, this.height, polyfill);
+    LogChannel.log(
+      "webxrv2",
+      `[webxrhost] rAF ` +
+        (this.openVrOverlayPacer != null
+          ? "OpenVR display pacing (Aardvark-style GetTimeSinceLastVsync; IWER rAF delay=0)"
+          : `polyfill=${rafPolyfillIntervalMs.toFixed(3)}ms (~${(1000 / rafPolyfillIntervalMs).toFixed(1)}Hz)`) +
+        `; IWER XRSession uses global rAF`,
+    );
 
     try {
       const adapter = await navigator.gpu.requestAdapter();
@@ -473,6 +547,9 @@ export class WebXRHost {
           renderer.setSize(this.width, this.height);
           await renderer.init();
           this.renderer = renderer;
+          if (this.skipWebGpuXrDraw) {
+            this.patchRendererToXrPoseOnly();
+          }
           return renderer;
         }) as never,
         size: { width: this.width, height: this.height, top: 0, left: 0 },
@@ -507,11 +584,18 @@ export class WebXRHost {
       assert(this.session, `Failed to enter ${this.sessionMode} session`);
       this.running = true;
       this.lastHeartbeatAt = performance.now();
+      if (this.skipWebGpuXrDraw) {
+        this.inspected = true;
+      }
       LogChannel.log(
         "webxrv2",
         `[webxrhost] entered ${this.sessionMode} presenting=${
           this.renderer?.xr.isPresenting ? "yes" : "no"
-        } alpha=${this.alphaEnabled ? "yes" : "no"}`,
+        } alpha=${this.alphaEnabled ? "yes" : "no"}${
+          this.skipWebGpuXrDraw
+            ? " webgpuSceneDraw=no (raylib-only; use overlay \"both\"/\"webgpu\" to draw the projection layer)"
+            : ""
+        }`,
       );
       this.startManualXrFrameLoop(rootStore, device);
 
@@ -534,7 +618,7 @@ export class WebXRHost {
             }`,
           );
         }
-        await wait(POLL_INTERVAL_MS);
+        await wait(hostHeartbeatPollMs);
       }
     } catch (error) {
       this.lastError = error instanceof Error ? error : new Error(String(error));
@@ -578,6 +662,11 @@ export class WebXRHost {
 
     if (this.renderer) {
       await this.renderer.setAnimationLoop(null);
+      if (this.originalWebGpuRendererRender) {
+        this.renderer.render = this.originalWebGpuRendererRender;
+        this.originalWebGpuRendererRender = null;
+      }
+      this.skipWebGpuXrDraw = false;
       this.renderer.dispose();
       this.renderer = null;
     }
@@ -602,7 +691,13 @@ export class WebXRHost {
     this.xrFpsCounter.reset();
     this.lastFpsLogAt = 0;
     this.lastPerfLogAt = 0;
+    this.lastXrSessionRafWallAt = 0;
+    this.xrSessionRafWallIntervalMetric.reset();
     this.xrAdvanceMetric.reset();
+    this.xrHmdEmulationMetric.reset();
+    this.xrControllerApplyMetric.reset();
+    this.xrR3fAdvanceMetric.reset();
+    this.xrShadowPoseMetric.reset();
     this.captureMetric.reset();
     this.readySignalMetric.reset();
     this.readbackMetric.reset();
@@ -630,6 +725,9 @@ export class WebXRHost {
     this.xrDevice = null;
     this.sessionMode = "immersive-vr";
     this.alphaEnabled = false;
+    this.nominalHmdDisplayHz = null;
+    this.vrCompositorPointer = null;
+    this.openVrOverlayPacer = null;
   }
 
   async captureOverlayFrame(): Promise<StereoMappedTextureReadback | null> {
@@ -865,6 +963,49 @@ export class WebXRHost {
     };
   }
 
+  /**
+   * Swap `WebGPURenderer.render` for a CPU-only path that runs the world-matrix
+   * update and `XRManager.updateCamera` (the same preamble as
+   * `WebGPURenderer._renderScene` before any GPU work). Use when the OpenVR
+   * ghost is Raylib-only; turn off via `StartOptions.skipWebGpuXrDraw` or use
+   * overlay "both" / "webgpu" to get a real projection layer again.
+   */
+  private patchRendererToXrPoseOnly() {
+    const r = this.renderer;
+    if (!r) {
+      return;
+    }
+    this.originalWebGpuRendererRender = r.render.bind(r);
+    r.render = (scene, camera) => {
+      this.applyWebGpuXrPoseOnly(scene, camera);
+    };
+  }
+
+  private applyWebGpuXrPoseOnly(scene: THREE.Object3D, camera: THREE.Camera) {
+    const renderer = this.renderer;
+    if (!renderer) {
+      return;
+    }
+    if (!renderer.initialized) {
+      return;
+    }
+    if ((renderer as unknown as { _isDeviceLost?: boolean })._isDeviceLost) {
+      return;
+    }
+    const xr = renderer.xr;
+    if (scene.matrixWorldAutoUpdate === true) {
+      scene.updateMatrixWorld();
+    }
+    if (camera.parent === null && camera.matrixWorldAutoUpdate === true) {
+      camera.updateMatrixWorld();
+    }
+    if (xr.enabled && xr.isPresenting) {
+      if (xr.cameraAutoUpdate) {
+        xr.updateCamera(camera as THREE.PerspectiveCamera);
+      }
+    }
+  }
+
   private startManualXrFrameLoop(
     rootStore: {
       getState: () => unknown;
@@ -882,29 +1023,49 @@ export class WebXRHost {
         return;
       }
 
-      this.lastXrCallbackAt = performance.now();
-      const advanceStartedAt = this.lastXrCallbackAt;
+      this.openVrOverlayPacer?.paceToDisplayAndRefreshPoses();
+      const wallNow = performance.now();
+      if (this.lastXrSessionRafWallAt > 0) {
+        this.xrSessionRafWallIntervalMetric.record(
+          wallNow - this.lastXrSessionRafWallAt,
+        );
+      }
+      this.lastXrSessionRafWallAt = wallNow;
+      this.lastXrCallbackAt = wallNow;
+      const advanceStartedAt = wallNow;
+      const t0 = performance.now();
       this.updateEmulatedHeadsetFromOpenVr();
+      this.xrHmdEmulationMetric.record(performance.now() - t0);
+      const t1 = performance.now();
       this.applyExternalControllerData();
+      this.xrControllerApplyMetric.record(performance.now() - t1);
       // R3F v10's scheduler-based advance() doesn't forward the XRFrame to
       // useFrame callbacks; stash it on the bridge so our useFrame shim can
       // inject it as the third arg downstream.
       currentXRFrame.value = frame;
+      const t2 = performance.now();
       try {
         advance(time);
       } finally {
         currentXRFrame.value = undefined;
       }
+      this.xrR3fAdvanceMetric.record(performance.now() - t2);
+      const t3 = performance.now();
       this.captureShadowPoseFromRenderer();
+      this.xrShadowPoseMetric.record(performance.now() - t3);
       this.frameCount++;
       this.xrFpsCounter.mark(this.lastXrCallbackAt);
       this.xrAdvanceMetric.record(performance.now() - advanceStartedAt);
       if (this.lastXrCallbackAt - this.lastFpsLogAt >= 1000) {
         this.lastFpsLogAt = this.lastXrCallbackAt;
-        LogChannel.log(
-          "fps",
-          `[webxrhost] xr=${this.xrFpsCounter.getFps().toFixed(1)}`,
-        );
+        {
+          const measured = this.xrFpsCounter.getFps();
+          const nom = this.nominalHmdDisplayHz;
+          const tail = nom != null && Number.isFinite(nom)
+            ? ` measured vs OpenVR ${nom.toFixed(0)} Hz nominal`
+            : "";
+          LogChannel.log("fps", `[webxrhost] xr=${measured.toFixed(1)}${tail}`);
+        }
       }
       this.maybeLogPerf();
 
@@ -969,7 +1130,12 @@ export class WebXRHost {
     }
 
     this.lastPerfLogAt = now;
+    const rafWallSample = this.xrSessionRafWallIntervalMetric.flush();
     const advanceSample = this.xrAdvanceMetric.flush();
+    const hmdSample = this.xrHmdEmulationMetric.flush();
+    const controllerSample = this.xrControllerApplyMetric.flush();
+    const r3fSample = this.xrR3fAdvanceMetric.flush();
+    const poseSample = this.xrShadowPoseMetric.flush();
     const readySignalSample = this.readySignalMetric.flush();
     const readbackSample = this.readbackMetric.flush();
     const queueAgeSample = this.queueAgeMetric.flush();
@@ -978,7 +1144,8 @@ export class WebXRHost {
     const mapRangeSample = this.mapRangeMetric.flush();
     const captureSample = this.captureMetric.flush();
     if (
-      !advanceSample && !readySignalSample && !readbackSample &&
+      !rafWallSample && !advanceSample && !hmdSample && !controllerSample && !r3fSample && !poseSample &&
+      !readySignalSample && !readbackSample &&
       !queueAgeSample && !gpuReadySample && !shelfSample &&
       !mapRangeSample && !captureSample
     ) {
@@ -986,9 +1153,36 @@ export class WebXRHost {
     }
 
     const parts: string[] = [];
+    if (rafWallSample) {
+      const implied = 1000 / rafWallSample.avgMs;
+      parts.push(
+        `session-raf=${rafWallSample.avgMs.toFixed(2)}ms avg ` +
+          `${rafWallSample.maxMs.toFixed(2)}ms max (~${implied.toFixed(0)}Hz)`,
+      );
+    }
     if (advanceSample) {
       parts.push(
         `advance=${advanceSample.avgMs.toFixed(2)}ms avg ${advanceSample.maxMs.toFixed(2)}ms max`,
+      );
+    }
+    if (hmdSample) {
+      parts.push(
+        `hmd=${hmdSample.avgMs.toFixed(2)}ms avg ${hmdSample.maxMs.toFixed(2)}ms max`,
+      );
+    }
+    if (controllerSample) {
+      parts.push(
+        `ctrl=${controllerSample.avgMs.toFixed(2)}ms avg ${controllerSample.maxMs.toFixed(2)}ms max`,
+      );
+    }
+    if (r3fSample) {
+      parts.push(
+        `r3f=${r3fSample.avgMs.toFixed(2)}ms avg ${r3fSample.maxMs.toFixed(2)}ms max`,
+      );
+    }
+    if (poseSample) {
+      parts.push(
+        `pose=${poseSample.avgMs.toFixed(2)}ms avg ${poseSample.maxMs.toFixed(2)}ms max`,
       );
     }
     if (readySignalSample) {
@@ -1095,6 +1289,9 @@ export class WebXRHost {
     position: [number, number, number];
     quaternion: [number, number, number, number];
   } | null {
+    if (this.openVrOverlayPacer) {
+      return this.openVrOverlayPacer.getCachedHmdEmulation();
+    }
     if (!this.vrSystemPointer) {
       return null;
     }

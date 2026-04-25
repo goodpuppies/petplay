@@ -14,6 +14,10 @@ import { currentXRFrame } from "./xrFrameBridge.ts";
 /**
  * Legacy `useFrame` callback: optional third argument is `XRFrame`.
  * R3F v10 `FrameNextCallback` is only `(state, delta)`; see `node_modules/@react-three/fiber/dist/webgpu/index.d.ts`.
+ *
+ * **v10 `UseFrameNextOptions` pass-through:** `phase`, `fps`, `drop`, `enabled`, `id`, etc. are
+ * forwarded to `@react-three/fiber/webgpu` as-is. A **numeric** second argument is still treated as
+ * `priority` for backwards compatibility.
  */
 export type LegacyUseFrameCallback = (
   state: FrameNextState,

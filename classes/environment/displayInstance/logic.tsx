@@ -1,7 +1,12 @@
 import React, { useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
-import { extend, type ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
+import {
+  extend,
+  type ThreeToJSXElements,
+  type UseFrameNextOptions,
+  useFrame,
+} from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { hmd34FromColumnMajor4x4 } from "../../openvrTransform.ts";
@@ -64,10 +69,22 @@ export function DisplayInstance(
   const height = frameProps.height ?? DEFAULT_DISPLAY_HEIGHT;
   const localHalfW = 0.5 * height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT;
 
+  const displaySyncFrameOpts = React.useMemo<UseFrameNextOptions>(
+    () => ({
+      id: "petplay-display-openvr",
+      enabled: displayInstanceActor != null,
+      phase: "finish",
+      fps: 60,
+      drop: true,
+    }),
+    [displayInstanceActor],
+  );
+
   useFrame(() => {
-    if (!displayInstanceActor) {
+    if (displayInstanceActor == null) {
       return;
     }
+    const targetActor = displayInstanceActor;
     const obj = handleRef.current;
     if (obj == null) {
       return;
@@ -102,14 +119,14 @@ export function DisplayInstance(
     lastSentWidth.current = widthMeters;
     try {
       PostMan.PostMessage({
-        target: displayInstanceActor,
+        target: targetActor,
         type: "SYNCDISPLAYPOSE",
         payload: { hmd, widthMeters },
       });
     } catch {
       // actor may be torn down
     }
-  });
+  }, displaySyncFrameOpts);
 
   return (
     <group

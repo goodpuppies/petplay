@@ -1,3 +1,8 @@
+/**
+ * Second worker: receives `ExtractionResult` from `webxr` and runs
+ * `WebXROverlayRaylib` (raylib) + OpenVR `present`. The Three.js / Raythree
+ * graph walk lives in the webxr worker; this actor only draws from IR.
+ */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
@@ -5,6 +10,8 @@ import type { WebXRRaythreeRenderPayload } from "../classes/webxrRaythreeScene.t
 
 type StartWebXROverlayPayload = {
   overlayPointer: number | bigint;
+  /** For `RAYLIBOVERLAYFRAMEACK` after each present (coalesced raylib path). */
+  webxrActor?: string;
   overlayKey?: string;
   overlayName?: string;
   overlayWidthInMeters?: number;
@@ -23,6 +30,7 @@ const state = actorState({
   overlayDistance: null as number | null,
   sortOrder: null as number | null,
   uploadedFrames: 0,
+  webxrActor: null as string | null,
 });
 
 new PostMan(
@@ -32,6 +40,7 @@ new PostMan(
       PostMan.setTopic("muffin");
     },
     STARTWEBXROVERLAY: (payload: StartWebXROverlayPayload) => {
+      state.webxrActor = payload.webxrActor ?? null;
       state.overlayPointer = payload.overlayPointer;
       state.overlayKey = payload.overlayKey ?? null;
       state.overlayName = payload.overlayName ?? "PetPlay WebXR Overlay";
@@ -69,6 +78,13 @@ new PostMan(
 
       state.overlay.present();
       state.uploadedFrames++;
+      if (state.webxrActor) {
+        PostMan.PostMessage({
+          target: state.webxrActor,
+          type: "RAYLIBOVERLAYFRAMEACK",
+          payload: null,
+        });
+      }
     },
     STOPWEBXROVERLAY: (_payload: void) => {
       cleanupOverlay();
@@ -92,4 +108,5 @@ function cleanupOverlay() {
   state.overlayDistance = null;
   state.sortOrder = null;
   state.uploadedFrames = 0;
+  state.webxrActor = null;
 }

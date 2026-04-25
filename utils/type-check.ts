@@ -10,6 +10,7 @@
 const IGNORE_PATHS = [
   "/submodules/threewebxrwebgpudeno/submodules/",
   "/submodules/threewebxrwebgpudeno/local-uikit/",
+  "/research/",
 ];
 
 async function runTypeCheck(): Promise<void> {

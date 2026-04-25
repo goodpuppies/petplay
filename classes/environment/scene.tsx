@@ -2,18 +2,16 @@ import React, { useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
-import { extend, ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
-import { Handle } from "@react-three/handle";
 import {
-  getShadowControllerSnapshot,
-  getVRCOriginMatrixElements,
-  isVRCOriginKnown,
-  updateShadowSceneMesh,
-} from "../webxrShadowScene.ts";
+  extend,
+  type ThreeToJSXElements,
+  type UseFrameNextOptions,
+  useFrame,
+} from "@react-three/fiber/webgpu";
+import { updateShadowSceneMesh } from "../webxrShadowScene.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
-
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -44,154 +42,34 @@ function RoomWireBox({ color }: { color: THREE.Color }) {
   );
 }
 
-function BouncingCube({ seed }: { seed: CubeSeed }) {
-  const meshRef = React.useRef<THREE.Mesh>(null);
-  const velocity = React.useRef(new THREE.Vector3(...seed.velocity));
-
-  useFrame((_state, deltaSeconds) => {
-    const mesh = meshRef.current;
-    if (mesh === null) {
-      return;
-    }
-
-    const delta = deltaSeconds * 60;
-    velocity.current.multiplyScalar(1 - (0.001 * delta));
-    mesh.position.addScaledVector(velocity.current, delta);
-
-    if (mesh.position.x < -3 || mesh.position.x > 3) {
-      mesh.position.x = THREE.MathUtils.clamp(mesh.position.x, -3, 3);
-      velocity.current.x = -velocity.current.x;
-    }
-
-    if (mesh.position.y < 0 || mesh.position.y > 6) {
-      mesh.position.y = THREE.MathUtils.clamp(mesh.position.y, 0, 6);
-      velocity.current.y = -velocity.current.y;
-    }
-
-    if (mesh.position.z < -3 || mesh.position.z > 3) {
-      mesh.position.z = THREE.MathUtils.clamp(mesh.position.z, -3, 3);
-      velocity.current.z = -velocity.current.z;
-    }
-
-    mesh.rotation.x += velocity.current.x * 2 * delta;
-    mesh.rotation.y += velocity.current.y * 2 * delta;
-    mesh.rotation.z += velocity.current.z * 2 * delta;
-  });
-
-  return (
-    <mesh
-      ref={meshRef}
-      position={seed.position}
-      rotation={seed.rotation}
-      scale={seed.scale}
-    >
-      <boxGeometry args={[0.15, 0.15, 0.15]} />
-      <meshLambertMaterial color={seed.color} />
-    </mesh>
-  );
-}
-
-type CubeSeed = {
-  position: [number, number, number];
-  rotation: [number, number, number];
-  scale: [number, number, number];
-  color: THREE.Color;
-  velocity: [number, number, number];
-};
-
-function createCubeSeed(): CubeSeed {
-  return {
-    position: [
-      Math.random() * 4 - 2,
-      Math.random() * 4,
-      Math.random() * 4 - 2,
-    ],
-    rotation: [
-      Math.random() * Math.PI * 2,
-      Math.random() * Math.PI * 2,
-      Math.random() * Math.PI * 2,
-    ],
-    scale: [
-      Math.random() + 0.5,
-      Math.random() + 0.5,
-      Math.random() + 0.5,
-    ],
-    color: new THREE.Color(Math.random() * 0xffffff),
-    velocity: [
-      Math.random() * 0.01 - 0.005,
-      Math.random() * 0.01 - 0.005,
-      Math.random() * 0.01 - 0.005,
-    ],
-  };
-}
-const CUBE_COUNT = 200;
-
 export function WebXRScene(
-  { XROrigin, displayInstanceActor = null }: WebXRSceneProps,
+  { XROrigin: _XROrigin, displayInstanceActor = null }: WebXRSceneProps,
 ) {
+  void _XROrigin;
   const accentRef = useRef<THREE.Mesh>(null!);
-  const boxRef = useRef<THREE.Mesh>(null!);
-  // Group that mirrors the VRChat world origin in SteamVR absolute space.
-  // Anything parented here gets expressed in VRC coordinates.
-  const vrcOriginGroupRef = useRef<THREE.Group>(null!);
-  const boxWorldPositionRef = useRef(new THREE.Vector3());
-  const boxWorldQuaternionRef = useRef(new THREE.Quaternion());
-  const boxWorldScaleRef = useRef(new THREE.Vector3());
-  const boxWorldRotationRef = useRef(new THREE.Euler());
 
-  // Trigger-to-teleport bookkeeping. We track the prior trigger state
-  // per hand so we only teleport on the rising edge (press), not every
-  // frame the trigger is held.
-  const prevTriggerRef = useRef({ left: false, right: false });
-  const vrcOriginMat4Ref = useRef(new THREE.Matrix4());
-  const vrcOriginInvMat4Ref = useRef(new THREE.Matrix4());
-  const handAbsMat4Ref = useRef(new THREE.Matrix4());
-  const boxLocalMat4Ref = useRef(new THREE.Matrix4());
-  const boxLocalPosRef = useRef(new THREE.Vector3());
-  const cubes = React.useMemo(
-    () => Array.from({ length: CUBE_COUNT }, () => createCubeSeed()),
+  // R3F v10: keep mesh animation on the default `update` phase. Memoize options
+  // so the scheduler job is not re-registered every React render.
+  const accentFrameOpts = React.useMemo<UseFrameNextOptions>(
+    () => ({ id: "petplay-accent-torus" }),
     [],
   );
-
   useFrame((_state, delta) => {
-    // Pull the latest VRC origin (updated by the webxr actor's ORIGINUPDATE
-    // handler) and drive the wrapping group's matrix directly. Falls back to
-    // identity until the first origin snapshot arrives.
-    const vrcGroup = vrcOriginGroupRef.current;
-    if (vrcGroup) {
-      vrcGroup.matrixAutoUpdate = false;
-      if (isVRCOriginKnown()) {
-        vrcGroup.matrix.fromArray(getVRCOriginMatrixElements());
-      } else {
-        vrcGroup.matrix.identity();
-      }
-      vrcGroup.matrixWorldNeedsUpdate = true;
-    }
-
-    // Trigger-press → teleport the cube to the pressing hand.
-    // The cube is a child of the VRC origin group, so its local position
-    // is VRC-relative. To land it on a hand whose pose is expressed in
-    // SteamVR absolute space, transform: boxLocal = inv(vrcOrigin) * handAbs.
-    const teleportTarget = boxRef.current;
-    const snapshot = getShadowControllerSnapshot();
-    const hands: Array<"left" | "right"> = ["left", "right"];
-    for (const hand of hands) {
-      const slot = snapshot[hand];
-      const prev = prevTriggerRef.current[hand];
-      const now = slot.triggerPressed && slot.valid;
-      if (now && !prev && teleportTarget) {
-        handAbsMat4Ref.current.fromArray(slot.matrix);
-        vrcOriginMat4Ref.current.fromArray(getVRCOriginMatrixElements());
-        vrcOriginInvMat4Ref.current.copy(vrcOriginMat4Ref.current).invert();
-        boxLocalMat4Ref.current
-          .multiplyMatrices(vrcOriginInvMat4Ref.current, handAbsMat4Ref.current);
-        boxLocalPosRef.current.setFromMatrixPosition(boxLocalMat4Ref.current);
-        teleportTarget.position.copy(boxLocalPosRef.current);
-      }
-      prevTriggerRef.current[hand] = now;
-    }
-
     accentRef.current.rotation.y += delta * 0.25;
+  }, accentFrameOpts);
+
+  // Ghost overlay snapshot for Raylib: not needed at HMD rate; `finish` runs after uikit/keyboard
+  // update jobs, and 60Hz is plenty for a slow torus + shadow mesh mirror.
+  const shadowMirrorOpts = React.useMemo<UseFrameNextOptions>(
+    () => ({
+      id: "petplay-raylib-torus-shadow",
+      phase: "finish",
+      fps: 60,
+      drop: true,
+    }),
+    [],
+  );
+  useFrame(() => {
     updateShadowSceneMesh(0, {
       kind: "torus",
       position: [0, 1.45, -1.8],
@@ -200,36 +78,7 @@ export function WebXRScene(
       color: [255, 139, 61, 255],
       wireColor: [255, 196, 148, 255],
     });
-    const box = boxRef.current;
-    box.updateWorldMatrix(true, false);
-    box.getWorldPosition(boxWorldPositionRef.current);
-    box.getWorldQuaternion(boxWorldQuaternionRef.current);
-    box.getWorldScale(boxWorldScaleRef.current);
-    boxWorldRotationRef.current.setFromQuaternion(
-      boxWorldQuaternionRef.current,
-      box.rotation.order,
-    );
-    updateShadowSceneMesh(1, {
-      kind: "cube",
-      position: [
-        boxWorldPositionRef.current.x,
-        boxWorldPositionRef.current.y,
-        boxWorldPositionRef.current.z,
-      ],
-      rotation: [
-        boxWorldRotationRef.current.x,
-        boxWorldRotationRef.current.y,
-        boxWorldRotationRef.current.z,
-      ],
-      scale: [
-        boxWorldScaleRef.current.x,
-        boxWorldScaleRef.current.y,
-        boxWorldScaleRef.current.z,
-      ],
-      color: [84, 214, 44, 220],
-      wireColor: [160, 255, 132, 255],
-    });
-  });
+  }, shadowMirrorOpts);
 
   const roomLineColor = React.useMemo(() => new THREE.Color(0xbcbcbc), []);
 
@@ -247,9 +96,6 @@ export function WebXRScene(
         <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
       </mesh>
       <RoomWireBox color={roomLineColor} />
-      {/* {cubes.map((seed, index) => (
-        <BouncingCube key={index} seed={seed} />
-      ))} */}
 
       <DisplayInstance
         position={[-0.75, 1.2, -1.45]}
@@ -260,21 +106,6 @@ export function WebXRScene(
         reorient with controller ray for typing toward the 16:9 overlay.
       */}
       <KeyboardPanel onKey={windowsSystemKeyboardSink} />
-
-      {/*
-        The cube lives inside the VRC-origin group so its local
-        position [0.35, 1.2, -1.45] is interpreted in VRChat world
-        space rather than raw SteamVR absolute space. The group's
-        matrix is updated each frame in useFrame above.
-      */}
-      <group ref={vrcOriginGroupRef}>
-        <Handle handleRef={boxRef as unknown as React.RefObject<import("three").Object3D | null>} multitouch>
-          <mesh ref={boxRef} position={[0.35, 1.2, -1.45]} scale={[0.18, 0.18, 0.18]}>
-            <boxGeometry args={[1, 1, 1]} />
-            <meshBasicNodeMaterial colorNode={TSL.color(0x54d62c)} />
-          </mesh>
-        </Handle>
-      </group>
     </>
   );
 }

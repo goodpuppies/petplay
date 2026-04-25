@@ -15,8 +15,9 @@ const state = actorState({
   inputstate: null as actionData | null,
 });
 
-const WEBXR_RENDER_HEIGHT = 500;
+const WEBXR_RENDER_HEIGHT = 10;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
+/** Raylib ghost only: `WebXRHost` skips WebGPU XR scene draws. Use `"both"` to compare to the live layer. */
 const WEBXR_OVERLAY_MODE = "raylib" as OverlayRenderMode;
 
 const stdinHandler = new MainStdinHandler({
@@ -86,6 +87,17 @@ async function main() {
     type: "INITOPENVR",
     payload: ivrsystem,
   });
+  const hmdDisplayFrequencyHz = await PostMan.PostMessage({
+    target: hmd,
+    type: "GETHMDDISPLAYFREQUENCY",
+    payload: null,
+  }, true) as number | null;
+
+  const compositorPtr = await PostMan.PostMessage({
+    target: ivr,
+    type: "GETCOMPOSITORPTR",
+    payload: null,
+  }, true) as bigint | null;
 
   PostMan.PostMessage({
     target: [origin, laser, displayInstance],
@@ -112,6 +124,8 @@ async function main() {
       overlayWidthInMeters: 3,
       overlayDistance: 1,
       overlayRenderMode: WEBXR_OVERLAY_MODE,
+      hmdDisplayFrequencyHz,
+      vrCompositorPointer: compositorPtr,
     },
   });
   PostMan.PostMessage({
