@@ -10,7 +10,11 @@ import type {
   RenderFrame,
   RenderInstance,
 } from "../submodules/raythree/src/lib.ts";
-import type { WebXRRaythreeUiOrderInfo, WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";
+import type {
+  WebXRRaythreeUiOrderInfo,
+  WebXRRaythreeUiPanelSnapshot,
+  WebXRRaythreeUiSnapshot,
+} from "./webxrRaythreeUi.ts";
 
 const MAX_MATERIAL_MAPS = 11;
 const ZERO_POINTER = 0n;
@@ -41,6 +45,40 @@ function isWebXrRaythreeDebugEnabled(): boolean {
 
 const WEBXR_RAYTHREE_DEBUG = isWebXrRaythreeDebugEnabled();
 const WEBXR_RAYTHREE_TEXT_FORCE_NON_INDEXED = false;
+
+/**
+ * A/B: set `--webxr-raythree-ui-panel-force-unbatched=1` to draw each uikit
+ * panel with `drawUiPanel` (original path) instead of `tryDrawUiPanelsBatched`.
+ * - If the keyboard looks **correct** with this on, the bug is in the batch
+ *   path (data texture, shader, or `gl_VertexID`).
+ * - If it still looks **wrong**, suspect snapshot `panel.data` / clipping, or
+ *   the unbatched `UI_PANEL_*` path.
+ * Use `--webxr-raythree-ui-panel-batch-debug=1` for a one-time CPU log
+ * (texture size, uniform locations, sample packed floats). For GPU work,
+ * temporarily replace the end of `UI_PANEL_BATCH_FRAGMENT_SHADER` with e.g.
+ * `finalColor = vec4(fract(vPanelId/20.0),fract(vPanelId/3.0),0.0,1.0);` to
+ * see whether `vPanelId` and `pfetch` vary per pixel.
+ */
+function isWebXrRaythreeUiPanelForceUnbatchedEnabled(): boolean {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-raythree-ui-panel-force-unbatched="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  return configured === "1" || configured === "true" || configured === "yes" || configured === "on";
+}
+
+function isWebXrRaythreeUiPanelBatchDebugEnabled(): boolean {
+  const configured = Deno.args
+    .find((arg) => arg.startsWith("--webxr-raythree-ui-panel-batch-debug="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  return configured === "1" || configured === "true" || configured === "yes" || configured === "on";
+}
+
+const WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED = isWebXrRaythreeUiPanelForceUnbatchedEnabled();
+const WEBXR_RAYTHREE_UI_PANEL_BATCH_DEBUG = isWebXrRaythreeUiPanelBatchDebugEnabled();
 
 function isWebXrRaythreeTextAssertEnabled(): boolean {
   const configured = Deno.args
@@ -75,6 +113,10 @@ type NativeMaterial = {
   blendMode: raylibBindings.BlendMode;
   /** When true, draw with `rlEnableWireMode` and the same lighting `DrawMesh` as solid. */
   wireframe: boolean;
+  /** Mirrors Three `Material.depthTest`; when false, draw passes rlgl depth test (HUD / laser on top). */
+  depthTest: boolean;
+  /** Mirrors Three `Material.depthWrite`. */
+  depthWrite: boolean;
 };
 
 type LightingShader = {
@@ -107,6 +149,17 @@ type UiTextShader = {
   tintLoc: number;
   pxRangeLoc: number;
   atlasSizeLoc: number;
+};
+
+type UiTextBatchShader = {
+  shader: raylibBindings.Shader;
+};
+
+type UiPanelBatchShader = {
+  shader: raylibBindings.Shader;
+  mvpLoc: number;
+  /** `texture0` (MAP_ALBEDO) — for debug; bound via `material.maps` + DrawMesh, not SetShaderValueTexture. */
+  texture0Loc: number;
 };
 
 type UiTextMeshCacheEntry = {
@@ -155,10 +208,36 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly uiMvpV = new THREE.Matrix4();
   private readonly uiMvpW = new THREE.Matrix4();
   private readonly uiMvp = new THREE.Matrix4();
+  /** Precomputed `projection * view` for the current uikit pass (one per eye); MVP = uiMvpPV * world. */
+  private readonly uiMvpPV = new THREE.Matrix4();
+  private readonly uiTextBatchShader: UiTextBatchShader;
+  private readonly uiTextBatchMaterialBytes: Uint8Array;
+  private readonly uiTextBatchMaterial: raylibBindings.Material;
+  private readonly uiPanelBatchShader: UiPanelBatchShader;
+  private readonly uiPanelBatchMaterialBytes: Uint8Array;
+  private readonly uiPanelBatchMaterial: raylibBindings.Material;
+  private uiTextBatchMesh: NativeMesh | null = null;
+  private textBatchPoolPos = new Float32Array(0);
+  private textBatchPoolN = new Float32Array(0);
+  private textBatchPoolUv = new Float32Array(0);
+  private textBatchPoolC = new Uint8Array(0);
+  private textBatchPoolCap = 0;
+  private uiPanelDataBytes: Uint8Array | null = null;
+  private uiPanelDataTexture: raylibBindings.Texture2D | null = null;
+  private uiPanelDataTexH = 0;
+  private uiPanelDataTexW = 9;
+  private uiPanelBatchMesh: NativeMesh | null = null;
+  private readonly clipV4 = new THREE.Vector4();
+  private readonly identityMatrix16 = new Float32Array([
+    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+  ]);
+  private lastBatchedTextAtlasId = 0;
   private readonly loggedTextCounts = new Set<number>();
   private readonly loggedWarnings = new Set<string>();
   private readonly loggedSkippedGeometryIds = new Set<number>();
   private readonly loggedProjectionSummary = new Set<string>();
+  private loggedUiPanelBatchDebugOnce = false;
+  private loggedUiPanelForceUnbatchedOnce = false;
   constructor() {
     this.baseMaterial = raylib.H.LoadMaterialDefault();
     this.lightingShader = createLightingShader();
@@ -178,6 +257,20 @@ export class WebXRRaythreeRaylibRenderer {
     this.uiTextMaterial = {
       shader: this.uiTextShader.shader,
       maps: pointerAddress(this.uiTextMaterialBytes),
+      params: [...this.baseMaterial.params] as [number, number, number, number],
+    } as unknown as raylibBindings.Material;
+    this.uiTextBatchShader = createUiTextBatchShader();
+    this.uiTextBatchMaterialBytes = cloneMaterialMaps(this.baseMaterial);
+    this.uiTextBatchMaterial = {
+      shader: this.uiTextBatchShader.shader,
+      maps: pointerAddress(this.uiTextBatchMaterialBytes),
+      params: [...this.baseMaterial.params] as [number, number, number, number],
+    } as unknown as raylibBindings.Material;
+    this.uiPanelBatchShader = createUiPanelBatchShader();
+    this.uiPanelBatchMaterialBytes = cloneMaterialMaps(this.baseMaterial);
+    this.uiPanelBatchMaterial = {
+      shader: this.uiPanelBatchShader.shader,
+      maps: pointerAddress(this.uiPanelBatchMaterialBytes),
       params: [...this.baseMaterial.params] as [number, number, number, number],
     } as unknown as raylibBindings.Material;
     const uiAlbedo = readMaterialMap(
@@ -238,6 +331,7 @@ export class WebXRRaythreeRaylibRenderer {
     },
     debugContext?: string,
     ui?: WebXRRaythreeUiSnapshot,
+    options?: { skipAssetSync?: boolean },
   ): {
     syncMs: number;
     frameMs: number;
@@ -245,12 +339,21 @@ export class WebXRRaythreeRaylibRenderer {
     opaqueMs: number;
     xparentMs: number;
     uiMs: number;
+    uiSortPrepMs: number;
+    uiPanelsMs: number;
+    uiTextMs: number;
+    uiPanelCount: number;
+    uiTextCount: number;
+    uiPanelDrawn: number;
+    uiTextDrawn: number;
     endMs: number;
     batchGeometries: number;
     batchMaterials: number;
   } {
     const t0 = performance.now();
-    this.syncAssets(extraction, debugContext);
+    if (options?.skipAssetSync !== true) {
+      this.syncAssets(extraction, debugContext);
+    }
     const t1 = performance.now();
     const phases = this.renderFrame(extraction.frame, background, matrices, ui);
     const t2 = performance.now();
@@ -261,6 +364,13 @@ export class WebXRRaythreeRaylibRenderer {
       opaqueMs: phases.opaqueMs,
       xparentMs: phases.xparentMs,
       uiMs: phases.uiMs,
+      uiSortPrepMs: phases.uiSortPrepMs,
+      uiPanelsMs: phases.uiPanelsMs,
+      uiTextMs: phases.uiTextMs,
+      uiPanelCount: phases.uiPanelCount,
+      uiTextCount: phases.uiTextCount,
+      uiPanelDrawn: phases.uiPanelDrawn,
+      uiTextDrawn: phases.uiTextDrawn,
       endMs: phases.endMs,
       batchGeometries: extraction.assets.geometries.length,
       batchMaterials: extraction.assets.materials.length,
@@ -282,10 +392,26 @@ export class WebXRRaythreeRaylibRenderer {
     if (this.uiMsdfAtlas !== null) {
       raylib.H.UnloadTexture(this.uiMsdfAtlas);
       this.uiMsdfAtlas = null;
+      this.lastBatchedTextAtlasId = 0;
     }
     this.unloadNativeMesh(this.uiPanelMesh);
+    if (this.uiTextBatchMesh !== null) {
+      this.unloadNativeMesh(this.uiTextBatchMesh);
+      this.uiTextBatchMesh = null;
+    }
+    if (this.uiPanelBatchMesh !== null) {
+      this.unloadNativeMesh(this.uiPanelBatchMesh);
+      this.uiPanelBatchMesh = null;
+    }
+    if (this.uiPanelDataTexture !== null) {
+      raylib.H.UnloadTexture(this.uiPanelDataTexture);
+      this.uiPanelDataTexture = null;
+    }
+    this.uiPanelDataBytes = null;
     raylib.H.UnloadShader(this.uiTextShader.shader);
+    raylib.H.UnloadShader(this.uiTextBatchShader.shader);
     raylib.H.UnloadShader(this.uiPanelShader.shader);
+    raylib.H.UnloadShader(this.uiPanelBatchShader.shader);
     raylib.H.UnloadShader(this.lightingShader.shader);
   }
 
@@ -378,6 +504,13 @@ export class WebXRRaythreeRaylibRenderer {
     opaqueMs: number;
     xparentMs: number;
     uiMs: number;
+    uiSortPrepMs: number;
+    uiPanelsMs: number;
+    uiTextMs: number;
+    uiPanelCount: number;
+    uiTextCount: number;
+    uiPanelDrawn: number;
+    uiTextDrawn: number;
     endMs: number;
   } {
     const tPrep0 = performance.now();
@@ -431,12 +564,26 @@ export class WebXRRaythreeRaylibRenderer {
       this.drawInstance(nativeMesh, nativeMaterial, instance);
     }
     const tXpr1 = performance.now();
+    let uiSortPrepMs = 0;
+    let uiPanelsMs = 0;
+    let uiTextMs = 0;
+    let uiPanelCount = 0;
+    let uiTextCount = 0;
+    let uiPanelDrawn = 0;
+    let uiTextDrawn = 0;
     if (ui !== undefined) {
       setUiDepthMaskEnabled(false);
       setUiDepthTestEnabled(false);
       setUiBackfaceCullingEnabled(false);
       try {
-        this.drawUiSnapshot(ui, viewMatrix, projectionMatrix);
+        const uiPhases = this.drawUiSnapshot(ui, viewMatrix, projectionMatrix);
+        uiSortPrepMs = uiPhases.sortPrepMs;
+        uiPanelsMs = uiPhases.panelsMs;
+        uiTextMs = uiPhases.textMs;
+        uiPanelCount = uiPhases.panelCount;
+        uiTextCount = uiPhases.textCount;
+        uiPanelDrawn = uiPhases.panelDrawn;
+        uiTextDrawn = uiPhases.textDrawn;
       } finally {
         setUiBackfaceCullingEnabled(true);
         setUiDepthTestEnabled(true);
@@ -453,15 +600,40 @@ export class WebXRRaythreeRaylibRenderer {
       opaqueMs: tOpq1 - tPrep1,
       xparentMs: tXpr1 - tOpq1,
       uiMs: tUi1 - tXpr1,
+      uiSortPrepMs,
+      uiPanelsMs,
+      uiTextMs,
+      uiPanelCount,
+      uiTextCount,
+      uiPanelDrawn,
+      uiTextDrawn,
       endMs: tEnd1 - tUi1,
     };
   }
 
+  /**
+   * Renders uikit with one `DrawMesh` + many uniform sets per panel (and one draw per text mesh).
+   * Hitting sub‑millisecond UI time at native res needs far fewer draw calls (instanced or packed
+   * instance buffer + one draw; possibly lighter fragment work), not only halving per-eye work.
+   */
   private drawUiSnapshot(
     ui: WebXRRaythreeUiSnapshot,
     viewMatrix: Float32Array,
     projectionMatrix: Float32Array,
-  ): void {
+  ): {
+    sortPrepMs: number;
+    panelsMs: number;
+    textMs: number;
+    panelCount: number;
+    textCount: number;
+    panelDrawn: number;
+    textDrawn: number;
+  } {
+    const t0 = performance.now();
+    this.uiMvpP.fromArray(projectionMatrix as unknown as number[]);
+    this.uiMvpV.fromArray(viewMatrix as unknown as number[]);
+    this.uiMvpPV.copy(this.uiMvpP).multiply(this.uiMvpV);
+
     const panels = [...ui.panels].sort((left, right) => {
       if (left.renderOrder !== right.renderOrder) {
         return left.renderOrder - right.renderOrder;
@@ -476,41 +648,79 @@ export class WebXRRaythreeRaylibRenderer {
       return this.getWorldMatrixViewDepth(right.worldMatrix) -
         this.getWorldMatrixViewDepth(left.worldMatrix);
     });
-    for (const panel of panels) {
-      this.drawUiPanel(panel, projectionMatrix, viewMatrix);
-    }
     const texts = [...ui.texts].sort((left, right) =>
       this.getWorldMatrixViewDepth(right.worldMatrix) -
         this.getWorldMatrixViewDepth(left.worldMatrix)
     );
-    for (const text of texts) {
-      this.drawUiText(text, projectionMatrix, viewMatrix);
+    const t1 = performance.now();
+
+    if (WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED && !this.loggedUiPanelForceUnbatchedOnce) {
+      this.loggedUiPanelForceUnbatchedOnce = true;
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] UI panels: force-unbatched (per-panel drawUiPanel); batch path skipped. " +
+          "Remove --webxr-raythree-ui-panel-force-unbatched=1 to re-test batching.",
+      );
     }
+
+    const panelBatched = WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED
+      ? null
+      : this.tryDrawUiPanelsBatched(panels, this.uiMvpPV);
+    let panelDrawn = 0;
+    if (panelBatched === null) {
+      for (const panel of panels) {
+        if (this.drawUiPanel(panel, this.uiMvpPV)) {
+          panelDrawn++;
+        }
+      }
+    } else {
+      panelDrawn = panelBatched;
+    }
+    const t2 = performance.now();
+
+    const textBatched = this.tryDrawUiTextBatched(texts, this.uiMvpPV);
+    let textDrawn = 0;
+    if (textBatched === null) {
+      for (const text of texts) {
+        if (this.drawUiText(text, this.uiMvpPV)) {
+          textDrawn++;
+        }
+      }
+    } else {
+      textDrawn = textBatched;
+    }
+    const t3 = performance.now();
+
     if (ui.texts.length > 0 && !this.loggedTextCounts.has(ui.texts.length)) {
       this.loggedTextCounts.add(ui.texts.length);
       debugLog(`ui text snapshot count=${ui.texts.length} renderer=billboard`);
     }
+
+    return {
+      sortPrepMs: t1 - t0,
+      panelsMs: t2 - t1,
+      textMs: t3 - t2,
+      panelCount: ui.panels.length,
+      textCount: ui.texts.length,
+      panelDrawn,
+      textDrawn,
+    };
   }
 
   private setUiShaderMvp(
     shader: raylibBindings.Shader,
     mvpLoc: number,
-    projection: Float32Array,
-    view: Float32Array,
+    projView: THREE.Matrix4,
     world: ArrayLike<number>,
   ): void {
     if (mvpLoc < 0) {
       return;
     }
-    const pEl = this.uiMvpP.elements;
-    const vEl = this.uiMvpV.elements;
     const worldEl = this.uiMvpW.elements;
     for (let i = 0; i < 16; i++) {
-      pEl[i] = projection[i] ?? 0;
-      vEl[i] = view[i] ?? 0;
       worldEl[i] = Number(world[i]);
     }
-    this.uiMvp.copy(this.uiMvpP).multiply(this.uiMvpV).multiply(this.uiMvpW);
+    this.uiMvp.copy(projView).multiply(this.uiMvpW);
     raylib.H.SetShaderValueMatrix(
       shader,
       mvpLoc,
@@ -518,37 +728,48 @@ export class WebXRRaythreeRaylibRenderer {
     );
   }
 
-  private drawUiPanel(
-    panel: WebXRRaythreeUiSnapshot["panels"][number],
-    projectionMatrix: Float32Array,
-    viewMatrix: Float32Array,
-  ): void {
+  private isUikitPanelCulled(panel: WebXRRaythreeUiPanelSnapshot): boolean {
     const width = Math.max(0, Number(panel.data[14] ?? 0));
     const height = Math.max(0, Number(panel.data[15] ?? 0));
     if (width <= 0 || height <= 0) {
-      return;
+      return true;
     }
     let wsum = 0;
     for (let j = 0; j < 16; j++) {
       wsum += Math.abs(panel.worldMatrix[j] ?? 0);
     }
     if (wsum < 1e-8) {
-      return;
+      return true;
     }
-
     const borderTop = Math.max(0, Number(panel.data[0] ?? 0));
     const borderRight = Math.max(0, Number(panel.data[1] ?? 0));
     const borderBottom = Math.max(0, Number(panel.data[2] ?? 0));
     const borderLeft = Math.max(0, Number(panel.data[3] ?? 0));
-    // Raw float α (0–1) — cull before rounding; avoids quads for transparent / near-off panels.
     const bgA = panel.data[7] ?? 0;
     const brdA = panel.data[12] ?? 0;
     if (
       bgA <= 1e-4 &&
       (brdA <= 1e-4 || (borderTop <= 0 && borderRight <= 0 && borderBottom <= 0 && borderLeft <= 0))
     ) {
-      return;
+      return true;
     }
+    return false;
+  }
+
+  /** @returns `true` if a panel quad was submitted to the GPU. */
+  private drawUiPanel(
+    panel: WebXRRaythreeUiSnapshot["panels"][number],
+    projView: THREE.Matrix4,
+  ): boolean {
+    if (this.isUikitPanelCulled(panel)) {
+      return false;
+    }
+    const width = Math.max(0, Number(panel.data[14] ?? 0));
+    const height = Math.max(0, Number(panel.data[15] ?? 0));
+    const borderTop = Math.max(0, Number(panel.data[0] ?? 0));
+    const borderRight = Math.max(0, Number(panel.data[1] ?? 0));
+    const borderBottom = Math.max(0, Number(panel.data[2] ?? 0));
+    const borderLeft = Math.max(0, Number(panel.data[3] ?? 0));
     const backgroundColor = readUiColor(panel.data, 4);
     const borderColor = readUiColor(panel.data, 9);
     setShaderVec4(
@@ -599,11 +820,11 @@ export class WebXRRaythreeRaylibRenderer {
     this.setUiShaderMvp(
       this.uiPanelShader.shader,
       this.uiPanelShader.mvpLoc,
-      projectionMatrix,
-      viewMatrix,
+      projView,
       panel.worldMatrix,
     );
     this.drawUiQuad(panel.worldMatrix);
+    return true;
   }
 
   private drawUiQuad(
@@ -616,21 +837,21 @@ export class WebXRRaythreeRaylibRenderer {
     );
   }
 
+  /** @returns `true` if a text mesh was submitted to the GPU. */
   private drawUiText(
     text: WebXRRaythreeUiSnapshot["texts"][number],
-    projectionMatrix: Float32Array,
-    viewMatrix: Float32Array,
-  ): void {
+    projView: THREE.Matrix4,
+  ): boolean {
     if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) {
-      return;
+      return false;
     }
     const atlas = this.ensureMsdfAtlas();
     if (atlas === null) {
-      return;
+      return false;
     }
     const mesh = this.getUiTextMesh(text);
     if (mesh === null) {
-      return;
+      return false;
     }
 
     const albedoMap = readMaterialMap(
@@ -660,11 +881,11 @@ export class WebXRRaythreeRaylibRenderer {
     this.setUiShaderMvp(
       this.uiTextShader.shader,
       this.uiTextShader.mvpLoc,
-      projectionMatrix,
-      viewMatrix,
+      projView,
       text.worldMatrix,
     );
     raylib.H.DrawMesh(mesh.mesh, this.uiTextMaterial, this.matrixForDraw(text.worldMatrix));
+    return true;
   }
 
   private getUiTextMesh(
@@ -722,7 +943,44 @@ export class WebXRRaythreeRaylibRenderer {
     material: NativeMaterial,
     worldMatrix: ArrayLike<number>,
   ): void {
-    if (material.wireframe) {
+    const restoreDepthTest = !material.depthTest;
+    const restoreDepthMask = !material.depthWrite;
+    if (restoreDepthTest) {
+      setUiDepthTestEnabled(false);
+    }
+    if (restoreDepthMask) {
+      setUiDepthMaskEnabled(false);
+    }
+    try {
+      if (material.wireframe) {
+        if (material.usesLighting) {
+          setShaderVec4(
+            this.lightingShader.shader,
+            this.lightingShader.baseColorLoc,
+            material.baseColor,
+          );
+        }
+        if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+          raylib.H.EndBlendMode();
+          raylib.H.BeginBlendMode(material.blendMode);
+        }
+        setWireModeEnabled(true);
+        try {
+          raylib.H.DrawMesh(
+            nativeMesh.mesh,
+            material.material,
+            this.matrixForDraw(worldMatrix),
+          );
+        } finally {
+          setWireModeEnabled(false);
+        }
+        if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+          raylib.H.EndBlendMode();
+          raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
+        }
+        return;
+      }
+
       if (material.usesLighting) {
         setShaderVec4(
           this.lightingShader.shader,
@@ -730,47 +988,27 @@ export class WebXRRaythreeRaylibRenderer {
           material.baseColor,
         );
       }
+
       if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
         raylib.H.EndBlendMode();
         raylib.H.BeginBlendMode(material.blendMode);
       }
-      setWireModeEnabled(true);
-      try {
-        raylib.H.DrawMesh(
-          nativeMesh.mesh,
-          material.material,
-          this.matrixForDraw(worldMatrix),
-        );
-      } finally {
-        setWireModeEnabled(false);
-      }
+      raylib.H.DrawMesh(
+        nativeMesh.mesh,
+        material.material,
+        this.matrixForDraw(worldMatrix),
+      );
       if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
         raylib.H.EndBlendMode();
         raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
       }
-      return;
-    }
-
-    if (material.usesLighting) {
-      setShaderVec4(
-        this.lightingShader.shader,
-        this.lightingShader.baseColorLoc,
-        material.baseColor,
-      );
-    }
-
-    if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
-      raylib.H.EndBlendMode();
-      raylib.H.BeginBlendMode(material.blendMode);
-    }
-    raylib.H.DrawMesh(
-      nativeMesh.mesh,
-      material.material,
-      this.matrixForDraw(worldMatrix),
-    );
-    if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
-      raylib.H.EndBlendMode();
-      raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
+    } finally {
+      if (restoreDepthTest) {
+        setUiDepthTestEnabled(true);
+      }
+      if (restoreDepthMask) {
+        setUiDepthMaskEnabled(true);
+      }
     }
   }
 
@@ -835,6 +1073,361 @@ export class WebXRRaythreeRaylibRenderer {
     return m;
   }
 
+  private ensureUikitPanelDataTexture(rowCount: number): void {
+    const h = Math.max(rowCount, 1);
+    if (
+      this.uiPanelDataBytes !== null && h <= this.uiPanelDataTexH &&
+      this.uiPanelDataTexture !== null
+    ) {
+      return;
+    }
+    if (this.uiPanelDataTexture !== null) {
+      raylib.H.UnloadTexture(this.uiPanelDataTexture);
+      this.uiPanelDataTexture = null;
+    }
+    this.uiPanelDataTexH = h;
+    const w = this.uiPanelDataTexW;
+    const fmt = raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+    const byteLen = Number(raylib.H.GetPixelDataSize(w, h, fmt));
+    const bytes = new Uint8Array(byteLen);
+    this.uiPanelDataBytes = bytes;
+    // `UnloadImage` frees `im.data` with raylib's allocator. JS heap pointers
+    // (UnsafePointer.of(bytes)) must not be passed through — copy into MemAlloc.
+    const heap = raylib.H.MemAlloc(byteLen);
+    const heapAddr = voidPointerToBigint(heap);
+    if (heapAddr === ZERO_POINTER) {
+      this.uiPanelDataBytes = null;
+      this.uiPanelDataTexH = 0;
+      return;
+    }
+    const heapPtr = pointerFromAddress(heapAddr);
+    if (heapPtr === null) {
+      this.uiPanelDataBytes = null;
+      this.uiPanelDataTexH = 0;
+      return;
+    }
+    new Uint8Array(
+      new Deno.UnsafePointerView(heapPtr).getArrayBuffer(byteLen),
+    ).set(bytes);
+    const image: raylib.Image = {
+      data: heapAddr as unknown as raylib.Image["data"],
+      width: w,
+      height: h,
+      mipmaps: 1,
+      format: fmt,
+    };
+    const imageHandle = raylibBindings.Image.createPointer(image);
+    const im = imageHandle.read();
+    this.uiPanelDataTexture = raylib.H.LoadTextureFromImage(im);
+    raylib.H.UnloadImage(im);
+    raylib.H.SetTextureFilter(
+      this.uiPanelDataTexture,
+      raylibBindings.TextureFilter.TEXTURE_FILTER_POINT,
+    );
+    raylib.H.SetTextureWrap(
+      this.uiPanelDataTexture,
+      raylibBindings.TextureWrap.TEXTURE_WRAP_CLAMP,
+    );
+  }
+
+  /**
+   * One `DrawMesh` for all uikit panel quads. Returns drawn count, `null` to fall back to per-panel draws.
+   */
+  private tryDrawUiPanelsBatched(
+    panels: WebXRRaythreeUiPanelSnapshot[],
+    projView: THREE.Matrix4,
+  ): number | null {
+    const drawn: WebXRRaythreeUiPanelSnapshot[] = [];
+    for (const p of panels) {
+      if (!this.isUikitPanelCulled(p)) {
+        drawn.push(p);
+      }
+    }
+    if (drawn.length === 0) {
+      return 0;
+    }
+    if (drawn.length > 255) {
+      return null;
+    }
+    this.ensureUikitPanelDataTexture(drawn.length);
+    if (this.uiPanelDataBytes === null || this.uiPanelDataTexture === null) {
+      return null;
+    }
+    const f = new Float32Array(
+      this.uiPanelDataBytes.buffer,
+      this.uiPanelDataBytes.byteOffset,
+      this.uiPanelDataBytes.length / 4,
+    );
+    for (let i = 0; i < drawn.length; i++) {
+      packUikitPanelRow(f, i, drawn[i]!);
+    }
+    const up = Deno.UnsafePointer.of(
+      this.uiPanelDataBytes as unknown as BufferSource,
+    );
+    if (up === null) {
+      return null;
+    }
+    raylib.H.UpdateTexture(this.uiPanelDataTexture, up);
+    if (this.uiPanelBatchMesh !== null) {
+      this.unloadNativeMesh(this.uiPanelBatchMesh);
+      this.uiPanelBatchMesh = null;
+    }
+    const vCount = 6 * drawn.length;
+    const pos = new Float32Array(vCount * 3);
+    const nrm = new Float32Array(vCount * 3);
+    const uv = new Float32Array(vCount * 2);
+    const col = new Uint8Array(vCount * 4);
+    for (let pi = 0; pi < drawn.length; pi++) {
+      const panel = drawn[pi]!;
+      this.worldMatrix.fromArray(panel.worldMatrix as unknown as number[]);
+      for (let v = 0; v < 6; v++) {
+        const o3 = (pi * 6 + v) * 3;
+        this.clipV4.set(
+          UI_QUAD6_POS[v * 3]!,
+          UI_QUAD6_POS[v * 3 + 1]!,
+          UI_QUAD6_POS[v * 3 + 2]!,
+          1,
+        );
+        this.clipV4.applyMatrix4(this.worldMatrix);
+        pos[o3] = this.clipV4.x;
+        pos[o3 + 1] = this.clipV4.y;
+        pos[o3 + 2] = this.clipV4.z;
+        nrm[o3] = 0;
+        nrm[o3 + 1] = 0;
+        nrm[o3 + 2] = 1;
+        const o2 = (pi * 6 + v) * 2;
+        uv[o2] = UI_QUAD6_UV[v * 2]!;
+        uv[o2 + 1] = UI_QUAD6_UV[v * 2 + 1]!;
+        const o4 = (pi * 6 + v) * 4;
+        // Panel row index comes from `gl_VertexID/6` in the batch panel shader, not from color.
+        col[o4] = 255;
+        col[o4 + 1] = 255;
+        col[o4 + 2] = 255;
+        col[o4 + 3] = 255;
+      }
+    }
+    const triCount = vCount / 3;
+    const meshHandle = raylibBindings.Mesh.createPointer({
+      vertexCount: vCount,
+      triangleCount: triCount,
+      vertices: pointerAddress(pos),
+      texcoords: pointerAddress(uv),
+      texcoords2: ZERO_POINTER,
+      normals: pointerAddress(nrm),
+      tangents: ZERO_POINTER,
+      colors: pointerAddress(col),
+      indices: ZERO_POINTER,
+      animVertices: ZERO_POINTER,
+      animNormals: ZERO_POINTER,
+      boneIds: ZERO_POINTER,
+      boneWeights: ZERO_POINTER,
+      boneMatrices: ZERO_POINTER,
+      boneCount: 0,
+      vaoId: 0,
+      vboId: ZERO_POINTER,
+    } as unknown as raylibBindings.Mesh);
+    raylib.H.UploadMesh(meshHandle.pointer, false);
+    const uploaded = meshHandle.read();
+    const sanitized = sanitizeUploadedMesh(uploaded);
+    meshHandle.write(sanitized);
+    this.uiPanelBatchMesh = { mesh: sanitized };
+    if (this.uiPanelBatchShader.mvpLoc >= 0) {
+      raylib.H.SetShaderValueMatrix(
+        this.uiPanelBatchShader.shader,
+        this.uiPanelBatchShader.mvpLoc,
+        this.matrixForDraw(projView.elements as unknown as number[]),
+      );
+    }
+    // Bind panel data like the MSDF text batch: put it on MATERIAL_MAP_ALBEDO so
+    // DrawMesh() runs rlEnableTexture (glBindTexture) for the sampler. setShaderValueTexture
+    // for a custom uPanelData only sets the uniform; rlgl never binds the id before rlDrawVertexArray.
+    const panelDataAlbedo = readMaterialMap(
+      this.uiPanelBatchMaterialBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+    );
+    writeMaterialMap(
+      this.uiPanelBatchMaterialBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+      {
+        ...panelDataAlbedo,
+        texture: this.uiPanelDataTexture,
+        color: raylib.WHITE,
+      },
+    );
+    if (WEBXR_RAYTHREE_UI_PANEL_BATCH_DEBUG && !this.loggedUiPanelBatchDebugOnce) {
+      this.loggedUiPanelBatchDebugOnce = true;
+      const fmt = raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+      const row0h = f.subarray(0, 16);
+      const row1h = drawn.length > 1 ? f.subarray(36, 36 + 16) : null;
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] UI panel batch (one-shot): " +
+          `drawn=${drawn.length} tex=${this.uiPanelDataTexW}x${this.uiPanelDataTexH} ` +
+          `format=${fmt} mvpLoc=${this.uiPanelBatchShader.mvpLoc} texture0Loc=${this.uiPanelBatchShader.texture0Loc} ` +
+          `vertexCount=${vCount} (vPanelId=gl_VertexID/6) ` +
+          `row0_16f_border_bg_brdrad=[${Array.from(row0h).map((x) => x.toFixed(4)).join(", ")}] ` +
+          (row1h != null
+            ? `row1_16f=[${Array.from(row1h).map((x) => x.toFixed(4)).join(", ")}]`
+            : "row1=—"),
+      );
+    }
+    raylib.H.DrawMesh(
+      this.uiPanelBatchMesh.mesh,
+      this.uiPanelBatchMaterial,
+      this.matrixForDraw(this.identityMatrix16),
+    );
+    return drawn.length;
+  }
+
+  private ensureTextBatchPool(vertexCount: number): void {
+    if (this.textBatchPoolCap >= vertexCount) {
+      return;
+    }
+    this.textBatchPoolCap = Math.max(Math.ceil(vertexCount * 1.2), 1024);
+    this.textBatchPoolPos = new Float32Array(this.textBatchPoolCap * 3);
+    this.textBatchPoolN = new Float32Array(this.textBatchPoolCap * 3);
+    this.textBatchPoolUv = new Float32Array(this.textBatchPoolCap * 2);
+    this.textBatchPoolC = new Uint8Array(this.textBatchPoolCap * 4);
+  }
+
+  /**
+   * One `DrawMesh` for all MSDF labels. Returns drawn *string* count, `null` to use per-text `DrawMesh`.
+   */
+  private tryDrawUiTextBatched(
+    texts: WebXRRaythreeUiSnapshot["texts"],
+    projView: THREE.Matrix4,
+  ): number | null {
+    const atlas = this.ensureMsdfAtlas();
+    if (atlas === null) {
+      return null;
+    }
+    if (atlas.id !== this.lastBatchedTextAtlasId) {
+      const albedoMap = readMaterialMap(
+        this.uiTextBatchMaterialBytes,
+        raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+      );
+      writeMaterialMap(
+        this.uiTextBatchMaterialBytes,
+        raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+        {
+          ...albedoMap,
+          texture: atlas,
+          color: raylib.WHITE,
+        },
+      );
+      this.lastBatchedTextAtlasId = atlas.id;
+    }
+    const work: Array<{
+      g: MsdfCpuGeometry;
+      m: THREE.Matrix4;
+      color: [number, number, number, number];
+    }> = [];
+    for (const t of texts) {
+      if (t.text.length === 0 || t.color[3] <= 0 || t.geometry == null) {
+        continue;
+      }
+      let g = buildMsdfGeometryCpu(
+        t.geometry.positions,
+        t.geometry.uvs,
+        t.geometry.indices,
+        t.text,
+      );
+      if (g == null) {
+        continue;
+      }
+      if (!g.expanded) {
+        const ex = expandIndexedMsdfTriangles(
+          g.positions3D,
+          g.uvs,
+          g.indices!,
+        );
+        g = {
+          ...g,
+          ...ex,
+          expanded: true,
+          indices: null,
+          triangleCount: ex.vertexCount / 3,
+        };
+      }
+      this.uiMvpW.fromArray(t.worldMatrix as unknown as number[]);
+      this.uiMvp.copy(projView).multiply(this.uiMvpW);
+      work.push({ g, m: this.uiMvp.clone(), color: t.color });
+    }
+    if (work.length === 0) {
+      return 0;
+    }
+    let totalV = 0;
+    for (const w of work) {
+      totalV += w.g.vertexCount;
+    }
+    if (totalV > 500000) {
+      return null;
+    }
+    this.ensureTextBatchPool(totalV);
+    let wx = 0;
+    for (const it of work) {
+      for (let i = 0; i < it.g.vertexCount; i++) {
+        this.clipV4.set(
+          it.g.positions3D[i * 3]!,
+          it.g.positions3D[i * 3 + 1]!,
+          it.g.positions3D[i * 3 + 2]!,
+          1,
+        );
+        this.clipV4.applyMatrix4(it.m);
+        const o3 = wx * 3;
+        this.textBatchPoolPos[o3] = this.clipV4.x;
+        this.textBatchPoolPos[o3 + 1] = this.clipV4.y;
+        this.textBatchPoolPos[o3 + 2] = this.clipV4.z;
+        this.textBatchPoolN[o3] = this.clipV4.w;
+        this.textBatchPoolN[o3 + 1] = 0;
+        this.textBatchPoolN[o3 + 2] = 0;
+        const o2 = wx * 2;
+        this.textBatchPoolUv[o2] = it.g.uvs[i * 2]!;
+        this.textBatchPoolUv[o2 + 1] = it.g.uvs[i * 2 + 1]!;
+        const o4 = wx * 4;
+        this.textBatchPoolC[o4] = Math.round(it.color[0] * 255);
+        this.textBatchPoolC[o4 + 1] = Math.round(it.color[1] * 255);
+        this.textBatchPoolC[o4 + 2] = Math.round(it.color[2] * 255);
+        this.textBatchPoolC[o4 + 3] = Math.round(it.color[3] * 255);
+        wx++;
+      }
+    }
+    if (this.uiTextBatchMesh !== null) {
+      this.unloadNativeMesh(this.uiTextBatchMesh);
+      this.uiTextBatchMesh = null;
+    }
+    const th = raylibBindings.Mesh.createPointer({
+      vertexCount: totalV,
+      triangleCount: totalV / 3,
+      vertices: pointerAddress(this.textBatchPoolPos.subarray(0, totalV * 3)),
+      texcoords: pointerAddress(this.textBatchPoolUv.subarray(0, totalV * 2)),
+      texcoords2: ZERO_POINTER,
+      normals: pointerAddress(this.textBatchPoolN.subarray(0, totalV * 3)),
+      tangents: ZERO_POINTER,
+      colors: pointerAddress(this.textBatchPoolC.subarray(0, totalV * 4)),
+      indices: ZERO_POINTER,
+      animVertices: ZERO_POINTER,
+      animNormals: ZERO_POINTER,
+      boneIds: ZERO_POINTER,
+      boneWeights: ZERO_POINTER,
+      boneMatrices: ZERO_POINTER,
+      boneCount: 0,
+      vaoId: 0,
+      vboId: ZERO_POINTER,
+    } as unknown as raylibBindings.Mesh);
+    raylib.H.UploadMesh(th.pointer, false);
+    const uText = th.read();
+    const sText = sanitizeUploadedMesh(uText);
+    th.write(sText);
+    this.uiTextBatchMesh = { mesh: sText };
+    raylib.H.DrawMesh(
+      this.uiTextBatchMesh.mesh,
+      this.uiTextBatchMaterial,
+      this.matrixForDraw(this.identityMatrix16),
+    );
+    return work.length;
+  }
+
   private unloadNativeMesh(nativeMesh: NativeMesh): void {
     if (nativeMesh.model !== undefined) {
       raylib.H.UnloadModel(nativeMesh.model);
@@ -885,6 +1478,8 @@ function createNativeMaterial(
     transparent: asset.state.transparent || asset.opacity < 0.999,
     blendMode: toRaylibBlendMode(asset.state.blendMode),
     wireframe: asset.state.wireframe === true,
+    depthTest: asset.state.depthTest !== false,
+    depthWrite: asset.state.depthWrite !== false,
   };
 }
 
@@ -951,6 +1546,26 @@ function createUiTextShader(): UiTextShader {
     tintLoc: raylib.H.GetShaderLocation(shader, "uTint"),
     pxRangeLoc: raylib.H.GetShaderLocation(shader, "uPxRange"),
     atlasSizeLoc: raylib.H.GetShaderLocation(shader, "uAtlasSize"),
+  };
+}
+
+function createUiTextBatchShader(): UiTextBatchShader {
+  const shader = raylib.H.LoadShaderFromMemory(
+    UI_TEXT_BATCH_VERTEX_SHADER,
+    UI_TEXT_BATCH_FRAGMENT_SHADER,
+  );
+  return { shader };
+}
+
+function createUiPanelBatchShader(): UiPanelBatchShader {
+  const shader = raylib.H.LoadShaderFromMemory(
+    UI_PANEL_BATCH_VERTEX_SHADER,
+    UI_PANEL_BATCH_FRAGMENT_SHADER,
+  );
+  return {
+    shader,
+    mvpLoc: raylib.H.GetShaderLocation(shader, "mvp"),
+    texture0Loc: raylib.H.GetShaderLocation(shader, "texture0"),
   };
 }
 
@@ -1168,6 +1783,56 @@ function computeUiDepthOffset(
   return groupOffset + instanceIndex * 0.0000001;
 }
 
+const _uikitQuadGeo = createUiQuadGeometryAsset();
+const UI_QUAD6_POS = new Float32Array(
+  _uikitQuadGeo.attributes.position!.array as ArrayLike<number>,
+);
+const UI_QUAD6_UV = new Float32Array(
+  _uikitQuadGeo.attributes.uv!.array as ArrayLike<number>,
+);
+
+/**
+ * 9×RGBAf texels (36 floats) per row; row index = instanced id in
+ * [UI_PANEL_BATCH_FRAGMENT_SHADER](webxrRaythreeRaylibRenderer.ts).
+ */
+function packUikitPanelRow(
+  destFloats: Float32Array,
+  row: number,
+  panel: WebXRRaythreeUiPanelSnapshot,
+): void {
+  const base = row * 36;
+  const d = panel.data;
+  const c = panel.clipping;
+  for (let i = 0; i < 4; i++) {
+    destFloats[base + i] = d[i] ?? 0;
+  }
+  const bg = toShaderColor(readUiColor(d, 4));
+  destFloats[base + 4] = bg[0]!;
+  destFloats[base + 5] = bg[1]!;
+  destFloats[base + 6] = bg[2]!;
+  destFloats[base + 7] = bg[3]!;
+  const br = toShaderColor(readUiColor(d, 9));
+  destFloats[base + 8] = br[0]!;
+  destFloats[base + 9] = br[1]!;
+  destFloats[base + 10] = br[2]!;
+  destFloats[base + 11] = br[3]!;
+  const rad = unpackUiBorderRadius(d[8] ?? 0);
+  destFloats[base + 12] = rad[0]!;
+  destFloats[base + 13] = rad[1]!;
+  destFloats[base + 14] = rad[2]!;
+  destFloats[base + 15] = rad[3]!;
+  const w = Math.max(0, Number(d[14] ?? 0));
+  const h = Math.max(0, Number(d[15] ?? 0));
+  const dep = computeUiDepthOffset(panel.orderInfo, panel.instanceIndex);
+  destFloats[base + 16] = w;
+  destFloats[base + 17] = h;
+  destFloats[base + 18] = dep;
+  destFloats[base + 19] = 0;
+  for (let i = 0; i < 16; i++) {
+    destFloats[base + 20 + i] = c[i] ?? 0;
+  }
+}
+
 function setShaderVec2(
   shader: raylibBindings.Shader,
   location: number,
@@ -1229,21 +1894,35 @@ function toUint16ArrayLoose(value: unknown): Uint16Array {
   return new Uint16Array(0);
 }
 
-function createNativeMeshFromMsdfBuffers(
+type MsdfCpuGeometry = {
+  positions3D: Float32Array;
+  uvs: Float32Array;
+  normals: Float32Array;
+  colors: Uint8Array;
+  indices: Uint16Array | null;
+  vertexCount: number;
+  triangleCount: number;
+  expanded: boolean;
+};
+
+/**
+ * CPU-side MSDF triangulation (same as {@link createNativeMeshFromMsdfBuffers} before GPU upload);
+ * used to merge many labels into a single `DrawMesh`.
+ */
+function buildMsdfGeometryCpu(
   positionsRaw: unknown,
   uvsRaw: unknown,
   indicesRaw: unknown,
   label?: string,
-): NativeMesh | null {
+): MsdfCpuGeometry | null {
   const positions2D = toFloat32ArrayLoose(positionsRaw);
   const uvs = toFloat32ArrayLoose(uvsRaw);
   const vertexCount = positions2D.length / 2;
   if (vertexCount <= 0) return null;
-  // Raylib meshes require 3D positions. MSDFTextGeometry emits 2D positions (z=0).
   const positions3D = new Float32Array(vertexCount * 3);
   for (let i = 0; i < vertexCount; i++) {
-    positions3D[i * 3] = positions2D[i * 2];
-    positions3D[i * 3 + 1] = positions2D[i * 2 + 1];
+    positions3D[i * 3] = positions2D[i * 2]!;
+    positions3D[i * 3 + 1] = positions2D[i * 2 + 1]!;
     positions3D[i * 3 + 2] = 0;
   }
   const normals = new Float32Array(vertexCount * 3);
@@ -1267,15 +1946,55 @@ function createNativeMeshFromMsdfBuffers(
       expandedNormals[i * 3 + 2] = 1;
     }
     const expandedColors = buildOpaqueWhiteColors(expanded.vertexCount);
-    const meshHandle = raylibBindings.Mesh.createPointer({
+    return {
+      positions3D: expanded.positions3D,
+      uvs: expanded.uvs,
+      normals: expandedNormals,
+      colors: expandedColors,
+      indices: null,
       vertexCount: expanded.vertexCount,
       triangleCount: expanded.vertexCount / 3,
-      vertices: pointerAddress(expanded.positions3D),
-      texcoords: pointerAddress(expanded.uvs),
+      expanded: true,
+    };
+  }
+
+  const colors = buildOpaqueWhiteColors(vertexCount);
+  const indices = toUint16ArrayLoose(indicesAny);
+  if (WEBXR_RAYTHREE_TEXT_ASSERT) {
+    assertMsdfConversionInvariants(positions2D, positions3D, uvs, indices, label ?? "<text>");
+  }
+  return {
+    positions3D,
+    uvs: uvs.slice(),
+    normals,
+    colors,
+    indices,
+    vertexCount,
+    triangleCount: indices.length / 3,
+    expanded: false,
+  };
+}
+
+function createNativeMeshFromMsdfBuffers(
+  positionsRaw: unknown,
+  uvsRaw: unknown,
+  indicesRaw: unknown,
+  label?: string,
+): NativeMesh | null {
+  const built = buildMsdfGeometryCpu(positionsRaw, uvsRaw, indicesRaw, label);
+  if (built == null) {
+    return null;
+  }
+  if (built.expanded) {
+    const meshHandle = raylibBindings.Mesh.createPointer({
+      vertexCount: built.vertexCount,
+      triangleCount: built.triangleCount,
+      vertices: pointerAddress(built.positions3D),
+      texcoords: pointerAddress(built.uvs),
       texcoords2: ZERO_POINTER,
-      normals: pointerAddress(expandedNormals),
+      normals: pointerAddress(built.normals),
       tangents: ZERO_POINTER,
-      colors: pointerAddress(expandedColors),
+      colors: pointerAddress(built.colors),
       indices: ZERO_POINTER,
       animVertices: ZERO_POINTER,
       animNormals: ZERO_POINTER,
@@ -1294,22 +2013,16 @@ function createNativeMeshFromMsdfBuffers(
     return { mesh: sanitized };
   }
 
-  const colors = buildOpaqueWhiteColors(vertexCount);
-  const indices = toUint16ArrayLoose(indicesAny);
-  if (WEBXR_RAYTHREE_TEXT_ASSERT) {
-    assertMsdfConversionInvariants(positions2D, positions3D, uvs, indices, label ?? "<text>");
-  }
-  const triangleCount = indices.length / 3;
   const meshHandle = raylibBindings.Mesh.createPointer({
-    vertexCount,
-    triangleCount,
-    vertices: pointerAddress(positions3D),
-    texcoords: pointerAddress(uvs.slice()),
+    vertexCount: built.vertexCount,
+    triangleCount: built.triangleCount,
+    vertices: pointerAddress(built.positions3D),
+    texcoords: pointerAddress(built.uvs),
     texcoords2: ZERO_POINTER,
-    normals: pointerAddress(normals),
+    normals: pointerAddress(built.normals),
     tangents: ZERO_POINTER,
-    colors: pointerAddress(colors),
-    indices: pointerAddress(indices),
+    colors: pointerAddress(built.colors),
+    indices: pointerAddress(built.indices!),
     animVertices: ZERO_POINTER,
     animNormals: ZERO_POINTER,
     boneIds: ZERO_POINTER,
@@ -1770,6 +2483,13 @@ function isInstancedInstance(
   instance: RenderInstance | InstancedRenderInstance,
 ): instance is InstancedRenderInstance {
   return instance.kind === "instancedMesh";
+}
+
+function voidPointerToBigint(p: raylibBindings.VoidPointer): bigint {
+  if (typeof p === "bigint") {
+    return p;
+  }
+  return Deno.UnsafePointer.value(p as Deno.PointerValue<unknown>);
 }
 
 function pointerAddress(value: unknown): bigint {
@@ -2240,5 +2960,185 @@ void main() {
   float alpha = clamp(sigDist / fwidth(sigDist) + 0.5, 0.0, 1.0);
   if (alpha < 0.01) discard;
   finalColor = vec4(uTint.rgb, uTint.a * alpha);
+}
+`;
+
+const UI_TEXT_BATCH_VERTEX_SHADER = /*glsl*/ `#version 330
+in vec3 vertexPosition;
+in vec3 vertexNormal;
+in vec2 vertexTexCoord;
+in vec4 vertexColor;
+out vec2 fragUv;
+out vec4 fragTint;
+void main() {
+  fragUv = vertexTexCoord;
+  gl_Position = vec4(vertexPosition.xy, vertexPosition.z, vertexNormal.x);
+  // Mesh u8 colors are already normalized 0-1 in the pipe; do not divide by 255 again.
+  fragTint = vertexColor;
+}
+`;
+
+const UI_TEXT_BATCH_FRAGMENT_SHADER = /*glsl*/ `#version 330
+in vec2 fragUv;
+in vec4 fragTint;
+out vec4 finalColor;
+uniform sampler2D texture0;
+float median(float r, float g, float b) {
+  return max(min(r, g), min(max(r, g), b));
+}
+void main() {
+  vec3 msd = texture(texture0, fragUv).rgb;
+  float sigDist = median(msd.r, msd.g, msd.b) - 0.5;
+  float alpha = clamp(sigDist / fwidth(sigDist) + 0.5, 0.0, 1.0);
+  if (alpha < 0.01) discard;
+  finalColor = vec4(fragTint.rgb, fragTint.a * alpha);
+}
+`;
+
+const UI_PANEL_BATCH_VERTEX_SHADER = /*glsl*/ `#version 330
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec4 vertexColor;
+uniform mat4 mvp;
+out vec2 fragUv;
+out vec3 vWorldPos;
+flat out int vPanelId;
+void main() {
+  fragUv = vertexTexCoord;
+  vWorldPos = vertexPosition;
+  // One batched tri-list quad = 6 non-indexed verts. Row in uPanelData must match
+  // packed panel N (see packUikitPanelRow). Do not encode N in vertexColor (unreliable).
+  vPanelId = gl_VertexID / 6;
+  gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+`;
+
+const UI_PANEL_BATCH_FRAGMENT_SHADER = /*glsl*/ `#version 330
+in vec2 fragUv;
+in vec3 vWorldPos;
+flat in int vPanelId;
+out vec4 finalColor;
+/* Panel float data: bound via material albedo so DrawMesh glBindTexture runs (see tryDrawUiPanelsBatched). */
+uniform sampler2D texture0;
+
+float min4(vec4 value) {
+  vec2 tmp = min(value.xy, value.zw);
+  return min(tmp.x, tmp.y);
+}
+float max4(vec4 value) {
+  vec2 tmp = max(value.xy, value.zw);
+  return max(tmp.x, tmp.y);
+}
+vec2 radiusDistance(float radius, vec2 outside, vec2 border, vec2 borderSize) {
+  vec2 outerRadius = vec2(radius);
+  vec2 innerRadius = max(vec2(0.0), outerRadius - borderSize);
+  vec2 radiusWeightUnnorm = abs(innerRadius - border);
+  float sum = radiusWeightUnnorm.x + radiusWeightUnnorm.y;
+  vec2 radiusWeight = sum > 0.0 ? radiusWeightUnnorm / sum : vec2(0.5);
+  return vec2(
+    radius - distance(outside, outerRadius),
+    dot(radiusWeight, innerRadius) - distance(border, innerRadius)
+  );
+}
+vec2 calculateCornerIntersection(float cornerRadius, vec2 borderSizes, float aspectRatio) {
+  float tmp1 = cornerRadius - borderSizes.y;
+  vec2 xIntersection = vec2(tmp1, tmp1 / aspectRatio);
+  float tmp2 = cornerRadius - borderSizes.x;
+  vec2 yIntersection = vec2(tmp2 * aspectRatio, tmp2);
+  return min(xIntersection, yIntersection);
+}
+vec4 pfetch(int c) {
+  return texelFetch(texture0, ivec2(c, vPanelId), 0);
+}
+void main() {
+  vec4 uBorderSize = pfetch(0);
+  vec4 uBackgroundColor = pfetch(1);
+  vec4 uBorderColor = pfetch(2);
+  vec4 uBorderRadius = pfetch(3);
+  vec4 uDD = pfetch(4);
+  vec2 uDimensions = uDD.xy;
+  float uDepthOffset = uDD.z;
+  mat4 uClipping = mat4(pfetch(5), pfetch(6), pfetch(7), pfetch(8));
+
+  vec4 plane;
+  float distanceToPlane;
+  float planeDistanceGradient;
+  float clipOpacity = 1.0;
+  for (int i = 0; i < 4; i++) {
+    plane = uClipping[i];
+    distanceToPlane = dot(vWorldPos, plane.xyz) + plane.w;
+    planeDistanceGradient = fwidth(distanceToPlane) * 0.5;
+    clipOpacity *= smoothstep(-planeDistanceGradient, planeDistanceGradient, distanceToPlane);
+    if (clipOpacity < 0.01) {
+      discard;
+    }
+  }
+  vec2 dimensions = max(uDimensions, vec2(0.0001));
+  float aspectRatio = dimensions.x / dimensions.y;
+  vec4 borderSize = uBorderSize / dimensions.yyyy;
+  vec2 uvFlipped = vec2(fragUv.x, 1.0 - fragUv.y);
+  vec4 vOutsideDistance = vec4(
+    uvFlipped.y,
+    (1.0 - uvFlipped.x) * aspectRatio,
+    1.0 - uvFlipped.y,
+    uvFlipped.x * aspectRatio
+  );
+  vec4 vBorderDistance = vOutsideDistance - borderSize;
+  vec2 distanceValues = vec2(min4(vOutsideDistance), min4(vBorderDistance));
+  vec4 negateBorderDistance = vec4(1.0) - vBorderDistance;
+  float maxWeight = max4(negateBorderDistance);
+  vec4 borderWeight = step(maxWeight, negateBorderDistance);
+  vec4 insideBorder = vec4(0.0);
+  vec2 cornerPos;
+  float cornerRadius;
+  vec2 cornerBorderSizes;
+  if (all(lessThan(vOutsideDistance.wx, uBorderRadius.xx))) {
+    cornerPos = vOutsideDistance.wx;
+    cornerRadius = uBorderRadius.x;
+    cornerBorderSizes = borderSize.wx;
+    distanceValues = radiusDistance(cornerRadius, cornerPos, vBorderDistance.wx, cornerBorderSizes);
+    vec2 lineIntersection = calculateCornerIntersection(cornerRadius, cornerBorderSizes, aspectRatio);
+    insideBorder.wx = max(vec2(0.0), lineIntersection - vBorderDistance.wx);
+  } else if (all(lessThan(vOutsideDistance.yx, uBorderRadius.yy))) {
+    cornerPos = vOutsideDistance.yx;
+    cornerRadius = uBorderRadius.y;
+    cornerBorderSizes = borderSize.yx;
+    distanceValues = radiusDistance(cornerRadius, cornerPos, vBorderDistance.yx, cornerBorderSizes);
+    vec2 lineIntersection = calculateCornerIntersection(cornerRadius, cornerBorderSizes, aspectRatio);
+    insideBorder.yx = max(vec2(0.0), lineIntersection - vBorderDistance.yx);
+  } else if (all(lessThan(vOutsideDistance.yz, uBorderRadius.zz))) {
+    cornerPos = vOutsideDistance.yz;
+    cornerRadius = uBorderRadius.z;
+    cornerBorderSizes = borderSize.yz;
+    distanceValues = radiusDistance(cornerRadius, cornerPos, vBorderDistance.yz, cornerBorderSizes);
+    vec2 lineIntersection = calculateCornerIntersection(cornerRadius, cornerBorderSizes, aspectRatio);
+    insideBorder.yz = max(vec2(0.0), lineIntersection - vBorderDistance.yz);
+  } else if (all(lessThan(vOutsideDistance.zw, uBorderRadius.ww))) {
+    cornerPos = vOutsideDistance.zw;
+    cornerRadius = uBorderRadius.w;
+    cornerBorderSizes = borderSize.zw;
+    distanceValues = radiusDistance(cornerRadius, cornerPos, vBorderDistance.zw, cornerBorderSizes);
+    vec2 lineIntersection = calculateCornerIntersection(cornerRadius, cornerBorderSizes, aspectRatio);
+    insideBorder.zw = max(vec2(0.0), lineIntersection - vBorderDistance.zw);
+  }
+  float insideBorderSum = dot(insideBorder, vec4(1.0));
+  if (insideBorderSum > 0.0) {
+    borderWeight = insideBorder / insideBorderSum;
+  }
+  vec2 distanceGradient = fwidth(distanceValues);
+  float outer = smoothstep(-distanceGradient.x, distanceGradient.x, distanceValues.x);
+  float inner = smoothstep(-distanceGradient.y, distanceGradient.y, distanceValues.y);
+  float transition = 1.0 - step(0.1, outer - inner) * (1.0 - inner);
+  float fullBackgroundOpacity = uBackgroundColor.a;
+  float fullBorderOpacity = min(1.0, uBorderColor.a + fullBackgroundOpacity);
+  float outOpacity = clipOpacity * outer * mix(fullBorderOpacity, fullBackgroundOpacity, transition);
+  if (outOpacity < 0.01) {
+    discard;
+  }
+  vec3 mainColor = uBackgroundColor.rgb;
+  float borderMix = uBorderColor.a / max(fullBorderOpacity, 0.001);
+  vec3 rgb = mix(mix(mainColor, uBorderColor.rgb, borderMix), mainColor, transition);
+  gl_FragDepth = max(0.0, gl_FragCoord.z - uDepthOffset);
+  finalColor = vec4(rgb, outOpacity);
 }
 `;

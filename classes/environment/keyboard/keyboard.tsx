@@ -110,6 +110,7 @@ export function KeyboardPanel(
             handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
             multitouch
             scale={{ uniform: true }}
+            filter={(e) => e.pointerType !== "ray"}
           >
             <GrabBox
               ref={handleRef}
@@ -117,8 +118,12 @@ export function KeyboardPanel(
               height={grabSize[1]}
               depth={grabSize[2]}
               lineColor={grabLineColor}
+              shellRayPickable={false}
             >
-              <group position={contentOffset}>
+              <group
+                position={contentOffset}
+                {...({ pointerEventsType: { deny: "grab" } } as Record<string, unknown>)}
+              >
                 <KeyboardFromJson
                   preloadedLayout={layoutReady}
                   onKey={onKey}

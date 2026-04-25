@@ -20,12 +20,21 @@ export type RaylibOverlayFrameAckPayload = {
   renderLeftOpaqueMs: number;
   renderLeftXparentMs: number;
   renderLeftUiMs: number;
+  /** Raylib uikit: `P*V` + sort panel/text lists (CPU before first UI `DrawMesh`). */
+  renderLeftUiSortPrepMs: number;
+  /** Per-panel shader uniforms + `DrawMesh` for rounded rects. */
+  renderLeftUiPanelsMs: number;
+  /** Per-text MSDF `DrawMesh`. */
+  renderLeftUiTextMs: number;
   renderLeftEndMs: number;
   renderRightSyncMs: number;
   renderRightPrepMs: number;
   renderRightOpaqueMs: number;
   renderRightXparentMs: number;
   renderRightUiMs: number;
+  renderRightUiSortPrepMs: number;
+  renderRightUiPanelsMs: number;
+  renderRightUiTextMs: number;
   renderRightEndMs: number;
   /** Varggles shader: two `DrawTexturePro` into `outputTarget` (wall). */
   renderCombineMs: number;
@@ -40,4 +49,10 @@ export type RaylibOverlayFrameAckPayload = {
   batchGeometries: number;
   /** Sum of `extraction.assets.materials.length` (L+R). */
   batchMaterials: number;
+  /** From uikit snapshot (`ui.panels.length`); same value for both eyes. */
+  uiPanelCount: number;
+  uiTextCount: number;
+  /** Panels that passed cull and issued `DrawMesh` (per eye; should match L/R). */
+  uiPanelDrawn: number;
+  uiTextDrawn: number;
 };

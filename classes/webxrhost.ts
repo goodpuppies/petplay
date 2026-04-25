@@ -4,7 +4,7 @@ import * as THREE from "three/webgpu";
 import "./browserStoragePolyfill.ts";
 import { advance, createRoot } from "@react-three/fiber/webgpu";
 import { currentXRFrame } from "./xrFrameBridge.ts";
-import { createXRStore, XR, XROrigin } from "@pmndrs/xr";
+import { createXRStore, DefaultXRController, XR, XROrigin } from "@pmndrs/xr";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
@@ -18,6 +18,7 @@ import {
   StereoTextureReadbackRing,
   TextureReadbackRing,
 } from "./webgpu.ts";
+import { PortaledControllerAimBeam } from "./environment/controllerAimBeam.tsx";
 import { NativeControllerHud } from "./environment/nativeFrontend.tsx";
 import { WebXRScene } from "./environment/scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
@@ -523,7 +524,20 @@ export class WebXRHost {
             React.createElement(NativeControllerHud, {
               actorId: options.wristMenuActor ?? null,
             }),
-          left: { rayPointer: { minDistance: -1 }, model: false },
+          left: () =>
+            React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(PortaledControllerAimBeam),
+              React.createElement(DefaultXRController, {
+                model: false,
+                grabPointer: false,
+                rayPointer: {
+                  minDistance: -1,
+                  rayModel: false,
+                },
+              }),
+            ),
         },
       });
 

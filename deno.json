@@ -19,7 +19,7 @@
     "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
     "@pmndrs/pointer-events": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/index.ts",
     //r3f
-    "@react-three/fiber": "./classes/r3fCompat.ts",
+    "@react-three/fiber": "./classes/r3fWebgpuCompat.ts",
     "@react-three/fiber/webgpu": "./classes/r3fWebgpuCompat.ts",
     "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
     "react": "npm:react@^19.2.5",

@@ -1,5 +1,6 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
+import { areNativeAssetBatchesIdenticalForSync } from "./raythreeAssetBatchesForSync.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import { WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
@@ -7,7 +8,12 @@ import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
 const VARGGLES_FRAGMENT_SHADER = WEBXR_VARGGLES_GLSL330_FRAGMENT;
 const TRANSPARENT_BLACK = { r: 0, g: 0, b: 0, a: 0 } as raylib.Color;
 
-/** Per-eye render target size (pixels); default 2560 → ~6.5M px/eye + 5120² combine. Override with `--webxr-raylib-eye-size=1024` etc. */
+/**
+ * Per-eye render target (pixels) for 3D + uikit. Default is native 2560/eye. UI cost is dominated by
+ * per-panel DrawMesh + uniform updates in the Raylib uikit path, not this resolution alone. Use
+ * `--webxr-raylib-eye-size=1280` (or another size) to trade overlay sharpness for fill rate while
+ * profiling or on weaker GPUs.
+ */
 function getRaylibNativeEyeSize(): number {
   const arg = Deno.args
     .find((a) => a.startsWith("--webxr-raylib-eye-size="))
@@ -211,13 +217,23 @@ export class WebXROverlayRaylib {
     renderLeftOpaqueMs: number;
     renderLeftXparentMs: number;
     renderLeftUiMs: number;
+    renderLeftUiSortPrepMs: number;
+    renderLeftUiPanelsMs: number;
+    renderLeftUiTextMs: number;
     renderLeftEndMs: number;
     renderRightSyncMs: number;
     renderRightPrepMs: number;
     renderRightOpaqueMs: number;
     renderRightXparentMs: number;
     renderRightUiMs: number;
+    renderRightUiSortPrepMs: number;
+    renderRightUiPanelsMs: number;
+    renderRightUiTextMs: number;
     renderRightEndMs: number;
+    uiPanelCount: number;
+    uiTextCount: number;
+    uiPanelDrawn: number;
+    uiTextDrawn: number;
   } {
     const eye = getRaylibNativeEyeSize();
     const renderT0 = performance.now();
@@ -231,6 +247,11 @@ export class WebXROverlayRaylib {
     if (!leftTarget || !rightTarget || !outputTarget || !shader || !sceneRenderer) {
       throw new Error("raylib compositor not initialized");
     }
+
+    const skipRightAssetSync = areNativeAssetBatchesIdenticalForSync(
+      payload.leftEye.assets,
+      payload.rightEye.assets,
+    );
 
     const tLeft0 = performance.now();
     const leftB = this.renderEye(leftTarget, () =>
@@ -258,6 +279,7 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=right`,
         payload.ui,
+        { skipAssetSync: skipRightAssetSync },
       )
     );
     const rightMs = performance.now() - tRight0;
@@ -347,13 +369,23 @@ export class WebXROverlayRaylib {
       renderLeftOpaqueMs: leftB.opaqueMs,
       renderLeftXparentMs: leftB.xparentMs,
       renderLeftUiMs: leftB.uiMs,
+      renderLeftUiSortPrepMs: leftB.uiSortPrepMs,
+      renderLeftUiPanelsMs: leftB.uiPanelsMs,
+      renderLeftUiTextMs: leftB.uiTextMs,
       renderLeftEndMs: leftB.endMs,
       renderRightSyncMs: rightB.syncMs,
       renderRightPrepMs: rightB.prepMs,
       renderRightOpaqueMs: rightB.opaqueMs,
       renderRightXparentMs: rightB.xparentMs,
       renderRightUiMs: rightB.uiMs,
+      renderRightUiSortPrepMs: rightB.uiSortPrepMs,
+      renderRightUiPanelsMs: rightB.uiPanelsMs,
+      renderRightUiTextMs: rightB.uiTextMs,
       renderRightEndMs: rightB.endMs,
+      uiPanelCount: leftB.uiPanelCount,
+      uiTextCount: leftB.uiTextCount,
+      uiPanelDrawn: leftB.uiPanelDrawn,
+      uiTextDrawn: leftB.uiTextDrawn,
     };
   }
 

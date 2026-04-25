@@ -111,12 +111,18 @@ const state = actorState({
   raylibOvrEyeLOpaqueMetric: new IntervalMetric(),
   raylibOvrEyeLXparentMetric: new IntervalMetric(),
   raylibOvrEyeLUiMetric: new IntervalMetric(),
+  raylibOvrEyeLUiSortMetric: new IntervalMetric(),
+  raylibOvrEyeLUiPanMetric: new IntervalMetric(),
+  raylibOvrEyeLUiTxtMetric: new IntervalMetric(),
   raylibOvrEyeLEndMetric: new IntervalMetric(),
   raylibOvrEyeRSyncMetric: new IntervalMetric(),
   raylibOvrEyeRPrepMetric: new IntervalMetric(),
   raylibOvrEyeROpaqueMetric: new IntervalMetric(),
   raylibOvrEyeRXparentMetric: new IntervalMetric(),
   raylibOvrEyeRUiMetric: new IntervalMetric(),
+  raylibOvrEyeRUiSortMetric: new IntervalMetric(),
+  raylibOvrEyeRUiPanMetric: new IntervalMetric(),
+  raylibOvrEyeRUiTxtMetric: new IntervalMetric(),
   raylibOvrEyeREndMetric: new IntervalMetric(),
   raylibOvrCombineMetric: new IntervalMetric(),
   /** Overlay `syncAssets` only (both eyes). */
@@ -126,6 +132,11 @@ const state = actorState({
   /** Sum of `assets.geometries.length` L+R; use max≫0 to spot per-frame re-upload. */
   raylibOvrBatchGeoMetric: new IntervalMetric(),
   raylibOvrBatchMatMetric: new IntervalMetric(),
+  /** Uikit panel/text counts from the Raylib snapshot (same for both eyes). */
+  raylibOvrUiPanelCountMetric: new IntervalMetric(),
+  raylibOvrUiTextCountMetric: new IntervalMetric(),
+  raylibOvrUiPanelDrawnMetric: new IntervalMetric(),
+  raylibOvrUiTextDrawnMetric: new IntervalMetric(),
   /** True after `RENDERWEBXRRAYTHREEFRAME` until overlay `RAYLIBOVERLAYFRAMEACK`. */
   raylibFrameInFlight: false,
   /** Latest built payload; dropped in favor of newer until sent (no message queue buildup). */
@@ -153,18 +164,28 @@ new PostMan(
         state.raylibOvrEyeLOpaqueMetric.record(payload.renderLeftOpaqueMs);
         state.raylibOvrEyeLXparentMetric.record(payload.renderLeftXparentMs);
         state.raylibOvrEyeLUiMetric.record(payload.renderLeftUiMs);
+        state.raylibOvrEyeLUiSortMetric.record(payload.renderLeftUiSortPrepMs);
+        state.raylibOvrEyeLUiPanMetric.record(payload.renderLeftUiPanelsMs);
+        state.raylibOvrEyeLUiTxtMetric.record(payload.renderLeftUiTextMs);
         state.raylibOvrEyeLEndMetric.record(payload.renderLeftEndMs);
         state.raylibOvrEyeRSyncMetric.record(payload.renderRightSyncMs);
         state.raylibOvrEyeRPrepMetric.record(payload.renderRightPrepMs);
         state.raylibOvrEyeROpaqueMetric.record(payload.renderRightOpaqueMs);
         state.raylibOvrEyeRXparentMetric.record(payload.renderRightXparentMs);
         state.raylibOvrEyeRUiMetric.record(payload.renderRightUiMs);
+        state.raylibOvrEyeRUiSortMetric.record(payload.renderRightUiSortPrepMs);
+        state.raylibOvrEyeRUiPanMetric.record(payload.renderRightUiPanelsMs);
+        state.raylibOvrEyeRUiTxtMetric.record(payload.renderRightUiTextMs);
         state.raylibOvrEyeREndMetric.record(payload.renderRightEndMs);
         state.raylibOvrCombineMetric.record(payload.renderCombineMs);
         state.raylibOvrSyncMetric.record(payload.renderSyncMs);
         state.raylibOvrDrawMetric.record(payload.renderDrawMs);
         state.raylibOvrBatchGeoMetric.record(payload.batchGeometries);
         state.raylibOvrBatchMatMetric.record(payload.batchMaterials);
+        state.raylibOvrUiPanelCountMetric.record(payload.uiPanelCount);
+        state.raylibOvrUiTextCountMetric.record(payload.uiTextCount);
+        state.raylibOvrUiPanelDrawnMetric.record(payload.uiPanelDrawn);
+        state.raylibOvrUiTextDrawnMetric.record(payload.uiTextDrawn);
       }
       state.raylibFrameInFlight = false;
       tryFlushPendingRaylibFrame();
@@ -293,18 +314,28 @@ new PostMan(
       state.raylibOvrEyeLOpaqueMetric.reset();
       state.raylibOvrEyeLXparentMetric.reset();
       state.raylibOvrEyeLUiMetric.reset();
+      state.raylibOvrEyeLUiSortMetric.reset();
+      state.raylibOvrEyeLUiPanMetric.reset();
+      state.raylibOvrEyeLUiTxtMetric.reset();
       state.raylibOvrEyeLEndMetric.reset();
       state.raylibOvrEyeRSyncMetric.reset();
       state.raylibOvrEyeRPrepMetric.reset();
       state.raylibOvrEyeROpaqueMetric.reset();
       state.raylibOvrEyeRXparentMetric.reset();
       state.raylibOvrEyeRUiMetric.reset();
+      state.raylibOvrEyeRUiSortMetric.reset();
+      state.raylibOvrEyeRUiPanMetric.reset();
+      state.raylibOvrEyeRUiTxtMetric.reset();
       state.raylibOvrEyeREndMetric.reset();
       state.raylibOvrCombineMetric.reset();
       state.raylibOvrSyncMetric.reset();
       state.raylibOvrDrawMetric.reset();
       state.raylibOvrBatchGeoMetric.reset();
       state.raylibOvrBatchMatMetric.reset();
+      state.raylibOvrUiPanelCountMetric.reset();
+      state.raylibOvrUiTextCountMetric.reset();
+      state.raylibOvrUiPanelDrawnMetric.reset();
+      state.raylibOvrUiTextDrawnMetric.reset();
       state.raylibFrameInFlight = false;
       state.raylibFramePending = null;
       state.nominalHmdDisplayHz = null;
@@ -742,24 +773,35 @@ function maybeLogOverlayPerf() {
   const ovrLOp = state.raylibOvrEyeLOpaqueMetric.flush();
   const ovrLXp = state.raylibOvrEyeLXparentMetric.flush();
   const ovrLUi = state.raylibOvrEyeLUiMetric.flush();
+  const ovrLUiS = state.raylibOvrEyeLUiSortMetric.flush();
+  const ovrLUiP = state.raylibOvrEyeLUiPanMetric.flush();
+  const ovrLUiT = state.raylibOvrEyeLUiTxtMetric.flush();
   const ovrLEd = state.raylibOvrEyeLEndMetric.flush();
   const ovrRSy = state.raylibOvrEyeRSyncMetric.flush();
   const ovrRPr = state.raylibOvrEyeRPrepMetric.flush();
   const ovrROp = state.raylibOvrEyeROpaqueMetric.flush();
   const ovrRXp = state.raylibOvrEyeRXparentMetric.flush();
   const ovrRUi = state.raylibOvrEyeRUiMetric.flush();
+  const ovrRUiS = state.raylibOvrEyeRUiSortMetric.flush();
+  const ovrRUiP = state.raylibOvrEyeRUiPanMetric.flush();
+  const ovrRUiT = state.raylibOvrEyeRUiTxtMetric.flush();
   const ovrREd = state.raylibOvrEyeREndMetric.flush();
   const ovrCb = state.raylibOvrCombineMetric.flush();
   const ovrSy = state.raylibOvrSyncMetric.flush();
   const ovrDr = state.raylibOvrDrawMetric.flush();
   const ovrBG = state.raylibOvrBatchGeoMetric.flush();
   const ovrBM = state.raylibOvrBatchMatMetric.flush();
+  const ovrUIPC = state.raylibOvrUiPanelCountMetric.flush();
+  const ovrUITC = state.raylibOvrUiTextCountMetric.flush();
+  const ovrUIPD = state.raylibOvrUiPanelDrawnMetric.flush();
+  const ovrUITD = state.raylibOvrUiTextDrawnMetric.flush();
   if (
     !uploadSample && !presentSample && !frameSample && !raythreeSample &&
     !sceneMx && !rayL && !rayR && !rayUi && !hostPrep && !postMsg &&
     !ovrH && !ovrR && !ovrO && !ovrEL && !ovrER && !ovrLSy && !ovrLPr && !ovrLOp && !ovrLXp &&
-    !ovrLUi && !ovrLEd && !ovrRSy && !ovrRPr && !ovrROp && !ovrRXp && !ovrRUi && !ovrREd &&
-    !ovrCb && !ovrSy && !ovrDr && !ovrBG && !ovrBM
+    !ovrLUi && !ovrLUiS && !ovrLUiP && !ovrLUiT && !ovrLEd && !ovrRSy && !ovrRPr && !ovrROp && !ovrRXp &&
+    !ovrRUi && !ovrRUiS && !ovrRUiP && !ovrRUiT && !ovrREd &&
+    !ovrCb && !ovrSy && !ovrDr && !ovrBG && !ovrBM && !ovrUIPC && !ovrUITC && !ovrUIPD && !ovrUITD
   ) {
     return;
   }
@@ -782,6 +824,9 @@ function maybeLogOverlayPerf() {
       fmtPerfInterval("rl-ovrL-opq", ovrLOp),
       fmtPerfInterval("rl-ovrL-xp", ovrLXp),
       fmtPerfInterval("rl-ovrL-ui", ovrLUi),
+      fmtPerfInterval("rl-ovrL-uiS", ovrLUiS),
+      fmtPerfInterval("rl-ovrL-uiP", ovrLUiP),
+      fmtPerfInterval("rl-ovrL-uiT", ovrLUiT),
       fmtPerfInterval("rl-ovrL-end", ovrLEd),
       fmtPerfInterval("rl-ovr-eyeR", ovrER),
       fmtPerfInterval("rl-ovrR-sy", ovrRSy),
@@ -789,11 +834,18 @@ function maybeLogOverlayPerf() {
       fmtPerfInterval("rl-ovrR-opq", ovrROp),
       fmtPerfInterval("rl-ovrR-xp", ovrRXp),
       fmtPerfInterval("rl-ovrR-ui", ovrRUi),
+      fmtPerfInterval("rl-ovrR-uiS", ovrRUiS),
+      fmtPerfInterval("rl-ovrR-uiP", ovrRUiP),
+      fmtPerfInterval("rl-ovrR-uiT", ovrRUiT),
       fmtPerfInterval("rl-ovrR-end", ovrREd),
       fmtPerfInterval("rl-ovr-sync", ovrSy),
       fmtPerfInterval("rl-ovr-draw", ovrDr),
       fmtPerfCount("rl-ovr-geoBatch", ovrBG),
       fmtPerfCount("rl-ovr-matBatch", ovrBM),
+      fmtPerfCount("rl-ovr-ui#pan", ovrUIPC),
+      fmtPerfCount("rl-ovr-ui#txt", ovrUITC),
+      fmtPerfCount("rl-ovr-ui#panDr", ovrUIPD),
+      fmtPerfCount("rl-ovr-ui#txtDr", ovrUITD),
       fmtPerfInterval("rl-ovr-combine", ovrCb),
       fmtPerfInterval("rl-ovr-settex", ovrO),
       fmtPerfInterval("upload", uploadSample),

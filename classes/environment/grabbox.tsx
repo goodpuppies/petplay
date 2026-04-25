@@ -20,6 +20,11 @@ export type GrabBoxProps = {
   depth: number;
   /** Albedo / emissive tint. */
   lineColor?: number;
+  /**
+   * When `false`, XR **trigger rays** ignore this hull so they can hit children behind the shell
+   * (keyboard keys). Squeeze “grab” still collides. Default `true` for generic shells like the display bezel.
+   */
+  shellRayPickable?: boolean;
   /** Uikit + this box both use a centered origin; children only need a `contentOffset` nudge, not a pivot correction. */
   children?: React.ReactNode;
 };
@@ -32,17 +37,21 @@ export type GrabBoxProps = {
  * to raylib, matching [DisplayInstanceFrame](displayInstance/ui.tsx) behavior.
  */
 export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
-  { width, height, depth, lineColor = DEFAULT_GRABBOX_LINE_COLOR, children },
+  { width, height, depth, lineColor = DEFAULT_GRABBOX_LINE_COLOR, shellRayPickable = true, children },
   ref,
 ) {
   const color = useMemo(() => new THREE.Color(lineColor), [lineColor]);
+
+  const shellPointerMods = !shellRayPickable
+    ? ({ pointerEventsType: { deny: "ray" } } as Record<string, unknown>)
+    : {};
 
   return (
     <group
       ref={ref}
       userData={{ grabbox: true, grabboxSize: [width, height, depth] as const }}
     >
-      <mesh>
+      <mesh {...shellPointerMods}>
         <boxGeometry args={[width, height, depth]} />
         <meshLambertMaterial
           wireframe
