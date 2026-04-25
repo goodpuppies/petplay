@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { InstancedBufferAttribute, Material, Object3D } from "three";
+import { collectUikitRootContextsFromObject } from "../submodules/threewebxrwebgpudeno/local-uikit/raylibUikitSceneRoots.ts";
 import {
   type OrderInfo,
   orderInfoKey,
@@ -90,6 +91,9 @@ const dataBlock16 = new Float32Array(16);
  * Per-instance panel `aData` for uikit: 16 floats in the same order as
  * [instanced-panel-group.ts](c:/GIT/petplay/submodules/threewebxrwebgpudeno/local-uikit/panel/instanced-panel-group.ts) `syncRows` (aData0 + aData1 + aData2 + aData3).
  *
+ * Panel **instances** are discovered via each root’s `PanelGroupManager` (same as WebGPU’s draw path)
+ * in [extractWebXRRaythreeUi](c:/GIT/petplay/classes/webxrRaythreeUi.ts), not by pattern-matching the scene graph.
+ *
  * The WebGPU panel TSL path reads the **split** row attributes, not the merged `aData` buffer. The
  * Raylib replicator in [webxrRaythreeRaylibRenderer.ts](c:/GIT/petplay/classes/webxrRaythreeRaylibRenderer.ts) must
  * use the same numbers as WebGPU, or a briefly stale merged `aData` produces wrong colors / “white”
@@ -161,8 +165,17 @@ export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnaps
     texts: [],
   };
 
+  for (const rootCtx of collectUikitRootContextsFromObject(scene)) {
+    rootCtx.panelGroupManager.forEachGroup((group) => {
+      const mesh = group.getInstancedPanelMesh();
+      if (mesh == null || !mesh.visible) {
+        return;
+      }
+      maybeCollectPanels(mesh, snapshot.panels);
+    });
+  }
+
   scene.traverseVisible((object: Object3D) => {
-    maybeCollectPanels(object, snapshot.panels);
     maybeCollectText(object, snapshot.texts);
   });
 

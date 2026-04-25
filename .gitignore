@@ -4,3 +4,5 @@ dist/
 cef/
 tmp/
 node_modules/
+.cursor/
+resources/Keyboard.json

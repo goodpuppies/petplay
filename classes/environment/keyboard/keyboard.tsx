@@ -44,7 +44,7 @@ export function KeyboardPanel(
       position={position}
       rotation={new THREE.Euler(...rotation, "XYZ")}
       scale={scale}
-      userData={{ keyboard: true, bridge: { kind: "worldKeyboard" } }}
+      userData={{ keyboard: true, worldKeyboard: true }}
     >
       {/* ref matches runtime object; `never` bridges conflicting Object3D typings in deps */}
       <Handle handleRef={handleRef as never} multitouch>
