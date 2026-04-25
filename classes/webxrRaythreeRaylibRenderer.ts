@@ -90,6 +90,9 @@ type LightingShader = {
 
 type UiPanelShader = {
   shader: raylibBindings.Shader;
+  mvpLoc: number;
+  worldLoc: number;
+  clippingLoc: number;
   backgroundColorLoc: number;
   borderColorLoc: number;
   borderSizeLoc: number;
@@ -100,6 +103,7 @@ type UiPanelShader = {
 
 type UiTextShader = {
   shader: raylibBindings.Shader;
+  mvpLoc: number;
   tintLoc: number;
   pxRangeLoc: number;
   atlasSizeLoc: number;
@@ -139,8 +143,11 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly instanceMatrix = new THREE.Matrix4();
   private readonly worldMatrix = new THREE.Matrix4();
   private readonly sortMatrix = new THREE.Matrix4();
-  private readonly cameraMatrix = new THREE.Matrix4();
   private readonly sortVector = new THREE.Vector3();
+  private readonly uiMvpP = new THREE.Matrix4();
+  private readonly uiMvpV = new THREE.Matrix4();
+  private readonly uiMvpW = new THREE.Matrix4();
+  private readonly uiMvp = new THREE.Matrix4();
   private readonly loggedTextCounts = new Set<number>();
   private readonly loggedWarnings = new Set<string>();
   private readonly loggedSkippedGeometryIds = new Set<number>();
@@ -322,7 +329,8 @@ export class WebXRRaythreeRaylibRenderer {
   ): void {
     applyLighting(this.lightingShader, frame);
     this.maybeLogProjectionSummary(frame);
-    const viewMatrix = matrices?.viewMatrix ?? frame.camera.viewMatrix;
+    const viewMatrix = (matrices?.viewMatrix ?? frame.camera.viewMatrix) as Float32Array;
+    const projectionMatrix = (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as Float32Array;
     const transparentInstances = frame.instances
       .filter((instance) => this.materials.get(instance.materialId)?.transparent === true)
       .sort((left, right) =>
@@ -363,7 +371,7 @@ export class WebXRRaythreeRaylibRenderer {
       setUiDepthTestEnabled(false);
       setUiBackfaceCullingEnabled(false);
       try {
-        this.drawUiSnapshot(ui, viewMatrix);
+        this.drawUiSnapshot(ui, viewMatrix, projectionMatrix);
       } finally {
         setUiBackfaceCullingEnabled(true);
         setUiDepthTestEnabled(true);
@@ -378,8 +386,8 @@ export class WebXRRaythreeRaylibRenderer {
   private drawUiSnapshot(
     ui: WebXRRaythreeUiSnapshot,
     viewMatrix: Float32Array,
+    projectionMatrix: Float32Array,
   ): void {
-    const uiCamera = toRaylibCameraFromViewMatrix(viewMatrix, this.cameraMatrix);
     const panels = [...ui.panels].sort((left, right) => {
       if (left.renderOrder !== right.renderOrder) {
         return left.renderOrder - right.renderOrder;
@@ -395,14 +403,14 @@ export class WebXRRaythreeRaylibRenderer {
         this.getWorldMatrixViewDepth(left.worldMatrix, viewMatrix);
     });
     for (const panel of panels) {
-      this.drawUiPanel(panel);
+      this.drawUiPanel(panel, projectionMatrix, viewMatrix);
     }
     const texts = [...ui.texts].sort((left, right) =>
       this.getWorldMatrixViewDepth(right.worldMatrix, viewMatrix) -
-      this.getWorldMatrixViewDepth(left.worldMatrix, viewMatrix)
+        this.getWorldMatrixViewDepth(left.worldMatrix, viewMatrix)
     );
     for (const text of texts) {
-      this.drawUiText(text, uiCamera);
+      this.drawUiText(text, projectionMatrix, viewMatrix);
     }
     if (ui.texts.length > 0 && !this.loggedTextCounts.has(ui.texts.length)) {
       this.loggedTextCounts.add(ui.texts.length);
@@ -410,10 +418,47 @@ export class WebXRRaythreeRaylibRenderer {
     }
   }
 
-  private drawUiPanel(panel: WebXRRaythreeUiSnapshot["panels"][number]): void {
+  private setUiShaderMvp(
+    shader: raylibBindings.Shader,
+    mvpLoc: number,
+    projection: Float32Array,
+    view: Float32Array,
+    world: ArrayLike<number>,
+  ): void {
+    if (mvpLoc < 0) {
+      return;
+    }
+    const pEl = this.uiMvpP.elements;
+    const vEl = this.uiMvpV.elements;
+    const worldEl = this.uiMvpW.elements;
+    for (let i = 0; i < 16; i++) {
+      pEl[i] = projection[i] ?? 0;
+      vEl[i] = view[i] ?? 0;
+      worldEl[i] = Number(world[i]);
+    }
+    this.uiMvp.copy(this.uiMvpP).multiply(this.uiMvpV).multiply(this.uiMvpW);
+    raylib.H.SetShaderValueMatrix(
+      shader,
+      mvpLoc,
+      toRaylibMatrix(this.uiMvp.elements),
+    );
+  }
+
+  private drawUiPanel(
+    panel: WebXRRaythreeUiSnapshot["panels"][number],
+    projectionMatrix: Float32Array,
+    viewMatrix: Float32Array,
+  ): void {
     const width = Math.max(0, Number(panel.data[14] ?? 0));
     const height = Math.max(0, Number(panel.data[15] ?? 0));
     if (width <= 0 || height <= 0) {
+      return;
+    }
+    let wsum = 0;
+    for (let j = 0; j < 16; j++) {
+      wsum += Math.abs(panel.worldMatrix[j] ?? 0);
+    }
+    if (wsum < 1e-8) {
       return;
     }
 
@@ -421,15 +466,17 @@ export class WebXRRaythreeRaylibRenderer {
     const borderRight = Math.max(0, Number(panel.data[1] ?? 0));
     const borderBottom = Math.max(0, Number(panel.data[2] ?? 0));
     const borderLeft = Math.max(0, Number(panel.data[3] ?? 0));
-    const backgroundColor = readUiColor(panel.data, 4);
-    const borderColor = readUiColor(panel.data, 9);
+    // Raw float α (0–1) — cull before rounding; avoids quads for transparent / near-off panels.
+    const bgA = panel.data[7] ?? 0;
+    const brdA = panel.data[12] ?? 0;
     if (
-      backgroundColor[3] <= 0 &&
-      (borderColor[3] <= 0 ||
-        (borderTop <= 0 && borderRight <= 0 && borderBottom <= 0 && borderLeft <= 0))
+      bgA <= 1e-4 &&
+      (brdA <= 1e-4 || (borderTop <= 0 && borderRight <= 0 && borderBottom <= 0 && borderLeft <= 0))
     ) {
       return;
     }
+    const backgroundColor = readUiColor(panel.data, 4);
+    const borderColor = readUiColor(panel.data, 9);
     setShaderVec4(
       this.uiPanelShader.shader,
       this.uiPanelShader.backgroundColorLoc,
@@ -461,6 +508,27 @@ export class WebXRRaythreeRaylibRenderer {
       this.uiPanelShader.depthOffsetLoc,
       computeUiDepthOffset(panel.orderInfo, panel.instanceIndex),
     );
+    if (this.uiPanelShader.worldLoc >= 0) {
+      raylib.H.SetShaderValueMatrix(
+        this.uiPanelShader.shader,
+        this.uiPanelShader.worldLoc,
+        toRaylibMatrix(panel.worldMatrix),
+      );
+    }
+    if (this.uiPanelShader.clippingLoc >= 0) {
+      raylib.H.SetShaderValueMatrix(
+        this.uiPanelShader.shader,
+        this.uiPanelShader.clippingLoc,
+        toRaylibMatrix(panel.clipping),
+      );
+    }
+    this.setUiShaderMvp(
+      this.uiPanelShader.shader,
+      this.uiPanelShader.mvpLoc,
+      projectionMatrix,
+      viewMatrix,
+      panel.worldMatrix,
+    );
     this.drawUiQuad(panel.worldMatrix);
   }
 
@@ -488,7 +556,8 @@ export class WebXRRaythreeRaylibRenderer {
 
   private drawUiText(
     text: WebXRRaythreeUiSnapshot["texts"][number],
-    _camera: raylibBindings.Camera3D,
+    projectionMatrix: Float32Array,
+    viewMatrix: Float32Array,
   ): void {
     if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) {
       return;
@@ -526,6 +595,13 @@ export class WebXRRaythreeRaylibRenderer {
       this.uiMsdfAtlasSize[1],
     );
 
+    this.setUiShaderMvp(
+      this.uiTextShader.shader,
+      this.uiTextShader.mvpLoc,
+      projectionMatrix,
+      viewMatrix,
+      text.worldMatrix,
+    );
     raylib.H.DrawMesh(mesh.mesh, this.uiTextMaterial, toRaylibMatrix(text.worldMatrix));
   }
 
@@ -555,7 +631,7 @@ export class WebXRRaythreeRaylibRenderer {
     return mesh;
   }
 
-private maybeLogProjectionSummary(frame: RenderFrame): void {
+  private maybeLogProjectionSummary(frame: RenderFrame): void {
     if (!WEBXR_RAYTHREE_DEBUG || frame.camera.type !== "perspective") {
       return;
     }
@@ -770,6 +846,9 @@ function createUiPanelShader(): UiPanelShader {
   );
   return {
     shader,
+    mvpLoc: raylib.H.GetShaderLocation(shader, "mvp"),
+    worldLoc: raylib.H.GetShaderLocation(shader, "uWorld"),
+    clippingLoc: raylib.H.GetShaderLocation(shader, "uClipping"),
     backgroundColorLoc: raylib.H.GetShaderLocation(shader, "uBackgroundColor"),
     borderColorLoc: raylib.H.GetShaderLocation(shader, "uBorderColor"),
     borderSizeLoc: raylib.H.GetShaderLocation(shader, "uBorderSize"),
@@ -786,6 +865,7 @@ function createUiTextShader(): UiTextShader {
   );
   return {
     shader,
+    mvpLoc: raylib.H.GetShaderLocation(shader, "mvp"),
     tintLoc: raylib.H.GetShaderLocation(shader, "uTint"),
     pxRangeLoc: raylib.H.GetShaderLocation(shader, "uPxRange"),
     atlasSizeLoc: raylib.H.GetShaderLocation(shader, "uAtlasSize"),
@@ -1166,7 +1246,9 @@ function toIndexArrayLoose(value: unknown): Uint16Array | Uint32Array {
   if (value instanceof Uint32Array) return value.slice();
   if (Array.isArray(value)) {
     const max = value.reduce((acc, entry) => Math.max(acc, Number(entry) || 0), 0);
-    return max > 65535 ? Uint32Array.from(value as ArrayLike<number>) : Uint16Array.from(value as ArrayLike<number>);
+    return max > 65535
+      ? Uint32Array.from(value as ArrayLike<number>)
+      : Uint16Array.from(value as ArrayLike<number>);
   }
   if (value != null && typeof value === "object") {
     const maybeLength = (value as { length?: number }).length;
@@ -1178,14 +1260,21 @@ function toIndexArrayLoose(value: unknown): Uint16Array | Uint32Array {
     const keys = Object.keys(value as Record<string, number>)
       .filter((key) => /^\d+$/.test(key))
       .sort((a, b) => Number(a) - Number(b));
-    const max = keys.reduce((acc, key) => Math.max(acc, Number((value as Record<string, number>)[key]) || 0), 0);
+    const max = keys.reduce(
+      (acc, key) => Math.max(acc, Number((value as Record<string, number>)[key]) || 0),
+      0,
+    );
     if (max > 65535) {
       const out = new Uint32Array(keys.length);
-      for (let i = 0; i < keys.length; i++) out[i] = Number((value as Record<string, number>)[keys[i]]);
+      for (let i = 0; i < keys.length; i++) {
+        out[i] = Number((value as Record<string, number>)[keys[i]]);
+      }
       return out;
     }
     const out = new Uint16Array(keys.length);
-    for (let i = 0; i < keys.length; i++) out[i] = Number((value as Record<string, number>)[keys[i]]);
+    for (let i = 0; i < keys.length; i++) {
+      out[i] = Number((value as Record<string, number>)[keys[i]]);
+    }
     return out;
   }
   return new Uint16Array(0);
@@ -1214,7 +1303,9 @@ function assertMsdfTopologyInvariants(
     throw new Error(`[msdf-assert] ${label}: topology has empty index buffer`);
   }
   if (topology.indexCount % 3 !== 0) {
-    throw new Error(`[msdf-assert] ${label}: topology index count not multiple of 3: ${topology.indexCount}`);
+    throw new Error(
+      `[msdf-assert] ${label}: topology index count not multiple of 3: ${topology.indexCount}`,
+    );
   }
   if (topology.minIndex < 0 || topology.maxIndex >= topology.vertexCount) {
     throw new Error(
@@ -1249,11 +1340,9 @@ function createUiTextGeometryKey(
   if (geometry == null) {
     return text;
   }
-  return `${text}\u241f${geometry.positions.length}\u241f${geometry.uvs.length}\u241f${
-    geometry.indices.length
-  }\u241f${geometry.version}\u241f${quickFloat32Hash(geometry.positions)}\u241f${
-    quickFloat32Hash(geometry.uvs)
-  }\u241f${quickIndexHash(geometry.indices)}`;
+  return `${text}\u241f${geometry.positions.length}\u241f${geometry.uvs.length}\u241f${geometry.indices.length}\u241f${geometry.version}\u241f${
+    quickFloat32Hash(geometry.positions)
+  }\u241f${quickFloat32Hash(geometry.uvs)}\u241f${quickIndexHash(geometry.indices)}`;
 }
 
 function quickFloat32Hash(values: Float32Array): string {
@@ -1297,7 +1386,9 @@ function maybeValidateMsdfGeometry(
   const indices = geometry.indices;
   const vertexCount = Math.floor(positions.length / 2);
   if (positions.length % 2 !== 0) {
-    throw new Error(`[msdf-assert] ${label}: positions length must be even, got ${positions.length}`);
+    throw new Error(
+      `[msdf-assert] ${label}: positions length must be even, got ${positions.length}`,
+    );
   }
   if (uvs.length !== vertexCount * 2) {
     throw new Error(
@@ -1305,7 +1396,9 @@ function maybeValidateMsdfGeometry(
     );
   }
   if (indices.length % 3 !== 0) {
-    throw new Error(`[msdf-assert] ${label}: index length must be multiple of 3, got ${indices.length}`);
+    throw new Error(
+      `[msdf-assert] ${label}: index length must be multiple of 3, got ${indices.length}`,
+    );
   }
   let maxIndex = 0;
   for (let i = 0; i < indices.length; i++) {
@@ -1340,11 +1433,17 @@ function assertMsdfConversionInvariants(
   const vertexCount = Math.floor(positions2D.length / 2);
   if (positions3D.length !== vertexCount * 3) {
     throw new Error(
-      `[msdf-assert] ${label}: converted position length mismatch expected=${vertexCount * 3} got=${positions3D.length}`,
+      `[msdf-assert] ${label}: converted position length mismatch expected=${
+        vertexCount * 3
+      } got=${positions3D.length}`,
     );
   }
   if (uvs.length !== vertexCount * 2) {
-    throw new Error(`[msdf-assert] ${label}: converted uv length mismatch expected=${vertexCount * 2} got=${uvs.length}`);
+    throw new Error(
+      `[msdf-assert] ${label}: converted uv length mismatch expected=${
+        vertexCount * 2
+      } got=${uvs.length}`,
+    );
   }
   if (indices.length === 0) {
     throw new Error(`[msdf-assert] ${label}: converted index buffer is empty`);
@@ -1636,39 +1735,6 @@ function toRaylibMatrix(
   };
 }
 
-function toRaylibCameraFromViewMatrix(
-  viewMatrix: Float32Array,
-  _helper: THREE.Matrix4,
-): raylibBindings.Camera3D {
-  // V is column-major world-to-eye: rotation R = upper-left 3x3, translation t = col 3.
-  // V^-1 = [R^T | -R^T t]. Derive eye world basis and position from R and t directly
-  // (THREE.Matrix4.invert has been observed to produce NaN here — avoid it).
-  const r00 = Number(viewMatrix[0] ?? 0), r10 = Number(viewMatrix[1] ?? 0), r20 = Number(viewMatrix[2] ?? 0);
-  const r01 = Number(viewMatrix[4] ?? 0), r11 = Number(viewMatrix[5] ?? 0), r21 = Number(viewMatrix[6] ?? 0);
-  const r02 = Number(viewMatrix[8] ?? 0), r12 = Number(viewMatrix[9] ?? 0), r22 = Number(viewMatrix[10] ?? 0);
-  const tx = Number(viewMatrix[12] ?? 0), ty = Number(viewMatrix[13] ?? 0), tz = Number(viewMatrix[14] ?? 0);
-  const position = {
-    x: -(r00 * tx + r10 * ty + r20 * tz),
-    y: -(r01 * tx + r11 * ty + r21 * tz),
-    z: -(r02 * tx + r12 * ty + r22 * tz),
-  };
-  // eye looks down -Z in eye space; world forward = -col2 of V^-1 = -(r20, r21, r22).
-  // world up = col1 of V^-1 = (r10, r11, r12).
-  const up = { x: r10, y: r11, z: r12 };
-  const target = {
-    x: position.x - r20,
-    y: position.y - r21,
-    z: position.z - r22,
-  };
-  return {
-    position,
-    target,
-    up,
-    fovy: 60,
-    projection: raylibBindings.CameraProjection.CAMERA_PERSPECTIVE,
-  };
-}
-
 function setShaderVec3(
   shader: raylibBindings.Shader,
   location: number,
@@ -1859,7 +1925,7 @@ function setWireModeEnabled(enabled: boolean): void {
   symbols.rlDisableWireMode();
 }
 
-const LIGHTING_VERTEX_SHADER = /*glsl*/`#version 330
+const LIGHTING_VERTEX_SHADER = /*glsl*/ `#version 330
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
@@ -1883,7 +1949,7 @@ void main() {
 }
 `;
 
-const LIGHTING_FRAGMENT_SHADER = /*glsl*/`#version 330
+const LIGHTING_FRAGMENT_SHADER = /*glsl*/ `#version 330
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec2 fragTexCoord;
@@ -1923,26 +1989,31 @@ void main() {
 }
 `;
 
-const UI_PANEL_VERTEX_SHADER = /*glsl*/`#version 330
+const UI_PANEL_VERTEX_SHADER = /*glsl*/ `#version 330
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 in vec3 vertexNormal;
 in vec4 vertexColor;
 
 uniform mat4 mvp;
+uniform mat4 uWorld;
 
 out vec2 fragUv;
+out vec3 vWorldPos;
 
 void main() {
   fragUv = vertexTexCoord;
+  vWorldPos = (uWorld * vec4(vertexPosition, 1.0)).xyz;
   gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
 `;
 
-const UI_PANEL_FRAGMENT_SHADER = /*glsl*/`#version 330
+const UI_PANEL_FRAGMENT_SHADER = /*glsl*/ `#version 330
 in vec2 fragUv;
+in vec3 vWorldPos;
 out vec4 finalColor;
 
+uniform mat4 uClipping;
 uniform vec4 uBackgroundColor;
 uniform vec4 uBorderColor;
 uniform vec4 uBorderSize;
@@ -1983,6 +2054,20 @@ vec2 calculateCornerIntersection(float cornerRadius, vec2 borderSizes, float asp
 }
 
 void main() {
+  vec4 plane;
+  float distanceToPlane;
+  float planeDistanceGradient;
+  float clipOpacity = 1.0;
+  for (int i = 0; i < 4; i++) {
+    plane = uClipping[i];
+    distanceToPlane = dot(vWorldPos, plane.xyz) + plane.w;
+    planeDistanceGradient = fwidth(distanceToPlane) * 0.5;
+    clipOpacity *= smoothstep(-planeDistanceGradient, planeDistanceGradient, distanceToPlane);
+    if (clipOpacity < 0.01) {
+      discard;
+    }
+  }
+
   vec2 dimensions = max(uDimensions, vec2(0.0001));
   float aspectRatio = dimensions.x / dimensions.y;
   vec4 borderSize = uBorderSize / dimensions.yyyy;
@@ -2048,7 +2133,7 @@ void main() {
 
   float fullBackgroundOpacity = uBackgroundColor.a;
   float fullBorderOpacity = min(1.0, uBorderColor.a + fullBackgroundOpacity);
-  float outOpacity = outer * mix(fullBorderOpacity, fullBackgroundOpacity, transition);
+  float outOpacity = clipOpacity * outer * mix(fullBorderOpacity, fullBackgroundOpacity, transition);
   if (outOpacity < 0.01) {
     discard;
   }
@@ -2061,7 +2146,7 @@ void main() {
 }
 `;
 
-const UI_TEXT_VERTEX_SHADER = /*glsl*/`#version 330
+const UI_TEXT_VERTEX_SHADER = /*glsl*/ `#version 330
 in vec3 vertexPosition;
 in vec2 vertexTexCoord;
 
@@ -2075,7 +2160,7 @@ void main() {
 }
 `;
 
-const UI_TEXT_FRAGMENT_SHADER = /*glsl*/`#version 330
+const UI_TEXT_FRAGMENT_SHADER = /*glsl*/ `#version 330
 in vec2 fragUv;
 out vec4 finalColor;
 

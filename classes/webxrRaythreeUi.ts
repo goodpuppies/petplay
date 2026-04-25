@@ -84,6 +84,76 @@ const DEFAULT_CLIPPING = new Float32Array([
 ]);
 const matrixHelper = new THREE.Matrix4();
 const instanceMatrixHelper = new THREE.Matrix4();
+const dataBlock16 = new Float32Array(16);
+
+/**
+ * Per-instance panel `aData` for uikit: 16 floats in the same order as
+ * [instanced-panel-group.ts](c:/GIT/petplay/submodules/threewebxrwebgpudeno/local-uikit/panel/instanced-panel-group.ts) `syncRows` (aData0 + aData1 + aData2 + aData3).
+ *
+ * The WebGPU panel TSL path reads the **split** row attributes, not the merged `aData` buffer. The
+ * Raylib replicator in [webxrRaythreeRaylibRenderer.ts](c:/GIT/petplay/classes/webxrRaythreeRaylibRenderer.ts) must
+ * use the same numbers as WebGPU, or a briefly stale merged `aData` produces wrong colors / “white”
+ * quads and smearing while the on-GPU uikit is fine.
+ */
+function readUikitPanelData16(
+  geometry:
+    | {
+      attributes?: Record<string, InstancedBufferAttribute | undefined>;
+    }
+    | null
+    | undefined,
+  index: number,
+): Float32Array | null {
+  if (geometry?.attributes == null) {
+    return null;
+  }
+  const a = geometry.attributes;
+  const a0 = a.aData0;
+  const a1 = a.aData1;
+  const a2 = a.aData2;
+  const a3 = a.aData3;
+  if (a0 != null && a1 != null && a2 != null && a3 != null) {
+    const o = index * 4;
+    if (
+      o + 4 > a0.array.length || o + 4 > a1.array.length || o + 4 > a2.array.length ||
+      o + 4 > a3.array.length
+    ) {
+      return null;
+    }
+    dataBlock16.set(a0.array.subarray(o, o + 4), 0);
+    dataBlock16.set(a1.array.subarray(o, o + 4), 4);
+    dataBlock16.set(a2.array.subarray(o, o + 4), 8);
+    dataBlock16.set(a3.array.subarray(o, o + 4), 12);
+    return dataBlock16;
+  }
+  const ad = a.aData;
+  if (ad == null) {
+    return null;
+  }
+  const o = index * 16;
+  if (o + 16 > ad.array.length) {
+    return null;
+  }
+  return new Float32Array(ad.array.subarray(o, o + 16));
+}
+
+function hasPanelDataAttributes(
+  geometry:
+    | {
+      attributes?: Record<string, InstancedBufferAttribute | undefined>;
+    }
+    | null
+    | undefined,
+): boolean {
+  if (geometry?.attributes == null) {
+    return false;
+  }
+  const a = geometry.attributes;
+  if (a.aData != null) {
+    return true;
+  }
+  return a.aData0 != null && a.aData1 != null && a.aData2 != null && a.aData3 != null;
+}
 
 export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnapshot {
   const snapshot: WebXRRaythreeUiSnapshot = {
@@ -119,8 +189,7 @@ function maybeCollectPanels(
   }).material;
   const instanceMatrix = geometry?.attributes?.instanceMatrix ??
     (object as Object3D & { instanceMatrix?: InstancedBufferAttribute }).instanceMatrix;
-  const instanceData = geometry?.attributes?.aData;
-  if (instanceMatrix == null || instanceData == null) {
+  if (instanceMatrix == null || !hasPanelDataAttributes(geometry)) {
     return;
   }
 
@@ -133,6 +202,19 @@ function maybeCollectPanels(
   for (let index = 0; index < count; index++) {
     const matrixOffset = index * 16;
     const dataOffset = index * 16;
+    // Freed uikit panel slots are cleared to an all-zero matrix; drawing them (and tinting) causes white smears.
+    const mloc = instanceMatrix.array.subarray(matrixOffset, matrixOffset + 16);
+    let localAbs = 0;
+    for (let j = 0; j < 16; j++) {
+      localAbs += Math.abs(mloc[j]!);
+    }
+    if (localAbs < 1e-4) {
+      continue;
+    }
+    const data16 = readUikitPanelData16(geometry, index);
+    if (data16 == null) {
+      continue;
+    }
     matrixHelper.fromArray(object.matrixWorld.elements);
     instanceMatrixHelper.fromArray(
       Array.from(instanceMatrix.array.slice(matrixOffset, matrixOffset + 16)),
@@ -140,7 +222,8 @@ function maybeCollectPanels(
     matrixHelper.multiply(instanceMatrixHelper);
     target.push({
       worldMatrix: new Float32Array(matrixHelper.elements),
-      data: new Float32Array(instanceData.array.slice(dataOffset, dataOffset + 16)),
+      // Always copy: `readUikitPanelData16` may write into the pooled `dataBlock16`.
+      data: Float32Array.from(data16),
       clipping: instanceClipping == null
         ? new Float32Array(DEFAULT_CLIPPING)
         : new Float32Array(instanceClipping.array.slice(dataOffset, dataOffset + 16)),
@@ -211,10 +294,10 @@ function readPanelInstanceCount(object: Object3D): number {
       attributes?: Record<string, InstancedBufferAttribute | undefined>;
     };
   };
-  const hasPanelAttributes = candidate.geometry?.attributes?.aData !== undefined &&
-    candidate.geometry?.attributes?.aData0 !== undefined &&
-    candidate.geometry?.attributes?.aClipping !== undefined;
-  if (!hasPanelAttributes) {
+  if (
+    !hasPanelDataAttributes(candidate.geometry) ||
+    candidate.geometry?.attributes?.aClipping == null
+  ) {
     return 0;
   }
   return Math.max(0, Number(candidate.count ?? 0));

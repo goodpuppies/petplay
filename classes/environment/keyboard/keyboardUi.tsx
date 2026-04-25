@@ -17,7 +17,20 @@ import { scanCodeHexToNumber, usQwertyFromScan } from "./usLayout.ts";
 
 const DEFAULT_ROW_HEIGHT = 64;
 
-export const DEFAULT_KEYBOARD_JSON_URL = new URL("../../../resources/Keyboard.json", import.meta.url);
+/**
+ * Uikit `Container` defaults can resolve to a visible (often white) instanced panel for “empty” flex
+ * chrome. Use for stack/row/gutter shells that should only hit-test and not draw.
+ * Do not set `backgroundOpacity={0}` here — the webgpu `Container` maps that to the whole element opacity.
+ */
+const LAYOUT_CHROME: { backgroundColor: "transparent"; borderWidth: 0 } = {
+  backgroundColor: "transparent",
+  borderWidth: 0,
+};
+
+export const DEFAULT_KEYBOARD_JSON_URL = new URL(
+  "../../../resources/Keyboard.json",
+  import.meta.url,
+);
 export const DEFAULT_KEYBOARD_PIXEL_SIZE = 0.00095;
 export const DEFAULT_KEYBOARD_COLUMN_BACKGROUND = "#0e141c";
 
@@ -30,25 +43,28 @@ const initialMods: ModifierSnapshot = {
   rightAlt: false,
 };
 
-export type KeyCapChromeProps = {
-  face: NormalizedKeyFace;
-  /** Yoga layout: inner pixel units. */
-  minWidth: number;
-  minHeight: number;
-  keyPadding?: number;
-  pixelSize: number;
-  children?: React.ReactNode;
-  pressedVisual?: boolean;
-} & Pick<
-  EventHandlersProperties,
-  "onPointerDown" | "onPointerUp" | "onPointerOut" | "onClick" | "onPointerOver"
->;
+export type KeyCapChromeProps =
+  & {
+    face: NormalizedKeyFace;
+    /** Yoga layout: inner pixel units. */
+    minWidth: number;
+    minHeight: number;
+    keyPadding?: number;
+    pixelSize: number;
+    children?: React.ReactNode;
+    pressedVisual?: boolean;
+  }
+  & Pick<
+    EventHandlersProperties,
+    "onPointerDown" | "onPointerUp" | "onPointerOut" | "onClick" | "onPointerOver"
+  >;
 
 /**
  * Visual-only key cap: colors and typography shell (no pointer handlers).
  */
 export function KeyCapChrome(
-  { face, minWidth, minHeight, pixelSize, children, pressedVisual = false, ...events }: KeyCapChromeProps,
+  { face, minWidth, minHeight, pixelSize, children, pressedVisual = false, ...events }:
+    KeyCapChromeProps,
 ) {
   const fill = tokenBackground(face.colorToken);
   const borderC = tokenBorderColor(face.colorToken);
@@ -90,21 +106,44 @@ export type KeyboardRowViewProps = {
 };
 
 export function KeyboardRowView(
-  { faces, keyWidth, keyPadding, keyRowHeight, pixelSize, renderKey, renderSpacer }: KeyboardRowViewProps,
+  { faces, keyWidth, keyPadding, keyRowHeight: _rowH, pixelSize, renderKey, renderSpacer }:
+    KeyboardRowViewProps,
 ) {
+  // Avoid flex `gapColumn` — in this uikit build it can allocate visible (often white) gap panels.
+  const rowChildren: React.ReactNode[] = [];
+  for (let i = 0; i < faces.length; i++) {
+    if (i > 0) {
+      rowChildren.push(
+        <Container
+          key={`h-gap-${i}`}
+          pixelSize={pixelSize}
+          minWidth={keyPadding}
+          minHeight={1}
+          alignSelf="stretch"
+          {...LAYOUT_CHROME}
+        />,
+      );
+    }
+    const cell = faces[i]!;
+    if ("spacer" in cell && cell.spacer) {
+      rowChildren.push(
+        <React.Fragment key={`s-${i}`}>{renderSpacer(cell.width, cell.height)}</React.Fragment>,
+      );
+    } else {
+      const face = cell as NormalizedKeyFace;
+      rowChildren.push(
+        <React.Fragment key={face.id}>{renderKey(face)}</React.Fragment>,
+      );
+    }
+  }
   return (
     <Container
       pixelSize={pixelSize}
       flexDirection="row"
       alignItems="stretch"
-      gapColumn={keyPadding}
+      {...LAYOUT_CHROME}
     >
-      {faces.map((cell, i) => {
-        if ("spacer" in cell && cell.spacer) {
-          return <React.Fragment key={`s-${i}`}>{renderSpacer(cell.width, cell.height)}</React.Fragment>;
-        }
-        return <React.Fragment key={(cell as NormalizedKeyFace).id}>{renderKey(cell as NormalizedKeyFace)}</React.Fragment>;
-      })}
+      {rowChildren}
     </Container>
   );
 }
@@ -139,7 +178,6 @@ export function KeyboardColumnShell(
       borderRadius={12}
       padding={keyGroupsPadding + 2}
       flexDirection="column"
-      gap={keyPadding}
     >
       {children}
     </Container>
@@ -242,22 +280,18 @@ export function KeyboardFromJson(
     return null;
   }
 
-  const { keyWidth, keyPadding, keyGroupsPadding, mainRows, navRows, numpadRows, rowH } = getMainGroupRows(
-    raw,
-    layoutFormat,
-  );
+  const { keyWidth, keyPadding, keyGroupsPadding, mainRows, navRows, numpadRows, rowH } =
+    getMainGroupRows(
+      raw,
+      layoutFormat,
+    );
 
-  const makeColumn = (rows: RowItem[][], columnId: string) => (
-    <KeyboardColumnShell
-      key={columnId}
-      pixelSize={pixelSize}
-      keyPadding={keyPadding}
-      keyGroupsPadding={0}
-      background={columnBackground}
-    >
-      {rows.map((r, i) => (
+  const makeColumn = (rows: RowItem[][], columnId: string) => {
+    // Avoid flex `gap` in the column: same “white gap quads” issue as `gapColumn` on rows.
+    const colChildren: React.ReactNode[] = rows.flatMap((r, i) => {
+      const rowView = (
         <KeyboardRowView
-          key={`${columnId}-${i}`}
+          key={`${columnId}-row-${i}`}
           faces={r}
           keyWidth={keyWidth}
           keyPadding={keyPadding}
@@ -278,11 +312,45 @@ export function KeyboardFromJson(
             <Container
               minWidth={keyWidth * sw}
               minHeight={rowH * sh}
+              {...LAYOUT_CHROME}
             />
           )}
         />
-      ))}
-    </KeyboardColumnShell>
+      );
+      if (i === 0) {
+        return [rowView];
+      }
+      return [
+        <Container
+          key={`${columnId}-v-gap-${i}`}
+          pixelSize={pixelSize}
+          minHeight={keyPadding}
+          minWidth={1}
+          alignSelf="stretch"
+          {...LAYOUT_CHROME}
+        />,
+        rowView,
+      ];
+    });
+    return (
+      <KeyboardColumnShell
+        key={columnId}
+        pixelSize={pixelSize}
+        keyPadding={keyPadding}
+        keyGroupsPadding={0}
+        background={columnBackground}
+      >
+        {colChildren}
+      </KeyboardColumnShell>
+    );
+  };
+
+  const packH = 2 * (keyGroupsPadding + 2);
+  const colH = (rows: number) => rows * rowH + Math.max(0, rows - 1) * keyPadding + packH;
+  const columnBlockH = Math.max(
+    colH(mainRows.length),
+    colH(navRows.length),
+    colH(numpadRows.length),
   );
 
   return (
@@ -290,10 +358,23 @@ export function KeyboardFromJson(
       pixelSize={pixelSize}
       flexDirection="row"
       alignItems="flex-start"
-      gap={keyGroupsPadding}
+      gap={0}
+      {...LAYOUT_CHROME}
     >
       {makeColumn(mainRows, "main")}
+      <Container
+        pixelSize={pixelSize}
+        minWidth={keyGroupsPadding}
+        minHeight={columnBlockH}
+        {...LAYOUT_CHROME}
+      />
       {makeColumn(navRows, "nav")}
+      <Container
+        pixelSize={pixelSize}
+        minWidth={keyGroupsPadding}
+        minHeight={columnBlockH}
+        {...LAYOUT_CHROME}
+      />
       {makeColumn(numpadRows, "numpad")}
     </Container>
   );

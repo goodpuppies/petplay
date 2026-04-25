@@ -17,7 +17,7 @@ const state = actorState({
 
 const WEBXR_RENDER_HEIGHT = 500;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
-const WEBXR_OVERLAY_MODE = "raylib" as OverlayRenderMode;
+const WEBXR_OVERLAY_MODE = "webgpu" as OverlayRenderMode;
 
 const stdinHandler = new MainStdinHandler({
   spawnOverlay: (name) => {

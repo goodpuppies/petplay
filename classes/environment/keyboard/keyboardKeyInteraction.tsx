@@ -56,6 +56,8 @@ export function InteractiveKeyCap(
         alignItems="center"
         justifyContent="center"
         minHeight={minHeight * 0.35}
+        backgroundColor="transparent"
+        borderWidth={0}
       >
         <Text
           color={tc}
