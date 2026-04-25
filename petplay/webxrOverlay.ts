@@ -6,6 +6,7 @@
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
+import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
 import type { WebXRRaythreeRenderPayload } from "../classes/webxrRaythreeScene.ts";
 
 type StartWebXROverlayPayload = {
@@ -57,8 +58,11 @@ new PostMan(
         return;
       }
 
-      state.overlayRaylib.renderRaythreeFrame(payload);
+      const handlerT0 = performance.now();
+      const rt = state.overlayRaylib.renderRaythreeFrame(payload);
+      const renderMs = rt.totalMs;
 
+      const openvrT0 = performance.now();
       if (!state.overlay) {
         const overlay = new OpenVrOverlayTexture(state.overlayPointer);
         overlay.initialize(state.overlayRaylib.getTextureHandle(), {
@@ -77,12 +81,38 @@ new PostMan(
       }
 
       state.overlay.present();
+      const openvrMs = performance.now() - openvrT0;
+      const handlerMs = performance.now() - handlerT0;
+      const ack: RaylibOverlayFrameAckPayload = {
+        handlerMs,
+        renderMs,
+        openvrMs,
+        renderLeftMs: rt.leftMs,
+        renderRightMs: rt.rightMs,
+        renderLeftSyncMs: rt.renderLeftSyncMs,
+        renderLeftPrepMs: rt.renderLeftPrepMs,
+        renderLeftOpaqueMs: rt.renderLeftOpaqueMs,
+        renderLeftXparentMs: rt.renderLeftXparentMs,
+        renderLeftUiMs: rt.renderLeftUiMs,
+        renderLeftEndMs: rt.renderLeftEndMs,
+        renderRightSyncMs: rt.renderRightSyncMs,
+        renderRightPrepMs: rt.renderRightPrepMs,
+        renderRightOpaqueMs: rt.renderRightOpaqueMs,
+        renderRightXparentMs: rt.renderRightXparentMs,
+        renderRightUiMs: rt.renderRightUiMs,
+        renderRightEndMs: rt.renderRightEndMs,
+        renderCombineMs: rt.combineMs,
+        renderSyncMs: rt.renderSyncMs,
+        renderDrawMs: rt.renderDrawMs,
+        batchGeometries: rt.batchGeometries,
+        batchMaterials: rt.batchMaterials,
+      };
       state.uploadedFrames++;
       if (state.webxrActor) {
         PostMan.PostMessage({
           target: state.webxrActor,
           type: "RAYLIBOVERLAYFRAMEACK",
-          payload: null,
+          payload: ack,
         });
       }
     },

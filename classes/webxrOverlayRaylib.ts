@@ -6,10 +6,22 @@ import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
 
 const VARGGLES_FRAGMENT_SHADER = WEBXR_VARGGLES_GLSL330_FRAGMENT;
 const TRANSPARENT_BLACK = { r: 0, g: 0, b: 0, a: 0 } as raylib.Color;
-const RAYLIB_NATIVE_EYE_SIZE = 2560;
 
-const DEFAULT_WINDOW_FLAGS = raylib.ConfigFlags.FLAG_MSAA_4X_HINT |
-  raylib.ConfigFlags.FLAG_WINDOW_HIDDEN;
+/** Per-eye render target size (pixels); default 2560 → ~6.5M px/eye + 5120² combine. Override with `--webxr-raylib-eye-size=1024` etc. */
+function getRaylibNativeEyeSize(): number {
+  const arg = Deno.args
+    .find((a) => a.startsWith("--webxr-raylib-eye-size="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  const n = arg != null ? Number.parseInt(arg, 10) : NaN;
+  if (Number.isFinite(n) && n >= 64 && n <= 4096) {
+    return n;
+  }
+  return 2560;
+}
+
+/** No MSAA: offscreen compositor + hidden 1×1 context; `RenderTexture2D` paths don't use the window sample buffer anyway. */
+const DEFAULT_WINDOW_FLAGS = raylib.ConfigFlags.FLAG_WINDOW_HIDDEN;
 const CONTEXT_WINDOW_WIDTH = 1;
 const CONTEXT_WINDOW_HEIGHT = 1;
 
@@ -108,7 +120,9 @@ export class WebXROverlayRaylib {
 
     LogChannel.log(
       "webxrv2",
-      `[webxr] raylib compositor ready hidden=yes context=${CONTEXT_WINDOW_WIDTH}x${CONTEXT_WINDOW_HEIGHT} eye=${RAYLIB_NATIVE_EYE_SIZE}x${RAYLIB_NATIVE_EYE_SIZE}`,
+      `[webxr] raylib compositor ready hidden=yes context=${CONTEXT_WINDOW_WIDTH}x${CONTEXT_WINDOW_HEIGHT} eye=${
+        getRaylibNativeEyeSize()
+      }x${getRaylibNativeEyeSize()}`,
     );
     LogChannel.log(
       "webxrv2",
@@ -180,13 +194,34 @@ export class WebXROverlayRaylib {
     }
   }
 
-  renderRaythreeFrame(payload: WebXRRaythreeRenderPayload) {
-    this.ensureTexture(
-      RAYLIB_NATIVE_EYE_SIZE,
-      RAYLIB_NATIVE_EYE_SIZE,
-      RAYLIB_NATIVE_EYE_SIZE,
-      RAYLIB_NATIVE_EYE_SIZE,
-    );
+  /** @returns wall ms breakdown; `left+right+combine` may slightly exceed `total` (timer overhead). */
+  renderRaythreeFrame(
+    payload: WebXRRaythreeRenderPayload,
+  ): {
+    totalMs: number;
+    leftMs: number;
+    rightMs: number;
+    combineMs: number;
+    renderSyncMs: number;
+    renderDrawMs: number;
+    batchGeometries: number;
+    batchMaterials: number;
+    renderLeftSyncMs: number;
+    renderLeftPrepMs: number;
+    renderLeftOpaqueMs: number;
+    renderLeftXparentMs: number;
+    renderLeftUiMs: number;
+    renderLeftEndMs: number;
+    renderRightSyncMs: number;
+    renderRightPrepMs: number;
+    renderRightOpaqueMs: number;
+    renderRightXparentMs: number;
+    renderRightUiMs: number;
+    renderRightEndMs: number;
+  } {
+    const eye = getRaylibNativeEyeSize();
+    const renderT0 = performance.now();
+    this.ensureTexture(eye, eye, eye, eye);
 
     const leftTarget = this.leftEyeTarget;
     const rightTarget = this.rightEyeTarget;
@@ -197,7 +232,8 @@ export class WebXROverlayRaylib {
       throw new Error("raylib compositor not initialized");
     }
 
-    this.renderEye(leftTarget, () => {
+    const tLeft0 = performance.now();
+    const leftB = this.renderEye(leftTarget, () =>
       sceneRenderer.renderExtraction(
         payload.leftEye,
         payload.background,
@@ -207,9 +243,12 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=left`,
         payload.ui,
-      );
-    });
-    this.renderEye(rightTarget, () => {
+      )
+    );
+    const leftMs = performance.now() - tLeft0;
+
+    const tRight0 = performance.now();
+    const rightB = this.renderEye(rightTarget, () =>
       sceneRenderer.renderExtraction(
         payload.rightEye,
         payload.background,
@@ -219,9 +258,16 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=right`,
         payload.ui,
-      );
-    });
+      )
+    );
+    const rightMs = performance.now() - tRight0;
 
+    const renderSyncMs = leftB.syncMs + rightB.syncMs;
+    const renderDrawMs = leftB.frameMs + rightB.frameMs;
+    const batchGeometries = leftB.batchGeometries + rightB.batchGeometries;
+    const batchMaterials = leftB.batchMaterials + rightB.batchMaterials;
+
+    const tCombine0 = performance.now();
     raylib.H.SetShaderValueMatrix(
       shader,
       this.lookRotationLocation,
@@ -285,6 +331,30 @@ export class WebXROverlayRaylib {
     raylib.H.EndShaderMode();
     raylib.H.EndBlendMode();
     raylib.H.EndTextureMode();
+    const combineMs = performance.now() - tCombine0;
+    const totalMs = performance.now() - renderT0;
+    return {
+      totalMs,
+      leftMs,
+      rightMs,
+      combineMs,
+      renderSyncMs,
+      renderDrawMs,
+      batchGeometries,
+      batchMaterials,
+      renderLeftSyncMs: leftB.syncMs,
+      renderLeftPrepMs: leftB.prepMs,
+      renderLeftOpaqueMs: leftB.opaqueMs,
+      renderLeftXparentMs: leftB.xparentMs,
+      renderLeftUiMs: leftB.uiMs,
+      renderLeftEndMs: leftB.endMs,
+      renderRightSyncMs: rightB.syncMs,
+      renderRightPrepMs: rightB.prepMs,
+      renderRightOpaqueMs: rightB.opaqueMs,
+      renderRightXparentMs: rightB.xparentMs,
+      renderRightUiMs: rightB.uiMs,
+      renderRightEndMs: rightB.endMs,
+    };
   }
 
   cleanup() {
@@ -321,9 +391,10 @@ export class WebXROverlayRaylib {
     }
   }
 
-  private renderEye(target: raylib.RenderTexture2D, draw: () => void) {
+  private renderEye<T>(target: raylib.RenderTexture2D, draw: () => T): T {
     raylib.H.BeginTextureMode(target);
-    draw();
+    const out = draw();
     raylib.H.EndTextureMode();
+    return out;
   }
 }

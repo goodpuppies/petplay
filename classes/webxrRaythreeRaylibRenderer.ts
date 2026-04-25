@@ -144,6 +144,13 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly worldMatrix = new THREE.Matrix4();
   private readonly sortMatrix = new THREE.Matrix4();
   private readonly sortVector = new THREE.Vector3();
+  private readonly transparentInstanceScratch: Array<RenderInstance | InstancedRenderInstance> =
+    [];
+  /** Filled from the current view matrix per frame; `getWorldMatrixViewDepth` reads it (do not re-enter before a sort has finished). */
+  private readonly raylibMatrixScratch: raylibBindings.Matrix = {
+    m0: 1, m1: 0, m2: 0, m3: 0, m4: 0, m5: 1, m6: 0, m7: 0, m8: 0, m9: 0, m10: 1, m11: 0, m12: 0, m13: 0,
+    m14: 0, m15: 1,
+  };
   private readonly uiMvpP = new THREE.Matrix4();
   private readonly uiMvpV = new THREE.Matrix4();
   private readonly uiMvpW = new THREE.Matrix4();
@@ -173,6 +180,18 @@ export class WebXRRaythreeRaylibRenderer {
       maps: pointerAddress(this.uiTextMaterialBytes),
       params: [...this.baseMaterial.params] as [number, number, number, number],
     } as unknown as raylibBindings.Material;
+    const uiAlbedo = readMaterialMap(
+      this.uiMaterialBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+    );
+    writeMaterialMap(
+      this.uiMaterialBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+      {
+        ...uiAlbedo,
+        color: raylib.WHITE,
+      },
+    );
   }
 
   private ensureMsdfAtlas(): raylibBindings.Texture2D | null {
@@ -206,6 +225,10 @@ export class WebXRRaythreeRaylibRenderer {
     }
   }
 
+  /**
+   * `syncMs`: CPU + `UploadMesh` / material work when `assets.geometries` / `assets.materials` lists carry updates.
+   * `frameMs`: `DrawMesh` + UI at eye resolution (dominates when batch lists are ~empty every frame).
+   */
   renderExtraction(
     extraction: ExtractionResult,
     background: [number, number, number, number],
@@ -215,9 +238,33 @@ export class WebXRRaythreeRaylibRenderer {
     },
     debugContext?: string,
     ui?: WebXRRaythreeUiSnapshot,
-  ): void {
+  ): {
+    syncMs: number;
+    frameMs: number;
+    prepMs: number;
+    opaqueMs: number;
+    xparentMs: number;
+    uiMs: number;
+    endMs: number;
+    batchGeometries: number;
+    batchMaterials: number;
+  } {
+    const t0 = performance.now();
     this.syncAssets(extraction, debugContext);
-    this.renderFrame(extraction.frame, background, matrices, ui);
+    const t1 = performance.now();
+    const phases = this.renderFrame(extraction.frame, background, matrices, ui);
+    const t2 = performance.now();
+    return {
+      syncMs: t1 - t0,
+      frameMs: t2 - t1,
+      prepMs: phases.prepMs,
+      opaqueMs: phases.opaqueMs,
+      xparentMs: phases.xparentMs,
+      uiMs: phases.uiMs,
+      endMs: phases.endMs,
+      batchGeometries: extraction.assets.geometries.length,
+      batchMaterials: extraction.assets.materials.length,
+    };
   }
 
   dispose(): void {
@@ -326,25 +373,41 @@ export class WebXRRaythreeRaylibRenderer {
       viewMatrix: Float32Array;
     },
     ui?: WebXRRaythreeUiSnapshot,
-  ): void {
+  ): {
+    prepMs: number;
+    opaqueMs: number;
+    xparentMs: number;
+    uiMs: number;
+    endMs: number;
+  } {
+    const tPrep0 = performance.now();
     applyLighting(this.lightingShader, frame);
     this.maybeLogProjectionSummary(frame);
     const viewMatrix = (matrices?.viewMatrix ?? frame.camera.viewMatrix) as Float32Array;
     const projectionMatrix = (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as Float32Array;
-    const transparentInstances = frame.instances
-      .filter((instance) => this.materials.get(instance.materialId)?.transparent === true)
-      .sort((left, right) =>
-        this.getInstanceViewDepth(right, viewMatrix) - this.getInstanceViewDepth(left, viewMatrix)
-      );
+    this.sortMatrix.fromArray(viewMatrix as unknown as number[]);
+    const scratch = this.transparentInstanceScratch;
+    scratch.length = 0;
+    for (let i = 0; i < frame.instances.length; i++) {
+      const inst = frame.instances[i]!;
+      if (this.materials.get(inst.materialId)?.transparent === true) {
+        scratch.push(inst);
+      }
+    }
+    scratch.sort((left, right) =>
+      this.getInstanceViewDepth(right) - this.getInstanceViewDepth(left)
+    );
+    const transparentInstances = scratch;
 
     raylib.H.ClearBackground(toRaylibColor(background));
     raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
     raylib.H.rlSetMatrixProjection(
-      toRaylibMatrix(matrices?.projectionMatrix ?? frame.camera.projectionMatrix),
+      this.matrixForDraw((matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as ArrayLike<number>),
     );
     raylib.H.rlSetMatrixModelview(
-      toRaylibMatrix(viewMatrix),
+      this.matrixForDraw(viewMatrix),
     );
+    const tPrep1 = performance.now();
 
     for (const instance of frame.instances) {
       const nativeMesh = this.geometries.get(instance.geometryId);
@@ -355,6 +418,7 @@ export class WebXRRaythreeRaylibRenderer {
 
       this.drawInstance(nativeMesh, nativeMaterial, instance);
     }
+    const tOpq1 = performance.now();
 
     raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
     for (const instance of transparentInstances) {
@@ -366,6 +430,7 @@ export class WebXRRaythreeRaylibRenderer {
 
       this.drawInstance(nativeMesh, nativeMaterial, instance);
     }
+    const tXpr1 = performance.now();
     if (ui !== undefined) {
       setUiDepthMaskEnabled(false);
       setUiDepthTestEnabled(false);
@@ -378,9 +443,18 @@ export class WebXRRaythreeRaylibRenderer {
         setUiDepthMaskEnabled(true);
       }
     }
+    const tUi1 = performance.now();
     raylib.H.EndBlendMode();
 
     raylib.H.EndMode3D();
+    const tEnd1 = performance.now();
+    return {
+      prepMs: tPrep1 - tPrep0,
+      opaqueMs: tOpq1 - tPrep1,
+      xparentMs: tXpr1 - tOpq1,
+      uiMs: tUi1 - tXpr1,
+      endMs: tEnd1 - tUi1,
+    };
   }
 
   private drawUiSnapshot(
@@ -399,15 +473,15 @@ export class WebXRRaythreeRaylibRenderer {
       if (left.instanceIndex !== right.instanceIndex) {
         return left.instanceIndex - right.instanceIndex;
       }
-      return this.getWorldMatrixViewDepth(right.worldMatrix, viewMatrix) -
-        this.getWorldMatrixViewDepth(left.worldMatrix, viewMatrix);
+      return this.getWorldMatrixViewDepth(right.worldMatrix) -
+        this.getWorldMatrixViewDepth(left.worldMatrix);
     });
     for (const panel of panels) {
       this.drawUiPanel(panel, projectionMatrix, viewMatrix);
     }
     const texts = [...ui.texts].sort((left, right) =>
-      this.getWorldMatrixViewDepth(right.worldMatrix, viewMatrix) -
-        this.getWorldMatrixViewDepth(left.worldMatrix, viewMatrix)
+      this.getWorldMatrixViewDepth(right.worldMatrix) -
+        this.getWorldMatrixViewDepth(left.worldMatrix)
     );
     for (const text of texts) {
       this.drawUiText(text, projectionMatrix, viewMatrix);
@@ -440,7 +514,7 @@ export class WebXRRaythreeRaylibRenderer {
     raylib.H.SetShaderValueMatrix(
       shader,
       mvpLoc,
-      toRaylibMatrix(this.uiMvp.elements),
+      this.matrixForDraw(this.uiMvp.elements),
     );
   }
 
@@ -512,14 +586,14 @@ export class WebXRRaythreeRaylibRenderer {
       raylib.H.SetShaderValueMatrix(
         this.uiPanelShader.shader,
         this.uiPanelShader.worldLoc,
-        toRaylibMatrix(panel.worldMatrix),
+        this.matrixForDraw(panel.worldMatrix),
       );
     }
     if (this.uiPanelShader.clippingLoc >= 0) {
       raylib.H.SetShaderValueMatrix(
         this.uiPanelShader.shader,
         this.uiPanelShader.clippingLoc,
-        toRaylibMatrix(panel.clipping),
+        this.matrixForDraw(panel.clipping),
       );
     }
     this.setUiShaderMvp(
@@ -535,22 +609,10 @@ export class WebXRRaythreeRaylibRenderer {
   private drawUiQuad(
     worldMatrix: ArrayLike<number>,
   ): void {
-    const albedoMap = readMaterialMap(
-      this.uiMaterialBytes,
-      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
-    );
-    writeMaterialMap(
-      this.uiMaterialBytes,
-      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
-      {
-        ...albedoMap,
-        color: raylib.WHITE,
-      },
-    );
     raylib.H.DrawMesh(
       this.uiPanelMesh.mesh,
       this.uiMaterial,
-      toRaylibMatrix(worldMatrix),
+      this.matrixForDraw(worldMatrix),
     );
   }
 
@@ -602,7 +664,7 @@ export class WebXRRaythreeRaylibRenderer {
       viewMatrix,
       text.worldMatrix,
     );
-    raylib.H.DrawMesh(mesh.mesh, this.uiTextMaterial, toRaylibMatrix(text.worldMatrix));
+    raylib.H.DrawMesh(mesh.mesh, this.uiTextMaterial, this.matrixForDraw(text.worldMatrix));
   }
 
   private getUiTextMesh(
@@ -677,7 +739,7 @@ export class WebXRRaythreeRaylibRenderer {
         raylib.H.DrawMesh(
           nativeMesh.mesh,
           material.material,
-          toRaylibMatrix(worldMatrix),
+          this.matrixForDraw(worldMatrix),
         );
       } finally {
         setWireModeEnabled(false);
@@ -704,7 +766,7 @@ export class WebXRRaythreeRaylibRenderer {
     raylib.H.DrawMesh(
       nativeMesh.mesh,
       material.material,
-      toRaylibMatrix(worldMatrix),
+      this.matrixForDraw(worldMatrix),
     );
     if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
       raylib.H.EndBlendMode();
@@ -718,10 +780,11 @@ export class WebXRRaythreeRaylibRenderer {
     instance: RenderInstance | InstancedRenderInstance,
   ): void {
     if (isInstancedInstance(instance)) {
-      this.worldMatrix.fromArray(Array.from(instance.worldMatrix));
+      this.worldMatrix.fromArray(instance.worldMatrix as unknown as number[]);
       for (let index = 0; index < instance.instanceCount; index++) {
         this.instanceMatrix.fromArray(
-          Array.from(instance.instanceMatrices.slice(index * 16, (index + 1) * 16)),
+          instance.instanceMatrices as unknown as number[],
+          index * 16,
         );
         this.instanceMatrix.premultiply(this.worldMatrix);
         this.drawNativeMesh(nativeMesh, nativeMaterial, this.instanceMatrix.elements);
@@ -734,16 +797,13 @@ export class WebXRRaythreeRaylibRenderer {
 
   private getInstanceViewDepth(
     instance: RenderInstance | InstancedRenderInstance,
-    viewMatrix: Float32Array,
   ): number {
-    return this.getWorldMatrixViewDepth(instance.worldMatrix, viewMatrix);
+    return this.getWorldMatrixViewDepth(instance.worldMatrix);
   }
 
   private getWorldMatrixViewDepth(
     worldMatrix: ArrayLike<number>,
-    viewMatrix: Float32Array,
   ): number {
-    this.sortMatrix.fromArray(Array.from(viewMatrix));
     this.sortVector.set(
       Number(worldMatrix[12] ?? 0),
       Number(worldMatrix[13] ?? 0),
@@ -751,6 +811,28 @@ export class WebXRRaythreeRaylibRenderer {
     );
     this.sortVector.applyMatrix4(this.sortMatrix);
     return -this.sortVector.z;
+  }
+
+  /** Fills and returns `this.raylibMatrixScratch` — safe for one immediate FFI/DrawMesh use per call. */
+  private matrixForDraw(elements: ArrayLike<number>): raylibBindings.Matrix {
+    const m = this.raylibMatrixScratch;
+    m.m0 = Number(elements[0]);
+    m.m4 = Number(elements[4]);
+    m.m8 = Number(elements[8]);
+    m.m12 = Number(elements[12]);
+    m.m1 = Number(elements[1]);
+    m.m5 = Number(elements[5]);
+    m.m9 = Number(elements[9]);
+    m.m13 = Number(elements[13]);
+    m.m2 = Number(elements[2]);
+    m.m6 = Number(elements[6]);
+    m.m10 = Number(elements[10]);
+    m.m14 = Number(elements[14]);
+    m.m3 = Number(elements[3]);
+    m.m7 = Number(elements[7]);
+    m.m11 = Number(elements[11]);
+    m.m15 = Number(elements[15]);
+    return m;
   }
 
   private unloadNativeMesh(nativeMesh: NativeMesh): void {
@@ -873,19 +955,23 @@ function createUiTextShader(): UiTextShader {
 }
 
 function applyLighting(shader: LightingShader, frame: RenderFrame): void {
-  const ambient = frame.lights.filter((light) => light.type === "ambient");
-  const ambientColor = ambient.reduce<[number, number, number]>(
-    (acc, light) => [
-      acc[0] + light.color[0] * light.intensity,
-      acc[1] + light.color[1] * light.intensity,
-      acc[2] + light.color[2] * light.intensity,
-    ],
-    [0.1, 0.1, 0.12],
-  );
+  let ar = 0.1;
+  let ag = 0.1;
+  let ab = 0.12;
+  let point: (typeof frame.lights)[number] | undefined;
+  for (const light of frame.lights) {
+    if (light.type === "ambient") {
+      ar += light.color[0] * light.intensity;
+      ag += light.color[1] * light.intensity;
+      ab += light.color[2] * light.intensity;
+    } else if (
+      point === undefined && light.type === "point" && light.position !== undefined
+    ) {
+      point = light;
+    }
+  }
+  const ambientColor: [number, number, number] = [ar, ag, ab];
 
-  const point = frame.lights.find((light) =>
-    light.type === "point" && light.position !== undefined
-  );
   const lightPosition = point?.position ?? [0, 6, 0];
   const lightColor = point?.color ?? [1, 1, 1];
   const lightIntensity = point?.intensity ?? 0;
@@ -1709,29 +1795,6 @@ function toRaylibColor(
     g: Math.max(0, Math.min(255, Math.round(rgba[1]))),
     b: Math.max(0, Math.min(255, Math.round(rgba[2]))),
     a: Math.max(0, Math.min(255, Math.round(rgba[3]))),
-  };
-}
-
-function toRaylibMatrix(
-  elements: ArrayLike<number>,
-): raylibBindings.Matrix {
-  return {
-    m0: Number(elements[0]),
-    m4: Number(elements[4]),
-    m8: Number(elements[8]),
-    m12: Number(elements[12]),
-    m1: Number(elements[1]),
-    m5: Number(elements[5]),
-    m9: Number(elements[9]),
-    m13: Number(elements[13]),
-    m2: Number(elements[2]),
-    m6: Number(elements[6]),
-    m10: Number(elements[10]),
-    m14: Number(elements[14]),
-    m3: Number(elements[3]),
-    m7: Number(elements[7]),
-    m11: Number(elements[11]),
-    m15: Number(elements[15]),
   };
 }
 

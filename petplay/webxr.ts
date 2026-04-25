@@ -1,4 +1,4 @@
-import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { actorState, collectTransferables, PostMan } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { wait } from "../classes/utils.ts";
@@ -7,6 +7,7 @@ import { WebXRHost } from "../classes/webxrhost.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
+import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
 import {
   type WebXRRaythreeRenderPayload,
   WebXRRaythreeSceneBridge,
@@ -96,6 +97,35 @@ const state = actorState({
   raylibHostPrepMetric: new IntervalMetric(),
   /** `PostMessage` to webxrOverlay only (structured clone + queue; coalesced to latest in flight). */
   raylibPostMsgMetric: new IntervalMetric(),
+  /** `webxrOverlay`: full `RENDERWEBXRRAYTHREEFRAME` handler until after `SetOverlayTexture`. */
+  raylibOvrHandlerMetric: new IntervalMetric(),
+  /** `WebXROverlayRaylib.renderRaythreeFrame` in overlay worker. */
+  raylibOvrRenderMetric: new IntervalMetric(),
+  /** `setTextureHandle` + `SetOverlayTexture` in overlay worker (excludes raylib compositor). */
+  raylibOvrOpenvrMetric: new IntervalMetric(),
+  raylibOvrEyeLeftMetric: new IntervalMetric(),
+  raylibOvrEyeRightMetric: new IntervalMetric(),
+  /** Left eye `renderExtraction` phases (see `RaylibOverlayFrameAckPayload`). */
+  raylibOvrEyeLSyncMetric: new IntervalMetric(),
+  raylibOvrEyeLPrepMetric: new IntervalMetric(),
+  raylibOvrEyeLOpaqueMetric: new IntervalMetric(),
+  raylibOvrEyeLXparentMetric: new IntervalMetric(),
+  raylibOvrEyeLUiMetric: new IntervalMetric(),
+  raylibOvrEyeLEndMetric: new IntervalMetric(),
+  raylibOvrEyeRSyncMetric: new IntervalMetric(),
+  raylibOvrEyeRPrepMetric: new IntervalMetric(),
+  raylibOvrEyeROpaqueMetric: new IntervalMetric(),
+  raylibOvrEyeRXparentMetric: new IntervalMetric(),
+  raylibOvrEyeRUiMetric: new IntervalMetric(),
+  raylibOvrEyeREndMetric: new IntervalMetric(),
+  raylibOvrCombineMetric: new IntervalMetric(),
+  /** Overlay `syncAssets` only (both eyes). */
+  raylibOvrSyncMetric: new IntervalMetric(),
+  /** Overlay `renderFrame` / `DrawMesh` only (both eyes). */
+  raylibOvrDrawMetric: new IntervalMetric(),
+  /** Sum of `assets.geometries.length` L+R; use max≫0 to spot per-frame re-upload. */
+  raylibOvrBatchGeoMetric: new IntervalMetric(),
+  raylibOvrBatchMatMetric: new IntervalMetric(),
   /** True after `RENDERWEBXRRAYTHREEFRAME` until overlay `RAYLIBOVERLAYFRAMEACK`. */
   raylibFrameInFlight: false,
   /** Latest built payload; dropped in favor of newer until sent (no message queue buildup). */
@@ -111,7 +141,31 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
     },
-    RAYLIBOVERLAYFRAMEACK: (_payload: void) => {
+    RAYLIBOVERLAYFRAMEACK: (payload: RaylibOverlayFrameAckPayload | void | null) => {
+      if (payload) {
+        state.raylibOvrHandlerMetric.record(payload.handlerMs);
+        state.raylibOvrRenderMetric.record(payload.renderMs);
+        state.raylibOvrOpenvrMetric.record(payload.openvrMs);
+        state.raylibOvrEyeLeftMetric.record(payload.renderLeftMs);
+        state.raylibOvrEyeRightMetric.record(payload.renderRightMs);
+        state.raylibOvrEyeLSyncMetric.record(payload.renderLeftSyncMs);
+        state.raylibOvrEyeLPrepMetric.record(payload.renderLeftPrepMs);
+        state.raylibOvrEyeLOpaqueMetric.record(payload.renderLeftOpaqueMs);
+        state.raylibOvrEyeLXparentMetric.record(payload.renderLeftXparentMs);
+        state.raylibOvrEyeLUiMetric.record(payload.renderLeftUiMs);
+        state.raylibOvrEyeLEndMetric.record(payload.renderLeftEndMs);
+        state.raylibOvrEyeRSyncMetric.record(payload.renderRightSyncMs);
+        state.raylibOvrEyeRPrepMetric.record(payload.renderRightPrepMs);
+        state.raylibOvrEyeROpaqueMetric.record(payload.renderRightOpaqueMs);
+        state.raylibOvrEyeRXparentMetric.record(payload.renderRightXparentMs);
+        state.raylibOvrEyeRUiMetric.record(payload.renderRightUiMs);
+        state.raylibOvrEyeREndMetric.record(payload.renderRightEndMs);
+        state.raylibOvrCombineMetric.record(payload.renderCombineMs);
+        state.raylibOvrSyncMetric.record(payload.renderSyncMs);
+        state.raylibOvrDrawMetric.record(payload.renderDrawMs);
+        state.raylibOvrBatchGeoMetric.record(payload.batchGeometries);
+        state.raylibOvrBatchMatMetric.record(payload.batchMaterials);
+      }
       state.raylibFrameInFlight = false;
       tryFlushPendingRaylibFrame();
     },
@@ -229,6 +283,28 @@ new PostMan(
       state.raythreeUiMetric.reset();
       state.raylibHostPrepMetric.reset();
       state.raylibPostMsgMetric.reset();
+      state.raylibOvrHandlerMetric.reset();
+      state.raylibOvrRenderMetric.reset();
+      state.raylibOvrOpenvrMetric.reset();
+      state.raylibOvrEyeLeftMetric.reset();
+      state.raylibOvrEyeRightMetric.reset();
+      state.raylibOvrEyeLSyncMetric.reset();
+      state.raylibOvrEyeLPrepMetric.reset();
+      state.raylibOvrEyeLOpaqueMetric.reset();
+      state.raylibOvrEyeLXparentMetric.reset();
+      state.raylibOvrEyeLUiMetric.reset();
+      state.raylibOvrEyeLEndMetric.reset();
+      state.raylibOvrEyeRSyncMetric.reset();
+      state.raylibOvrEyeRPrepMetric.reset();
+      state.raylibOvrEyeROpaqueMetric.reset();
+      state.raylibOvrEyeRXparentMetric.reset();
+      state.raylibOvrEyeRUiMetric.reset();
+      state.raylibOvrEyeREndMetric.reset();
+      state.raylibOvrCombineMetric.reset();
+      state.raylibOvrSyncMetric.reset();
+      state.raylibOvrDrawMetric.reset();
+      state.raylibOvrBatchGeoMetric.reset();
+      state.raylibOvrBatchMatMetric.reset();
       state.raylibFrameInFlight = false;
       state.raylibFramePending = null;
       state.nominalHmdDisplayHz = null;
@@ -405,6 +481,7 @@ function tryFlushPendingRaylibFrame(): void {
     target: state.overlayActor,
     type: "RENDERWEBXRRAYTHREEFRAME",
     payload: toSend,
+    transfer: collectTransferables(toSend),
   });
   state.raylibPostMsgMetric.record(performance.now() - postStartedAt);
   state.presentMetric.record(0);
@@ -627,6 +704,17 @@ function fmtPerfInterval(
   return `${label}=${sample.avgMs.toFixed(2)}ms avg ${sample.maxMs.toFixed(2)}ms max`;
 }
 
+/** Same as {@link fmtPerfInterval} but for non-ms counters recorded via `IntervalMetric`. */
+function fmtPerfCount(
+  label: string,
+  sample: IntervalMetricSample | null,
+): string | null {
+  if (!sample) {
+    return null;
+  }
+  return `${label}=${sample.avgMs.toFixed(1)} avg ${sample.maxMs.toFixed(0)} max`;
+}
+
 function maybeLogOverlayPerf() {
   const now = performance.now();
   if (now - state.lastPerfLogAt < 1000) {
@@ -644,9 +732,34 @@ function maybeLogOverlayPerf() {
   const rayUi = state.raythreeUiMetric.flush();
   const hostPrep = state.raylibHostPrepMetric.flush();
   const postMsg = state.raylibPostMsgMetric.flush();
+  const ovrH = state.raylibOvrHandlerMetric.flush();
+  const ovrR = state.raylibOvrRenderMetric.flush();
+  const ovrO = state.raylibOvrOpenvrMetric.flush();
+  const ovrEL = state.raylibOvrEyeLeftMetric.flush();
+  const ovrER = state.raylibOvrEyeRightMetric.flush();
+  const ovrLSy = state.raylibOvrEyeLSyncMetric.flush();
+  const ovrLPr = state.raylibOvrEyeLPrepMetric.flush();
+  const ovrLOp = state.raylibOvrEyeLOpaqueMetric.flush();
+  const ovrLXp = state.raylibOvrEyeLXparentMetric.flush();
+  const ovrLUi = state.raylibOvrEyeLUiMetric.flush();
+  const ovrLEd = state.raylibOvrEyeLEndMetric.flush();
+  const ovrRSy = state.raylibOvrEyeRSyncMetric.flush();
+  const ovrRPr = state.raylibOvrEyeRPrepMetric.flush();
+  const ovrROp = state.raylibOvrEyeROpaqueMetric.flush();
+  const ovrRXp = state.raylibOvrEyeRXparentMetric.flush();
+  const ovrRUi = state.raylibOvrEyeRUiMetric.flush();
+  const ovrREd = state.raylibOvrEyeREndMetric.flush();
+  const ovrCb = state.raylibOvrCombineMetric.flush();
+  const ovrSy = state.raylibOvrSyncMetric.flush();
+  const ovrDr = state.raylibOvrDrawMetric.flush();
+  const ovrBG = state.raylibOvrBatchGeoMetric.flush();
+  const ovrBM = state.raylibOvrBatchMatMetric.flush();
   if (
     !uploadSample && !presentSample && !frameSample && !raythreeSample &&
-    !sceneMx && !rayL && !rayR && !rayUi && !hostPrep && !postMsg
+    !sceneMx && !rayL && !rayR && !rayUi && !hostPrep && !postMsg &&
+    !ovrH && !ovrR && !ovrO && !ovrEL && !ovrER && !ovrLSy && !ovrLPr && !ovrLOp && !ovrLXp &&
+    !ovrLUi && !ovrLEd && !ovrRSy && !ovrRPr && !ovrROp && !ovrRXp && !ovrRUi && !ovrREd &&
+    !ovrCb && !ovrSy && !ovrDr && !ovrBG && !ovrBM
   ) {
     return;
   }
@@ -661,6 +774,28 @@ function maybeLogOverlayPerf() {
       fmtPerfInterval("rt-right", rayR),
       fmtPerfInterval("rt-ui", rayUi),
       fmtPerfInterval("overlay-post", postMsg),
+      fmtPerfInterval("rl-ovr-handler", ovrH),
+      fmtPerfInterval("rl-ovr-render", ovrR),
+      fmtPerfInterval("rl-ovr-eyeL", ovrEL),
+      fmtPerfInterval("rl-ovrL-sy", ovrLSy),
+      fmtPerfInterval("rl-ovrL-pr", ovrLPr),
+      fmtPerfInterval("rl-ovrL-opq", ovrLOp),
+      fmtPerfInterval("rl-ovrL-xp", ovrLXp),
+      fmtPerfInterval("rl-ovrL-ui", ovrLUi),
+      fmtPerfInterval("rl-ovrL-end", ovrLEd),
+      fmtPerfInterval("rl-ovr-eyeR", ovrER),
+      fmtPerfInterval("rl-ovrR-sy", ovrRSy),
+      fmtPerfInterval("rl-ovrR-pr", ovrRPr),
+      fmtPerfInterval("rl-ovrR-opq", ovrROp),
+      fmtPerfInterval("rl-ovrR-xp", ovrRXp),
+      fmtPerfInterval("rl-ovrR-ui", ovrRUi),
+      fmtPerfInterval("rl-ovrR-end", ovrREd),
+      fmtPerfInterval("rl-ovr-sync", ovrSy),
+      fmtPerfInterval("rl-ovr-draw", ovrDr),
+      fmtPerfCount("rl-ovr-geoBatch", ovrBG),
+      fmtPerfCount("rl-ovr-matBatch", ovrBM),
+      fmtPerfInterval("rl-ovr-combine", ovrCb),
+      fmtPerfInterval("rl-ovr-settex", ovrO),
       fmtPerfInterval("upload", uploadSample),
       fmtPerfInterval("present", presentSample),
       fmtPerfInterval("frame", frameSample),

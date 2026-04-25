@@ -128,7 +128,8 @@ function readUikitPanelData16(
     dataBlock16.set(a1.array.subarray(o, o + 4), 4);
     dataBlock16.set(a2.array.subarray(o, o + 4), 8);
     dataBlock16.set(a3.array.subarray(o, o + 4), 12);
-    return dataBlock16;
+    // Copy: pooled buffer must not appear in postMessage transfer lists (shared by many panels).
+    return new Float32Array(dataBlock16);
   }
   const ad = a.aData;
   if (ad == null) {
@@ -274,15 +275,17 @@ function maybeCollectText(
   const indexAttr = meshGeometry?.index;
   if (positionAttr != null && uvAttr != null && indexAttr != null) {
     const rawIndices = indexAttr.array;
-    const indices = rawIndices instanceof Uint16Array || rawIndices instanceof Uint32Array
-      ? rawIndices
+    const indices = rawIndices instanceof Uint16Array
+      ? rawIndices.slice()
+      : rawIndices instanceof Uint32Array
+      ? rawIndices.slice()
       : new Uint32Array(Array.from(rawIndices as ArrayLike<number>));
     geometry = {
       positions: positionAttr.array instanceof Float32Array
-        ? positionAttr.array
+        ? positionAttr.array.slice()
         : Float32Array.from(positionAttr.array as ArrayLike<number>),
       uvs: uvAttr.array instanceof Float32Array
-        ? uvAttr.array
+        ? uvAttr.array.slice()
         : Float32Array.from(uvAttr.array as ArrayLike<number>),
       indices,
       version: Number(indexAttr.version ?? 0) + Number(positionAttr.version ?? 0),

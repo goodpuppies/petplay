@@ -95,7 +95,7 @@ export function WebXRScene(
         <torusGeometry args={[0.12, 0.012, 16, 48]} />
         <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
       </mesh>
-      <RoomWireBox color={roomLineColor} />
+      {/* <RoomWireBox color={roomLineColor} /> */}
 
       <DisplayInstance
         position={[-0.75, 1.2, -1.45]}

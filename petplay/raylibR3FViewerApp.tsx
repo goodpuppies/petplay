@@ -626,7 +626,7 @@ export async function runRaylibR3FViewerApp(
 
       raylib.BeginDrawing();
       try {
-        renderer.renderExtraction(
+        void renderer.renderExtraction(
           extraction,
           getSceneBackgroundColor(scene),
           {
