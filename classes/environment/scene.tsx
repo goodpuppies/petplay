@@ -38,7 +38,7 @@ function RoomWireBox({ color }: { color: THREE.Color }) {
   }, [geometry]);
 
   return (
-    <lineSegments geometry={geometry}>
+    <lineSegments geometry={geometry as unknown as THREE.BufferGeometry}>
       <lineBasicMaterial color={color} />
     </lineSegments>
   );
@@ -268,7 +268,7 @@ export function WebXRScene(
         matrix is updated each frame in useFrame above.
       */}
       <group ref={vrcOriginGroupRef}>
-        <Handle handleRef={boxRef} multitouch>
+        <Handle handleRef={boxRef as unknown as React.RefObject<import("three").Object3D | null>} multitouch>
           <mesh ref={boxRef} position={[0.35, 1.2, -1.45]} scale={[0.18, 0.18, 0.18]}>
             <boxGeometry args={[1, 1, 1]} />
             <meshBasicNodeMaterial colorNode={TSL.color(0x54d62c)} />

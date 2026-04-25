@@ -4,47 +4,69 @@ import {
   useFrame as useWebGPUFrame,
   useStore,
 } from "@react-three/fiber/webgpu";
+import type {
+  FrameNextCallback,
+  FrameNextState,
+  UseFrameNextOptions,
+} from "@react-three/fiber/webgpu";
+import { currentXRFrame } from "../classes/xrFrameBridge.ts";
 
-type FrameCallback = Parameters<typeof useWebGPUFrame>[0];
-type FrameOptions = Parameters<typeof useWebGPUFrame>[1];
+export type LegacyUseFrameCallback = (
+  state: FrameNextState,
+  delta: number,
+  xrFrame?: XRFrame | null,
+) => void;
 
-export function useFrame(
-  callback: FrameCallback,
-  options?: FrameOptions | number,
-): ReturnType<typeof useWebGPUFrame> {
-  const store = useStore();
-  let elapsed = 0;
-  let lastTime = performance.now();
-
-  const wrappedCallback: FrameCallback = (state, delta, frame) => {
-    const hasUsableClock =
-      state &&
+function hasUsableClock(
+  state: unknown,
+): state is FrameNextState & { clock: { getElapsedTime(): number } } {
+  return Boolean(
+    state &&
       typeof state === "object" &&
       "clock" in state &&
-      state.clock &&
-      typeof state.clock.getElapsedTime === "function";
+      (state as { clock?: unknown }).clock &&
+      typeof (state as { clock: { getElapsedTime?: unknown } }).clock.getElapsedTime === "function",
+  );
+}
 
-    if (typeof delta === "number") {
-      elapsed += delta;
-    } else {
-      const now = performance.now();
-      elapsed += (now - lastTime) / 1000;
-      lastTime = now;
+export function useFrame(
+  callback?: undefined,
+  options?: UseFrameNextOptions | number,
+): ReturnType<typeof useWebGPUFrame>;
+export function useFrame(
+  callback: LegacyUseFrameCallback,
+  options?: UseFrameNextOptions | number,
+): ReturnType<typeof useWebGPUFrame>;
+export function useFrame(
+  callback?: LegacyUseFrameCallback,
+  options?: UseFrameNextOptions | number,
+): ReturnType<typeof useWebGPUFrame> {
+  if (callback === undefined) {
+    if (typeof options === "number") {
+      return useWebGPUFrame(undefined, { priority: options });
     }
+    return useWebGPUFrame(undefined, options);
+  }
+
+  const store = useStore();
+  let elapsed = 0;
+
+  const wrappedCallback: FrameNextCallback = (state, delta) => {
+    elapsed += delta;
 
     const fallbackState = store.getState();
-    const rootState = hasUsableClock
+    const rootState = hasUsableClock(state)
       ? state
-      : {
-          ...fallbackState,
-          ...(state && typeof state === "object" ? state : {}),
-          clock: {
-            ...fallbackState.clock,
-            getElapsedTime: () => elapsed,
-          },
-        };
+      : ({
+        ...fallbackState,
+        ...(typeof state === "object" && state !== null ? state as object : {}),
+        clock: {
+          getElapsedTime: () => elapsed,
+          getDelta: () => delta,
+        },
+      } as unknown as FrameNextState);
 
-    return callback(rootState, delta, frame);
+    callback(rootState, delta, currentXRFrame.value);
   };
 
   if (typeof options === "number") {

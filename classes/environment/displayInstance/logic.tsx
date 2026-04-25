@@ -117,7 +117,7 @@ export function DisplayInstance(
       rotation={rotation}
       userData={{ displayInstance: true, aspect: "16:9", displayInstanceActor: displayInstanceActor ?? null }}
     >
-      <Handle handleRef={handleRef} multitouch scale={{ uniform: true }}>
+      <Handle handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>} multitouch scale={{ uniform: true }}>
         <DisplayInstanceFrame ref={handleRef} {...frameProps} />
       </Handle>
     </group>

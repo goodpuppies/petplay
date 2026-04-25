@@ -4,7 +4,8 @@
   ],
   "compilerOptions": {
     "jsx": "react-jsx",
-    "jsxImportSource": "react"
+    "jsxImportSource": "react",
+    "lib": ["deno.window", "deno.unstable", "dom", "dom.iterable"]
   },
   "nodeModulesDir":"auto",
   "imports": {
@@ -36,6 +37,7 @@
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
     "check": "deno run -A utils/type-check.ts",
+    "check:all": "deno check --allow-import",
     "ui": "deno run -A petplay/uiViewer.tsx ",
     "keyb": "deno run -A petplay/keyboardViewer.tsx ",
     "build": {

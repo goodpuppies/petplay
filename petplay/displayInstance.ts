@@ -236,7 +236,7 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   const texture = state.glManager!.getTexture();
   if (!texture) throw new Error("texture is null");
   const textureData: OpenVR.Texture = {
-    handle: BigInt(texture[0]),
+    handle: BigInt(texture[0]) as unknown as Deno.PointerValue<unknown>,
     eType: OpenVR.TextureType.TextureType_OpenGL,
     eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto,
   };

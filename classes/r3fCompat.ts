@@ -4,12 +4,28 @@ import {
   useFrame as useFiberFrame,
   useStore,
 } from "npm:@react-three/fiber@10.0.0-alpha.2";
+import type {
+  FrameNextCallback,
+  FrameNextState,
+  UseFrameNextOptions,
+} from "npm:@react-three/fiber@10.0.0-alpha.2";
 import { currentXRFrame } from "./xrFrameBridge.ts";
 
-type FrameCallback = Parameters<typeof useFiberFrame>[0];
-type FrameOptions = Parameters<typeof useFiberFrame>[1];
+/**
+ * Legacy `useFrame` callback (R3F ≤9 / pmndrs packages): optional third argument is `XRFrame`.
+ * R3F v10 only passes `(state, delta)`; this compat forwards {@link currentXRFrame} as the third argument.
+ *
+ * @see FrameNextCallback in `node_modules/@react-three/fiber/dist/index.d.ts`
+ */
+export type LegacyUseFrameCallback = (
+  state: FrameNextState,
+  delta: number,
+  xrFrame?: XRFrame | null,
+) => void;
 
-function hasUsableClock(state: unknown): state is { clock: { getElapsedTime(): number } } {
+function hasUsableClock(
+  state: unknown,
+): state is FrameNextState & { clock: { getElapsedTime(): number } } {
   return Boolean(
     state &&
       typeof state === "object" &&
@@ -20,38 +36,43 @@ function hasUsableClock(state: unknown): state is { clock: { getElapsedTime(): n
 }
 
 export function useFrame(
-  callback: FrameCallback,
-  options?: FrameOptions | number,
+  callback?: undefined,
+  options?: UseFrameNextOptions | number,
+): ReturnType<typeof useFiberFrame>;
+export function useFrame(
+  callback: LegacyUseFrameCallback,
+  options?: UseFrameNextOptions | number,
+): ReturnType<typeof useFiberFrame>;
+export function useFrame(
+  callback?: LegacyUseFrameCallback,
+  options?: UseFrameNextOptions | number,
 ): ReturnType<typeof useFiberFrame> {
+  if (callback === undefined) {
+    if (typeof options === "number") {
+      return useFiberFrame(undefined, { priority: options });
+    }
+    return useFiberFrame(undefined, options);
+  }
+
   const store = useStore();
   let elapsed = 0;
-  let lastTime = performance.now();
 
-  const wrappedCallback: FrameCallback = (state, delta, frame) => {
-    if (typeof delta === "number") {
-      elapsed += delta;
-    } else {
-      const now = performance.now();
-      elapsed += (now - lastTime) / 1000;
-      lastTime = now;
-    }
+  const wrappedCallback: FrameNextCallback = (state, delta) => {
+    elapsed += delta;
 
     const fallbackState = store.getState();
     const rootState = hasUsableClock(state)
       ? state
-      : {
+      : ({
         ...fallbackState,
-        ...(state && typeof state === "object" ? state : {}),
+        ...(typeof state === "object" && state !== null ? state as object : {}),
         clock: {
-          ...fallbackState.clock,
           getElapsedTime: () => elapsed,
+          getDelta: () => delta,
         },
-      };
+      } as unknown as FrameNextState);
 
-    // R3F v10's scheduler drops the XRFrame arg on useFrame callbacks.
-    // Our XR host stashes the current frame in xrFrameBridge around advance()
-    // so consumers (notably @pmndrs/xr) still receive it.
-    return callback(rootState, delta, frame ?? currentXRFrame.value);
+    callback(rootState, delta, currentXRFrame.value);
   };
 
   if (typeof options === "number") {

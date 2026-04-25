@@ -9,6 +9,7 @@
     "jsr:@gfx/build-glfw@0.1.0": "0.1.0",
     "jsr:@gfx/canvas@0.5.8": "0.5.8",
     "jsr:@gfx/dwm@~0.3.9": "0.3.9",
+    "jsr:@milly/namedpipe@1.1.0": "1.1.0",
     "jsr:@milly/namedpipe@^1.1.0": "1.1.0",
     "jsr:@mommysgoodpuppy/logchannel@0.1": "0.1.0",
     "jsr:@sdl3/sdl3-deno@^2.1.0": "2.1.0",

@@ -39,7 +39,7 @@ export function installWebXRHostPolyfills(width: number, height: number, pollInt
   }
 
   globalAny.ResizeObserver ??= ResizeObserver;
-  globalAny.window ??= globalThis as unknown as Window & typeof globalThis;
+  globalAny.window ??= globalThis;
   setGlobalNumber("innerWidth", width);
   setGlobalNumber("innerHeight", height);
 

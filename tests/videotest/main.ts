@@ -110,13 +110,13 @@ async function inputloop(inputactor: ActorId, overlayactor: ActorId) {
         OpenVR.InputDigitalActionData,
       ];
 
-    if (inputstate[2].bState == 1) {
+    if (inputstate[2].bState) {
       PostMan.PostMessage({
         target: overlayactor,
         type: "SETOVERLAYLOCATION",
         payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
       });
-    } else if (inputstate[3].bState == 1) {
+    } else if (inputstate[3].bState) {
       PostMan.PostMessage({
         target: overlayactor,
         type: "SETOVERLAYLOCATION",

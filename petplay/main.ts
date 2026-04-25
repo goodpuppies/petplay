@@ -211,13 +211,13 @@ async function inputloop(inputactor: string) {
     state.inputstate = inputstate;
 
     if (state.overlays.length > 0) {
-      if (inputstate[2].bState == 1) {
+      if (inputstate[2].bState) {
         PostMan.PostMessage({
           target: state.overlays,
           type: "SETOVERLAYLOCATION",
           payload: inputstate[0].pose.mDeviceToAbsoluteTracking,
         });
-      } else if (inputstate[3].bState == 1) {
+      } else if (inputstate[3].bState) {
         PostMan.PostMessage({
           target: state.overlays,
           type: "SETOVERLAYLOCATION",

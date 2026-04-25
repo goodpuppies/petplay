@@ -365,7 +365,7 @@ function gethmdpose() {
     OpenVR.k_unTrackedDeviceIndex_Hmd * OpenVR.TrackedDevicePoseStruct.byteSize,
     OpenVR.TrackedDevicePoseStruct.byteSize
   );
-  return OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+  return OpenVR.TrackedDevicePoseStruct.read(poseView) as unknown as OpenVR.TrackedDevicePose;
 }
 
 function INITGL(name?: string) {

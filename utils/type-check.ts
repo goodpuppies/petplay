@@ -1,8 +1,10 @@
 #!/usr/bin/env -S deno run -A
 
 /**
- * Type check runner that filters out errors from specific paths.
- * Run with: deno run -A utils/type-check.ts
+ * Type check runner that filters out errors from specific paths (vendor-heavy submodules).
+ *
+ * Prefer this over raw `deno check` in this repo: `deno task check`
+ * Full unfiltered graph: `deno task check:all`
  */
 
 const IGNORE_PATHS = [

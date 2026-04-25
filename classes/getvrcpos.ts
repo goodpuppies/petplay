@@ -1,3 +1,4 @@
+/// <reference lib="deno.unstable" />
 import { Message } from "https://deno.land/x/osc@v0.1.0/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 

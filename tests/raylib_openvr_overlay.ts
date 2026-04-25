@@ -119,7 +119,7 @@ async function runWorkerHarness(config: Config) {
   const worker = new Worker(new URL("./raylib_openvr_overlay_worker.ts", import.meta.url).href, {
     type: "module",
     deno: { permissions: "inherit" },
-  });
+  } as WorkerOptions);
 
   const workerArgs = buildWorkerArgs({ ...config, spawnWorker: false });
   worker.postMessage({ type: "start", args: workerArgs });
@@ -182,7 +182,7 @@ function initializeOpenVrOverlayPointer(): number {
   }
 
   const overlayPointerNumeric = Deno.UnsafePointer.value(overlayPtr);
-  if (overlayPointerNumeric === 0) {
+  if (Number(overlayPointerNumeric) === 0) {
     throw new Error("IVROverlay pointer resolved to 0");
   }
 

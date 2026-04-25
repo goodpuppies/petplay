@@ -435,7 +435,7 @@ export class WebXRHost {
         globalObject: globalThis,
         polyfillLayers: false,
       });
-      assert(navigator.xr, "navigator.xr was not installed");
+      assert((navigator as unknown as { xr?: XRSystem }).xr, "navigator.xr was not installed");
 
       const store = createXRStore({
         offerSession: false,
@@ -500,7 +500,10 @@ export class WebXRHost {
         this.surfaceHost.present();
       }
 
-      this.session = await this.enterXrWhenReady(store, this.sessionMode);
+      this.session = await this.enterXrWhenReady(
+        store as unknown as { enterAR: () => Promise<XRSession>; enterVR: () => Promise<XRSession> },
+        this.sessionMode,
+      );
       assert(this.session, `Failed to enter ${this.sessionMode} session`);
       this.running = true;
       this.lastHeartbeatAt = performance.now();
@@ -1123,7 +1126,7 @@ export class WebXRHost {
       OpenVR.k_unTrackedDeviceIndex_Hmd * OpenVR.TrackedDevicePoseStruct.byteSize,
       OpenVR.TrackedDevicePoseStruct.byteSize,
     );
-    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as unknown as OpenVR.TrackedDevicePose;
     if (!hmdPose.bPoseIsValid) {
       return null;
     }

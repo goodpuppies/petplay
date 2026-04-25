@@ -107,7 +107,7 @@ function getHMDPose(): OpenVR.TrackedDevicePose {
   hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
   OpenVR.TrackedDevicePoseStruct.byteSize
   );
-  const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+  const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as unknown as OpenVR.TrackedDevicePose;
 
   return hmdPose;
 }
@@ -158,7 +158,7 @@ function getHMDPoseX(): OpenVR.TrackedDevicePose {
     hmdIndex * OpenVR.TrackedDevicePoseStruct.byteSize,
     OpenVR.TrackedDevicePoseStruct.byteSize
   );
-  const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as OpenVR.TrackedDevicePose;
+  const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as unknown as OpenVR.TrackedDevicePose;
 
   return hmdPose;
 }

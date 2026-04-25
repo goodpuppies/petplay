@@ -1396,7 +1396,7 @@ function createNativeMesh(asset: GeometryAsset): NativeMesh | null {
 }
 
 function sanitizeUploadedMesh(mesh: raylibBindings.Mesh): raylibBindings.Mesh {
-  const hasIndices = mesh.indices !== ZERO_POINTER;
+  const hasIndices = (mesh.indices as unknown as bigint) !== ZERO_POINTER;
   return {
     ...mesh,
     vertices: ZERO_POINTER,
