@@ -12,7 +12,7 @@ import {
 } from "../webxrShadowScene.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
-import { KeyboardPanel } from "./keyboard/keyboard.tsx";
+import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
 
 
 // deno-lint-ignore no-explicit-any
@@ -259,7 +259,7 @@ export function WebXRScene(
         World-space keyboard: default pose matches petplay/keyboard/keyboard.ts constants;
         reorient with controller ray for typing toward the 16:9 overlay.
       */}
-      <KeyboardPanel />
+      <KeyboardPanel onKey={windowsSystemKeyboardSink} />
 
       {/*
         The cube lives inside the VRC-origin group so its local

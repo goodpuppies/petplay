@@ -657,6 +657,7 @@
     "https://glfw-binaries.deno.dev/3.4.0-patch3/glfw3_darwin_aarch64.js": "0b61def6f669ee4262929649b14a46687a724615bfbd6916b6ee06321931b403",
     "https://glfw-binaries.deno.dev/3.4.0-patch3/glfw3_linux.js": "d76eb1ca34a88ee52c1426d0d58e9fcf284e717144f47d9d5ada988e96076b35",
     "https://glfw-binaries.deno.dev/3.4.0-patch3/glfw3_windows.js": "b064f7873744ba2d1fdbacc4c605a5a9477b612d5ea8e4391cb622a775315824",
+    "https://raw.githubusercontent.com/DjDeveloperr/deno_win32/0.4.1/util.ts": "0f846e01a976601ad4c9839b72df8aaddc65685a16bc658a1bb914e21323e231",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/mod.ts": "9473507398048cb24dbb37b3a220777106c69c28d573898648deb2bb84a7e131",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/array.ts": "9a1eef640c1db4a71ca99c43e87c3bf4fd9a66826ed699115f539632c3606f45",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/src/array/array_buffer.ts": "3e78940e9d481e23cc271d14ed9fa4c45e4e7e6bdbcc602f26e8a70ff28ba6bb",
@@ -742,7 +743,8 @@
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/varint/_common.ts": "c7430bfb243b2311e852c45664194e3c2fd7c6cd61ff03292410fca89101ec2d",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/varint/i32_leb128.ts": "e37e9e24c48ee7b43264c486ded758ffabb9a4e261f7c8d6d275a48b78ea2f29",
     "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/varint/i64_leb128.ts": "febba94e3fd9ac71bd65219be9f651f2f7706e11a621153f282ce6e33c69d8fe",
-    "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/varint/mod.ts": "f52855601abd19c9af3cdc4e19afde4b57a0d567b99a807063b6a3761b783bba"
+    "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/refs/heads/main/src/varint/mod.ts": "f52855601abd19c9af3cdc4e19afde4b57a0d567b99a807063b6a3761b783bba",
+    "https://win32.deno.dev/0.4.1/UI.Input.KeyboardAndMouse": "d14b9e198f38d4675437a691acec2bc74cc713a231b541c4ba979356e1fa808a"
   },
   "workspace": {
     "dependencies": [

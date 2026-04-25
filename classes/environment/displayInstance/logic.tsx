@@ -50,7 +50,7 @@ function hmd34ApproxEqual(
 export function DisplayInstance(
   { position, rotation, displayInstanceActor, ...frameProps }: DisplayInstanceProps,
 ) {
-  const handleRef = useRef<THREE.Object3D | null>(null);
+  const handleRef = useRef<THREE.Group | null>(null);
   const p0 = useRef(new THREE.Vector3());
   const p1 = useRef(new THREE.Vector3());
   const decompPos = useRef(new THREE.Vector3());

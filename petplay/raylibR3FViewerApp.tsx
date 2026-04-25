@@ -8,6 +8,10 @@ import { createScreenCameraStore, filterForOnePointerLeftClick } from "@pmndrs/h
 import { createR3FExtractionRoot, RaythreeExtractor } from "../submodules/raythree/src/lib.ts";
 import { extractWebXRRaythreeUi } from "../classes/webxrRaythreeUi.ts";
 import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";
+import {
+  releaseWindowsSyntheticKeyboardState,
+  releaseWindowsSyntheticKeyboardStateWithKm,
+} from "../classes/environment/keyboard/win32SystemKeyboard.ts";
 
 export type RaylibR3FViewerControlsStore = ReturnType<typeof createScreenCameraStore>;
 
@@ -497,6 +501,22 @@ export async function runRaylibR3FViewerApp(
   console.log(`${p} Window config:`, { width, height, title });
   installSyntheticDomEventPolyfills();
 
+  let win32Shutdown: typeof import("@win32/km") | null = null;
+  if (Deno.build.os === "windows") {
+    win32Shutdown = await import("@win32/km");
+    for (const sig of (["SIGINT", "SIGTERM"] as const)) {
+      try {
+        Deno.addSignalListener(sig, () => {
+          if (win32Shutdown) {
+            releaseWindowsSyntheticKeyboardStateWithKm(win32Shutdown);
+          }
+        });
+      } catch {
+        // ignore (no permission / unsupported)
+      }
+    }
+  }
+
   const [ax, ay, az] = options.aim.aimOrigin;
   const [cx, cy, cz] = options.aim.cameraPosition;
   const fov = options.aim.fov ?? 55;
@@ -627,6 +647,7 @@ export async function runRaylibR3FViewerApp(
     console.error(`${p} Error in main loop:`, error);
     throw error;
   } finally {
+    await releaseWindowsSyntheticKeyboardState();
     forwarded?.destroy();
     r3f.dispose();
     renderer?.dispose();

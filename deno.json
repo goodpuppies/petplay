@@ -31,6 +31,7 @@
     "three/addons/": "./submodules/threewebxrwebgpudeno/submodules/three.js/examples/jsm/",
     "three/tsl": "./submodules/threewebxrwebgpudeno/submodules/three.js/build/three.tsl.js",
     "@types/three": "npm:@types/three@^0.182.0",
+    "@win32/km": "https://win32.deno.dev/0.4.1/UI.Input.KeyboardAndMouse"
   },
   "tasks": {
     "vitebuild": "cd submodules/frontend && deno task build",
@@ -40,6 +41,7 @@
     "check:all": "deno check --allow-import",
     "ui": "deno run -A petplay/uiViewer.tsx ",
     "keyb": "deno run -A petplay/keyboardViewer.tsx ",
+    "keyb:reset": "deno run -A petplay/resetKeyboard.ts",
     "build": {
       "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./cef/ --icon resources/petplay.ico petplay/petplay.ts",
       "dependencies": [

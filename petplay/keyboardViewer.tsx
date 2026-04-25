@@ -1,5 +1,5 @@
 import React from "react";
-import { KeyboardPanel } from "../classes/environment/keyboard/keyboard.tsx";
+import { KeyboardPanel, windowsSystemKeyboardSink } from "../classes/environment/keyboard/keyboard.tsx";
 import {
   OrbitHandlesView,
   type RaylibR3FViewerSceneProps,
@@ -39,7 +39,7 @@ function KeyboardViewerScene(
         <planeGeometry args={[4.5, 4.5]} />
         <meshStandardMaterial color="#0e1522" roughness={1} metalness={0} />
       </mesh>
-      <KeyboardPanel />
+      <KeyboardPanel onKey={windowsSystemKeyboardSink} />
     </>
   );
 }

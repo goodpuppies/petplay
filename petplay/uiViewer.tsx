@@ -2,7 +2,7 @@ import React from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber/webgpu";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
-import { KeyboardPanel } from "../classes/environment/keyboard/keyboard.tsx";
+import { KeyboardPanel, windowsSystemKeyboardSink } from "../classes/environment/keyboard/keyboard.tsx";
 import {
   OrbitHandlesView,
   type RaylibR3FViewerSceneProps,
@@ -57,6 +57,7 @@ function UiViewerScene(
           }}
         />
         <KeyboardPanel
+          onKey={windowsSystemKeyboardSink}
           position={[0.55, 0.95, -1.38]}
           rotation={[0, -0.32, 0]}
           scale={[0.4, 0.4, 0.4]}

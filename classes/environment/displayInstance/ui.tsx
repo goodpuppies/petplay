@@ -2,6 +2,7 @@ import React, { forwardRef, useMemo } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
+import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -20,8 +21,8 @@ export const DEFAULT_DISPLAY_HEIGHT = 0.5;
 /** Default depth of the thin box “screen” volume. */
 export const DEFAULT_DISPLAY_DEPTH = 0.04;
 
-/** Default frame color (hex). */
-export const DEFAULT_LINE_COLOR = 0x7ec8e3;
+/** @deprecated Use [DEFAULT_GRABBOX_LINE_COLOR](grabbox.tsx). */
+export const DEFAULT_LINE_COLOR = DEFAULT_GRABBOX_LINE_COLOR;
 
 export type DisplayInstanceFrameProps = {
   /** Full height of the 16:9 frame. Width = height × `DISPLAY_ASPECT_WIDTH_OVER_HEIGHT`. */
@@ -32,31 +33,26 @@ export type DisplayInstanceFrameProps = {
 };
 
 /**
- * Visual-only 16:9 thin box. Uses `Mesh` + `MeshLambertMaterial` with `wireframe` (not
- * `LineBasicMaterial`) so the raythree extract gets `state.wireframe` and
- * [classes/webxrRaythreeRaylibRenderer.ts](classes/webxrRaythreeRaylibRenderer.ts) can mirror edges via
- * `DrawModelWiresEx` (unlit) using material base color. The WebGPU/Three wireframe and the mirror are
- * independent; raylib does not use `uBaseColor` lighting for wire draw.
+ * Visual-only 16:9 thin box — a [GrabBox](grabbox.tsx) with fixed aspect. Wireframe and raylib
+ * mirroring are documented on `GrabBox`.
  */
-export const DisplayInstanceFrame = forwardRef<THREE.Object3D, DisplayInstanceFrameProps>(
+export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrameProps>(
   function DisplayInstanceFrame(
     { height = DEFAULT_DISPLAY_HEIGHT, depth = DEFAULT_DISPLAY_DEPTH, lineColor = DEFAULT_LINE_COLOR },
     ref,
   ) {
-    const width = height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT;
-    const color = useMemo(() => new THREE.Color(lineColor), [lineColor]);
-
+    const width = useMemo(
+      () => height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+      [height],
+    );
     return (
-      <mesh ref={ref}>
-        <boxGeometry args={[width, height, depth]} />
-        <meshLambertMaterial
-          wireframe
-          color={color}
-          emissive={color}
-          emissiveIntensity={0.2}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
+      <GrabBox
+        ref={ref}
+        width={width}
+        height={height}
+        depth={depth}
+        lineColor={lineColor}
+      />
     );
   },
 );

@@ -5,6 +5,14 @@ import type { NormalizedKeyFace } from "./types.ts";
 import { keyTextColor } from "./theme.ts";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 
+/**
+ * XR controller squeeze drives a sphere “grab” pointer (`pointerType === "grab"`).
+ * Key caps should only react to trigger-ray / mouse / touch so moving the panel doesn’t type.
+ */
+function isTriggerLikePointer(event: { pointerType?: string }): boolean {
+  return event.pointerType !== "grab";
+}
+
 export type InteractiveKeyCapProps = {
   face: NormalizedKeyFace;
   minWidth: number;
@@ -15,6 +23,8 @@ export type InteractiveKeyCapProps = {
   onActivate: (face: NormalizedKeyFace) => void;
   /** For testing: notify on any pointer down. */
   onTestPointerDown?: (face: NormalizedKeyFace) => void;
+  /** Latched modifier (caps/shift/ctrl/alt/meta) — same visual as held. */
+  latched?: boolean;
 };
 
 /**
@@ -29,10 +39,12 @@ export function InteractiveKeyCap(
     currentLabel,
     onActivate,
     onTestPointerDown,
+    latched = false,
   }: InteractiveKeyCapProps,
 ) {
   const [pressed, setPressed] = useState(false);
-  const tc = keyTextColor(face.colorToken);
+  const down = pressed || latched;
+  const tc = keyTextColor(face.colorToken, down);
   const font = Math.max(10, face.fontSize);
 
   return (
@@ -41,14 +53,24 @@ export function InteractiveKeyCap(
       minWidth={minWidth}
       minHeight={minHeight}
       pixelSize={pixelSize}
-      pressedVisual={pressed}
-      onPointerDown={() => {
+      pressedVisual={down}
+      onPointerDown={(e) => {
+        if (!isTriggerLikePointer(e)) return;
         onTestPointerDown?.(face);
         setPressed(true);
       }}
-      onPointerUp={() => setPressed(false)}
-      onPointerOut={() => setPressed(false)}
-      onClick={() => onActivate(face)}
+      onPointerUp={(e) => {
+        if (!isTriggerLikePointer(e)) return;
+        setPressed(false);
+      }}
+      onPointerOut={(e) => {
+        if (!isTriggerLikePointer(e)) return;
+        setPressed(false);
+      }}
+      onClick={(e) => {
+        if (!isTriggerLikePointer(e)) return;
+        onActivate(face);
+      }}
     >
       <Container
         pixelSize={pixelSize}
