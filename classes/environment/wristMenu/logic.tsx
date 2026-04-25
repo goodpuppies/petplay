@@ -4,7 +4,7 @@ import * as THREE from "three/webgpu";
 import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
 import { DefaultXRController, XRSpace } from "@pmndrs/xr";
-import { PortaledControllerAimBeam } from "../controllerAimBeam.tsx";
+import { ConstantControllerAimBeam } from "../controllerAimBeam.tsx";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { WristMenuUi } from "./ui.tsx";
 import type { WristMenuButtonId, WristMenuStateSnapshot } from "./types.ts";
@@ -182,7 +182,7 @@ export function WristMenuPanel(
 export function WristMenuControllerHud({ actorId }: { actorId?: string | null }) {
   return (
     <>
-      <PortaledControllerAimBeam />
+      <ConstantControllerAimBeam />
       <DefaultXRController
         rayPointer={{
           minDistance: -1,

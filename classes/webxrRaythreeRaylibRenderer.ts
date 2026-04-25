@@ -523,7 +523,10 @@ export class WebXRRaythreeRaylibRenderer {
     scratch.length = 0;
     for (let i = 0; i < frame.instances.length; i++) {
       const inst = frame.instances[i]!;
-      if (this.materials.get(inst.materialId)?.transparent === true) {
+      if (
+        this.materials.get(inst.materialId)?.transparent === true &&
+        !inst.hudOverUi
+      ) {
         scratch.push(inst);
       }
     }
@@ -545,7 +548,10 @@ export class WebXRRaythreeRaylibRenderer {
     for (const instance of frame.instances) {
       const nativeMesh = this.geometries.get(instance.geometryId);
       const nativeMaterial = this.materials.get(instance.materialId);
-      if (!nativeMesh || !nativeMaterial || nativeMaterial.transparent) {
+      if (
+        !nativeMesh || !nativeMaterial || nativeMaterial.transparent ||
+        instance.hudOverUi
+      ) {
         continue;
       }
 
@@ -590,6 +596,7 @@ export class WebXRRaythreeRaylibRenderer {
         setUiDepthMaskEnabled(true);
       }
     }
+    this.drawHudOverUiInstances(frame);
     const tUi1 = performance.now();
     raylib.H.EndBlendMode();
 
@@ -1031,6 +1038,48 @@ export class WebXRRaythreeRaylibRenderer {
     }
 
     this.drawNativeMesh(nativeMesh, nativeMaterial, instance.worldMatrix);
+  }
+
+  /**
+   * World meshes marked `userData.raythreeHudOverUi` (e.g. controller aim beam) draw
+   * after the uikit pass so they are not covered by panel/text quads in the Raylib path.
+   */
+  private drawHudOverUiInstances(frame: RenderFrame): void {
+    const opaque: Array<RenderInstance | InstancedRenderInstance> = [];
+    const transparent: Array<RenderInstance | InstancedRenderInstance> = [];
+    for (const instance of frame.instances) {
+      if (!instance.hudOverUi) {
+        continue;
+      }
+      const m = this.materials.get(instance.materialId);
+      if (m == null) {
+        continue;
+      }
+      (m.transparent ? transparent : opaque).push(instance);
+    }
+    if (opaque.length === 0 && transparent.length === 0) {
+      return;
+    }
+    transparent.sort((a, b) => this.getInstanceViewDepth(b) - this.getInstanceViewDepth(a));
+    setUiDepthMaskEnabled(false);
+    setUiDepthTestEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    try {
+      for (const list of [opaque, transparent]) {
+        for (const instance of list) {
+          const nativeMesh = this.geometries.get(instance.geometryId);
+          const nativeMaterial = this.materials.get(instance.materialId);
+          if (nativeMesh == null || nativeMaterial == null) {
+            continue;
+          }
+          this.drawInstance(nativeMesh, nativeMaterial, instance);
+        }
+      }
+    } finally {
+      setUiBackfaceCullingEnabled(true);
+      setUiDepthTestEnabled(true);
+      setUiDepthMaskEnabled(true);
+    }
   }
 
   private getInstanceViewDepth(

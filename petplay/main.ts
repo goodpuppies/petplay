@@ -15,7 +15,7 @@ const state = actorState({
   inputstate: null as actionData | null,
 });
 
-const WEBXR_RENDER_HEIGHT = 10;
+const WEBXR_RENDER_HEIGHT = 50;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
 /** Raylib ghost only: `WebXRHost` skips WebGPU XR scene draws. Use `"both"` to compare to the live layer. */
 const WEBXR_OVERLAY_MODE = "raylib" as OverlayRenderMode;

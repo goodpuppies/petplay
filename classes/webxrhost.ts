@@ -18,7 +18,7 @@ import {
   StereoTextureReadbackRing,
   TextureReadbackRing,
 } from "./webgpu.ts";
-import { PortaledControllerAimBeam } from "./environment/controllerAimBeam.tsx";
+import { ConstantControllerAimBeam } from "./environment/controllerAimBeam.tsx";
 import { NativeControllerHud } from "./environment/nativeFrontend.tsx";
 import { WebXRScene } from "./environment/scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
@@ -528,7 +528,7 @@ export class WebXRHost {
             React.createElement(
               React.Fragment,
               null,
-              React.createElement(PortaledControllerAimBeam),
+              React.createElement(ConstantControllerAimBeam),
               React.createElement(DefaultXRController, {
                 model: false,
                 grabPointer: false,
