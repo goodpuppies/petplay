@@ -1,549 +1,46 @@
 import React from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber/webgpu";
-import { OrbitHandles } from "@react-three/handle";
-import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
-import { forwardHtmlEvents } from "@pmndrs/pointer-events";
-import { createScreenCameraStore, filterForOnePointerLeftClick } from "@pmndrs/handle";
-import { createR3FExtractionRoot, RaythreeExtractor } from "../submodules/raythree/src/lib.ts";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
-import { extractWebXRRaythreeUi } from "../classes/webxrRaythreeUi.ts";
-import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";
-
-// Log dependency versions
-console.log("[uiViewer] Dependency versions check:");
-console.log("[uiViewer] - THREE version:", THREE.REVISION);
-
-try {
-  console.log(
-    "[uiViewer] - filterForOnePointerLeftClick from @pmndrs/handle:",
-    typeof filterForOnePointerLeftClick,
-  );
-  console.log(
-    "[uiViewer] - createScreenCameraStore from @pmndrs/handle:",
-    typeof createScreenCameraStore,
-  );
-} catch (e) {
-  console.error("[uiViewer] - Error inspecting @pmndrs/handle exports:", e);
-}
+import { KeyboardPanel } from "../classes/environment/keyboard/keyboard.tsx";
+import {
+  OrbitHandlesView,
+  type RaylibR3FViewerSceneProps,
+  runRaylibR3FViewerApp,
+  SceneCameraAim,
+} from "./raylibR3FViewerApp.tsx";
 
 const DEFAULT_WIDTH = 1400;
 const DEFAULT_HEIGHT = 900;
 const DEFAULT_TITLE = "PetPlay UI Viewer";
-const UI_TARGET = new THREE.Vector3(0, 1.28, -1.45);
-
-function getDefaultRaylibPath(): string {
-  const url = new URL("../resources/raylib.dll", import.meta.url);
-  return Deno.build.os === "windows"
-    ? decodeURIComponent(url.pathname.replace(/^\/+/, ""))
-    : decodeURIComponent(url.pathname);
-}
-
-function getNumberArg(name: string, fallback: number): number {
-  const raw = Deno.args.find((arg) => arg.startsWith(`--${name}=`))?.split("=", 2)[1];
-  const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function getStringArg(name: string, fallback: string): string {
-  return Deno.args.find((arg) => arg.startsWith(`--${name}=`))?.split("=", 2)[1] ?? fallback;
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-type SyntheticEventInit = {
-  type: string;
-  pointerId?: number;
-  pointerType?: string;
-  button?: number;
-  buttons?: number;
-  clientX?: number;
-  clientY?: number;
-  movementX?: number;
-  movementY?: number;
-  deltaY?: number;
-  ctrlKey?: boolean;
-  shiftKey?: boolean;
-  altKey?: boolean;
-  metaKey?: boolean;
-};
-
-type Listener = (event: Event) => void;
-
-class SyntheticMouseEvent extends Event {
-  pointerId: number;
-  pointerType: string;
-  button: number;
-  buttons: number;
-  clientX: number;
-  clientY: number;
-  movementX: number;
-  movementY: number;
-  deltaY: number;
-  ctrlKey: boolean;
-  shiftKey: boolean;
-  altKey: boolean;
-  metaKey: boolean;
-  override currentTarget: EventTarget | null = null;
-  override target: EventTarget | null = null;
-
-  constructor(init: SyntheticEventInit) {
-    super(init.type, { bubbles: true, cancelable: true });
-    this.pointerId = init.pointerId ?? 1;
-    this.pointerType = init.pointerType ?? "mouse";
-    this.button = init.button ?? 0;
-    this.buttons = init.buttons ?? 0;
-    this.clientX = init.clientX ?? 0;
-    this.clientY = init.clientY ?? 0;
-    this.movementX = init.movementX ?? 0;
-    this.movementY = init.movementY ?? 0;
-    this.deltaY = init.deltaY ?? 0;
-    this.ctrlKey = init.ctrlKey ?? false;
-    this.shiftKey = init.shiftKey ?? false;
-    this.altKey = init.altKey ?? false;
-    this.metaKey = init.metaKey ?? false;
-  }
-
-  get x(): number {
-    return this.clientX;
-  }
-
-  get y(): number {
-    return this.clientY;
-  }
-
-  get pageX(): number {
-    return this.clientX;
-  }
-
-  get pageY(): number {
-    return this.clientY;
-  }
-
-  get screenX(): number {
-    return this.clientX;
-  }
-
-  get screenY(): number {
-    return this.clientY;
-  }
-
-  get offsetX(): number {
-    return this.clientX;
-  }
-
-  get offsetY(): number {
-    return this.clientY;
-  }
-
-  get layerX(): number {
-    return this.clientX;
-  }
-
-  get layerY(): number {
-    return this.clientY;
-  }
-}
-
-function installSyntheticDomEventPolyfills() {
-  const globalAny = globalThis as Record<string, unknown>;
-  globalAny.MouseEvent ??= SyntheticMouseEvent;
-  globalAny.PointerEvent ??= SyntheticMouseEvent;
-  globalAny.WheelEvent ??= SyntheticMouseEvent;
-}
-
-class SyntheticCanvas extends EventTarget {
-  readonly style = { width: "", height: "", touchAction: "none" };
-  readonly ownerDocument = {
-    addEventListener() {},
-    removeEventListener() {},
-  };
-  private readonly listeners = new Map<string, Set<Listener>>();
-  private readonly pointerCapture = new Set<number>();
-
-  constructor(
-    private readonly width: number,
-    private readonly height: number,
-  ) {
-    super();
-    this.style.width = `${width}px`;
-    this.style.height = `${height}px`;
-  }
-
-  override addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
-    if (listener == null) {
-      return;
-    }
-    const fn: Listener = typeof listener === "function"
-      ? listener
-      : listener.handleEvent.bind(listener);
-    let set = this.listeners.get(type);
-    if (set == null) {
-      set = new Set();
-      this.listeners.set(type, set);
-    }
-    const sizeBefore = set.size;
-    set.add(fn);
-    console.log(
-      `[uiViewer] addEventListener: ${type}, listeners before: ${sizeBefore}, after: ${set.size}, listener: ${
-        fn.name || "anonymous"
-      }`,
-    );
-  }
-
-  override removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
-    if (listener == null) {
-      return;
-    }
-    const set = this.listeners.get(type);
-    if (set == null) {
-      return;
-    }
-    for (const candidate of set) {
-      if (
-        candidate === listener ||
-        ("handleEvent" in listener && candidate === listener.handleEvent.bind(listener))
-      ) {
-        set.delete(candidate);
-      }
-    }
-  }
-
-  dispatchSyntheticEvent(init: SyntheticEventInit) {
-    const event = new SyntheticMouseEvent(init);
-    event.currentTarget = this;
-    event.target = this;
-    const listeners = this.listeners.get(init.type);
-    if (init.type === "pointerdown" || init.type === "pointerup") {
-      console.log(
-        `[uiViewer] dispatchSyntheticEvent: ${init.type}, listeners count: ${
-          listeners?.size ?? 0
-        }, button: ${init.button}, buttons: ${init.buttons}`,
-      );
-    }
-    if (listeners == null) {
-      return;
-    }
-    for (const listener of listeners) {
-      try {
-        listener(event);
-      } catch (e) {
-        console.error(`[uiViewer] Error in listener for ${init.type}:`, e);
-      }
-    }
-  }
-
-  getBoundingClientRect() {
-    return {
-      x: 0,
-      y: 0,
-      top: 0,
-      left: 0,
-      width: this.width,
-      height: this.height,
-      right: this.width,
-      bottom: this.height,
-    };
-  }
-
-  setPointerCapture(pointerId: number) {
-    this.pointerCapture.add(pointerId);
-  }
-
-  releasePointerCapture(pointerId: number) {
-    this.pointerCapture.delete(pointerId);
-  }
-
-  hasPointerCapture(pointerId: number) {
-    return this.pointerCapture.has(pointerId);
-  }
-}
-
-type RaylibPointerBridge = {
-  update(): void;
-};
-
-function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge {
-  let lastX = 0;
-  let lastY = 0;
-  let initialized = false;
-  let leftDown = false;
-  let rightDown = false;
-  let overSent = false;
-  const emitPointer = (
-    type: string,
-    button: number,
-    buttons: number,
-    clientX: number,
-    clientY: number,
-    movementX: number,
-    movementY: number,
-  ) => {
-    /* console.log(`[uiViewer] Pointer event: ${type}`, {
-      button,
-      buttons,
-      clientX,
-      clientY,
-      movementX,
-      movementY,
-    }); */
-    canvas.dispatchSyntheticEvent({
-      type,
-      pointerId: 1,
-      pointerType: "mouse",
-      button,
-      buttons,
-      clientX,
-      clientY,
-      movementX,
-      movementY,
-    });
-  };
-
-  return {
-    update() {
-      const mouse = raylib.H.GetMousePosition();
-      const clientX = mouse.x;
-      const clientY = mouse.y;
-      if (!initialized) {
-        initialized = true;
-        lastX = clientX;
-        lastY = clientY;
-      }
-      const movementX = clientX - lastX;
-      const movementY = clientY - lastY;
-      const buttons = (raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_LEFT) ? 1 : 0) |
-        (raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_RIGHT) ? 2 : 0);
-
-      if (!overSent) {
-        emitPointer("pointerover", -1, buttons, clientX, clientY, 0, 0);
-        overSent = true;
-      }
-
-      if (movementX !== 0 || movementY !== 0) {
-        emitPointer("pointermove", -1, buttons, clientX, clientY, movementX, movementY);
-      }
-
-      const nextLeftDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_LEFT);
-      if (nextLeftDown !== leftDown) {
-        emitPointer(nextLeftDown ? "pointerdown" : "pointerup", 0, buttons, clientX, clientY, 0, 0);
-        leftDown = nextLeftDown;
-      }
-
-      const nextRightDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_RIGHT);
-      if (nextRightDown !== rightDown) {
-        emitPointer(
-          nextRightDown ? "pointerdown" : "pointerup",
-          2,
-          buttons,
-          clientX,
-          clientY,
-          0,
-          0,
-        );
-        if (nextRightDown) {
-          canvas.dispatchSyntheticEvent({
-            type: "contextmenu",
-            button: 2,
-            buttons,
-            clientX,
-            clientY,
-          });
-        }
-        rightDown = nextRightDown;
-      }
-
-      const wheel = raylib.H.GetMouseWheelMove();
-      if (wheel !== 0) {
-        canvas.dispatchSyntheticEvent({
-          type: "wheel",
-          clientX,
-          clientY,
-          deltaY: -wheel * 100,
-          buttons,
-        });
-      }
-
-      lastX = clientX;
-      lastY = clientY;
-    },
-  };
-}
-
-function getSceneBackgroundColor(scene: THREE.Scene): [number, number, number, number] {
-  const background = scene.background;
-  if (background instanceof THREE.Color) {
-    return [
-      Math.round(background.r * 255),
-      Math.round(background.g * 255),
-      Math.round(background.b * 255),
-      255,
-    ];
-  }
-  return [0, 0, 0, 255];
-}
-
-function normalizeThreeCameraInstance(camera: THREE.Camera): void {
-  const typedCamera = camera as THREE.Camera & {
-    type?: string;
-    aspect?: number;
-  };
-  if (typedCamera.type === "PerspectiveCamera" && !(camera instanceof THREE.PerspectiveCamera)) {
-    Object.setPrototypeOf(camera, THREE.PerspectiveCamera.prototype);
-  }
-}
-
-async function main() {
-  console.log("[uiViewer] main() starting");
-  const width = getNumberArg("width", DEFAULT_WIDTH);
-  const height = getNumberArg("height", DEFAULT_HEIGHT);
-  const title = getStringArg("title", DEFAULT_TITLE);
-  console.log("[uiViewer] Window config:", { width, height, title });
-  installSyntheticDomEventPolyfills();
-
-  const extractor = new RaythreeExtractor();
-  console.log("[uiViewer] Creating controlsStore with createScreenCameraStore()");
-  const controlsStore = createScreenCameraStore();
-  console.log("[uiViewer] controlsStore created, initial state:", controlsStore.getState());
-  controlsStore.getState().setOriginPosition(UI_TARGET.x, UI_TARGET.y, UI_TARGET.z);
-  controlsStore.getState().setCameraPosition(0, 1.35, 0.65);
-  console.log("[uiViewer] controlsStore after setting positions:", controlsStore.getState());
-
-  console.log("[uiViewer] Creating R3F extraction root");
-  const r3f = await createR3FExtractionRoot({
-    width,
-    height,
-    camera: {
-      position: [0, 1.35, 0.65],
-      fov: 55,
-      near: 0.05,
-      far: 100,
-    },
-  });
-  console.log("[uiViewer] R3F root created");
-
-  const inputCanvas = new SyntheticCanvas(width, height);
-  console.log("[uiViewer] SyntheticCanvas created:", { width, height });
-  const pointerBridge = createRaylibPointerBridge(inputCanvas);
-  console.log("[uiViewer] RaylibPointerBridge created");
-
-  raylib.loadRaylib(getDefaultRaylibPath());
-  console.log("[uiViewer] Raylib loaded");
-  let renderer: WebXRRaythreeRaylibRenderer | null = null;
-  let windowInitialized = false;
-  let forwarded:
-    | {
-      destroy: () => void;
-      update: () => void;
-    }
-    | null = null;
-  try {
-    raylib.H.InitWindow(width, height, title);
-    windowInitialized = true;
-    console.log("[uiViewer] Raylib window initialized");
-    raylib.SetTargetFPS(60);
-    renderer = new WebXRRaythreeRaylibRenderer();
-    console.log("[uiViewer] WebXRRaythreeRaylibRenderer created");
-
-    console.log("[uiViewer] Rendering UiViewerScene with controlsStore");
-    r3f.render(<UiViewerScene controlsStore={controlsStore} />);
-
-    while (!raylib.WindowShouldClose()) {
-      const scene = r3f.getScene();
-      const camera = r3f.getCamera();
-      if (scene === null || camera === null) {
-        await wait(1);
-        continue;
-      }
-      normalizeThreeCameraInstance(camera);
-      if (camera instanceof THREE.PerspectiveCamera) {
-        const expectedAspect = width / height;
-        if (
-          !Number.isFinite(camera.aspect) || camera.aspect === 0 ||
-          Math.abs(camera.aspect - expectedAspect) > 1e-6
-        ) {
-          camera.aspect = expectedAspect;
-          camera.updateProjectionMatrix();
-        }
-      }
-      if (forwarded == null) {
-        console.log("[uiViewer] Setting up forwardHtmlEvents");
-        forwarded = forwardHtmlEvents(inputCanvas as never, () => camera, scene, {
-          batchEvents: false,
-        });
-        console.log("[uiViewer] forwardHtmlEvents setup complete");
-      }
-
-      scene.updateMatrixWorld(true);
-      camera.updateMatrixWorld(true);
-      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-      pointerBridge.update();
-      try {
-        forwarded.update();
-      } catch (e) {
-        console.error("[uiViewer] Error in forwarded.update():", e);
-      }
-      camera.updateMatrixWorld(true);
-      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-
-      const extraction = extractor.extract(scene, camera);
-      const ui = extractWebXRRaythreeUi(scene);
-
-      raylib.BeginDrawing();
-      try {
-        renderer.renderExtraction(
-          extraction,
-          getSceneBackgroundColor(scene),
-          {
-            projectionMatrix: new Float32Array(camera.projectionMatrix.elements),
-            viewMatrix: new Float32Array(camera.matrixWorldInverse.elements),
-          },
-          "desktop-ui-viewer",
-          ui,
-        );
-        raylib.DrawFPS(16, 16);
-      } finally {
-        raylib.EndDrawing();
-      }
-
-      await wait(1);
-    }
-  } catch (error) {
-    console.error("[uiViewer] Error in main loop:", error);
-    throw error;
-  } finally {
-    forwarded?.destroy();
-    r3f.dispose();
-    renderer?.dispose();
-    if (windowInitialized) {
-      raylib.CloseWindow();
-    }
-    raylib.unloadRaylib();
-  }
-}
+const UI_LOG = "[uiViewer]";
+/** Orbit / pan target — HUD + keyboard cluster */
+const UI_AIM_ORIGIN: [number, number, number] = [0, 1.28, -1.45];
+const UI_CAMERA: [number, number, number] = [0, 1.35, 0.65];
 
 function UiViewerScene(
-  { controlsStore }: { controlsStore: ReturnType<typeof createScreenCameraStore> },
+  { controlsStore, logPrefix }: RaylibR3FViewerSceneProps,
 ) {
-  console.log("[uiViewer] UiViewerScene rendering, controlsStore state:", controlsStore.getState());
+  console.log(
+    `${logPrefix} UiViewerScene rendering, controlsStore state:`,
+    controlsStore.getState(),
+  );
   React.useEffect(() => {
-    console.log("[uiViewer] UiViewerScene mounted");
+    console.log(`${logPrefix} UiViewerScene mounted`);
     const unsubscribe = controlsStore.subscribe((state) => {
-      console.log("[uiViewer] controlsStore state changed:", state);
+      console.log(`${logPrefix} controlsStore state changed:`, state);
     });
     return () => {
-      console.log("[uiViewer] UiViewerScene unmounting");
+      console.log(`${logPrefix} UiViewerScene unmounting`);
       unsubscribe();
     };
-  }, [controlsStore]);
+  }, [controlsStore, logPrefix]);
 
   return (
     <>
-      <SceneCameraAim controlsStore={controlsStore} />
+      <SceneCameraAim controlsStore={controlsStore} logPrefix={logPrefix} />
       <React.Suspense fallback={null}>
-        <OrbitHandlesWrapper controlsStore={controlsStore} />
+        <OrbitHandlesView controlsStore={controlsStore} logPrefix={logPrefix} />
       </React.Suspense>
       <color attach="background" args={[0x0b1018]} />
       <ambientLight intensity={1.25} />
@@ -559,52 +56,14 @@ function UiViewerScene(
             scale: [1.4, 1.4, 1.4],
           }}
         />
+        <KeyboardPanel
+          position={[0.55, 0.95, -1.38]}
+          rotation={[0, -0.32, 0]}
+          scale={[0.4, 0.4, 0.4]}
+        />
       </group>
     </>
   );
-}
-
-function OrbitHandlesWrapper(
-  { controlsStore }: { controlsStore: ReturnType<typeof createScreenCameraStore> },
-) {
-  console.log("[uiViewer] OrbitHandlesWrapper rendering");
-  try {
-    return (
-      <OrbitHandles
-        store={controlsStore}
-        damping={false}
-        rotate={false}
-        pan={{ filter: filterForOnePointerLeftClick }}
-      />
-    );
-  } catch (e) {
-    console.error("[uiViewer] Error rendering OrbitHandles:", e);
-    return null;
-  }
-}
-
-function SceneCameraAim(
-  { controlsStore }: { controlsStore: ReturnType<typeof createScreenCameraStore> },
-) {
-  const camera = useThree((state) => state.camera);
-
-  React.useLayoutEffect(() => {
-    console.log("[uiViewer] SceneCameraAim setting up camera");
-    console.log("[uiViewer] - Camera before setup:", {
-      position: camera.position.toArray(),
-      type: camera.type,
-    });
-    camera.position.set(0, 1.35, 0.65);
-    console.log("[uiViewer] - Camera after position set:", camera.position.toArray());
-    controlsStore.getState().setOriginPosition(UI_TARGET.x, UI_TARGET.y, UI_TARGET.z);
-    controlsStore.getState().setCameraPosition(0, 1.35, 0.65);
-    console.log("[uiViewer] - controlsStore after SceneCameraAim setup:", controlsStore.getState());
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld(true);
-    console.log("[uiViewer] SceneCameraAim setup complete");
-  }, [camera, controlsStore]);
-
-  return null;
 }
 
 function Backdrop() {
@@ -624,8 +83,9 @@ function Backdrop() {
 
 function UiStand() {
   const groupRef = React.useRef<THREE.Object3D | null>(null);
+  const clock = useThree((s) => s.clock);
 
-  useFrame((state) => {
+  useFrame(() => {
     if (groupRef.current === null) {
       return;
     }
@@ -633,8 +93,9 @@ function UiStand() {
       position: THREE.Vector3;
       rotation: THREE.Euler;
     };
-    group.position.y = 1.02 + Math.sin(state.clock.elapsedTime * 0.8) * 0.015;
-    group.rotation.y = Math.sin(state.clock.elapsedTime * 0.35) * 0.08;
+    const t = clock.getElapsedTime();
+    group.position.y = 1.02 + Math.sin(t * 0.8) * 0.015;
+    group.rotation.y = Math.sin(t * 0.35) * 0.08;
   });
 
   return (
@@ -652,7 +113,20 @@ function UiStand() {
 }
 
 if (import.meta.main) {
-  await main().catch((error) => {
+  await runRaylibR3FViewerApp({
+    defaultTitle: DEFAULT_TITLE,
+    logPrefix: UI_LOG,
+    defaultWidth: DEFAULT_WIDTH,
+    defaultHeight: DEFAULT_HEIGHT,
+    aim: {
+      aimOrigin: UI_AIM_ORIGIN,
+      cameraPosition: UI_CAMERA,
+      fov: 55,
+    },
+    renderExtractionId: "desktop-ui-viewer",
+    Scene: UiViewerScene,
+    logDependencyVersions: true,
+  }).catch((error) => {
     console.error(error);
     Deno.exit(1);
   });

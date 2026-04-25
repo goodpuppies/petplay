@@ -37,6 +37,7 @@
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
     "check": "deno run -A utils/type-check.ts",
     "ui": "deno run -A petplay/uiViewer.tsx ",
+    "keyb": "deno run -A petplay/keyboardViewer.tsx ",
     "build": {
       "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./cef/ --icon resources/petplay.ico petplay/petplay.ts",
       "dependencies": [
