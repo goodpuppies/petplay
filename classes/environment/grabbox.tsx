@@ -37,13 +37,20 @@ export type GrabBoxProps = {
  * to raylib, matching [DisplayInstanceFrame](displayInstance/ui.tsx) behavior.
  */
 export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
-  { width, height, depth, lineColor = DEFAULT_GRABBOX_LINE_COLOR, shellRayPickable = true, children },
+  {
+    width,
+    height,
+    depth,
+    lineColor = DEFAULT_GRABBOX_LINE_COLOR,
+    shellRayPickable = true,
+    children,
+  },
   ref,
 ) {
   const color = useMemo(() => new THREE.Color(lineColor), [lineColor]);
 
   const shellPointerMods = !shellRayPickable
-    ? ({ pointerEventsType: { deny: "ray" } } as Record<string, unknown>)
+    ? ({ pointerEventsType: { deny: ["ray", "screen-mouse"] } } as Record<string, unknown>)
     : {};
 
   return (

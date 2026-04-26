@@ -1,5 +1,9 @@
 import React from "react";
-import { KeyboardPanel, windowsSystemKeyboardSink } from "../classes/environment/keyboard/keyboard.tsx";
+import {
+  KeyboardPanel,
+  windowsSystemKeyboardSink,
+} from "../classes/environment/keyboard/keyboard.tsx";
+import type { KeyboardSink } from "../classes/environment/keyboard/types.ts";
 import {
   OrbitHandlesView,
   type RaylibR3FViewerSceneProps,
@@ -11,6 +15,7 @@ const DEFAULT_WIDTH = 1400;
 const DEFAULT_HEIGHT = 900;
 const DEFAULT_TITLE = "PetPlay Keyboard Viewer";
 const KEYB_LOG = "[keybViewer]";
+const ENABLE_WINDOWS_KEYS_ARG = "--send-windows-keys";
 /**
  * Orbit / pan focus — matches [KeyboardPanel](keyboard.tsx) default placement so pan/zoom stay centered on the keys.
  * Camera sits in front, slightly above the home row.
@@ -21,6 +26,15 @@ const KEYB_CAMERA: [number, number, number] = [0, 0.88, 0.42];
 function KeyboardViewerScene(
   { controlsStore, logPrefix }: RaylibR3FViewerSceneProps,
 ) {
+  const keyboardSink = React.useMemo<KeyboardSink>(() => {
+    if (Deno.args.includes(ENABLE_WINDOWS_KEYS_ARG)) {
+      return windowsSystemKeyboardSink;
+    }
+    return (ev) => {
+      console.log(`${logPrefix} keyboard event`, ev);
+    };
+  }, [logPrefix]);
+
   return (
     <>
       <SceneCameraAim controlsStore={controlsStore} logPrefix={logPrefix} />
@@ -39,7 +53,7 @@ function KeyboardViewerScene(
         <planeGeometry args={[4.5, 4.5]} />
         <meshStandardMaterial color="#0e1522" roughness={1} metalness={0} />
       </mesh>
-      <KeyboardPanel onKey={windowsSystemKeyboardSink} />
+      <KeyboardPanel onKey={keyboardSink} />
     </>
   );
 }

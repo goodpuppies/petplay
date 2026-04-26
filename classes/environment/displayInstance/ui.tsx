@@ -30,6 +30,11 @@ export type DisplayInstanceFrameProps = {
   depth?: number;
   /** Albedo / tint; same prop name as before. */
   lineColor?: number;
+  /**
+   * When `false` (default), the trigger **ray** ignores the wire hull; squeeze `grab` still collides — same
+   * pattern as the keyboard `GrabBox` so you can aim with the laser and squeeze to move the display.
+   */
+  shellRayPickable?: boolean;
 };
 
 /**
@@ -38,7 +43,12 @@ export type DisplayInstanceFrameProps = {
  */
 export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrameProps>(
   function DisplayInstanceFrame(
-    { height = DEFAULT_DISPLAY_HEIGHT, depth = DEFAULT_DISPLAY_DEPTH, lineColor = DEFAULT_LINE_COLOR },
+    {
+      height = DEFAULT_DISPLAY_HEIGHT,
+      depth = DEFAULT_DISPLAY_DEPTH,
+      lineColor = DEFAULT_LINE_COLOR,
+      shellRayPickable = false,
+    },
     ref,
   ) {
     const width = useMemo(
@@ -52,6 +62,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         height={height}
         depth={depth}
         lineColor={lineColor}
+        shellRayPickable={shellRayPickable}
       />
     );
   },

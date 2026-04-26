@@ -64,6 +64,10 @@ export type KeyCapChromeProps =
     pixelSize: number;
     children?: React.ReactNode;
     pressedVisual?: boolean;
+    /** uikit local Z (meters × pixelSize); negative = depress into board. */
+    transformTranslateZ?: number;
+    transformScaleX?: number;
+    transformScaleY?: number;
   }
   & Pick<
     EventHandlersProperties,
@@ -74,8 +78,18 @@ export type KeyCapChromeProps =
  * Visual-only key cap: colors and typography shell (no pointer handlers).
  */
 export function KeyCapChrome(
-  { face, minWidth, minHeight, pixelSize, children, pressedVisual = false, ...events }:
-    KeyCapChromeProps,
+  {
+    face,
+    minWidth,
+    minHeight,
+    pixelSize,
+    children,
+    pressedVisual = false,
+    transformTranslateZ,
+    transformScaleX,
+    transformScaleY,
+    ...events
+  }: KeyCapChromeProps,
 ) {
   const fill = tokenBackground(face.colorToken, pressedVisual);
   const borderC = tokenBorderColor(face.colorToken, pressedVisual);
@@ -86,21 +100,34 @@ export function KeyCapChrome(
       pixelSize={pixelSize}
       minWidth={minWidth}
       minHeight={minHeight}
-      backgroundColor={fill}
-      backgroundOpacity={1}
-      borderWidth={pressedVisual ? 2 : 1}
-      borderColor={borderC}
-      borderRadius={5}
-      padding={4}
       alignItems="center"
       justifyContent="center"
+      {...LAYOUT_CHROME}
       {...events}
     >
-      {children ?? (
-        <Text color={tc} fontSize={face.fontSize} pixelSize={pixelSize} textAlign="center">
-          {"·"}
-        </Text>
-      )}
+      <Container
+        pixelSize={pixelSize}
+        minWidth={minWidth}
+        minHeight={minHeight}
+        backgroundColor={fill}
+        backgroundOpacity={1}
+        borderWidth={pressedVisual ? 2 : 1}
+        borderColor={borderC}
+        borderRadius={5}
+        padding={4}
+        alignItems="center"
+        justifyContent="center"
+        pointerEvents="none"
+        transformTranslateZ={transformTranslateZ}
+        transformScaleX={transformScaleX}
+        transformScaleY={transformScaleY}
+      >
+        {children ?? (
+          <Text color={tc} fontSize={face.fontSize} pixelSize={pixelSize} textAlign="center">
+            {"·"}
+          </Text>
+        )}
+      </Container>
     </Container>
   );
 }
@@ -231,214 +258,228 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     },
     ref,
   ) {
-  const [raw, setRaw] = useState<KeyboardLayoutJson | null>(() => preloadedLayout);
-  const [mods, setMods] = useState<ModifierSnapshot>(initialMods);
+    const [raw, setRaw] = useState<KeyboardLayoutJson | null>(() => preloadedLayout);
+    const [mods, setMods] = useState<ModifierSnapshot>(initialMods);
 
-  const path = useMemo(() => layoutUrl, [layoutUrl]);
+    const path = useMemo(() => layoutUrl, [layoutUrl]);
 
-  useEffect(() => {
-    if (preloadedLayout) {
-      setRaw(preloadedLayout);
-      return;
-    }
-    let cancel = false;
-    void (async () => {
-      const text = await Deno.readTextFile(path);
-      if (cancel) {
+    useEffect(() => {
+      if (preloadedLayout) {
+        setRaw(preloadedLayout);
         return;
       }
-      setRaw(JSON.parse(stripJsonComments(text)) as KeyboardLayoutJson);
-    })();
-    return () => {
-      cancel = true;
-    };
-  }, [path, preloadedLayout]);
+      let cancel = false;
+      void (async () => {
+        const text = await Deno.readTextFile(path);
+        if (cancel) {
+          return;
+        }
+        setRaw(JSON.parse(stripJsonComments(text)) as KeyboardLayoutJson);
+      })();
+      return () => {
+        cancel = true;
+      };
+    }, [path, preloadedLayout]);
 
-  const sink: KeyboardSink = onKey ?? ((ev) => {
-    console.log("[keyboard]", ev);
-  });
+    const sink: KeyboardSink = onKey ?? ((ev) => {
+      console.log("[keyboard]", ev);
+    });
 
-  const emit = useCallback(
-    (ev: KeyboardLogicEvent) => {
-      sink(ev);
-    },
-    [sink],
-  );
+    const emit = useCallback(
+      (ev: KeyboardLogicEvent) => {
+        sink(ev);
+      },
+      [sink],
+    );
 
-  const handleKey = useCallback(
-    (face: NormalizedKeyFace) => {
-      if (face.useVirtualKeyCode) {
-        const s = face.displayMain;
+    const handleKey = useCallback(
+      (face: NormalizedKeyFace) => {
+        if (face.useVirtualKeyCode) {
+          const s = face.displayMain;
+          emit({
+            kind: "key",
+            scanCode: 0,
+            scanCodeHex: "00",
+            char: s.length === 1 ? s : undefined,
+            virtualKeyName: face.virtualName,
+          });
+          return;
+        }
+        const hi = face.scanCodeHex.toUpperCase();
+        const sc = scanCodeHexToNumber(hi);
+        if (face.toggle && hi === "3A") {
+          setMods((m) => {
+            const next = { ...m, caps: !m.caps };
+            emit({ kind: "modifier", modifier: "caps", active: next.caps });
+            return next;
+          });
+          return;
+        }
+        if (face.sticky) {
+          if (hi === "2A" || hi === "36") {
+            setMods((m) => {
+              const next = { ...m, shift: !m.shift };
+              emit({ kind: "modifier", modifier: "shift", active: next.shift });
+              return next;
+            });
+            return;
+          }
+          if (hi === "1D") {
+            setMods((m) => {
+              const next = { ...m, leftCtrl: !m.leftCtrl };
+              emit({ kind: "modifier", modifier: "leftCtrl", active: next.leftCtrl });
+              return next;
+            });
+            return;
+          }
+          if (hi === "E01D") {
+            setMods((m) => {
+              const next = { ...m, rightCtrl: !m.rightCtrl };
+              emit({ kind: "modifier", modifier: "rightCtrl", active: next.rightCtrl });
+              return next;
+            });
+            return;
+          }
+          if (hi === "38") {
+            setMods((m) => {
+              const next = { ...m, leftAlt: !m.leftAlt };
+              emit({ kind: "modifier", modifier: "leftAlt", active: next.leftAlt });
+              return next;
+            });
+            return;
+          }
+          if (hi === "E038") {
+            setMods((m) => {
+              const next = { ...m, rightAlt: !m.rightAlt };
+              emit({ kind: "modifier", modifier: "rightAlt", active: next.rightAlt });
+              return next;
+            });
+            return;
+          }
+          if (hi === "E05B") {
+            setMods((m) => {
+              const next = { ...m, leftMeta: !m.leftMeta };
+              emit({ kind: "modifier", modifier: "leftMeta", active: next.leftMeta });
+              return next;
+            });
+            return;
+          }
+          if (hi === "E05C") {
+            setMods((m) => {
+              const next = { ...m, rightMeta: !m.rightMeta };
+              emit({ kind: "modifier", modifier: "rightMeta", active: next.rightMeta });
+              return next;
+            });
+            return;
+          }
+        }
+        const { main } = usQwertyFromScan(
+          face.scanCodeHex,
+          { shift: mods.shift, caps: mods.caps },
+          face.respectCapsLock,
+        );
         emit({
           kind: "key",
-          scanCode: 0,
-          scanCodeHex: "00",
-          char: s.length === 1 ? s : undefined,
-          virtualKeyName: face.virtualName,
+          scanCode: sc,
+          scanCodeHex: hi,
+          char: main.length === 1 ? main : undefined,
         });
-        return;
-      }
-      const hi = face.scanCodeHex.toUpperCase();
-      const sc = scanCodeHexToNumber(hi);
-      if (face.toggle && hi === "3A") {
-        setMods((m) => {
-          const next = { ...m, caps: !m.caps };
-          emit({ kind: "modifier", modifier: "caps", active: next.caps });
-          return next;
-        });
-        return;
-      }
-      if (face.sticky) {
-        if (hi === "2A" || hi === "36") {
-          setMods((m) => {
-            const next = { ...m, shift: !m.shift };
-            emit({ kind: "modifier", modifier: "shift", active: next.shift });
-            return next;
-          });
-          return;
-        }
-        if (hi === "1D") {
-          setMods((m) => {
-            const next = { ...m, leftCtrl: !m.leftCtrl };
-            emit({ kind: "modifier", modifier: "leftCtrl", active: next.leftCtrl });
-            return next;
-          });
-          return;
-        }
-        if (hi === "E01D") {
-          setMods((m) => {
-            const next = { ...m, rightCtrl: !m.rightCtrl };
-            emit({ kind: "modifier", modifier: "rightCtrl", active: next.rightCtrl });
-            return next;
-          });
-          return;
-        }
-        if (hi === "38") {
-          setMods((m) => {
-            const next = { ...m, leftAlt: !m.leftAlt };
-            emit({ kind: "modifier", modifier: "leftAlt", active: next.leftAlt });
-            return next;
-          });
-          return;
-        }
-        if (hi === "E038") {
-          setMods((m) => {
-            const next = { ...m, rightAlt: !m.rightAlt };
-            emit({ kind: "modifier", modifier: "rightAlt", active: next.rightAlt });
-            return next;
-          });
-          return;
-        }
-        if (hi === "E05B") {
-          setMods((m) => {
-            const next = { ...m, leftMeta: !m.leftMeta };
-            emit({ kind: "modifier", modifier: "leftMeta", active: next.leftMeta });
-            return next;
-          });
-          return;
-        }
-        if (hi === "E05C") {
-          setMods((m) => {
-            const next = { ...m, rightMeta: !m.rightMeta };
-            emit({ kind: "modifier", modifier: "rightMeta", active: next.rightMeta });
-            return next;
-          });
-          return;
-        }
-      }
-      const { main } = usQwertyFromScan(
-        face.scanCodeHex,
-        { shift: mods.shift, caps: mods.caps },
-        face.respectCapsLock,
+      },
+      [emit, mods],
+    );
+
+    if (raw == null) {
+      return null;
+    }
+
+    const { keyWidth, keyPadding, keyGroupsPadding, mainRows, navRows, numpadRows, rowH } =
+      getMainGroupRows(
+        raw,
+        layoutFormat,
       );
-      emit({
-        kind: "key",
-        scanCode: sc,
-        scanCodeHex: hi,
-        char: main.length === 1 ? main : undefined,
+
+    const makeColumn = (rows: RowItem[][], columnId: string) => {
+      // Avoid flex `gap` in the column: same “white gap quads” issue as `gapColumn` on rows.
+      const colChildren: React.ReactNode[] = rows.flatMap((r, i) => {
+        const rowView = (
+          <KeyboardRowView
+            key={`${columnId}-row-${i}`}
+            faces={r}
+            keyWidth={keyWidth}
+            keyPadding={keyPadding}
+            keyRowHeight={rowH}
+            pixelSize={pixelSize}
+            renderKey={(face) => (
+              <InteractiveKeyCap
+                key={face.id}
+                face={face}
+                minWidth={keyWidth * face.widthMul}
+                minHeight={rowH * face.heightMul}
+                pixelSize={pixelSize}
+                currentLabel={resolveLabel(face, mods)}
+                latched={isModifierLatchedVisual(face, mods)}
+                onActivate={handleKey}
+              />
+            )}
+            renderSpacer={(sw, sh) => (
+              <Container
+                minWidth={keyWidth * sw}
+                minHeight={rowH * sh}
+                {...LAYOUT_CHROME}
+              />
+            )}
+          />
+        );
+        if (i === 0) {
+          return [rowView];
+        }
+        return [
+          <Container
+            key={`${columnId}-v-gap-${i}`}
+            pixelSize={pixelSize}
+            minHeight={keyPadding}
+            minWidth={1}
+            alignSelf="stretch"
+            {...LAYOUT_CHROME}
+          />,
+          rowView,
+        ];
       });
-    },
-    [emit, mods],
-  );
-
-  if (raw == null) {
-    return null;
-  }
-
-  const { keyWidth, keyPadding, keyGroupsPadding, mainRows, navRows, numpadRows, rowH } =
-    getMainGroupRows(
-      raw,
-      layoutFormat,
-    );
-
-  const makeColumn = (rows: RowItem[][], columnId: string) => {
-    // Avoid flex `gap` in the column: same “white gap quads” issue as `gapColumn` on rows.
-    const colChildren: React.ReactNode[] = rows.flatMap((r, i) => {
-      const rowView = (
-        <KeyboardRowView
-          key={`${columnId}-row-${i}`}
-          faces={r}
-          keyWidth={keyWidth}
+      return (
+        <KeyboardColumnShell
+          key={columnId}
+          pixelSize={pixelSize}
           keyPadding={keyPadding}
-          keyRowHeight={rowH}
-          pixelSize={pixelSize}
-          renderKey={(face) => (
-            <InteractiveKeyCap
-              key={face.id}
-              face={face}
-              minWidth={keyWidth * face.widthMul}
-              minHeight={rowH * face.heightMul}
-              pixelSize={pixelSize}
-              currentLabel={resolveLabel(face, mods)}
-              latched={isModifierLatchedVisual(face, mods)}
-              onActivate={handleKey}
-            />
-          )}
-          renderSpacer={(sw, sh) => (
-            <Container
-              minWidth={keyWidth * sw}
-              minHeight={rowH * sh}
-              {...LAYOUT_CHROME}
-            />
-          )}
-        />
+          keyGroupsPadding={0}
+          background={columnBackground}
+        >
+          {colChildren}
+        </KeyboardColumnShell>
       );
-      if (i === 0) {
-        return [rowView];
-      }
-      return [
-        <Container
-          key={`${columnId}-v-gap-${i}`}
-          pixelSize={pixelSize}
-          minHeight={keyPadding}
-          minWidth={1}
-          alignSelf="stretch"
-          {...LAYOUT_CHROME}
-        />,
-        rowView,
-      ];
-    });
-    return (
-      <KeyboardColumnShell
-        key={columnId}
-        pixelSize={pixelSize}
-        keyPadding={keyPadding}
-        keyGroupsPadding={0}
-        background={columnBackground}
-      >
-        {colChildren}
-      </KeyboardColumnShell>
-    );
-  };
+    };
 
-  const packH = 2 * (keyGroupsPadding + 2);
-  const colH = (rows: number) => rows * rowH + Math.max(0, rows - 1) * keyPadding + packH;
-  const columnBlockH = Math.max(
-    colH(mainRows.length),
-    colH(navRows.length),
-    colH(numpadRows.length),
-  );
-  if (layoutMode === "compact") {
+    const packH = 2 * (keyGroupsPadding + 2);
+    const colH = (rows: number) => rows * rowH + Math.max(0, rows - 1) * keyPadding + packH;
+    const columnBlockH = Math.max(
+      colH(mainRows.length),
+      colH(navRows.length),
+      colH(numpadRows.length),
+    );
+    if (layoutMode === "compact") {
+      return (
+        <Container
+          ref={ref}
+          pixelSize={pixelSize}
+          flexDirection="row"
+          alignItems="flex-start"
+          gap={0}
+          {...LAYOUT_CHROME}
+        >
+          {makeColumn(mainRows, "main")}
+        </Container>
+      );
+    }
+
     return (
       <Container
         ref={ref}
@@ -449,36 +490,22 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
         {...LAYOUT_CHROME}
       >
         {makeColumn(mainRows, "main")}
+        <Container
+          pixelSize={pixelSize}
+          minWidth={keyGroupsPadding}
+          minHeight={columnBlockH}
+          {...LAYOUT_CHROME}
+        />
+        {makeColumn(navRows, "nav")}
+        <Container
+          pixelSize={pixelSize}
+          minWidth={keyGroupsPadding}
+          minHeight={columnBlockH}
+          {...LAYOUT_CHROME}
+        />
+        {makeColumn(numpadRows, "numpad")}
       </Container>
     );
-  }
-
-  return (
-    <Container
-      ref={ref}
-      pixelSize={pixelSize}
-      flexDirection="row"
-      alignItems="flex-start"
-      gap={0}
-      {...LAYOUT_CHROME}
-    >
-      {makeColumn(mainRows, "main")}
-      <Container
-        pixelSize={pixelSize}
-        minWidth={keyGroupsPadding}
-        minHeight={columnBlockH}
-        {...LAYOUT_CHROME}
-      />
-      {makeColumn(navRows, "nav")}
-      <Container
-        pixelSize={pixelSize}
-        minWidth={keyGroupsPadding}
-        minHeight={columnBlockH}
-        {...LAYOUT_CHROME}
-      />
-      {makeColumn(numpadRows, "numpad")}
-    </Container>
-  );
   },
 );
 

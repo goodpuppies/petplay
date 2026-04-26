@@ -3,7 +3,8 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { wait } from "../classes/utils.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
-import { WebXRHost } from "../classes/webxrhost.ts";
+import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
+import { getCrashOnDroppedFrameMode, WebXRHost } from "../classes/webxrhost.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
@@ -12,6 +13,14 @@ import {
   type WebXRRaythreeRenderPayload,
   WebXRRaythreeSceneBridge,
 } from "../classes/webxrRaythreeScene.ts";
+import {
+  CONTROLLER_SAB_BYTE_LENGTH,
+  hashControllerPoseMatrices,
+  type ControllerExternalDataTuple,
+  initControllerStateSab,
+  readControllerStateSab,
+  writeControllerStateSab,
+} from "../classes/controllerStateSab.ts";
 import {
   setShadowControllerPose,
   setVRCOriginFromHmdMatrix34,
@@ -41,16 +50,11 @@ type StartWebXRPayload = {
   hmdDisplayFrequencyHz?: number | null;
   /** `GETCOMPOSITORPTR` from the OpenVR actor; optional for Aardvark-style overlay display pacing. */
   vrCompositorPointer?: bigint | null;
+  /** `GETINPUTPTR` from the OpenVR actor — OpenVR input is sampled in the **webxr** rAF (see `WebXRHost`) so poses match display timing; optional SAB still mirrors to `controllers` for laser/GC. */
+  vrInputPointer?: number | bigint | null;
 };
 
-type ControllerDataPayload = [
-  ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>,
-  ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>,
-  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
-  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
-  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
-  ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>,
-];
+type ControllerDataPayload = ControllerExternalDataTuple;
 
 type OverlayConfig = {
   overlayPointer: number | bigint;
@@ -77,6 +81,15 @@ const state = actorState({
   controllerLoop: null as Promise<void> | null,
   controllerRunning: false,
   controllerActor: null as string | null,
+  /** Set when SAB attach succeeds before `WebXRHost.start`; frame ingest reads this. */
+  controllerSharedStateSab: null as SharedArrayBuffer | null,
+  /**
+   * Last `writeSeq` from `readControllerStateSab` (`-1` = none yet). Only advances when
+   * the SAB **writer** starves; the writer is ~1kHz so this rarely matters vs pose dupes.
+   */
+  lastControllerSabWriteSeq: -1,
+  /** FNV hash of L/R 3×4 at previous XR rAF (for `controller-stale` pose-dup). */
+  lastRafControllerPoseHash: null as number | null,
   overlayRunning: false,
   lastUploadedHostFrameCount: -1,
   uploadedFrames: 0,
@@ -207,12 +220,160 @@ new PostMan(
             });
           }
           const overlayMode = payload?.overlayRenderMode ?? "raylib";
+          const crashOnDropMode = getCrashOnDroppedFrameMode();
+          if (crashOnDropMode.controllerSabStale) {
+            LogChannel.log(
+              "webxrv2",
+              "[webxr] crash-on-dropped-frame: controller-stale (same pose hash 2× rAF " +
+                "with OpenVR |v|/|ω| above floor — or writeSeq stuck; not “writer slow” by itself)",
+            );
+          }
+
+          let onBeforeExternalControllerApply: (() => void) | undefined;
+          state.controllerSharedStateSab = null;
+          const vrInputPaced = payload?.vrInputPointer != null;
+
+          const runControllerStaleChecks = (data: ControllerDataPayload, writeSeq: number) => {
+            const host = state.host;
+            if (!host) return;
+            const fc = host.getStatus().frameCount;
+            const h = hashControllerPoseMatrices(data);
+            const maxMotion = (() => {
+              const v = (p: ControllerDataPayload[0]) => {
+                const l = p.pose.vVelocity.v;
+                const a = p.pose.vAngularVelocity.v;
+                return Math.max(
+                  Math.hypot(l[0]!, l[1]!, l[2]!),
+                  Math.hypot(a[0]!, a[1]!, a[2]!),
+                );
+              };
+              return Math.max(v(data[0]!), v(data[1]!));
+            })();
+            const STALE_MOTION_FLOOR = 0.02;
+            if (crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
+              const samePoseTwoRafs =
+                state.lastRafControllerPoseHash != null && h === state.lastRafControllerPoseHash;
+              const writerStarved = writeSeq > 0 &&
+                state.lastControllerSabWriteSeq >= 0 &&
+                writeSeq === state.lastControllerSabWriteSeq;
+              if (writerStarved) {
+                throw new Error(
+                  `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (no new sample between XR rAFs)`,
+                );
+              }
+              if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
+                throw new Error(
+                  `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
+                    `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
+                    `tracking did not advance the 3×4 between display frames`,
+                );
+              }
+            }
+            state.lastRafControllerPoseHash = h;
+            state.lastControllerSabWriteSeq = writeSeq;
+          };
+
+          if (state.controllerActor) {
+            const sab = new SharedArrayBuffer(CONTROLLER_SAB_BYTE_LENGTH);
+            initControllerStateSab(sab);
+            try {
+              if (vrInputPaced) {
+                await PostMan.PostMessage({
+                  target: state.controllerActor,
+                  type: "SETCONTROLLERSHAREDSTATE",
+                  payload: { sab, webxrPacedWriter: true },
+                }, true);
+              } else {
+                await PostMan.PostMessage({
+                  target: state.controllerActor,
+                  type: "SETCONTROLLERSHAREDSTATE",
+                  payload: sab,
+                }, true);
+              }
+              state.controllerSharedStateSab = sab;
+              state.lastControllerSabWriteSeq = -1;
+              state.lastRafControllerPoseHash = null;
+              if (!vrInputPaced) {
+                /**
+                 * OpenVR samples run in the `controllers` actor (see `scheduleControllerSabFrame`),
+                 * then webxr *reads* the SAB in this callback (legacy path).
+                 */
+                onBeforeExternalControllerApply = function webxrIngestControllerSabAndCheckStale() {
+                  const buf = state.controllerSharedStateSab;
+                  const host = state.host;
+                  if (!buf || !host) return;
+                  const read = readControllerStateSab(buf);
+                  if (!read) return;
+                  const { data, writeSeq, motion } = read;
+                  const fc = host.getStatus().frameCount;
+                  const h = hashControllerPoseMatrices(data);
+                  const maxMotion = Math.max(
+                    motion.leftLin,
+                    motion.leftAng,
+                    motion.rightLin,
+                    motion.rightAng,
+                  );
+                  const STALE_MOTION_FLOOR = 0.02;
+                  if (crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
+                    const samePoseTwoRafs =
+                      state.lastRafControllerPoseHash != null && h === state.lastRafControllerPoseHash;
+                    const writerStarved = writeSeq > 0 &&
+                      state.lastControllerSabWriteSeq >= 0 &&
+                      writeSeq === state.lastControllerSabWriteSeq;
+                    if (writerStarved) {
+                      throw new Error(
+                        `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
+                          `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
+                      );
+                    }
+                    if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
+                      throw new Error(
+                        `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
+                          `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
+                          `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
+                      );
+                    }
+                  }
+                  state.lastRafControllerPoseHash = h;
+                  state.lastControllerSabWriteSeq = writeSeq;
+                  host.setControllerData(data);
+                  publishControllerSnapshot(data);
+                };
+              }
+            } catch (error) {
+              LogChannel.log(
+                "webxrv2",
+                `[webxr] controller SAB not available, will use postMessage polling: ${error}`,
+              );
+            }
+          }
+
+          const onInProcessControllerFrame: ((d: ControllerDataPayload) => void) | undefined = vrInputPaced
+            ? (d) => {
+              const buf = state.controllerSharedStateSab;
+              if (buf) {
+                writeControllerStateSab(buf, d);
+                const read = readControllerStateSab(buf);
+                if (read) {
+                  if (crashOnDropMode.controllerSabStale) {
+                    runControllerStaleChecks(d, read.writeSeq);
+                  } else {
+                    state.lastRafControllerPoseHash = hashControllerPoseMatrices(d);
+                    state.lastControllerSabWriteSeq = read.writeSeq;
+                  }
+                }
+              }
+              publishControllerSnapshot(d);
+            }
+            : undefined;
+
           await state.host!.start({
             width: payload?.width,
             height: payload?.height,
             title: payload?.title,
             debugWindow: payload?.debugWindow,
             vrSystemPointer: payload?.vrSystemPointer,
+            vrInputPointer: payload?.vrInputPointer ?? null,
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayInstanceActor: payload?.displayInstanceActor,
@@ -220,6 +381,8 @@ new PostMan(
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
             nominalHmdDisplayHz: payload?.hmdDisplayFrequencyHz ?? null,
+            onBeforeExternalControllerApply: vrInputPaced ? undefined : onBeforeExternalControllerApply,
+            onInProcessControllerFrame: vrInputPaced ? onInProcessControllerFrame : undefined,
           });
         })().catch((error) => {
           LogChannel.log("webxrv2", `[webxr] startup failed: ${error}`);
@@ -242,6 +405,10 @@ new PostMan(
         inspected: false,
         lastInspection: null,
         error: null,
+        lastLayerInfo: null,
+        xrRafMaxIntervalMs: 0,
+        xrRafSlowFrameCount: 0,
+        vsyncDisplayFramesSkipped: 0,
       };
       return {
         ...hostStatus,
@@ -274,6 +441,8 @@ new PostMan(
         await state.host.stop();
         state.startup = null;
       }
+      state.lastControllerSabWriteSeq = -1;
+      state.lastRafControllerPoseHash = null;
       state.webGpuOverlay?.cleanup();
       state.webGpuOverlay = null;
       state.webGpuOverlayGl?.cleanup();
@@ -399,29 +568,61 @@ function publishControllerSnapshot(data: ControllerDataPayload | null) {
 }
 
 async function pumpControllerFrames() {
-  while (state.controllerRunning) {
-    if (!state.host || !state.controllerActor) {
-      await wait(10);
-      continue;
-    }
+  await state.startup;
 
+  const detachControllerSab = async () => {
+    const id = state.controllerActor;
+    if (!id) return;
+    state.controllerSharedStateSab = null;
     try {
-      const controllerData = await PostMan.PostMessage({
-        target: state.controllerActor,
-        type: "GETCONTROLLERDATA",
+      await PostMan.PostMessage({
+        target: id,
+        type: "SETCONTROLLERSHAREDSTATE",
         payload: null,
-      }, true) as ControllerDataPayload;
-      state.host.setControllerData(controllerData);
-      publishControllerSnapshot(controllerData);
-    } catch (error) {
-      state.host.setControllerData(null);
-      publishControllerSnapshot(null);
-      LogChannel.log("webxrv2", `[webxr] controller poll failed: ${error}`);
-      await wait(50);
-      continue;
+      }, true);
+    } catch {
+      // Controller may already be gone.
+    }
+  };
+
+  const useSabIngest = state.controllerSharedStateSab != null;
+
+  try {
+    if (useSabIngest) {
+      while (state.controllerRunning) {
+        await wait(500);
+      }
+      return;
     }
 
-    await wait(8);
+    while (state.controllerRunning) {
+      if (!state.host || !state.controllerActor) {
+        await wait(10);
+        continue;
+      }
+
+      try {
+        const controllerData = await PostMan.PostMessage({
+          target: state.controllerActor,
+          type: "GETCONTROLLERDATA",
+          payload: null,
+        }, true) as ControllerDataPayload;
+        state.host.setControllerData(controllerData);
+        publishControllerSnapshot(controllerData);
+      } catch (error) {
+        state.host.setControllerData(null);
+        publishControllerSnapshot(null);
+        LogChannel.log("webxrv2", `[webxr] controller poll failed: ${error}`);
+        await wait(50);
+        continue;
+      }
+
+      await wait(8);
+    }
+  } finally {
+    if (useSabIngest) {
+      await detachControllerSab();
+    }
   }
 }
 
@@ -650,6 +851,7 @@ async function uploadRaylibShadowFrame() {
 }
 
 async function pumpOverlayFrames() {
+  const dropCrash = getCrashOnDroppedFrameMode();
   while (state.overlayRunning) {
     if (!state.host || !hasAnyOverlayMode()) {
       await wait(10);
@@ -657,6 +859,19 @@ async function pumpOverlayFrames() {
     }
 
     const hostStatus = state.host.getStatus();
+    if (
+      dropCrash.overlay &&
+      hostStatus.frameCount > WEBXR_CRASH_ON_DROP_WARMUP_FRAMES &&
+      state.lastUploadedHostFrameCount >= 0
+    ) {
+      if (hostStatus.frameCount > state.lastUploadedHostFrameCount + 1) {
+        throw new Error(
+          `[webxr] overlay path missed host frame(s): lastUploadAtHostFrame=${
+            state.lastUploadedHostFrameCount
+          } now=${hostStatus.frameCount} (one host tick advanced without a matching overlay run)`,
+        );
+      }
+    }
     if (hostStatus.frameCount <= state.lastUploadedHostFrameCount) {
       await wait(1);
       continue;

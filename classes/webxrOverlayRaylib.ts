@@ -23,7 +23,7 @@ function getRaylibNativeEyeSize(): number {
   if (Number.isFinite(n) && n >= 64 && n <= 4096) {
     return n;
   }
-  return 2560;
+  return 3560;
 }
 
 /** No MSAA: offscreen compositor + hidden 1×1 context; `RenderTexture2D` paths don't use the window sample buffer anyway. */

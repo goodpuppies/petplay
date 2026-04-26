@@ -1,3 +1,4 @@
+import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
 import React, { useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
@@ -74,8 +75,9 @@ export function DisplayInstance(
       id: "petplay-display-openvr",
       enabled: displayInstanceActor != null,
       phase: "finish",
-      fps: 60,
-      drop: true,
+      // No `fps` / `drop`: a 60Hz cap (and `drop: true` under load) only re-evaluated this pose
+      // 60×/s while XR sim can run 75–200+ Hz, which beats with the HMD/overlay and looks like
+      // micro judder. Matrix equality below still limits cross-actor traffic when the pose is flat.
     }),
     [displayInstanceActor],
   );
@@ -134,7 +136,13 @@ export function DisplayInstance(
       rotation={rotation}
       userData={{ displayInstance: true, aspect: "16:9", displayInstanceActor: displayInstanceActor ?? null }}
     >
-      <Handle handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>} multitouch scale={{ uniform: true }}>
+      <Handle
+        handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
+        multitouch
+        scale={{ uniform: true }}
+        // Same as KeyboardPanel: no translate from trigger; squeeze grab-ray only.
+        filter={(e: PenPointerEvent) => e.pointerType !== "ray"}
+      >
         <DisplayInstanceFrame ref={handleRef} {...frameProps} />
       </Handle>
     </group>

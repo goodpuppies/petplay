@@ -1,16 +1,45 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
+import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { KeyCapChrome } from "./keyboardUi.tsx";
 import type { NormalizedKeyFace } from "./types.ts";
 import { keyTextColor } from "./theme.ts";
-import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
+
+const requestAnimFrame: (c: (t: number) => void) => number = (c) =>
+  (globalThis as unknown as { requestAnimationFrame: (c: (t: number) => void) => number })
+    .requestAnimationFrame(c);
+const cancelAnimFrame: (h: number) => void = (h) =>
+  (globalThis as unknown as { cancelAnimationFrame: (h: number) => void }).cancelAnimationFrame(h);
+
+/** Stronger shrink on press (uikit `transformScale`). */
+const KEY_CLICK_SCALE = 0.78;
+/** uikit `transformTranslateZ` raw units (scaled by pixelSize in layout). */
+const KEY_DEPRESS_Z = -32;
+/**
+ * uikit applies transform props as an instant matrix change. We run a `requestAnimationFrame` loop to
+ * ease `depress` from 1 toward 0 over this many ms after pointer up or out. New presses cancel this
+ * (release does not have to finish). Increase for a slower return to the rest pose.
+ */
+const KEY_RELEASE_EASE_MS = 200;
+
+function easeOutCubic(t: number): number {
+  const u = 1 - Math.max(0, Math.min(1, t));
+  return 1 - u * u * u;
+}
 
 /**
- * XR controller squeeze drives a sphere “grab” pointer (`pointerType === "grab"`).
- * Key caps should only react to trigger-ray / mouse / touch so moving the panel doesn’t type.
+ * XR controller squeeze drives a grab pointer (`pointerType === "grab"`).
+ * Key caps should only react to trigger-ray / mouse / touch so moving the panel does not type.
  */
 function isTriggerLikePointer(event: { pointerType?: string }): boolean {
   return event.pointerType !== "grab";
+}
+
+function isPrimaryActivation(event: { button?: number; pointerType?: string }): boolean {
+  if (!isTriggerLikePointer(event)) {
+    return false;
+  }
+  return event.pointerType?.includes("mouse") ? event.button === 0 : true;
 }
 
 export type InteractiveKeyCapProps = {
@@ -42,10 +71,60 @@ export function InteractiveKeyCap(
     latched = false,
   }: InteractiveKeyCapProps,
 ) {
-  const [pressed, setPressed] = useState(false);
-  const down = pressed || latched;
-  const tc = keyTextColor(face.colorToken, down);
+  const [depress, setDepress] = useState(0);
+  const [hovered, setHovered] = useState(false);
+  const releaseRafRef = useRef<number | null>(null);
+  const depressRef = useRef(0);
+  depressRef.current = depress;
+
+  /** Any depress in (0,1] uses the “lit” / pressed look so easing does not step through hover in mid-travel. */
+  const litSurface = hovered || latched || depress > 0;
+  const tc = keyTextColor(face.colorToken, litSurface);
   const font = Math.max(10, face.fontSize);
+
+  const cancelReleaseRaf = () => {
+    if (releaseRafRef.current != null) {
+      cancelAnimFrame(releaseRafRef.current);
+      releaseRafRef.current = null;
+    }
+  };
+
+  const startEaseToRest = (from: number) => {
+    const start = globalThis.performance.now();
+    const t0 = from;
+    const step = (now: number) => {
+      const u = (now - start) / KEY_RELEASE_EASE_MS;
+      if (u >= 1) {
+        depressRef.current = 0;
+        setDepress(0);
+        releaseRafRef.current = null;
+        return;
+      }
+      const e = 1 - easeOutCubic(u);
+      setDepress(t0 * e);
+      releaseRafRef.current = requestAnimFrame(step);
+    };
+    releaseRafRef.current = requestAnimFrame(step);
+  };
+
+  const beginRelease = () => {
+    cancelReleaseRaf();
+    const t0 = depressRef.current;
+    if (t0 <= 0) {
+      return;
+    }
+    startEaseToRest(t0);
+  };
+
+  useEffect(
+    () => () => {
+      cancelReleaseRaf();
+    },
+    [],
+  );
+
+  const scaleP = 1 + (KEY_CLICK_SCALE - 1) * depress;
+  const zP = KEY_DEPRESS_Z * depress;
 
   return (
     <KeyCapChrome
@@ -53,23 +132,31 @@ export function InteractiveKeyCap(
       minWidth={minWidth}
       minHeight={minHeight}
       pixelSize={pixelSize}
-      pressedVisual={down}
-      onPointerDown={(e) => {
+      pressedVisual={litSurface}
+      transformScaleX={depress > 0 ? scaleP : undefined}
+      transformScaleY={depress > 0 ? scaleP : undefined}
+      transformTranslateZ={depress > 0 ? zP : undefined}
+      onPointerOver={(e) => {
         if (!isTriggerLikePointer(e)) return;
+        setHovered(true);
+      }}
+      onPointerDown={(e) => {
+        if (!isPrimaryActivation(e)) return;
+        // Cancel release rAF; new presses are not gated on release finishing.
+        cancelReleaseRaf();
         onTestPointerDown?.(face);
-        setPressed(true);
+        onActivate(face);
+        depressRef.current = 1;
+        setDepress(1);
       }}
       onPointerUp={(e) => {
         if (!isTriggerLikePointer(e)) return;
-        setPressed(false);
+        beginRelease();
       }}
       onPointerOut={(e) => {
         if (!isTriggerLikePointer(e)) return;
-        setPressed(false);
-      }}
-      onClick={(e) => {
-        if (!isTriggerLikePointer(e)) return;
-        onActivate(face);
+        setHovered(false);
+        beginRelease();
       }}
     >
       <Container

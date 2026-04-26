@@ -4,7 +4,11 @@ import { useThree } from "@react-three/fiber/webgpu";
 import { OrbitHandles } from "@react-three/handle";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { forwardHtmlEvents } from "@pmndrs/pointer-events";
-import { createScreenCameraStore, filterForOnePointerLeftClick } from "@pmndrs/handle";
+import {
+  createScreenCameraStore,
+  filterForOnePointerLeftClick,
+  filterForOnePointerRightClickOrTwoPointer,
+} from "@pmndrs/handle";
 import { createR3FExtractionRoot, RaythreeExtractor } from "../submodules/raythree/src/lib.ts";
 import { extractWebXRRaythreeUi } from "../classes/webxrRaythreeUi.ts";
 import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";
@@ -176,9 +180,9 @@ class SyntheticMouseEvent extends Event {
 
 function installSyntheticDomEventPolyfills() {
   const globalAny = globalThis as Record<string, unknown>;
-  globalAny.MouseEvent ??= SyntheticMouseEvent;
-  globalAny.PointerEvent ??= SyntheticMouseEvent;
-  globalAny.WheelEvent ??= SyntheticMouseEvent;
+  globalAny.MouseEvent = SyntheticMouseEvent;
+  globalAny.PointerEvent = SyntheticMouseEvent;
+  globalAny.WheelEvent = SyntheticMouseEvent;
 }
 
 class SyntheticCanvas extends EventTarget {
@@ -454,7 +458,7 @@ export function OrbitHandlesView(
       <OrbitHandles
         store={controlsStore}
         damping={false}
-        rotate={false}
+        rotate={{ filter: filterForOnePointerRightClickOrTwoPointer }}
         pan={{ filter: filterForOnePointerLeftClick }}
       />
     );

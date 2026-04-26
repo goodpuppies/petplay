@@ -7,6 +7,7 @@
  *   `frameDuration - secondsSinceLastVsync + secondsFromVsyncToPhotons`.
  */
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 
 const MAX_VSYNC_POLLS = 2_000_000;
 
@@ -79,11 +80,17 @@ export type OpenVrHmdEmulationPose = {
   quaternion: [number, number, number, number];
 };
 
+/** `vsync` — wait for a new display index (default, ~HMD refresh). `fast` — one sample per call, no spin. */
+export type OpenVrOverlayPaceMode = "vsync" | "fast";
+
 export class OpenVrOverlayFramePacer {
   private readonly vr: OpenVR.IVRSystem;
   private readonly compositor: OpenVR.IVRCompositor | null;
+  private readonly crashOnVsyncIndexGap: boolean;
+  private readonly paceMode: OpenVrOverlayPaceMode;
   private lastVsyncFrameIndex: bigint = 0n;
   private framesSkipped = 0;
+  private paceToDisplayCallCount = 0;
   private lastPredictedSeconds = 0;
   private lastHmd: OpenVrHmdEmulationPose | null = null;
   private readonly poseArrayBuffer: ArrayBuffer;
@@ -91,19 +98,30 @@ export class OpenVrOverlayFramePacer {
   private displayHzCache: number | null = null;
   private secondsVsyncToPhotonsCache: number | null = null;
 
-  constructor(vr: OpenVR.IVRSystem, compositor: OpenVR.IVRCompositor | null) {
+  constructor(
+    vr: OpenVR.IVRSystem,
+    compositor: OpenVR.IVRCompositor | null,
+    crashOnVsyncIndexGap = false,
+    paceMode: OpenVrOverlayPaceMode = "vsync",
+  ) {
     this.vr = vr;
     this.compositor = compositor;
+    this.crashOnVsyncIndexGap = crashOnVsyncIndexGap;
+    this.paceMode = paceMode;
     const n = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
     this.poseArrayBuffer = new ArrayBuffer(n);
     this.posePtr = Deno.UnsafePointer.of(this.poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
   }
 
   /**
-   * Block until a new display frame, then fill predicted HMD tracking for that frame
-   * (Aardvark `updateOpenVrPoses`).
+   * Aardvark `CVRManager::updateOpenVrPoses` (overlay, no `WaitGetPoses`):
+   * block for a new vsync index, then `GetDeviceToAbsoluteTrackingPose` for predicted HMD.
+   * If `!CanRenderScene` or `GetTimeSinceLastVsync` fails, returns without updating
+   * **HMD** cache — do **not** conflate with `IVRInput` (`doInputWork` in Aardvark still
+   * runs every `runFrame` after this; see `webxrhost` tick order).
    */
   paceToDisplayAndRefreshPoses(): void {
+    this.paceToDisplayCallCount++;
     if (this.compositor != null && !this.compositor.CanRenderScene()) {
       return;
     }
@@ -113,25 +131,47 @@ export class OpenVrOverlayFramePacer {
     const pSec = Deno.UnsafePointer.of(floatBuf) as Deno.PointerValue<number>;
     const pFrame = Deno.UnsafePointer.of(frameBuf) as Deno.PointerValue<bigint>;
 
-    const last = this.lastVsyncFrameIndex;
-    let spins = 0;
-    let newIndex = last;
-    while (newIndex === last) {
+    const useVsyncSpin = this.paceMode === "vsync";
+    if (useVsyncSpin) {
+      const last = this.lastVsyncFrameIndex;
+      let spins = 0;
+      let newIndex = last;
+      while (newIndex === last) {
+        if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
+          return;
+        }
+        newIndex = frameBuf[0];
+        if (++spins > MAX_VSYNC_POLLS) {
+          return;
+        }
+      }
+
+      if (last + 1n < newIndex) {
+        this.framesSkipped++;
+        if (
+          this.crashOnVsyncIndexGap && last !== 0n &&
+          this.paceToDisplayCallCount > WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
+        ) {
+          throw new Error(
+            `[openVrOverlayFramePacer] vsync frame index gap: last=${last} new=${newIndex} (dropped ${
+              newIndex - last - 1n
+            } display frame(s); set --webxr-crash-on-dropped-frame=off to disable)`,
+          );
+        }
+      }
+      this.lastVsyncFrameIndex = newIndex;
+
+      this.vr.GetTimeSinceLastVsync(pSec, pFrame);
+    } else {
       if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
         return;
       }
-      newIndex = frameBuf[0];
-      if (++spins > MAX_VSYNC_POLLS) {
-        return;
+      const newIndex = frameBuf[0];
+      if (this.lastVsyncFrameIndex + 1n < newIndex) {
+        this.framesSkipped += Number(newIndex - this.lastVsyncFrameIndex - 1n);
       }
+      this.lastVsyncFrameIndex = newIndex;
     }
-
-    if (last + 1n < newIndex) {
-      this.framesSkipped++;
-    }
-    this.lastVsyncFrameIndex = newIndex;
-
-    this.vr.GetTimeSinceLastVsync(pSec, pFrame);
     const secondsSinceLastVsync = floatBuf[0];
 
     this.displayHzCache ??= readHmdFloatProp(
@@ -208,6 +248,9 @@ export function tryCreateOpenVrOverlayFramePacer(
   systemPointer: number | bigint | null,
   compositorPointer: number | bigint | null,
   enabled: boolean,
+  /** When `true`, `paceToDisplayAndRefreshPoses` throws if the vsync index skips (after the first sample). */
+  crashOnVsyncIndexGap = false,
+  paceMode: OpenVrOverlayPaceMode = "vsync",
 ): OpenVrOverlayFramePacer | null {
   if (!enabled || systemPointer == null) {
     return null;
@@ -220,16 +263,18 @@ export function tryCreateOpenVrOverlayFramePacer(
   }
   const vr = new OpenVR.IVRSystem(sp);
   if (compositorPointer == null) {
-    return new OpenVrOverlayFramePacer(vr, null);
+    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode);
   }
   const cp = Deno.UnsafePointer.create(
     typeof compositorPointer === "bigint" ? compositorPointer : BigInt(compositorPointer),
   );
   if (cp == null) {
-    return new OpenVrOverlayFramePacer(vr, null);
+    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode);
   }
   return new OpenVrOverlayFramePacer(
     vr,
     new OpenVR.IVRCompositor(cp),
+    crashOnVsyncIndexGap,
+    paceMode,
   );
 }

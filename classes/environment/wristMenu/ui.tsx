@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import * as TSL from "three/tsl";
+import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
 import { Content } from "../../../submodules/threewebxrwebgpudeno/uikit-r3f.tsx";
 import { Button, Container, Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import type { WristMenuButtonId } from "./types.ts";
@@ -15,6 +16,8 @@ export type WristMenuUiProps = {
   musicActive?: boolean;
   signalActive?: boolean;
   onToggle?: (id: WristMenuButtonId) => void;
+  /** Only the opposite controller’s pointer should hit the menu (set from `WristMenuPanel` in XR). */
+  pointerEventsType?: AllowedPointerEventsType;
 };
 
 const DEFAULT_CLOCK = "12:00 PM";
@@ -137,15 +140,15 @@ export function WristMenuUi(
     musicActive = false,
     signalActive = false,
     onToggle,
+    pointerEventsType,
   }: WristMenuUiProps,
 ) {
-  /* console.log("[wristMenu] WristMenuUi render", {
-    clock, dateLabel, elapsed, layersActive, musicActive, signalActive,
-  }); */
+  const pe: AllowedPointerEventsType = pointerEventsType ?? "all";
   return (
     <ControllerFrame>
       <Container
         pixelSize={0.001}
+        pointerEventsType={pe}
         backgroundColor="#2c3e50"
         borderColor="#3b5268"
         borderWidth={4}

@@ -3,8 +3,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three/webgpu";
 import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
-import { DefaultXRController, XRSpace } from "@pmndrs/xr";
-import { ConstantControllerAimBeam } from "../controllerAimBeam.tsx";
+import { useXRInputSourceStateContext, XRSpace } from "@pmndrs/xr";
+import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
+import { PetplayDefaultXRController } from "../petplayXrController.tsx";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { WristMenuUi } from "./ui.tsx";
 import type { WristMenuButtonId, WristMenuStateSnapshot } from "./types.ts";
@@ -31,11 +32,30 @@ export type WristMenuTransform = {
 };
 
 export type WristMenuPanelProps = {
-  ignoredHandedness?: "left" | "right";
+  /**
+   * When set (e.g. from the controller the panel is parented to), the wrist only accepts
+   * pointers from the *other* hand; the host hand’s ray/grip does not see this UI.
+   */
+  hostHandedness?: "left" | "right";
   transform?: WristMenuTransform;
   actorId?: string | null;
   initialState?: Partial<WristMenuStateSnapshot>;
 };
+
+function wristMenuPointerEventsForHost(
+  host: "left" | "right",
+): AllowedPointerEventsType {
+  return (_id, _pointerType, st) => {
+    if (st == null || typeof st !== "object" || !("inputSource" in st)) {
+      return true;
+    }
+    const h = (st as { inputSource?: { handedness: XRHandedness } }).inputSource?.handedness;
+    if (h !== "left" && h !== "right") {
+      return true;
+    }
+    return h !== host;
+  };
+}
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat("en-US", {
@@ -112,8 +132,11 @@ async function toggleActorState(
 }
 
 export function WristMenuPanel(
-  { ignoredHandedness: _ignoredHandedness, transform, actorId, initialState }: WristMenuPanelProps,
+  { hostHandedness, transform, actorId, initialState }: WristMenuPanelProps,
 ) {
+  const menuPointerType = hostHandedness != null
+    ? wristMenuPointerEventsForHost(hostHandedness)
+    : "all" satisfies AllowedPointerEventsType;
   const startedAt = useRef(performance.now());
   const [buttonState, setButtonState] = useState(() => toStateSnapshot(initialState));
   const [now, setNow] = useState(() => Date.now());
@@ -173,6 +196,7 @@ export function WristMenuPanel(
           musicActive={buttonState.musicActive}
           signalActive={buttonState.signalActive}
           onToggle={handleToggle}
+          pointerEventsType={menuPointerType}
         />
       </Handle>
     </group>
@@ -180,17 +204,18 @@ export function WristMenuPanel(
 }
 
 export function WristMenuControllerHud({ actorId }: { actorId?: string | null }) {
+  const xrState = useXRInputSourceStateContext();
+  const h = xrState.inputSource.handedness;
+  const hostHandedness: "left" | "right" | undefined = h === "left" || h === "right" ? h : undefined;
   return (
     <>
-      <ConstantControllerAimBeam />
-      <DefaultXRController
+      <PetplayDefaultXRController
         rayPointer={{
           minDistance: -1,
-          rayModel: false,
         }}
       />
       <XRSpace space="grip-space">
-        <WristMenuPanel ignoredHandedness="right" actorId={actorId} />
+        <WristMenuPanel hostHandedness={hostHandedness} actorId={actorId} />
       </XRSpace>
     </>
   );

@@ -4,7 +4,7 @@ import * as THREE from "three/webgpu";
 import "./browserStoragePolyfill.ts";
 import { advance, createRoot } from "@react-three/fiber/webgpu";
 import { currentXRFrame } from "./xrFrameBridge.ts";
-import { createXRStore, DefaultXRController, XR, XROrigin } from "@pmndrs/xr";
+import { createXRStore, XR, XROrigin } from "@pmndrs/xr";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
@@ -18,7 +18,7 @@ import {
   StereoTextureReadbackRing,
   TextureReadbackRing,
 } from "./webgpu.ts";
-import { ConstantControllerAimBeam } from "./environment/controllerAimBeam.tsx";
+import { PetplayDefaultXRController } from "./environment/petplayXrController.tsx";
 import { NativeControllerHud } from "./environment/nativeFrontend.tsx";
 import { WebXRScene } from "./environment/scene.tsx";
 import { FpsCounter } from "./fpsCounter.ts";
@@ -28,10 +28,23 @@ import { installWebXRHostPolyfills, type WebXrHostPolyfillOptions } from "./webx
 import {
   tryCreateOpenVrOverlayFramePacer,
   type OpenVrOverlayFramePacer,
+  type OpenVrOverlayPaceMode,
 } from "./openVrOverlayFramePacing.ts";
+import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+
+type OpenVrPoseActionData = ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>;
+type OpenVrDigitalActionData = ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>;
+export type ExternalControllerData = [
+  OpenVrPoseActionData,
+  OpenVrPoseActionData,
+  OpenVrDigitalActionData,
+  OpenVrDigitalActionData,
+  OpenVrDigitalActionData,
+  OpenVrDigitalActionData,
+];
 
 type StartOptions = {
   width?: number;
@@ -62,11 +75,45 @@ type StartOptions = {
    */
   vrCompositorPointer?: number | bigint | null;
   /**
+   * Each XR session rAF tick, right after `paceToDisplayAndRefreshPoses` (when
+   * present) and before HMD/controller emulation. Use to ingest cross-actor
+   * controller input (e.g. SharedArrayBuffer) for this display frame.
+   * **Must be synchronous** — `XRFrame` is only valid for the synchronous rAF
+   * invocation; `await` here invalidates the frame before `advance()` (WebXR / IWER).
+   */
+  onBeforeExternalControllerApply?: () => void;
+  /**
+   * When `vrInputPointer` is set, `UpdateActionState` + pose reads run in this
+   * worker on each XR rAF (after the compositor pacer), matching display timing
+   * instead of a separate ~1kHz SAB writer. Fires with the same 6-tuple that
+   * `setControllerData` would use for `applyExternalControllerData`.
+   */
+  onInProcessControllerFrame?: (data: ExternalControllerData) => void;
+  /**
    * When `true` (default), drive IWER’s global rAF with OpenVR display timing
    * (`openVrOverlayFramePacing`) instead of a fixed setTimeout. Set `false` to A/B test
    * the old synthetic rAF only.
    */
   useOpenVrOverlayFramePacing?: boolean;
+  /**
+   * OpenVR `paceToDisplay` mode. `vsync` (default) waits for a new display index per tick (~HMD Hz).
+   * `fast` samples once with no vsync spin — higher simulation / R3F rate; may duplicate photons, more CPU.
+   * Overrides `deno run ... --webxr-openvr-pace=...` when set.
+   */
+  openVrPace?: OpenVrOverlayPaceMode;
+  /**
+   * When the OpenVR overlay pacer is **not** used, set Deno’s synthetic `requestAnimationFrame` target
+   * (Hz), e.g. 120, instead of `nominalHmdDisplayHz` or 16ms. Ignored when `openVrOverlayPacer` is active.
+   * Overrides `deno run ... --webxr-polyfill-hz=...` when set.
+   */
+  webxrPolyfillHz?: number | null;
+  /**
+   * Minimum interval between manual XR rAF bodies (pose + `advance`). Offloads sim-vs-photon beat
+   * when `openVrPace: fast` runs the loop far above the HMD/overlay (e.g. 200 sim Hz vs 75 display).
+   * `undefined` = use `--webxr-sim-tick-hz=...` (default off). `"display"` = `1000 / nominalHmdDisplayHz` (or 90).
+   * Overrides CLI when set.
+   */
+  simTickHz?: number | "display";
 };
 
 type WebXRStatus = {
@@ -77,6 +124,12 @@ type WebXRStatus = {
   lastInspection: NonBlackPixelReport | null;
   error: string | null;
   lastLayerInfo: string | null;
+  /** Largest wall gap between XR rAF callbacks (ms) since `start` (after first callback). */
+  xrRafMaxIntervalMs: number;
+  /** Count of rAF gaps > ~1.25× nominal frame time (after `WEBXR_CRASH_ON_DROP_WARMUP_FRAMES`). */
+  xrRafSlowFrameCount: number;
+  /** `OpenVrOverlayFramePacer` display index gaps (compositor may have missed vsyncs). */
+  vsyncDisplayFramesSkipped: number;
 };
 
 export type WebXRShadowFrame = {
@@ -207,6 +260,242 @@ function getReadbackRingSize(): number {
   return parsed;
 }
 
+/**
+ * `deno run ... --webxr-log-slow-frames` logs throttled messages when the wall interval between
+ * XR rAF callbacks exceeds ~1.3× nominal frame time (after warmup). Use with
+ * `GETWEBXRSTATUS` metrics when crash mode stays quiet but motion still judders.
+ */
+export function getLogSlowXrFrames(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-log-slow-frames"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "off" || v === "no") {
+    return false;
+  }
+  return true;
+}
+
+const DEFAULT_XRAF_STRICT_INTERVAL_MULT = 1.12;
+
+/**
+ * Tunes `xr-raf-strict` (default ~1.12 = first noticeable gap vs nominal refresh).
+ * Example: `deno run ... --webxr-raf-strict-mult=1.08`
+ */
+export function getXrRafStrictIntervalMultiplier(): number {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-raf-strict-mult="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (raw == null || raw === "") {
+    return DEFAULT_XRAF_STRICT_INTERVAL_MULT;
+  }
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n <= 1.0 || n > 2.5) {
+    LogChannel.log(
+      "webxrv2",
+      `[webxrhost] invalid --webxr-raf-strict-mult=${raw}, using ${DEFAULT_XRAF_STRICT_INTERVAL_MULT}`,
+    );
+    return DEFAULT_XRAF_STRICT_INTERVAL_MULT;
+  }
+  return n;
+}
+
+/**
+ * When the OpenVR/startup path does not pass `nominalHmdDisplayHz` but you know the headset (e.g.
+ * 75 Hz), set `deno run ... --webxr-fallback-nominal-hz=75` so rAF expect/strict thresholds use
+ * 1000/75 ms instead of the 90 Hz fallback.
+ */
+function getWebxrFallbackNominalHzFromArgs(): number | null {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-fallback-nominal-hz="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (raw == null || raw === "") {
+    return null;
+  }
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 30 || n > 240) {
+    LogChannel.log("webxrv2", `[webxrhost] invalid --webxr-fallback-nominal-hz=${raw}, ignoring`);
+    return null;
+  }
+  return n;
+}
+
+/** Per-frame lerp toward raw OpenVR hand position. `0` = off. Default softens 1-frame pose spikes. */
+const DEFAULT_WEBXR_CONTROLLER_POS_LERP = 0.28;
+
+function getWebxrControllerPosLerpFromArgs(): number {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-controller-pos-lerp="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (raw == null || raw === "") {
+    return DEFAULT_WEBXR_CONTROLLER_POS_LERP;
+  }
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    LogChannel.log(
+      "webxrv2",
+      `[webxrhost] invalid --webxr-controller-pos-lerp=${raw}, using ${DEFAULT_WEBXR_CONTROLLER_POS_LERP}`,
+    );
+    return DEFAULT_WEBXR_CONTROLLER_POS_LERP;
+  }
+  return n;
+}
+
+/**
+ * Max hand speed (m/s) between consecutive `applyExternalControllerData` invocations, applied to
+ * **raw** OpenVR position before the position lerp. `0` = no cap. Defaults so a 90 Hz display can
+ * move ~0.08 m in one 11 ms step without clipping normal motion; a single 10–15 cm 1 rAF outlier
+ * is pulled back toward the path from the previous sample.
+ */
+const DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS = 7;
+
+function getWebxrControllerMaxHandMpsFromArgs(): number {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-controller-max-hand-mps="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (raw == null || raw === "") {
+    return DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS;
+  }
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 50) {
+    LogChannel.log(
+      "webxrv2",
+      `[webxrhost] invalid --webxr-controller-max-hand-mps=${raw}, using ${DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS}`,
+    );
+    return DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS;
+  }
+  return n;
+}
+
+function getWebxrOpenVrPaceFromArgs(): OpenVrOverlayPaceMode {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-openvr-pace="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  if (raw == null || raw === "" || raw === "vsync" || raw === "display") {
+    return "vsync";
+  }
+  if (raw === "fast" || raw === "throughput" || raw === "max") {
+    return "fast";
+  }
+  LogChannel.log("webxrv2", `[webxrhost] unknown --webxr-openvr-pace=${raw}, using vsync`);
+  return "vsync";
+}
+
+/** `null` = use `nominalHmdDisplayHz` (or 16ms fallback) for the synthetic rAF when no OpenVR pacer. */
+function getWebxrPolyfillHzFromArgs(): number | null {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-polyfill-hz="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (raw == null || raw === "") {
+    return null;
+  }
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n < 30 || n > 360) {
+    LogChannel.log("webxrv2", `[webxrhost] invalid --webxr-polyfill-hz=${raw}, ignoring`);
+    return null;
+  }
+  return n;
+}
+
+/**
+ * `null` = no cap. `"display"` = use `1000 / nominalHmdDisplayHz` (set in `start`). Else 30-240 = Hz.
+ */
+function getWebxrSimTickHzFromArgs(): number | "display" | null {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-sim-tick-hz="))
+    ?.split("=", 2)[1]
+    ?.trim();
+  if (raw == null || raw === "") {
+    return null;
+  }
+  const low = raw.toLowerCase();
+  if (low === "display" || low === "hmd" || low === "nominal" || low === "panel") {
+    return "display";
+  }
+  const n = Number.parseFloat(raw);
+  if (Number.isFinite(n) && n >= 30 && n <= 240) {
+    return n;
+  }
+  LogChannel.log("webxrv2", `[webxrhost] invalid --webxr-sim-tick-hz=${raw}, not capping sim ticks`);
+  return null;
+}
+
+/**
+ * `deno run ... --webxr-crash-on-dropped-frame=...` (or `=off`) throws on suspect dropped frames
+ * so a debugger can break on the Error. Options (comma‑separated):
+ * - `vsync` — `OpenVrOverlayFramePacer` display index skip (after first index).
+ * - `overlay` — `pumpOverlayFrames` sees `host.frameCount` jump by more than one before upload.
+ * - `xr-raf` — wall time between `XRSession` rAF callbacks exceeds ~1.85× nominal frame time
+ *   (tolerates heavy jitter; often stays quiet when strict mode would fire).
+ * - `xr-raf-strict` — first post‑warmup interval **>** `strictMult ×` nominal (default ~1.12×) —
+ *   for catching a single “late” rAF when CPU is within budget but cadence slipped.
+ * - `controller-stale` — (SAB v4) same **pose matrix hash** on two consecutive XR rAF ticks while
+ *   OpenVR |v|/|ω| are above a floor (or stuck `writeSeq`, rare at ~1kHz writes). A fast writer does
+ *   not help if tracking hands you the same 3×4 for two **display** frames.
+ * Shorthands: `all` = vsync+overlay+`xr-raf` (loose). `all-strict` = vsync+overlay+`xr-raf-strict`.
+ *
+ * Tuning: `--webxr-raf-strict-mult=1.1`, and `--webxr-fallback-nominal-hz=75` if Hz is not in the
+ * start payload. Each mode still skips the first `WEBXR_CRASH_ON_DROP_WARMUP_FRAMES` frames
+ * (startup ~2 fps is expected).
+ */
+export function getCrashOnDroppedFrameMode(): {
+  vsync: boolean;
+  overlay: boolean;
+  xrRaf: boolean;
+  xrRafStrict: boolean;
+  /** `petplay/webxr` SAB ingest: same controller sample for two display frames. */
+  controllerSabStale: boolean;
+} {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-crash-on-dropped-frame="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  if (raw == null || raw === "" || raw === "off") {
+    return {
+      vsync: false,
+      overlay: false,
+      xrRaf: false,
+      xrRafStrict: false,
+      controllerSabStale: false,
+    };
+  }
+  if (raw === "all") {
+    return {
+      vsync: true,
+      overlay: true,
+      xrRaf: true,
+      xrRafStrict: false,
+      controllerSabStale: false,
+    };
+  }
+  if (raw === "all-strict") {
+    return {
+      vsync: true,
+      overlay: true,
+      xrRaf: false,
+      xrRafStrict: true,
+      controllerSabStale: false,
+    };
+  }
+  const parts = raw.split(",").map((s) => s.trim());
+  return {
+    vsync: parts.includes("vsync"),
+    overlay: parts.includes("overlay"),
+    xrRaf: parts.includes("xr-raf") || parts.includes("raf"),
+    xrRafStrict: parts.includes("xr-raf-strict"),
+    controllerSabStale: parts.includes("controller-stale") || parts.includes("ctrl-stale"),
+  };
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -231,17 +520,6 @@ type XrDeviceBridge = {
     right?: XrControllerBridge;
   };
 };
-
-type OpenVrPoseActionData = ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>;
-type OpenVrDigitalActionData = ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>;
-type ExternalControllerData = [
-  OpenVrPoseActionData,
-  OpenVrPoseActionData,
-  OpenVrDigitalActionData,
-  OpenVrDigitalActionData,
-  OpenVrDigitalActionData,
-  OpenVrDigitalActionData,
-];
 
 function createStructBuffer<T>(byteSize: number): {
   pointer: Deno.PointerValue<T>;
@@ -297,6 +575,13 @@ export class WebXRHost {
   private readonly grabLeftHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
   private readonly grabRightHandlePtr = P.BigUint64P<OpenVR.ActionHandle>();
   private readonly actionSetHandlePtr = P.BigUint64P<OpenVR.ActionSetHandle>();
+  /** `/user/hand/left` / `right` — Aardvark `GetInputSourceHandle` + per-hand `UpdateActionState`. */
+  private leftHandPathHandle: OpenVR.InputValueHandle = OpenVR.k_ulInvalidInputValueHandle;
+  private rightHandPathHandle: OpenVR.InputValueHandle = OpenVR.k_ulInvalidInputValueHandle;
+  private readonly leftHandPathHandlePtr = P.BigUint64P<OpenVR.InputValueHandle>();
+  private readonly rightHandPathHandlePtr = P.BigUint64P<OpenVR.InputValueHandle>();
+  /** Two `VRActiveActionSet_t` (left/right `ulRestrictedToDevice`) for `UpdateActionState(..., 2)`. */
+  private dualActiveActionSetBuffer: ArrayBuffer | null = null;
   private readonly leftPoseState = createStructBuffer<OpenVR.InputPoseActionData>(
     OpenVR.InputPoseActionDataStruct.byteSize,
   );
@@ -352,8 +637,30 @@ export class WebXRHost {
   private skipWebGpuXrDraw = false;
   private originalWebGpuRendererRender: THREE.WebGPURenderer["render"] | null = null;
   private nominalHmdDisplayHz: number | null = null;
+  /**
+   * When set, at least this many ms between `session.requestAnimationFrame` sim ticks
+   * (reduces 200+ Hz sim vs ~75 Hz display judder with `--webxr-openvr-pace=fast`).
+   */
+  private xrSimTickMinIntervalMs: number | null = null;
+  private xrSimTickDelayTimeout: ReturnType<typeof setTimeout> | null = null;
   private openVrOverlayPacer: OpenVrOverlayFramePacer | null = null;
+  /**
+   * When true, OpenVR pacing + IVRInput + `syncEmulatedDevicePosesToSpaces` run from IWER
+   * `onBeforeFrameStart` (see iwer `XRSession.ts`), not from the session rAF tick — Aardvark order.
+   */
+  private openVrDrivenBeforeIwerFrameStart = false;
+  /** Set in `start` from `getCrashOnDroppedFrameMode().xrRaf` (1.85× nominal). */
+  private crashOnDroppedXrRaf = false;
+  /** Set in `start` from `getCrashOnDroppedFrameMode().xrRafStrict` (default ~1.12× nominal). */
+  private crashOnDroppedXrRafStrict = false;
+  private xrRafStrictIntervalMult = DEFAULT_XRAF_STRICT_INTERVAL_MULT;
+  private logSlowXrFrames = false;
+  private lastSlowXrFrameLogAt = 0;
+  private xrRafMaxIntervalMs = 0;
+  private xrRafSlowFrameCount = 0;
   private vrCompositorPointer: number | bigint | null = null;
+  private onBeforeExternalControllerApply: (() => void) | undefined;
+  private onInProcessControllerFrame: ((data: ExternalControllerData) => void) | undefined;
   private latestShadowPose: {
     viewerPosition: Float32Array;
     viewerQuaternion: Float32Array;
@@ -369,10 +676,31 @@ export class WebXRHost {
     ipdMeters: number;
   } | null = null;
 
+  /** Lerp `α` per XR frame toward raw pose position (`--webxr-controller-pos-lerp`, `0` = raw). */
+  private readonly emulatedControllerPosLerp = getWebxrControllerPosLerpFromArgs();
+  private readonly emulatedControllerMaxHandMps = getWebxrControllerMaxHandMpsFromArgs();
+  private emulatedControllerApplyPrevWallAt = 0;
+  private readonly emulatedControllerPosLeft = new THREE.Vector3();
+  private readonly emulatedControllerPosRight = new THREE.Vector3();
+  private readonly emulatedControllerRawPrevLeft = new THREE.Vector3();
+  private readonly emulatedControllerRawPrevRight = new THREE.Vector3();
+  private emulatedControllerPosInited: { left: boolean; right: boolean } = {
+    left: false,
+    right: false,
+  };
+  private readonly tempEmulatedControllerPosTarget = new THREE.Vector3();
+  private readonly tempEmulatedControllerRawDelta = new THREE.Vector3();
+
   async start(options: StartOptions = {}) {
     if (this.running) {
       return;
     }
+
+    if (this.xrSimTickDelayTimeout != null) {
+      clearTimeout(this.xrSimTickDelayTimeout);
+      this.xrSimTickDelayTimeout = null;
+    }
+    this.xrSimTickMinIntervalMs = null;
 
     this.frameCount = 0;
     this.xrFpsCounter.reset();
@@ -383,10 +711,14 @@ export class WebXRHost {
     this.lastLayerInfo = null;
     this.lastXrCallbackAt = 0;
     this.lastXrSessionRafWallAt = 0;
+    this.lastSlowXrFrameLogAt = 0;
+    this.xrRafMaxIntervalMs = 0;
+    this.xrRafSlowFrameCount = 0;
     this.lastHeartbeatAt = 0;
     this.lastFpsLogAt = 0;
     this.lastPerfLogAt = 0;
     this.layerReadyLogged = false;
+    this.resetEmulatedControllerPositionSmoothing();
     this.xrSessionRafWallIntervalMetric.reset();
     this.xrAdvanceMetric.reset();
     this.xrHmdEmulationMetric.reset();
@@ -404,21 +736,91 @@ export class WebXRHost {
     this.height = options.height ?? 900;
     this.debugWindowEnabled = options.debugWindow ?? false;
     this.skipWebGpuXrDraw = Boolean(options.skipWebGpuXrDraw) && !this.debugWindowEnabled;
-    this.nominalHmdDisplayHz = options.nominalHmdDisplayHz ?? null;
+    const nominalFromPayload = options.nominalHmdDisplayHz ?? null;
+    const nominalFromFallbackCli = nominalFromPayload == null
+      ? getWebxrFallbackNominalHzFromArgs()
+      : null;
+    this.nominalHmdDisplayHz = nominalFromPayload ?? nominalFromFallbackCli ?? null;
+    if (nominalFromFallbackCli != null) {
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] --webxr-fallback-nominal-hz=${nominalFromFallbackCli} (rAF strict/loose expect ms)`,
+      );
+    }
+    {
+      const simFromOpt = options.simTickHz;
+      const simFromArg = getWebxrSimTickHzFromArgs();
+      const simMode: number | "display" | null = simFromOpt !== undefined
+        ? simFromOpt
+        : simFromArg;
+      if (simMode === "display") {
+        const nom = this.nominalHmdDisplayHz;
+        this.xrSimTickMinIntervalMs = 1000 /
+          (nom != null && Number.isFinite(nom) && nom > 0 ? nom : 90);
+      } else if (typeof simMode === "number" && simMode > 0) {
+        this.xrSimTickMinIntervalMs = 1000 / simMode;
+      }
+      if (this.xrSimTickMinIntervalMs != null) {
+        LogChannel.log(
+          "webxrv2",
+          `[webxrhost] XR sim tick min ${
+            this.xrSimTickMinIntervalMs.toFixed(2)
+          }ms (~${(1000 / this.xrSimTickMinIntervalMs).toFixed(0)} Hz) — set --webxr-sim-tick-hz=display or 75 to reduce micro judder when sim (fast pace) outruns the overlay/HMD`,
+        );
+      }
+    }
     this.vrSystemPointer = options.vrSystemPointer ?? null;
     this.vrCompositorPointer = options.vrCompositorPointer ?? null;
+    this.onBeforeExternalControllerApply = options.onBeforeExternalControllerApply;
+    this.onInProcessControllerFrame = options.onInProcessControllerFrame;
     this.vrInputPointer = options.vrInputPointer ?? null;
     this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
     this.alphaEnabled = options.alpha ?? this.sessionMode === "immersive-ar";
     const useOverlayPacing = options.useOpenVrOverlayFramePacing !== false;
+    const crashOnDrop = getCrashOnDroppedFrameMode();
+    this.crashOnDroppedXrRaf = crashOnDrop.xrRaf;
+    this.crashOnDroppedXrRafStrict = crashOnDrop.xrRafStrict;
+    this.xrRafStrictIntervalMult = getXrRafStrictIntervalMultiplier();
+    this.logSlowXrFrames = getLogSlowXrFrames();
+    const openVrPace = options.openVrPace ?? getWebxrOpenVrPaceFromArgs();
     this.openVrOverlayPacer = tryCreateOpenVrOverlayFramePacer(
       this.vrSystemPointer,
       this.vrCompositorPointer,
       useOverlayPacing,
+      crashOnDrop.vsync,
+      openVrPace,
     );
+    if (crashOnDrop.vsync || crashOnDrop.overlay || crashOnDrop.xrRaf || crashOnDrop.xrRafStrict) {
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] --webxr-crash-on-dropped-frame: vsync=${crashOnDrop.vsync} overlay=${
+          crashOnDrop.overlay
+        } xr-raf=${crashOnDrop.xrRaf} xr-raf-strict=${crashOnDrop.xrRafStrict}${
+          crashOnDrop.xrRafStrict
+            ? ` (mult=${this.xrRafStrictIntervalMult.toFixed(3)} nominal=${
+              this.nominalHmdDisplayHz != null
+                ? `${this.nominalHmdDisplayHz.toFixed(0)}Hz`
+                : "fallback 90Hz"
+            })`
+            : ""
+        }`,
+      );
+    }
+    if (this.logSlowXrFrames) {
+      LogChannel.log("webxrv2", "[webxrhost] --webxr-log-slow-frames enabled (throttled soft logs)");
+    }
     const hostHeartbeatPollMs = 16;
     const nom = this.nominalHmdDisplayHz;
-    const rafPolyfillIntervalMs = nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
+    const polyfillHzOverride = options.webxrPolyfillHz ?? getWebxrPolyfillHzFromArgs();
+    if (this.openVrOverlayPacer != null && polyfillHzOverride != null) {
+      LogChannel.log(
+        "webxrv2",
+        "[webxrhost] --webxr-polyfill-hz ignored when OpenVR pacer is active (rAF delay=0; use --webxr-openvr-pace=fast for a higher sim tick rate)",
+      );
+    }
+    const rafPolyfillIntervalMs = polyfillHzOverride != null && Number.isFinite(polyfillHzOverride) && polyfillHzOverride > 0
+      ? 1000 / polyfillHzOverride
+      : nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
       ? 1000 / nom
       : 16;
     const polyfill: WebXrHostPolyfillOptions = {
@@ -430,7 +832,9 @@ export class WebXRHost {
       "webxrv2",
       `[webxrhost] rAF ` +
         (this.openVrOverlayPacer != null
-          ? "OpenVR display pacing (Aardvark-style GetTimeSinceLastVsync; IWER rAF delay=0)"
+          ? (openVrPace === "fast"
+            ? "OpenVR fast pace (single GetTimeSinceLastVsync; IWER rAF delay=0)"
+            : "OpenVR display pacing (Aardvark-style wait for new vsync index; IWER rAF delay=0)")
           : `polyfill=${rafPolyfillIntervalMs.toFixed(3)}ms (~${(1000 / rafPolyfillIntervalMs).toFixed(1)}Hz)`) +
         `; IWER XRSession uses global rAF`,
     );
@@ -510,6 +914,19 @@ export class WebXRHost {
         globalObject: globalThis,
         polyfillLayers: false,
       });
+      const xrDevWithHook = this.xrDevice as XrDeviceBridge & {
+        setBeforeFrameStartHook?: (cb: ((frame: XRFrame) => void) | null | undefined) => void;
+      };
+      if (typeof xrDevWithHook.setBeforeFrameStartHook === "function") {
+        xrDevWithHook.setBeforeFrameStartHook((frame) => {
+          this.applyOpenVrTrackingBeforeIwerOnFrameStart(frame);
+        });
+        this.openVrDrivenBeforeIwerFrameStart = true;
+        LogChannel.log(
+          "webxrv2",
+          "[webxrhost] IWER onBeforeFrameStart: OpenVR runs before tracked-input onFrameStart (Aardvark order)",
+        );
+      }
       assert((navigator as unknown as { xr?: XRSystem }).xr, "navigator.xr was not installed");
 
       const store = createXRStore({
@@ -525,19 +942,12 @@ export class WebXRHost {
               actorId: options.wristMenuActor ?? null,
             }),
           left: () =>
-            React.createElement(
-              React.Fragment,
-              null,
-              React.createElement(ConstantControllerAimBeam),
-              React.createElement(DefaultXRController, {
-                model: false,
-                grabPointer: false,
-                rayPointer: {
-                  minDistance: -1,
-                  rayModel: false,
-                },
-              }),
-            ),
+            React.createElement(PetplayDefaultXRController, {
+              model: false,
+              rayPointer: {
+                minDistance: -1,
+              },
+            }),
         },
       });
 
@@ -651,6 +1061,9 @@ export class WebXRHost {
       error: this.lastError?.message ?? null,
       lastLayerInfo: this.lastLayerInfo ??
         describeProjectionLayer(this.session, this.overlayUploadFormat),
+      xrRafMaxIntervalMs: this.xrRafMaxIntervalMs,
+      xrRafSlowFrameCount: this.xrRafSlowFrameCount,
+      vsyncDisplayFramesSkipped: this.openVrOverlayPacer?.getFramesSkippedCount() ?? 0,
     };
   }
 
@@ -664,6 +1077,10 @@ export class WebXRHost {
 
   async stop() {
     this.running = false;
+    if (this.xrSimTickDelayTimeout != null) {
+      clearTimeout(this.xrSimTickDelayTimeout);
+      this.xrSimTickDelayTimeout = null;
+    }
 
     if (this.session) {
       try {
@@ -736,12 +1153,49 @@ export class WebXRHost {
     this.triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.grabRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
+    this.rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
+    this.dualActiveActionSetBuffer = null;
+    if (this.xrDevice != null && this.openVrDrivenBeforeIwerFrameStart) {
+      const d = this.xrDevice as XrDeviceBridge & {
+        setBeforeFrameStartHook?: (cb: ((frame: XRFrame) => void) | null | undefined) => void;
+      };
+      d.setBeforeFrameStartHook?.(null);
+      this.openVrDrivenBeforeIwerFrameStart = false;
+    }
     this.xrDevice = null;
     this.sessionMode = "immersive-vr";
     this.alphaEnabled = false;
     this.nominalHmdDisplayHz = null;
     this.vrCompositorPointer = null;
     this.openVrOverlayPacer = null;
+    this.crashOnDroppedXrRaf = false;
+    this.crashOnDroppedXrRafStrict = false;
+    this.onBeforeExternalControllerApply = undefined;
+    this.onInProcessControllerFrame = undefined;
+    this.xrSimTickMinIntervalMs = null;
+    this.resetEmulatedControllerPositionSmoothing();
+  }
+
+  private resetEmulatedControllerPositionSmoothing() {
+    this.emulatedControllerPosInited = { left: false, right: false };
+    this.emulatedControllerPosLeft.set(0, 0, 0);
+    this.emulatedControllerPosRight.set(0, 0, 0);
+    this.emulatedControllerRawPrevLeft.set(0, 0, 0);
+    this.emulatedControllerRawPrevRight.set(0, 0, 0);
+    this.emulatedControllerApplyPrevWallAt = 0;
+  }
+
+  private beginEmulatedControllerDataFrame(): number {
+    const now = performance.now();
+    if (this.emulatedControllerApplyPrevWallAt <= 0) {
+      return 1 / 90;
+    }
+    return Math.max(1e-3, (now - this.emulatedControllerApplyPrevWallAt) / 1000);
+  }
+
+  private endEmulatedControllerDataFrame() {
+    this.emulatedControllerApplyPrevWallAt = performance.now();
   }
 
   async captureOverlayFrame(): Promise<StereoMappedTextureReadback | null> {
@@ -1032,27 +1486,88 @@ export class WebXRHost {
 
     this.xrFrameRequestActive = true;
     const tick = (time: number, frame: XRFrame) => {
+      const tickT0 = performance.now();
       if (!this.running || !this.session) {
         this.xrFrameRequestActive = false;
         return;
       }
 
-      this.openVrOverlayPacer?.paceToDisplayAndRefreshPoses();
+      // OpenVR pacing + IVRInput: when IWER exposes `setBeforeFrameStartHook`, they run in
+      // `applyOpenVrTrackingBeforeIwerOnFrameStart` **before** `XRTrackedInput.onFrameStart`
+      // (see iwer `XRSession.ts`). Otherwise keep the legacy path here (older iwer build).
+      if (!this.openVrDrivenBeforeIwerFrameStart) {
+        this.openVrOverlayPacer?.paceToDisplayAndRefreshPoses();
+        this.onBeforeExternalControllerApply?.();
+        const tHmd = performance.now();
+        this.updateEmulatedHeadsetFromOpenVr();
+        this.xrHmdEmulationMetric.record(performance.now() - tHmd);
+        const tCtrl = performance.now();
+        this.applyExternalControllerData();
+        this.xrControllerApplyMetric.record(performance.now() - tCtrl);
+        this.syncIwerEmulatedPosesToSpaces();
+      }
+
       const wallNow = performance.now();
+      const nom = this.nominalHmdDisplayHz;
+      const expectedMs = nom != null && nom > 0 && Number.isFinite(nom)
+        ? 1000 / nom
+        : 1000 / 90;
+      const rafIntervalMs =
+        this.lastXrSessionRafWallAt > 0 ? wallNow - this.lastXrSessionRafWallAt : 0;
+      if (rafIntervalMs > 0 && this.frameCount >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
+        if (this.crashOnDroppedXrRafStrict) {
+          const limitMs = expectedMs * this.xrRafStrictIntervalMult;
+          if (rafIntervalMs > limitMs) {
+            throw new Error(
+              `[webxrhost] XR rAF strict: interval ${rafIntervalMs.toFixed(2)}ms > ${
+                limitMs.toFixed(2)
+              }ms ` +
+                `(${this.xrRafStrictIntervalMult.toFixed(3)}× nominal ${expectedMs.toFixed(2)}ms; ` +
+                `~${(1000 / rafIntervalMs).toFixed(1)} Hz effective vs ${
+                  nom != null && nom > 0 && Number.isFinite(nom) ? `${nom.toFixed(0)}` : "90"
+                } Hz nominal)`,
+            );
+          }
+        }
+        if (this.crashOnDroppedXrRaf) {
+          const limitMs = expectedMs * 1.85;
+          if (rafIntervalMs > limitMs) {
+            throw new Error(
+              `[webxrhost] XR rAF wall gap ${rafIntervalMs.toFixed(2)}ms > ${limitMs.toFixed(1)}ms ` +
+                `(~${(1000 / rafIntervalMs).toFixed(1)} Hz effective vs nominal ${
+                  nom?.toFixed(0) ?? "90"
+                } Hz)`,
+            );
+          }
+        }
+      }
+      if (rafIntervalMs > 0 && this.frameCount >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
+        this.xrRafMaxIntervalMs = Math.max(this.xrRafMaxIntervalMs, rafIntervalMs);
+        if (rafIntervalMs > expectedMs * 1.25) {
+          this.xrRafSlowFrameCount++;
+        }
+        if (
+          this.logSlowXrFrames &&
+          rafIntervalMs > expectedMs * 1.3 &&
+          wallNow - this.lastSlowXrFrameLogAt >= 400
+        ) {
+          this.lastSlowXrFrameLogAt = wallNow;
+          LogChannel.log(
+            "webxrv2",
+            `[webxrhost] slow XR rAF interval ${rafIntervalMs.toFixed(1)}ms (nominal ${
+              expectedMs.toFixed(2)
+            }ms; ~${(1000 / rafIntervalMs).toFixed(0)} Hz effective) frameCount=${
+              this.frameCount
+            }`,
+          );
+        }
+      }
       if (this.lastXrSessionRafWallAt > 0) {
-        this.xrSessionRafWallIntervalMetric.record(
-          wallNow - this.lastXrSessionRafWallAt,
-        );
+        this.xrSessionRafWallIntervalMetric.record(rafIntervalMs);
       }
       this.lastXrSessionRafWallAt = wallNow;
       this.lastXrCallbackAt = wallNow;
       const advanceStartedAt = wallNow;
-      const t0 = performance.now();
-      this.updateEmulatedHeadsetFromOpenVr();
-      this.xrHmdEmulationMetric.record(performance.now() - t0);
-      const t1 = performance.now();
-      this.applyExternalControllerData();
-      this.xrControllerApplyMetric.record(performance.now() - t1);
       // R3F v10's scheduler-based advance() doesn't forward the XRFrame to
       // useFrame callbacks; stash it on the bridge so our useFrame shim can
       // inject it as the third arg downstream.
@@ -1102,7 +1617,16 @@ export class WebXRHost {
         });
       }
 
-      this.session.requestAnimationFrame(tick);
+      const minInterval = this.xrSimTickMinIntervalMs;
+      if (minInterval == null) {
+        this.session.requestAnimationFrame(tick);
+      } else {
+        const wait = Math.max(0, minInterval - (performance.now() - tickT0));
+        this.xrSimTickDelayTimeout = setTimeout(() => {
+          this.xrSimTickDelayTimeout = null;
+          this.session?.requestAnimationFrame(tick);
+        }, wait);
+      }
     };
 
     this.session.requestAnimationFrame(tick);
@@ -1275,6 +1799,36 @@ export class WebXRHost {
     throw lastError ?? new Error("Timed out waiting for XR store to connect");
   }
 
+  private syncIwerEmulatedPosesToSpaces() {
+    if (!this.xrDevice) {
+      return;
+    }
+    const dev = this.xrDevice as unknown as { syncEmulatedDevicePosesToSpaces?: () => void };
+    // Must call as `dev.method()` so `this` inside IWER stays the XRDevice (extracting
+    // the function and doing `fn()` breaks `this[P_DEVICE]` and throws).
+    dev.syncEmulatedDevicePosesToSpaces?.();
+  }
+
+  /**
+   * IWER `XRSession.onDeviceFrame`: runs after `XRFrame` is created, **before**
+   * `device.onFrameStart` → `XRTrackedInput.applyPoseToTargetRaySpace` (see iwer source).
+   * Mirrors Aardvark `runFrame`: `updateOpenVrPoses` then `doInputWork` before any use of poses.
+   */
+  private applyOpenVrTrackingBeforeIwerOnFrameStart(_frame: XRFrame): void {
+    if (!this.session) {
+      return;
+    }
+    this.openVrOverlayPacer?.paceToDisplayAndRefreshPoses();
+    this.onBeforeExternalControllerApply?.();
+    const tHmd = performance.now();
+    this.updateEmulatedHeadsetFromOpenVr();
+    this.xrHmdEmulationMetric.record(performance.now() - tHmd);
+    const tCtrl = performance.now();
+    this.applyExternalControllerData();
+    this.xrControllerApplyMetric.record(performance.now() - tCtrl);
+    this.syncIwerEmulatedPosesToSpaces();
+  }
+
   private updateEmulatedHeadsetFromOpenVr() {
     if (!this.xrDevice) {
       return;
@@ -1422,6 +1976,11 @@ export class WebXRHost {
       return;
     }
 
+    if (this.vrInputPointer && !this.openVrControllerBridgeDisabled) {
+      this.updateEmulatedControllersFromOpenVr();
+      return;
+    }
+
     const data = this.latestControllerData;
     if (!data) {
       if (this.xrDevice.controllers.left) {
@@ -1430,15 +1989,18 @@ export class WebXRHost {
       if (this.xrDevice.controllers.right) {
         this.xrDevice.controllers.right.connected = false;
       }
+      this.resetEmulatedControllerPositionSmoothing();
       return;
     }
 
+    const stepDt = this.beginEmulatedControllerDataFrame();
     this.updateControllerState(
       this.xrDevice.controllers.left,
       "left",
       data[0],
       data[2],
       data[4],
+      stepDt,
     );
     this.updateControllerState(
       this.xrDevice.controllers.right,
@@ -1446,7 +2008,9 @@ export class WebXRHost {
       data[1],
       data[3],
       data[5],
+      stepDt,
     );
+    this.endEmulatedControllerDataFrame();
   }
 
   private updateEmulatedControllersFromOpenVr() {
@@ -1458,20 +2022,39 @@ export class WebXRHost {
       return;
     }
 
+    let beganControllerFrameClock = false;
     try {
       const vrInput = this.ensureOpenVrInput();
       if (!vrInput) {
         return;
       }
 
+      const stepDt = this.beginEmulatedControllerDataFrame();
+      beganControllerFrameClock = true;
+
       this.updateOpenVrActionState(vrInput);
 
-      this.readPoseAction(vrInput, this.handPoseLeftHandle, this.leftPoseState);
-      this.readPoseAction(vrInput, this.handPoseRightHandle, this.rightPoseState);
-      this.readDigitalAction(vrInput, this.triggerLeftHandle, this.leftTriggerState);
-      this.readDigitalAction(vrInput, this.triggerRightHandle, this.rightTriggerState);
-      this.readDigitalAction(vrInput, this.grabLeftHandle, this.leftGrabState);
-      this.readDigitalAction(vrInput, this.grabRightHandle, this.rightGrabState);
+      this.readPoseAction(
+        vrInput,
+        this.handPoseLeftHandle,
+        this.leftPoseState,
+        this.leftHandPathHandle,
+      );
+      this.readPoseAction(
+        vrInput,
+        this.handPoseRightHandle,
+        this.rightPoseState,
+        this.rightHandPathHandle,
+      );
+      this.readDigitalAction(vrInput, this.triggerLeftHandle, this.leftTriggerState, this.leftHandPathHandle);
+      this.readDigitalAction(
+        vrInput,
+        this.triggerRightHandle,
+        this.rightTriggerState,
+        this.rightHandPathHandle,
+      );
+      this.readDigitalAction(vrInput, this.grabLeftHandle, this.leftGrabState, this.leftHandPathHandle);
+      this.readDigitalAction(vrInput, this.grabRightHandle, this.rightGrabState, this.rightHandPathHandle);
 
       const leftPoseData = OpenVR.InputPoseActionDataStruct.read(this.leftPoseState.view);
       const rightPoseData = OpenVR.InputPoseActionDataStruct.read(this.rightPoseState.view);
@@ -1480,12 +2063,23 @@ export class WebXRHost {
       const leftGrabData = OpenVR.InputDigitalActionDataStruct.read(this.leftGrabState.view);
       const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(this.rightGrabState.view);
 
+      const frameTuple: ExternalControllerData = [
+        leftPoseData,
+        rightPoseData,
+        leftTriggerData,
+        rightTriggerData,
+        leftGrabData,
+        rightGrabData,
+      ];
+      this.onInProcessControllerFrame?.(frameTuple);
+
       this.updateControllerState(
         this.xrDevice.controllers.left,
         "left",
         leftPoseData,
         leftTriggerData,
         leftGrabData,
+        stepDt,
       );
       this.updateControllerState(
         this.xrDevice.controllers.right,
@@ -1493,6 +2087,7 @@ export class WebXRHost {
         rightPoseData,
         rightTriggerData,
         rightGrabData,
+        stepDt,
       );
     } catch (error) {
       this.openVrControllerBridgeDisabled = true;
@@ -1501,6 +2096,10 @@ export class WebXRHost {
         "webxrv2",
         `[webxrhost] disabling OpenVR controller bridge: ${this.openVrControllerBridgeError}`,
       );
+    } finally {
+      if (beganControllerFrameClock) {
+        this.endEmulatedControllerDataFrame();
+      }
     }
   }
 
@@ -1573,6 +2172,29 @@ export class WebXRHost {
       throw new Error(`Failed to get OpenVR action set handle: ${error}`);
     }
     this.actionSetHandle = new Deno.UnsafePointerView(this.actionSetHandlePtr).getBigUint64();
+
+    let hErr = vrInput.GetInputSourceHandle("/user/hand/left", this.leftHandPathHandlePtr);
+    if (hErr === OpenVR.InputError.VRInputError_None) {
+      this.leftHandPathHandle = new Deno.UnsafePointerView(this.leftHandPathHandlePtr).getBigUint64();
+    } else {
+      this.leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] GetInputSourceHandle /user/hand/left: ${OpenVR.InputError[hErr] ?? hErr} — using unbounded actions`,
+      );
+    }
+    hErr = vrInput.GetInputSourceHandle("/user/hand/right", this.rightHandPathHandlePtr);
+    if (hErr === OpenVR.InputError.VRInputError_None) {
+      this.rightHandPathHandle = new Deno.UnsafePointerView(this.rightHandPathHandlePtr).getBigUint64();
+    } else {
+      this.rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
+      LogChannel.log(
+        "webxrv2",
+        `[webxrhost] GetInputSourceHandle /user/hand/right: ${OpenVR.InputError[hErr] ?? hErr} — using unbounded actions`,
+      );
+    }
+
+    this.dualActiveActionSetBuffer = new ArrayBuffer(OpenVR.ActiveActionSetStruct.byteSize * 2);
     this.openVrInputInitialized = true;
   }
 
@@ -1589,6 +2211,35 @@ export class WebXRHost {
   }
 
   private updateOpenVrActionState(vrInput: OpenVR.IVRInput) {
+    // Aardvark `CVRManager::doInputWork`: one `UpdateActionState` with **two** entries, each
+    // `ulRestrictedToDevice` = that hand’s `GetInputSourceHandle`, then
+    // `GetPoseActionDataForNextFrame(..., pathDevice)`.
+    if (this.dualActiveActionSetBuffer) {
+      const b = this.dualActiveActionSetBuffer;
+      const w = OpenVR.ActiveActionSetStruct.byteSize;
+      const view0 = new DataView(b, 0, w);
+      const view1 = new DataView(b, w, w);
+      const base = {
+        ulActionSet: this.actionSetHandle,
+        ulSecondaryActionSet: 0n as OpenVR.ActionSetHandle,
+        unPadding: 0,
+        nPriority: 0,
+      };
+      OpenVR.ActiveActionSetStruct.write(
+        { ...base, ulRestrictedToDevice: this.leftHandPathHandle },
+        view0,
+      );
+      OpenVR.ActiveActionSetStruct.write(
+        { ...base, ulRestrictedToDevice: this.rightHandPathHandle },
+        view1,
+      );
+      const ptr = Deno.UnsafePointer.of(b) as Deno.PointerValue<OpenVR.ActiveActionSet>;
+      const error = vrInput.UpdateActionState(ptr, w, 2);
+      if (error !== OpenVR.InputError.VRInputError_None) {
+        throw new Error(`Failed to update OpenVR action state (dual set): ${error}`);
+      }
+      return;
+    }
     const [activeActionSetPtr] = createStruct<OpenVR.ActiveActionSet>(
       {
         ulActionSet: this.actionSetHandle,
@@ -1616,15 +2267,17 @@ export class WebXRHost {
       pointer: Deno.PointerValue<OpenVR.InputPoseActionData>;
       view: DataView<ArrayBuffer>;
     },
+    /** Per-hand `GetInputSourceHandle` (Aardvark `pathDevice` on `GetPoseActionDataForNextFrame`). */
+    restrictToDevice: OpenVR.InputValueHandle,
   ) {
     new Uint8Array(target.view.buffer, target.view.byteOffset, target.view.byteLength).fill(0);
-    const error = vrInput.GetPoseActionDataRelativeToNow(
+    // Aardvark `getActionStateForHand`: `GetPoseActionDataForNextFrame` after `UpdateActionState`.
+    const error = vrInput.GetPoseActionDataForNextFrame(
       handle,
       OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
-      0,
       target.pointer,
       OpenVR.InputPoseActionDataStruct.byteSize,
-      OpenVR.k_ulInvalidInputValueHandle,
+      restrictToDevice,
     );
     if (
       error !== OpenVR.InputError.VRInputError_None &&
@@ -1642,13 +2295,14 @@ export class WebXRHost {
       pointer: Deno.PointerValue<OpenVR.InputDigitalActionData>;
       view: DataView<ArrayBuffer>;
     },
+    restrictToDevice: OpenVR.InputValueHandle,
   ) {
     new Uint8Array(target.view.buffer, target.view.byteOffset, target.view.byteLength).fill(0);
     const error = vrInput.GetDigitalActionData(
       handle,
       target.pointer,
       OpenVR.InputDigitalActionDataStruct.byteSize,
-      OpenVR.k_ulInvalidInputValueHandle,
+      restrictToDevice,
     );
     if (
       error !== OpenVR.InputError.VRInputError_None &&
@@ -1680,6 +2334,7 @@ export class WebXRHost {
     poseData: OpenVrPoseActionData,
     triggerData: OpenVrDigitalActionData,
     grabData: OpenVrDigitalActionData,
+    stepDtSec: number,
   ) {
     if (!controller) {
       return;
@@ -1692,6 +2347,11 @@ export class WebXRHost {
     controller.updateButtonValue?.("trigger", triggerData?.bState ? 1 : 0);
     controller.updateButtonValue?.("squeeze", grabData?.bState ? 1 : 0);
     if (!isConnected) {
+      if (handedness === "left") {
+        this.emulatedControllerPosInited.left = false;
+      } else {
+        this.emulatedControllerPosInited.right = false;
+      }
       return;
     }
 
@@ -1704,7 +2364,54 @@ export class WebXRHost {
       baseQuaternion[3],
     );
     correctedQuaternion.multiply(CONTROLLER_ROTATION_OFFSET);
-    controller.position?.set?.(m[0][3], m[1][3], m[2][3]);
+    const rawX = m[0][3];
+    const rawY = m[1][3];
+    const rawZ = m[2][3];
+    const lerpA = this.emulatedControllerPosLerp;
+    const vMax = this.emulatedControllerMaxHandMps;
+    const lastRaw = handedness === "left"
+      ? this.emulatedControllerRawPrevLeft
+      : this.emulatedControllerRawPrevRight;
+    const smooth = handedness === "left"
+      ? this.emulatedControllerPosLeft
+      : this.emulatedControllerPosRight;
+    const inited = handedness === "left"
+      ? this.emulatedControllerPosInited.left
+      : this.emulatedControllerPosInited.right;
+    let tx = rawX;
+    let ty = rawY;
+    let tz = rawZ;
+    if (vMax > 0 && inited) {
+      this.tempEmulatedControllerRawDelta.set(
+        rawX - lastRaw.x,
+        rawY - lastRaw.y,
+        rawZ - lastRaw.z,
+      );
+      const maxDelta = vMax * stepDtSec;
+      const dLen = this.tempEmulatedControllerRawDelta.length();
+      if (dLen > maxDelta && dLen > 1e-20) {
+        this.tempEmulatedControllerRawDelta.multiplyScalar(maxDelta / dLen);
+        tx = lastRaw.x + this.tempEmulatedControllerRawDelta.x;
+        ty = lastRaw.y + this.tempEmulatedControllerRawDelta.y;
+        tz = lastRaw.z + this.tempEmulatedControllerRawDelta.z;
+      }
+    }
+    lastRaw.set(rawX, rawY, rawZ);
+    if (lerpA <= 0) {
+      controller.position?.set?.(tx, ty, tz);
+    } else if (!inited) {
+      smooth.set(tx, ty, tz);
+      controller.position?.set?.(smooth.x, smooth.y, smooth.z);
+    } else {
+      this.tempEmulatedControllerPosTarget.set(tx, ty, tz);
+      smooth.lerp(this.tempEmulatedControllerPosTarget, lerpA);
+      controller.position?.set?.(smooth.x, smooth.y, smooth.z);
+    }
+    if (handedness === "left") {
+      this.emulatedControllerPosInited.left = true;
+    } else {
+      this.emulatedControllerPosInited.right = true;
+    }
     controller.quaternion?.set?.(
       correctedQuaternion.x,
       correctedQuaternion.y,

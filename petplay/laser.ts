@@ -46,6 +46,7 @@ async function updateLoop() {
                 continue;
             }
 
+            // `GETCONTROLLERDATA` is a cached snapshot when webxr SAB is active (no extra OpenVR work).
             const controllerData = await PostMan.PostMessage({
                 target: state.inputActor,
                 type: "GETCONTROLLERDATA",
