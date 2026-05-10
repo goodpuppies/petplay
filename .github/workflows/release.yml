@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Preconfigure
+        run: deno run -A utils/preconf.ts
+
+      - name: Install dependencies
+        run: deno install
+
+      - name: Build executable
+        run: deno run build
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: petplay.exe
