@@ -26,6 +26,7 @@ import { IntervalMetric } from "./intervalMetric.ts";
 import { tempFile } from "./utils.ts";
 import { installWebXRHostPolyfills, type WebXrHostPolyfillOptions } from "./webxrPolyfills.ts";
 import {
+  type OpenVrHmdEmulationPose,
   type OpenVrOverlayFramePacer,
   type OpenVrOverlayPaceMode,
   tryCreateOpenVrOverlayFramePacer,
@@ -95,6 +96,8 @@ type StartOptions = {
    * the old synthetic rAF only.
    */
   useOpenVrOverlayFramePacing?: boolean;
+  /** When true, WebXRHost does not read OpenVR HMD poses; an external overlay loop may own them. */
+  disableOpenVrHmdPose?: boolean;
   /**
    * OpenVR `paceToDisplay` mode. `vsync` (default) waits for a new display index per tick (~HMD Hz).
    * `fast` samples once with no vsync spin — higher simulation / R3F rate; may duplicate photons, more CPU.
@@ -151,6 +154,8 @@ export type WebXRShadowFrame = {
   rightEyeProjectionMatrix: Float32Array;
   halfFovInRadians: number;
   ipdMeters: number;
+  /** Debug-only raw OpenVR left controller position, drawn directly by Raylib. */
+  raylibDebugLeftControllerPosition?: Float32Array;
 };
 
 const POLL_INTERVAL_MS = 16;
@@ -332,8 +337,8 @@ function getWebxrFallbackNominalHzFromArgs(): number | null {
   return n;
 }
 
-/** Per-frame lerp toward raw OpenVR hand position. `0` = off. Default softens 1-frame pose spikes. */
-const DEFAULT_WEBXR_CONTROLLER_POS_LERP = 0.28;
+/** Per-frame lerp toward raw OpenVR hand position. `0` = off. Aardvark-style default is raw. */
+const DEFAULT_WEBXR_CONTROLLER_POS_LERP = 0;
 
 function getWebxrControllerPosLerpFromArgs(): number {
   const raw = Deno.args
@@ -356,11 +361,9 @@ function getWebxrControllerPosLerpFromArgs(): number {
 
 /**
  * Max hand speed (m/s) between consecutive `applyExternalControllerData` invocations, applied to
- * **raw** OpenVR position before the position lerp. `0` = no cap. Defaults so a 90 Hz display can
- * move ~0.08 m in one 11 ms step without clipping normal motion; a single 10–15 cm 1 rAF outlier
- * is pulled back toward the path from the previous sample.
+ * **raw** OpenVR position before the position lerp. `0` = no cap. Aardvark-style default is raw.
  */
-const DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS = 7;
+const DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS = 0;
 
 function getWebxrControllerMaxHandMpsFromArgs(): number {
   const raw = Deno.args
@@ -379,6 +382,26 @@ function getWebxrControllerMaxHandMpsFromArgs(): number {
     return DEFAULT_WEBXR_CONTROLLER_MAX_HAND_MPS;
   }
   return n;
+}
+
+function getWebxrRaylibControllerDebugEnabled(): boolean {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-raylib-controller-debug="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+type RaylibControllerDebugSource = "action" | "device";
+
+function getWebxrRaylibControllerDebugSource(): RaylibControllerDebugSource {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--webxr-raylib-controller-debug-source="))
+    ?.split("=", 2)[1]
+    ?.trim()
+    .toLowerCase();
+  return raw === "device" ? "device" : "action";
 }
 
 function getWebxrOpenVrPaceFromArgs(): OpenVrOverlayPaceMode {
@@ -798,6 +821,7 @@ export class WebXRHost {
   private width = 1600;
   private height = 900;
   private vrSystemPointer: number | bigint | null = null;
+  private disableOpenVrHmdPose = false;
   private vrInputPointer: number | bigint | null = null;
   private vrInput: OpenVR.IVRInput | null = null;
   private actionManifestPath: string | null = null;
@@ -906,6 +930,7 @@ export class WebXRHost {
   private onBeforeExternalControllerApply: (() => void) | undefined;
   private onInProcessControllerFrame: ((data: ExternalControllerData) => void) | undefined;
   private latestShadowPose: {
+    lookRotation: Float32Array;
     viewerPosition: Float32Array;
     viewerQuaternion: Float32Array;
     leftEyePosition: Float32Array;
@@ -923,6 +948,10 @@ export class WebXRHost {
   /** Lerp `α` per XR frame toward raw pose position (`--webxr-controller-pos-lerp`, `0` = raw). */
   private readonly emulatedControllerPosLerp = getWebxrControllerPosLerpFromArgs();
   private readonly emulatedControllerMaxHandMps = getWebxrControllerMaxHandMpsFromArgs();
+  private readonly raylibDebugControllerCube = getWebxrRaylibControllerDebugEnabled();
+  private readonly raylibDebugControllerSource = getWebxrRaylibControllerDebugSource();
+  private latestRaylibDebugLeftControllerPosition: Float32Array | null = null;
+  private directRaylibOpenVrHmdPoseLogged = false;
   private emulatedControllerApplyPrevWallAt = 0;
   private readonly emulatedControllerPosLeft = new THREE.Vector3();
   private readonly emulatedControllerPosRight = new THREE.Vector3();
@@ -1014,6 +1043,7 @@ export class WebXRHost {
     }
     this.vrSystemPointer = options.vrSystemPointer ?? null;
     this.vrCompositorPointer = options.vrCompositorPointer ?? null;
+    this.disableOpenVrHmdPose = options.disableOpenVrHmdPose ?? false;
     this.onBeforeExternalControllerApply = options.onBeforeExternalControllerApply;
     this.onInProcessControllerFrame = options.onInProcessControllerFrame;
     this.vrInputPointer = options.vrInputPointer ?? null;
@@ -1505,7 +1535,7 @@ export class WebXRHost {
       eyeHeight,
       outputWidth: eyeWidth * 2,
       outputHeight: eyeWidth * 2,
-      lookRotation: this.getOverlayLookRotationMatrix(),
+      lookRotation: new Float32Array(pose.lookRotation),
       viewerPosition: new Float32Array(pose.viewerPosition),
       viewerQuaternion: new Float32Array(pose.viewerQuaternion),
       leftEyePosition: new Float32Array(pose.leftEyePosition),
@@ -1518,7 +1548,42 @@ export class WebXRHost {
       rightEyeProjectionMatrix: new Float32Array(pose.rightEyeProjectionMatrix),
       halfFovInRadians: pose.halfFovInRadians,
       ipdMeters: pose.ipdMeters,
+      ...(this.raylibDebugControllerCube && this.latestRaylibDebugLeftControllerPosition
+        ? {
+          raylibDebugLeftControllerPosition: new Float32Array(
+            this.latestRaylibDebugLeftControllerPosition,
+          ),
+        }
+        : {}),
     };
+  }
+
+  applyDirectOpenVrShadowPose(openVrHmd: OpenVrHmdEmulationPose | null) {
+    if (!openVrHmd || !this.latestShadowPose) {
+      return;
+    }
+    const pose = this.latestShadowPose;
+    const directViewer = {
+      position: new Float32Array(openVrHmd.position),
+      quaternion: new Float32Array(openVrHmd.quaternion),
+    };
+    const directEyes = this.buildOpenVrDirectEyePoses(openVrHmd.matrix, pose.ipdMeters);
+    this.latestShadowPose = {
+      ...pose,
+      lookRotation: this.getOverlayLookRotationMatrixFromWorldHmd(openVrHmd.matrix),
+      viewerPosition: directViewer.position,
+      viewerQuaternion: directViewer.quaternion,
+      leftEyePosition: directEyes.left.position,
+      leftEyeQuaternion: directEyes.left.quaternion,
+      leftEyeViewMatrix: directEyes.left.viewMatrix,
+      rightEyePosition: directEyes.right.position,
+      rightEyeQuaternion: directEyes.right.quaternion,
+      rightEyeViewMatrix: directEyes.right.viewMatrix,
+    };
+  }
+
+  applyDirectRaylibDebugLeftControllerPosition(position: Float32Array | null) {
+    this.latestRaylibDebugLeftControllerPosition = position ? new Float32Array(position) : null;
   }
 
   getRaythreeSceneContext(): {
@@ -2136,6 +2201,9 @@ export class WebXRHost {
     position: [number, number, number];
     quaternion: [number, number, number, number];
   } | null {
+    if (this.disableOpenVrHmdPose) {
+      return null;
+    }
     if (this.openVrOverlayPacer) {
       return this.openVrOverlayPacer.getCachedHmdEmulation();
     }
@@ -2215,28 +2283,51 @@ export class WebXRHost {
     }
 
     const viewer = this.objectWorldTransformToPose(xrCamera);
-    const left = this.objectWorldTransformToPose(leftCamera);
-    const right = this.objectWorldTransformToPose(rightCamera);
+    let left = this.objectWorldTransformToPose(leftCamera);
+    let right = this.objectWorldTransformToPose(rightCamera);
     const ipdMeters = Math.hypot(
       right.position[0] - left.position[0],
       right.position[1] - left.position[1],
       right.position[2] - left.position[2],
     );
+    const openVrHmd = this.openVrOverlayPacer?.getCachedHmdEmulation() ?? null;
+    const directViewer = openVrHmd
+      ? {
+        position: new Float32Array(openVrHmd.position),
+        quaternion: new Float32Array(openVrHmd.quaternion),
+      }
+      : viewer;
+    if (openVrHmd) {
+      const directEyes = this.buildOpenVrDirectEyePoses(
+        openVrHmd.matrix,
+        ipdMeters,
+      );
+      left = directEyes.left;
+      right = directEyes.right;
+      if (!this.directRaylibOpenVrHmdPoseLogged) {
+        this.directRaylibOpenVrHmdPoseLogged = true;
+        LogChannel.log(
+          "webxrv2",
+          "[webxrhost] Raylib shadow camera uses direct OpenVR HMD pose",
+        );
+      }
+    }
 
     this.latestShadowPose = {
-      viewerPosition: viewer.position,
-      viewerQuaternion: viewer.quaternion,
+      lookRotation: openVrHmd
+        ? this.getOverlayLookRotationMatrixFromWorldHmd(openVrHmd.matrix)
+        : this.getOverlayLookRotationMatrixFromQuaternion(directViewer.quaternion),
+      viewerPosition: directViewer.position,
+      viewerQuaternion: directViewer.quaternion,
       leftEyePosition: left.position,
       leftEyeQuaternion: left.quaternion,
-      leftEyeViewMatrix: new Float32Array(
-        new THREE.Matrix4().copy(leftCamera.matrixWorld).invert().elements,
-      ),
+      leftEyeViewMatrix: left.viewMatrix ??
+        new Float32Array(new THREE.Matrix4().copy(leftCamera.matrixWorld).invert().elements),
       leftEyeProjectionMatrix: new Float32Array(leftCamera.projectionMatrix.elements),
       rightEyePosition: right.position,
       rightEyeQuaternion: right.quaternion,
-      rightEyeViewMatrix: new Float32Array(
-        new THREE.Matrix4().copy(rightCamera.matrixWorld).invert().elements,
-      ),
+      rightEyeViewMatrix: right.viewMatrix ??
+        new Float32Array(new THREE.Matrix4().copy(rightCamera.matrixWorld).invert().elements),
       rightEyeProjectionMatrix: new Float32Array(rightCamera.projectionMatrix.elements),
       halfFovInRadians: this.projectionMatrixToHalfFovInRadians(
         leftCamera.projectionMatrix.elements,
@@ -2245,9 +2336,27 @@ export class WebXRHost {
     };
   }
 
+  private buildOpenVrDirectEyePoses(worldFromHmdValues: Float32Array, ipdMeters: number) {
+    const worldFromHmd = new THREE.Matrix4().fromArray(worldFromHmdValues as unknown as number[]);
+    const left = this.matrixWorldToPose(
+      new THREE.Matrix4().copy(worldFromHmd).multiply(
+        new THREE.Matrix4().makeTranslation(-ipdMeters * 0.5, 0, 0),
+      ),
+    );
+    const right = this.matrixWorldToPose(
+      new THREE.Matrix4().copy(worldFromHmd).multiply(
+        new THREE.Matrix4().makeTranslation(ipdMeters * 0.5, 0, 0),
+      ),
+    );
+    return { left, right };
+  }
+
   private objectWorldTransformToPose(object: THREE.Object3D) {
     object.updateMatrixWorld(true);
-    const matrix = object.matrixWorld;
+    return this.matrixWorldToPose(object.matrixWorld);
+  }
+
+  private matrixWorldToPose(matrix: THREE.Matrix4) {
     const position = new THREE.Vector3();
     const quaternion = new THREE.Quaternion();
     const scale = new THREE.Vector3();
@@ -2255,6 +2364,7 @@ export class WebXRHost {
     return {
       position: new Float32Array([position.x, position.y, position.z]),
       quaternion: new Float32Array([quaternion.x, quaternion.y, quaternion.z, quaternion.w]),
+      viewMatrix: new Float32Array(new THREE.Matrix4().copy(matrix).invert().elements),
     };
   }
 
@@ -2384,6 +2494,7 @@ export class WebXRHost {
         rightGrabData,
       ];
       this.onInProcessControllerFrame?.(frameTuple);
+      this.updateRaylibDebugControllerDevicePosition(vrInput, leftPoseData);
 
       this.updateControllerState(
         this.xrDevice.controllers.left,
@@ -2413,6 +2524,40 @@ export class WebXRHost {
         this.endEmulatedControllerDataFrame();
       }
     }
+  }
+
+  private updateRaylibDebugControllerDevicePosition(
+    vrInput: OpenVR.IVRInput,
+    leftPoseData: OpenVrPoseActionData,
+  ) {
+    if (
+      !this.raylibDebugControllerCube ||
+      this.raylibDebugControllerSource !== "device" ||
+      !this.openVrOverlayPacer ||
+      !leftPoseData?.activeOrigin
+    ) {
+      return;
+    }
+
+    const [originInfoPtr, originInfoView] = createStruct<OpenVR.InputOriginInfo>(
+      null,
+      OpenVR.InputOriginInfoStruct,
+    );
+    const error = vrInput.GetOriginTrackedDeviceInfo(
+      leftPoseData.activeOrigin,
+      originInfoPtr,
+      OpenVR.InputOriginInfoStruct.byteSize,
+    );
+    if (error !== OpenVR.InputError.VRInputError_None) {
+      return;
+    }
+
+    const info = OpenVR.InputOriginInfoStruct.read(originInfoView);
+    const pose = this.openVrOverlayPacer.getCachedTrackedDevicePose(info.trackedDeviceIndex);
+    if (!pose) {
+      return;
+    }
+    this.latestRaylibDebugLeftControllerPosition = new Float32Array(pose.position);
   }
 
   private ensureOpenVrInput(): OpenVR.IVRInput | null {
@@ -2666,6 +2811,7 @@ export class WebXRHost {
     if (!isConnected) {
       if (handedness === "left") {
         this.emulatedControllerPosInited.left = false;
+        this.latestRaylibDebugLeftControllerPosition = null;
       } else {
         this.emulatedControllerPosInited.right = false;
       }
@@ -2684,6 +2830,13 @@ export class WebXRHost {
     const rawX = m[0][3];
     const rawY = m[1][3];
     const rawZ = m[2][3];
+    if (
+      this.raylibDebugControllerCube &&
+      this.raylibDebugControllerSource === "action" &&
+      handedness === "left"
+    ) {
+      this.latestRaylibDebugLeftControllerPosition = new Float32Array([rawX, rawY, rawZ]);
+    }
     const lerpA = this.emulatedControllerPosLerp;
     const vMax = this.emulatedControllerMaxHandMps;
     const lastRaw = handedness === "left"
@@ -2828,21 +2981,33 @@ export class WebXRHost {
       ] as const
       : null;
 
-    const lookRotation = new THREE.Matrix4();
     if (!quatValues) {
-      return new Float32Array(lookRotation.identity().elements);
+      return new Float32Array(new THREE.Matrix4().identity().elements);
     }
 
+    return this.getOverlayLookRotationMatrixFromQuaternion(quatValues);
+  }
+
+  private getOverlayLookRotationMatrixFromQuaternion(quatValues: ArrayLike<number>): Float32Array {
     const worldFromHmd = new THREE.Matrix4().makeRotationFromQuaternion(
       new THREE.Quaternion(
-        quatValues[0],
-        quatValues[1],
-        quatValues[2],
-        quatValues[3],
+        Number(quatValues[0] ?? 0),
+        Number(quatValues[1] ?? 0),
+        Number(quatValues[2] ?? 0),
+        Number(quatValues[3] ?? 1),
       ),
     );
-    const hmdFromWorld = worldFromHmd.invert();
+    return this.getOverlayLookRotationMatrixFromWorldHmd(
+      new Float32Array(worldFromHmd.elements),
+    );
+  }
+
+  private getOverlayLookRotationMatrixFromWorldHmd(worldFromHmdValues: ArrayLike<number>): Float32Array {
+    const hmdFromWorld = new THREE.Matrix4()
+      .fromArray(worldFromHmdValues as unknown as number[])
+      .invert();
     const zFlip = new THREE.Matrix4().makeScale(1, 1, -1);
+    const lookRotation = new THREE.Matrix4();
     lookRotation.multiplyMatrices(hmdFromWorld, zFlip);
     return new Float32Array(lookRotation.elements);
   }

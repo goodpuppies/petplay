@@ -1,12 +1,18 @@
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import * as THREE from "three";
 import { wait } from "../classes/utils.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
 import { getCrashOnDroppedFrameMode, WebXRHost } from "../classes/webxrhost.ts";
+import {
+  tryCreateOpenVrOverlayFramePacer,
+  type OpenVrHmdEmulationPose,
+  type OpenVrOverlayFramePacer,
+} from "../classes/openVrOverlayFramePacing.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
-import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
+import { WebXROverlayRaylib, type NativeOpenVrRaylibDebugFrame } from "../classes/webxrOverlayRaylib.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
@@ -26,6 +32,51 @@ import {
 
 function getWebxrFrameLogsEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getNativeRaylibOpenVrDebugEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getNativeRaylibOpenVrDebugWithHostEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug-with-host"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getDisableHostOpenVrInputEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-disable-host-openvr-input"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getRaylibBypassRaythreeEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-bypass-raythree"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getRaylibOpenVrPacedRaythreeEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-openvr-paced-raythree"));
   if (raw == null) {
     return false;
   }
@@ -53,6 +104,11 @@ type StartWebXRPayload = {
   overlayWidthInMeters?: number;
   overlayDistance?: number;
   overlayRenderMode?: OverlayRenderMode;
+  nativeRaylibDebug?: boolean;
+  nativeRaylibDebugWithHost?: boolean;
+  disableHostOpenVrInput?: boolean;
+  raylibBypassRaythree?: boolean;
+  raylibOpenVrPacedRaythree?: boolean;
   /** `GETHMDDISPLAYFREQUENCY` from the hmd actor (OpenVR `Prop_DisplayFrequency_Float`). */
   hmdDisplayFrequencyHz?: number | null;
   /** `GETCOMPOSITORPTR` from the OpenVR actor; optional for Aardvark-style overlay display pacing. */
@@ -82,6 +138,21 @@ const state = actorState({
   webGpuOverlayGl: null as WebXROverlayGl | null,
   raylibOverlay: null as OpenVrOverlayTexture | null,
   raylibOverlayRaylib: null as WebXROverlayRaylib | null,
+  nativeRaylibDebug: false,
+  nativeRaylibDebugWithHost: false,
+  nativeRaylibPacer: null as OpenVrOverlayFramePacer | null,
+  nativeRaylibVrSystem: null as OpenVR.IVRSystem | null,
+  nativeRaylibLeftControllerIndex: null as number | null,
+  nativeRaylibRightControllerIndex: null as number | null,
+  nativeRaylibDebugTraceFirstFrame: false,
+  disableHostOpenVrInput: false,
+  raylibBypassRaythree: false,
+  raylibBypassRaythreeLogged: false,
+  raylibOpenVrPacedRaythree: false,
+  raylibOpenVrPacedRaythreeLogged: false,
+  raylibShadowNoSourceLogged: false,
+  raylibShadowNoSceneLogged: false,
+  raylibOpenVrPacedLastStatusLogAt: 0,
   webGpuOverlayConfig: null as OverlayConfig | null,
   raylibOverlayConfig: null as OverlayConfig | null,
   overlayRenderMode: "raylib" as OverlayRenderMode,
@@ -176,14 +247,49 @@ new PostMan(
       state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib";
       state.nominalHmdDisplayHz = payload?.hmdDisplayFrequencyHz ?? null;
       state.frameLogsEnabled = getWebxrFrameLogsEnabled();
+      state.nativeRaylibDebug = payload?.nativeRaylibDebug ?? getNativeRaylibOpenVrDebugEnabled();
+      state.nativeRaylibDebugWithHost = payload?.nativeRaylibDebugWithHost ??
+        getNativeRaylibOpenVrDebugWithHostEnabled();
+      state.disableHostOpenVrInput = payload?.disableHostOpenVrInput ??
+        getDisableHostOpenVrInputEnabled();
+      state.raylibBypassRaythree = payload?.raylibBypassRaythree ??
+        getRaylibBypassRaythreeEnabled();
+      state.raylibOpenVrPacedRaythree = payload?.raylibOpenVrPacedRaythree ??
+        getRaylibOpenVrPacedRaythreeEnabled();
       if (!state.startup) {
         state.startup = (async () => {
           await initializeOverlay(payload ?? null);
+          if (state.nativeRaylibDebug) {
+            initializeNativeRaylibDebug(payload ?? null);
+            LogChannel.log(
+              "webxrv2",
+              state.nativeRaylibDebugWithHost
+                ? "[webxr] native Raylib/OpenVR debug mode (WebXRHost also running; host OpenVR pacer disabled)"
+                : "[webxr] native Raylib/OpenVR debug mode (skipping WebXRHost)",
+            );
+            state.nativeRaylibDebugTraceFirstFrame = true;
+            if (hasAnyOverlayMode() && !state.overlayLoop) {
+              state.overlayRunning = true;
+              await wait(0);
+              state.overlayLoop = pumpOverlayFrames().finally(() => {
+                state.overlayLoop = null;
+              });
+            }
+            if (!state.nativeRaylibDebugWithHost) {
+              while (state.overlayRunning) {
+                await wait(16);
+              }
+              return;
+            }
+          }
           if (hasAnyOverlayMode() && !state.overlayLoop) {
             state.overlayRunning = true;
             state.overlayLoop = pumpOverlayFrames().finally(() => {
               state.overlayLoop = null;
             });
+          }
+          if (includesRaylibOverlay(payload?.overlayRenderMode ?? "raylib")) {
+            initializeRaylibOpenVrPacer(payload ?? null, "raylib overlay");
           }
           const overlayMode = payload?.overlayRenderMode ?? "raylib";
           const crashOnDropMode = getCrashOnDroppedFrameMode();
@@ -197,7 +303,10 @@ new PostMan(
 
           let onBeforeExternalControllerApply: (() => void) | undefined;
           state.controllerSharedStateSab = null;
-          const vrInputPaced = payload?.vrInputPointer != null;
+          const effectiveVrInputPointer = state.disableHostOpenVrInput
+            ? null
+            : payload?.vrInputPointer ?? null;
+          const vrInputPaced = effectiveVrInputPointer != null;
 
           const runControllerStaleChecks = (data: ControllerDataPayload, writeSeq: number) => {
             const host = state.host;
@@ -342,7 +451,7 @@ new PostMan(
             title: payload?.title,
             debugWindow: payload?.debugWindow,
             vrSystemPointer: payload?.vrSystemPointer,
-            vrInputPointer: payload?.vrInputPointer ?? null,
+            vrInputPointer: effectiveVrInputPointer,
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayInstanceActor: payload?.displayInstanceActor,
@@ -350,6 +459,10 @@ new PostMan(
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
             nominalHmdDisplayHz: payload?.hmdDisplayFrequencyHz ?? null,
+            useOpenVrOverlayFramePacing: includesRaylibOverlay(overlayMode) && !payload?.debugWindow
+              ? false
+              : undefined,
+            disableOpenVrHmdPose: state.raylibOpenVrPacedRaythree,
             onBeforeExternalControllerApply: vrInputPaced
               ? undefined
               : onBeforeExternalControllerApply,
@@ -422,6 +535,21 @@ new PostMan(
       state.raylibOverlay = null;
       state.raylibOverlayRaylib?.cleanup();
       state.raylibOverlayRaylib = null;
+      state.nativeRaylibPacer = null;
+      state.nativeRaylibVrSystem = null;
+      state.nativeRaylibLeftControllerIndex = null;
+      state.nativeRaylibRightControllerIndex = null;
+      state.nativeRaylibDebug = false;
+      state.nativeRaylibDebugWithHost = false;
+      state.nativeRaylibDebugTraceFirstFrame = false;
+      state.disableHostOpenVrInput = false;
+      state.raylibBypassRaythree = false;
+      state.raylibBypassRaythreeLogged = false;
+      state.raylibOpenVrPacedRaythree = false;
+      state.raylibOpenVrPacedRaythreeLogged = false;
+      state.raylibShadowNoSourceLogged = false;
+      state.raylibShadowNoSceneLogged = false;
+      state.raylibOpenVrPacedLastStatusLogAt = 0;
       state.webGpuOverlayConfig = null;
       state.raylibOverlayConfig = null;
       state.controllerActor = null;
@@ -647,6 +775,41 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
   }
 }
 
+function initializeNativeRaylibDebug(payload: StartWebXRPayload | null) {
+  initializeRaylibOpenVrPacer(payload, "native Raylib debug");
+}
+
+function initializeRaylibOpenVrPacer(payload: StartWebXRPayload | null, label: string) {
+  if (!payload?.vrSystemPointer) {
+    throw new Error(`${label} requires vrSystemPointer`);
+  }
+  if (state.nativeRaylibPacer && state.nativeRaylibVrSystem) {
+    return;
+  }
+  LogChannel.log("webxrv2", `[webxr] ${label} init: creating IVRSystem wrapper`);
+  const systemPointer = Deno.UnsafePointer.create(
+    typeof payload.vrSystemPointer === "bigint"
+      ? payload.vrSystemPointer
+      : BigInt(payload.vrSystemPointer),
+  );
+  if (!systemPointer) {
+    throw new Error(`invalid vrSystemPointer for ${label}`);
+  }
+  state.nativeRaylibVrSystem = new OpenVR.IVRSystem(systemPointer);
+  LogChannel.log("webxrv2", `[webxr] ${label} init: creating OpenVR pacer`);
+  state.nativeRaylibPacer = tryCreateOpenVrOverlayFramePacer(
+    payload.vrSystemPointer,
+    payload.vrCompositorPointer ?? null,
+    true,
+    false,
+    "vsync",
+  );
+  if (!state.nativeRaylibPacer) {
+    throw new Error(`failed to create OpenVR pacer for ${label}`);
+  }
+  LogChannel.log("webxrv2", `[webxr] ${label} init: ready`);
+}
+
 function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
   if (state.webGpuOverlay || !state.webGpuOverlayGl || !state.webGpuOverlayConfig) {
     return;
@@ -796,13 +959,54 @@ async function uploadRaylibShadowFrame() {
     return false;
   }
 
+  if (state.raylibBypassRaythree) {
+    if (!state.raylibBypassRaythreeLogged) {
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] raylib overlay bypassing Raythree extraction/render (native OpenVR debug frame)",
+      );
+      state.raylibBypassRaythreeLogged = true;
+    }
+    return await uploadNativeRaylibDebugFrame();
+  }
+
   const prepStartedAt = performance.now();
+  if (state.nativeRaylibPacer) {
+    state.nativeRaylibPacer.paceToDisplayAndRefreshPoses();
+    state.host.applyDirectOpenVrShadowPose(state.nativeRaylibPacer.getCachedHmdEmulation());
+    const leftController = getNativeRaylibControllerPose(
+      OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+    );
+    state.host.applyDirectRaylibDebugLeftControllerPosition(
+      leftController ? new Float32Array(leftController.position) : null,
+    );
+  }
   const sourceFrame = state.host.captureShadowFrame();
   if (!sourceFrame) {
+    if (!state.raylibShadowNoSourceLogged) {
+      const status = state.host.getStatus();
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] Raylib shadow frame unavailable: frameCount=${status.frameCount} ${
+          status.lastLayerInfo ?? "no layer info"
+        }`,
+      );
+      state.raylibShadowNoSourceLogged = true;
+    }
     return false;
   }
   const sceneContext = state.host.getRaythreeSceneContext();
   if (!sceneContext) {
+    if (!state.raylibShadowNoSceneLogged) {
+      const status = state.host.getStatus();
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] Raythree scene context unavailable: frameCount=${status.frameCount} ${
+          status.lastLayerInfo ?? "no layer info"
+        }`,
+      );
+      state.raylibShadowNoSceneLogged = true;
+    }
     return false;
   }
   state.raylibHostPrepMetric.record(performance.now() - prepStartedAt);
@@ -883,9 +1087,221 @@ async function uploadRaylibShadowFrame() {
   return true;
 }
 
+function openVrLookRotationFromWorldHmd(worldFromHmd: Float32Array): Float32Array {
+  const hmdFromWorld = new THREE.Matrix4()
+    .fromArray(worldFromHmd as unknown as number[])
+    .invert();
+  return new Float32Array(
+    hmdFromWorld.multiply(new THREE.Matrix4().makeScale(1, 1, -1)).elements,
+  );
+}
+
+function projectionHalfFov(matrix: Float32Array): number {
+  const m5 = Number(matrix[5] ?? 0);
+  return Number.isFinite(m5) && m5 !== 0
+    ? Math.atan(1 / m5)
+    : ((112 / 2) * (Math.PI / 180));
+}
+
+function nativeDebugProjectionMatrix(): Float32Array {
+  const camera = new THREE.PerspectiveCamera(112, 1, 0.05, 100);
+  camera.updateProjectionMatrix();
+  return new Float32Array(camera.projectionMatrix.elements);
+}
+
+function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
+  const pacer = state.nativeRaylibPacer;
+  const vr = state.nativeRaylibVrSystem;
+  if (!pacer || !vr) {
+    return null;
+  }
+
+  const trace = state.nativeRaylibDebugTraceFirstFrame;
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: pace");
+  pacer.paceToDisplayAndRefreshPoses();
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: read hmd");
+  const hmd = pacer.getCachedHmdEmulation();
+  if (!hmd) {
+    return null;
+  }
+
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: controller index");
+  const leftControllerIndex = vr.GetTrackedDeviceIndexForControllerRole(
+    OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+  );
+  state.nativeRaylibLeftControllerIndex = leftControllerIndex;
+  if (trace) {
+    LogChannel.log("webxrv2", `[webxr] native debug frame: controller index=${leftControllerIndex}`);
+  }
+  const leftController = pacer.getCachedTrackedDevicePose(leftControllerIndex);
+  const worldFromHmd = new THREE.Matrix4().fromArray(hmd.matrix as unknown as number[]);
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: eye matrices");
+  const ipdMeters = 0.064;
+  const leftWorld = new THREE.Matrix4()
+    .copy(worldFromHmd)
+    .multiply(new THREE.Matrix4().makeTranslation(-ipdMeters * 0.5, 0, 0));
+  const rightWorld = new THREE.Matrix4()
+    .copy(worldFromHmd)
+    .multiply(new THREE.Matrix4().makeTranslation(ipdMeters * 0.5, 0, 0));
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: synthetic projection");
+  const leftProjection = nativeDebugProjectionMatrix();
+  const rightProjection = nativeDebugProjectionMatrix();
+
+  return {
+    leftProjectionMatrix: leftProjection,
+    leftViewMatrix: new Float32Array(leftWorld.invert().elements),
+    rightProjectionMatrix: rightProjection,
+    rightViewMatrix: new Float32Array(rightWorld.invert().elements),
+    lookRotation: openVrLookRotationFromWorldHmd(hmd.matrix),
+    halfFovInRadians: projectionHalfFov(leftProjection),
+    hmdPosition: new Float32Array(hmd.position),
+    leftControllerPosition: leftController ? new Float32Array(leftController.position) : null,
+  };
+}
+
+function getNativeRaylibLeftControllerPosition(): Float32Array | null {
+  const pose = getNativeRaylibControllerPose(
+    OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+  );
+  return pose ? new Float32Array(pose.position) : null;
+}
+
+function getNativeRaylibControllerPose(
+  role: OpenVR.TrackedControllerRole,
+): OpenVrHmdEmulationPose | null {
+  const pacer = state.nativeRaylibPacer;
+  const vr = state.nativeRaylibVrSystem;
+  if (!pacer || !vr) {
+    return null;
+  }
+
+  const isLeft = role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
+  let index = isLeft ? state.nativeRaylibLeftControllerIndex : state.nativeRaylibRightControllerIndex;
+  if (index == null || index === OpenVR.k_unTrackedDeviceIndexInvalid) {
+    index = vr.GetTrackedDeviceIndexForControllerRole(role);
+    if (isLeft) {
+      state.nativeRaylibLeftControllerIndex = index;
+    } else {
+      state.nativeRaylibRightControllerIndex = index;
+    }
+  }
+  if (index === OpenVR.k_unTrackedDeviceIndexInvalid) {
+    return null;
+  }
+  return pacer.getCachedTrackedDevicePose(index);
+}
+
+async function uploadNativeRaylibDebugFrame() {
+  if (!state.raylibOverlayRaylib) {
+    return false;
+  }
+  const trace = state.nativeRaylibDebugTraceFirstFrame;
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: build");
+  const frame = buildNativeOpenVrDebugFrame();
+  if (!frame) {
+    return false;
+  }
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: raylib render");
+  const t0 = performance.now();
+  const rt = state.raylibOverlayRaylib.renderNativeOpenVrDebugFrame(frame);
+  state.raylibOvrRenderMetric.record(rt.totalMs);
+  state.raylibOvrEyeLeftMetric.record(rt.leftMs);
+  state.raylibOvrEyeRightMetric.record(rt.rightMs);
+  state.raylibOvrCombineMetric.record(rt.combineMs);
+  const openvrT0 = performance.now();
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: openvr overlay ensure");
+  ensureRaylibOverlayForFrame();
+  if (!state.raylibOverlay) {
+    throw new Error("OpenVR Raylib overlay not initialized");
+  }
+  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: openvr overlay present");
+  state.raylibOverlay.setTextureHandle(state.raylibOverlayRaylib.getTextureHandle());
+  state.raylibOverlay.present();
+  state.raylibOvrOpenvrMetric.record(performance.now() - openvrT0);
+  state.raylibOvrHandlerMetric.record(performance.now() - t0);
+  if (trace) {
+    state.nativeRaylibDebugTraceFirstFrame = false;
+    LogChannel.log("webxrv2", "[webxr] native debug frame: first frame complete");
+  }
+  return true;
+}
+
 async function pumpOverlayFrames() {
   const dropCrash = getCrashOnDroppedFrameMode();
   while (state.overlayRunning) {
+    if (state.nativeRaylibDebug) {
+      try {
+        const frameStartedAt = performance.now();
+        if (await uploadNativeRaylibDebugFrame()) {
+          state.uploadedFrames++;
+          state.overlayFpsCounter.mark();
+          state.frameMetric.record(performance.now() - frameStartedAt);
+          maybeLogOverlayPerf();
+        } else {
+          await wait(1);
+        }
+      } catch (error) {
+        LogChannel.log("webxrv2", `[webxr] native Raylib debug frame failed: ${error}`);
+        state.overlayRunning = false;
+        throw error;
+      }
+      continue;
+    }
+    if (state.raylibBypassRaythree) {
+      try {
+        if (!state.raylibBypassRaythreeLogged) {
+          LogChannel.log(
+            "webxrv2",
+            "[webxr] raylib overlay bypassing WebXR frame gate and Raythree (native OpenVR debug frame)",
+          );
+          state.raylibBypassRaythreeLogged = true;
+        }
+        const frameStartedAt = performance.now();
+        if (await uploadNativeRaylibDebugFrame()) {
+          state.uploadedFrames++;
+          state.overlayFpsCounter.mark();
+          state.frameMetric.record(performance.now() - frameStartedAt);
+          maybeLogOverlayPerf();
+        } else {
+          await wait(1);
+        }
+      } catch (error) {
+        LogChannel.log("webxrv2", `[webxr] raylib bypass frame failed: ${error}`);
+        state.overlayRunning = false;
+        throw error;
+      }
+      continue;
+    }
+    if (state.raylibOpenVrPacedRaythree) {
+      try {
+        if (!state.raylibOpenVrPacedRaythreeLogged) {
+          LogChannel.log(
+            "webxrv2",
+            "[webxr] raylib overlay OpenVR-paced Raythree mode (latest host scene, no WebXR frame gate)",
+          );
+          state.raylibOpenVrPacedRaythreeLogged = true;
+        }
+        const frameStartedAt = performance.now();
+        let rendered = await uploadRaylibShadowFrame();
+        if (!rendered) {
+          rendered = await uploadNativeRaylibDebugFrame();
+        }
+        if (rendered) {
+          state.uploadedFrames++;
+          state.overlayFpsCounter.mark();
+          state.frameMetric.record(performance.now() - frameStartedAt);
+          maybeLogOverlayPerf();
+          await wait(0);
+        } else {
+          await wait(1);
+        }
+      } catch (error) {
+        LogChannel.log("webxrv2", `[webxr] OpenVR-paced Raythree frame failed: ${error}`);
+        state.overlayRunning = false;
+        throw error;
+      }
+      continue;
+    }
     if (!state.host || !hasAnyOverlayMode()) {
       await wait(10);
       continue;

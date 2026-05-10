@@ -204,6 +204,13 @@ export class OpenVrOverlayFramePacer {
     return this.lastHmd;
   }
 
+  getCachedTrackedDevicePose(index: number): OpenVrHmdEmulationPose | null {
+    if (!Number.isInteger(index) || index < 0 || index >= OpenVR.k_unMaxTrackedDeviceCount) {
+      return null;
+    }
+    return this.readHmdPoseAtIndex(index);
+  }
+
   getLastPredictedSecondsToPhotons(): number {
     return this.lastPredictedSeconds;
   }

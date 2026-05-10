@@ -21,6 +21,51 @@ const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
 /** Raylib ghost only: `WebXRHost` skips WebGPU XR scene draws. Use `"both"` to compare to the live layer. */
 const WEBXR_OVERLAY_MODE = "raylib" as OverlayRenderMode;
 
+function getNativeRaylibOpenVrDebugEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getNativeRaylibOpenVrDebugWithHostEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug-with-host"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getDisableHostOpenVrInputEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-disable-host-openvr-input"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getRaylibBypassRaythreeEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-bypass-raythree"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getRaylibOpenVrPacedRaythreeEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-openvr-paced-raythree"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
 const stdinHandler = new MainStdinHandler({
   spawnOverlay: (name) => {
     void spawnOverlay(name);
@@ -103,6 +148,11 @@ async function main() {
       overlayWidthInMeters: 3,
       overlayDistance: 1,
       overlayRenderMode: WEBXR_OVERLAY_MODE,
+      nativeRaylibDebug: getNativeRaylibOpenVrDebugEnabled(),
+      nativeRaylibDebugWithHost: getNativeRaylibOpenVrDebugWithHostEnabled(),
+      disableHostOpenVrInput: getDisableHostOpenVrInputEnabled(),
+      raylibBypassRaythree: getRaylibBypassRaythreeEnabled(),
+      raylibOpenVrPacedRaythree: getRaylibOpenVrPacedRaythreeEnabled(),
       hmdDisplayFrequencyHz,
       vrCompositorPointer: compositorPtr,
       /** Sample IVRInput on the webxr XR rAF (after compositor pacing) instead of a ~1kHz SAB writer. */

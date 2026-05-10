@@ -5,8 +5,22 @@ import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import { WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
 
+export type NativeOpenVrRaylibDebugFrame = {
+  leftProjectionMatrix: Float32Array;
+  leftViewMatrix: Float32Array;
+  rightProjectionMatrix: Float32Array;
+  rightViewMatrix: Float32Array;
+  lookRotation: Float32Array;
+  halfFovInRadians: number;
+  hmdPosition: Float32Array;
+  leftControllerPosition: Float32Array | null;
+};
+
 const VARGGLES_FRAGMENT_SHADER = WEBXR_VARGGLES_GLSL330_FRAGMENT;
 const TRANSPARENT_BLACK = { r: 0, g: 0, b: 0, a: 0 } as raylib.Color;
+const DEBUG_LEFT_CONTROLLER_CUBE_SIZE = 0.075;
+const DEBUG_LEFT_CONTROLLER_CUBE_FILL = { r: 255, g: 48, b: 64, a: 220 } as raylib.Color;
+const DEBUG_LEFT_CONTROLLER_CUBE_WIRE = { r: 255, g: 255, b: 255, a: 255 } as raylib.Color;
 
 /**
  * Per-eye render target (pixels) for 3D + uikit. Default is native 2560/eye. UI cost is dominated by
@@ -286,8 +300,8 @@ export class WebXROverlayRaylib {
     );
 
     const tLeft0 = performance.now();
-    const leftB = this.renderEye(leftTarget, () =>
-      sceneRenderer.renderExtraction(
+    const leftB = this.renderEye(leftTarget, () => {
+      const result = sceneRenderer.renderExtraction(
         payload.leftEye,
         payload.background,
         {
@@ -296,12 +310,19 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=left`,
         payload.ui,
-      ));
+      );
+      this.drawDebugLeftControllerCube(
+        payload.frame,
+        payload.frame.leftEyeProjectionMatrix,
+        payload.frame.leftEyeViewMatrix,
+      );
+      return result;
+    });
     const leftMs = performance.now() - tLeft0;
 
     const tRight0 = performance.now();
-    const rightB = this.renderEye(rightTarget, () =>
-      sceneRenderer.renderExtraction(
+    const rightB = this.renderEye(rightTarget, () => {
+      const result = sceneRenderer.renderExtraction(
         payload.rightEye,
         payload.background,
         {
@@ -311,7 +332,14 @@ export class WebXROverlayRaylib {
         `frame=${payload.frame.frameCount} eye=right`,
         payload.ui,
         { skipAssetSync: skipRightAssetSync },
-      ));
+      );
+      this.drawDebugLeftControllerCube(
+        payload.frame,
+        payload.frame.rightEyeProjectionMatrix,
+        payload.frame.rightEyeViewMatrix,
+      );
+      return result;
+    });
     const rightMs = performance.now() - tRight0;
 
     const renderSyncMs = leftB.syncMs + rightB.syncMs;
@@ -419,6 +447,103 @@ export class WebXROverlayRaylib {
     };
   }
 
+  renderNativeOpenVrDebugFrame(frame: NativeOpenVrRaylibDebugFrame): {
+    totalMs: number;
+    leftMs: number;
+    rightMs: number;
+    combineMs: number;
+  } {
+    const eye = this.resolvedEyeSize ?? getRaylibNativeEyeSize();
+    const renderT0 = performance.now();
+    this.ensureTexture(eye, eye, eye, eye);
+
+    const leftTarget = this.leftEyeTarget;
+    const rightTarget = this.rightEyeTarget;
+    const outputTarget = this.outputTarget;
+    const shader = this.combineShader;
+    if (!leftTarget || !rightTarget || !outputTarget || !shader) {
+      throw new Error("raylib compositor not initialized");
+    }
+
+    const tLeft0 = performance.now();
+    this.renderEye(leftTarget, () =>
+      this.drawNativeOpenVrDebugEye(
+        frame.leftProjectionMatrix,
+        frame.leftViewMatrix,
+        frame,
+      )
+    );
+    const leftMs = performance.now() - tLeft0;
+
+    const tRight0 = performance.now();
+    this.renderEye(rightTarget, () =>
+      this.drawNativeOpenVrDebugEye(
+        frame.rightProjectionMatrix,
+        frame.rightViewMatrix,
+        frame,
+      )
+    );
+    const rightMs = performance.now() - tRight0;
+
+    const tCombine0 = performance.now();
+    raylib.H.SetShaderValueMatrix(
+      shader,
+      this.lookRotationLocation,
+      createRaylibLookRotation(frame.lookRotation),
+    );
+    const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);
+    const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
+    if (!halfFovPointer) {
+      throw new Error("Failed to allocate raylib half-FOV uniform buffer");
+    }
+    raylib.H.SetShaderValue(
+      shader,
+      this.halfFovLocation,
+      halfFovPointer,
+      raylib.ShaderUniformDataType.SHADER_UNIFORM_FLOAT,
+    );
+    raylib.H.BeginTextureMode(outputTarget);
+    raylib.H.ClearBackground(TRANSPARENT_BLACK);
+    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    raylib.H.BeginShaderMode(shader);
+    this.setShaderVec2(shader, this.outputUvScaleLocation, 1, 0.5);
+    this.setShaderVec2(shader, this.outputUvOffsetLocation, 0, 0);
+    raylib.H.DrawTexturePro(
+      leftTarget.texture,
+      { x: 0, y: 0, width: leftTarget.texture.width, height: -leftTarget.texture.height },
+      { x: 0, y: 0, width: outputTarget.texture.width, height: outputTarget.texture.height * 0.5 },
+      { x: 0, y: 0 },
+      0,
+      raylib.WHITE,
+    );
+    this.setShaderVec2(shader, this.outputUvScaleLocation, 1, 0.5);
+    this.setShaderVec2(shader, this.outputUvOffsetLocation, 0, 0.5);
+    raylib.H.DrawTexturePro(
+      rightTarget.texture,
+      { x: 0, y: 0, width: rightTarget.texture.width, height: -rightTarget.texture.height },
+      {
+        x: 0,
+        y: outputTarget.texture.height * 0.5,
+        width: outputTarget.texture.width,
+        height: outputTarget.texture.height * 0.5,
+      },
+      { x: 0, y: 0 },
+      0,
+      raylib.WHITE,
+    );
+    raylib.H.EndShaderMode();
+    raylib.H.EndBlendMode();
+    raylib.H.EndTextureMode();
+    const combineMs = performance.now() - tCombine0;
+
+    return {
+      totalMs: performance.now() - renderT0,
+      leftMs,
+      rightMs,
+      combineMs,
+    };
+  }
+
   cleanup() {
     this.unloadTargets();
     this.sceneRenderer?.dispose();
@@ -458,5 +583,108 @@ export class WebXROverlayRaylib {
     const out = draw();
     raylib.H.EndTextureMode();
     return out;
+  }
+
+  private drawNativeOpenVrDebugEye(
+    projectionMatrix: Float32Array,
+    viewMatrix: Float32Array,
+    frame: NativeOpenVrRaylibDebugFrame,
+  ) {
+    raylib.H.ClearBackground(TRANSPARENT_BLACK);
+    raylib.H.BeginMode3D({
+      position: { x: 0, y: 0, z: 0 },
+      target: { x: 0, y: 0, z: -1 },
+      up: { x: 0, y: 1, z: 0 },
+      fovy: 60,
+      projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
+    });
+    raylib.H.rlSetMatrixProjection(toRaylibMatrix(projectionMatrix));
+    raylib.H.rlSetMatrixModelview(toRaylibMatrix(viewMatrix));
+    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    raylib.H.DrawGrid(20, 0.25);
+    const h = frame.hmdPosition;
+    raylib.H.DrawCubeV(
+      {
+        x: Number(h[0] ?? 0),
+        y: Number(h[1] ?? 0),
+        z: Number(h[2] ?? 0) - 0.35,
+      },
+      { x: 0.05, y: 0.05, z: 0.05 },
+      { r: 60, g: 180, b: 255, a: 200 },
+    );
+    const p = frame.leftControllerPosition;
+    if (p) {
+      const position = {
+        x: Number(p[0] ?? 0),
+        y: Number(p[1] ?? 0),
+        z: Number(p[2] ?? 0),
+      };
+      raylib.H.DrawCubeV(
+        position,
+        {
+          x: DEBUG_LEFT_CONTROLLER_CUBE_SIZE,
+          y: DEBUG_LEFT_CONTROLLER_CUBE_SIZE,
+          z: DEBUG_LEFT_CONTROLLER_CUBE_SIZE,
+        },
+        DEBUG_LEFT_CONTROLLER_CUBE_FILL,
+      );
+      raylib.H.DrawCubeWiresV(
+        position,
+        {
+          x: DEBUG_LEFT_CONTROLLER_CUBE_SIZE * 1.08,
+          y: DEBUG_LEFT_CONTROLLER_CUBE_SIZE * 1.08,
+          z: DEBUG_LEFT_CONTROLLER_CUBE_SIZE * 1.08,
+        },
+        DEBUG_LEFT_CONTROLLER_CUBE_WIRE,
+      );
+    }
+    raylib.H.EndBlendMode();
+    raylib.H.EndMode3D();
+  }
+
+  private drawDebugLeftControllerCube(
+    frame: WebXRRaythreeRenderPayload["frame"],
+    projectionMatrix: Float32Array,
+    viewMatrix: Float32Array,
+  ) {
+    const p = frame.raylibDebugLeftControllerPosition;
+    if (!p) {
+      return;
+    }
+    const position = {
+      x: Number(p[0] ?? 0),
+      y: Number(p[1] ?? 0),
+      z: Number(p[2] ?? 0),
+    };
+    raylib.H.BeginMode3D({
+      position: { x: 0, y: 0, z: 0 },
+      target: { x: 0, y: 0, z: -1 },
+      up: { x: 0, y: 1, z: 0 },
+      fovy: 60,
+      projection: raylib.CameraProjection.CAMERA_PERSPECTIVE,
+    });
+    raylib.H.rlSetMatrixProjection(toRaylibMatrix(projectionMatrix));
+    raylib.H.rlSetMatrixModelview(toRaylibMatrix(viewMatrix));
+    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    raylib.H.DrawCubeV(
+      position,
+      {
+        x: DEBUG_LEFT_CONTROLLER_CUBE_SIZE,
+        y: DEBUG_LEFT_CONTROLLER_CUBE_SIZE,
+        z: DEBUG_LEFT_CONTROLLER_CUBE_SIZE,
+      },
+      DEBUG_LEFT_CONTROLLER_CUBE_FILL,
+    );
+    raylib.H.DrawCubeWiresV(
+      position,
+      {
+        x: DEBUG_LEFT_CONTROLLER_CUBE_SIZE * 1.08,
+        y: DEBUG_LEFT_CONTROLLER_CUBE_SIZE * 1.08,
+        z: DEBUG_LEFT_CONTROLLER_CUBE_SIZE * 1.08,
+      },
+      DEBUG_LEFT_CONTROLLER_CUBE_WIRE,
+    );
+    raylib.H.EndBlendMode();
+    raylib.H.EndMode3D();
   }
 }
