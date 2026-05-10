@@ -39,6 +39,7 @@ import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { useFrame as useR3FFrame } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu"
 
 type OpenVrPoseActionData = ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>;
 type OpenVrDigitalActionData = ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>;
@@ -79,6 +80,11 @@ type StartOptions = {
    */
   vrCompositorPointer?: number | bigint | null;
   /**
+   * `IVRInput` (OpenVR). When provided, {@link DirectOpenVrInputSource} reads trigger / grab
+   * buttons directly from the action manifest each frame.
+   */
+  vrInputPointer?: number | bigint | null;
+  /**
    * Each XR session rAF tick, right after `paceToDisplayAndRefreshPoses` (when
    * present) and before HMD/controller emulation. Use to ingest cross-actor
    * controller input (e.g. SharedArrayBuffer) for this display frame.
@@ -88,8 +94,8 @@ type StartOptions = {
   onBeforeExternalControllerApply?: () => void;
   /**
    * Fires with the 6-tuple that `setControllerData` would use for
-   * `applyExternalControllerData`. Button states are always false since
-   * DirectOpenVrInputSource doesn't support buttons yet.
+   * `applyExternalControllerData`. Button states come from
+   * {@link DirectOpenVrInputSource} when initialised with `vrInputPointer`.
    */
   onInProcessControllerFrame?: (data: ExternalControllerData) => void;
   /**
@@ -879,6 +885,7 @@ export class WebXRHost {
   private xrRafMaxIntervalMs = 0;
   private xrRafSlowFrameCount = 0;
   private vrCompositorPointer: number | bigint | null = null;
+  private vrInputPointer: number | bigint | null = null;
   private externalPacerTimestamp = 0;
   private externalPacerFrameSeq = 0;
   private consumedExternalPacerFrameSeq = 0;
@@ -1008,6 +1015,10 @@ export class WebXRHost {
     }
     this.vrSystemPointer = options.vrSystemPointer ?? null;
     this.vrCompositorPointer = options.vrCompositorPointer ?? null;
+    this.vrInputPointer = options.vrInputPointer ?? null;
+    if (this.vrInputPointer != null) {
+      this.directOpenVrInputSource.initialize(this.vrInputPointer);
+    }
     this.disableOpenVrHmdPose = options.disableOpenVrHmdPose ?? false;
     this.onBeforeExternalControllerApply = options.onBeforeExternalControllerApply;
     this.onInProcessControllerFrame = options.onInProcessControllerFrame;
@@ -1256,10 +1267,33 @@ export class WebXRHost {
         //camera: { position: [0, 0, 0], fov: 75, near: 0.1, far: 100 },
       });
 
+      let sceneMountedResolve!: () => void
+      const sceneMounted = new Promise<void>((resolve) => {
+        sceneMountedResolve = resolve
+      })
+
+      function SceneMountedMarker() {
+        React.useLayoutEffect(() => {
+          sceneMountedResolve()
+        }, [])
+        return null
+      }
+
+      function NoR3FDefaultRender() {
+        useR3FFrame(() => { }, {
+          id: "petplay-no-r3f-default-render",
+          phase: "render",
+        })
+
+        return null
+      }
+
       const rootStore = this.root.render(
         React.createElement(
           XR,
           { store },
+          React.createElement(SceneMountedMarker),
+          React.createElement(NoR3FDefaultRender), // for the test
           React.createElement(WebXRScene, {
             XROrigin,
             displayInstanceActor: options.displayInstanceActor ?? null,
@@ -1269,7 +1303,8 @@ export class WebXRHost {
       this.rootStore = rootStore;
       rootStore.getState().xr.disconnect();
 
-      await wait(0);
+      //await wait(0);
+      await sceneMounted
       advance(performance.now());
       if (this.debugWindowEnabled) {
         this.surfaceHost.present();
@@ -1417,6 +1452,8 @@ export class WebXRHost {
     this.debugWindowEnabled = false;
     this.latestShadowPose = null;
     this.vrSystemPointer = null;
+    this.vrInputPointer = null;
+    this.directOpenVrInputSource.resetInput();
     if (this.xrDevice != null && this.openVrDrivenBeforeIwerFrameStart) {
       const d = this.xrDevice as XrDeviceBridge & {
         setBeforeFrameStartHook?: (cb: ((frame: XRFrame) => void) | null | undefined) => void;
@@ -1877,6 +1914,7 @@ export class WebXRHost {
         const tHmd = performance.now();
         this.updateEmulatedHeadsetFromOpenVr();
         this.xrHmdEmulationMetric.record(performance.now() - tHmd);
+        this.directOpenVrInputSource.updateActionState();
         const tCtrl = performance.now();
         this.applyExternalControllerData();
         this.xrControllerApplyMetric.record(performance.now() - tCtrl);
@@ -2237,6 +2275,7 @@ export class WebXRHost {
     const tHmd = performance.now();
     this.updateEmulatedHeadsetFromOpenVr();
     this.xrHmdEmulationMetric.record(performance.now() - tHmd);
+    this.directOpenVrInputSource.updateActionState();
     const tCtrl = performance.now();
     this.applyExternalControllerData();
     this.xrControllerApplyMetric.record(performance.now() - tCtrl);
@@ -2462,7 +2501,6 @@ export class WebXRHost {
     const snapshot = this.directOpenVrInputSource.getSnapshot();
     const stepDt = this.beginEmulatedControllerDataFrame();
     try {
-      // DirectOpenVrInputSource doesn't support buttons yet, so we pass 0 for all button states
       const leftPoseData: OpenVrPoseActionData = snapshot.controllers.left
         ? {
           bActive: 1,
@@ -2525,7 +2563,6 @@ export class WebXRHost {
           },
         };
 
-      // Buttons from DirectOpenVrInputSource (currently stubbed to 0)
       const leftTriggerData: OpenVrDigitalActionData = {
         bActive: snapshot.controllers.left ? 1 : 0,
         activeOrigin: 0n,

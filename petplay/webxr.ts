@@ -116,6 +116,8 @@ type StartWebXRPayload = {
   hmdDisplayFrequencyHz?: number | null;
   /** `GETCOMPOSITORPTR` from the OpenVR actor; optional for Aardvark-style overlay display pacing. */
   vrCompositorPointer?: bigint | null;
+  /** `GETINPUTPTR` from the OpenVR actor; enables DirectOpenVrInputSource trigger/grab reads. */
+  vrInputPointer?: number | bigint | null;
 };
 
 type ControllerDataPayload = ControllerExternalDataTuple;
@@ -421,6 +423,7 @@ new PostMan(
             debugWindow: payload?.debugWindow,
             vrSystemPointer: payload?.vrSystemPointer,
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
+            vrInputPointer: payload?.vrInputPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayInstanceActor: payload?.displayInstanceActor,
             sessionMode: payload?.sessionMode,
