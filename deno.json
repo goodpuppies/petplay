@@ -44,7 +44,7 @@
     "keyb": "deno run -A petplay/keyboardViewer.tsx ",
     "keyb:reset": "deno run -A petplay/resetKeyboard.ts",
     "build": {
-      "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./dist/ --include ./submodules/threewebxrwebgpudeno/vendor/three-msdf-text-utils/demo/fonts/roboto/ --icon resources/petplay.ico petplay/petplay.ts"
+      "command": "deno compile -A --no-check --include ./petplay/ --include ./classes/ --include ./resources/ --include ./submodules/threewebxrwebgpudeno/vendor/three-msdf-text-utils/demo/fonts/roboto/ --icon resources/petplay.ico petplay/petplay.ts"
     },
     "devw": {
       "command": "deno run -A --env-file utils/watcher.ts --watch ./petplay/ --ext ts --verbose --exec \"deno run -A petplay/petplay.ts dev\"",
