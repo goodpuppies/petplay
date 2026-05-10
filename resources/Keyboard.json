@@ -1,0 +1,390 @@
+{
+    "keyWidth": 73.1667,
+    "keyPadding": 4,
+    "keyHaptic": 2000,
+    "keyGroupsPadding": 10,
+
+    //Keycodes are actually ScanCodes, ref can be found at http://kbdlayout.info/
+    "keyboardGroups":
+    {
+        "mainGroup":
+        {
+            "ansiRows":
+            [
+                [
+                    {"keycode": "01", "color":"dark", "label": "esc", "fontSize": 24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "3B", "color":"dark", "label":"F1", "fontSize":24},
+                    {"keycode": "3C", "color":"dark", "label":"F2", "fontSize":24},
+                    {"keycode": "3D", "color":"dark", "label":"F3", "fontSize":24},
+                    {"keycode": "3E", "color":"dark", "label":"F4", "fontSize":24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "3F", "color":"dark", "label":"F5", "fontSize":24},
+                    {"keycode": "40", "color":"dark", "label":"F6", "fontSize":24},
+                    {"keycode": "41", "color":"dark", "label":"F7", "fontSize":24},
+                    {"keycode": "42", "color":"dark", "label":"F8", "fontSize":24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "43", "color":"dark", "label":"F9", "fontSize":24},
+                    {"keycode": "44", "color":"dark", "label":"F10", "fontSize":24},
+                    {"keycode": "57", "color":"dark", "label":"F11", "fontSize":24},
+                    {"keycode": "58", "color":"dark", "label":"F12", "fontSize":24}
+                ],
+                [
+                    {"keycode": "29"}, // tilde
+                    {"keycode": "02"},
+                    {"keycode": "03"},
+                    {"keycode": "04"},
+                    {"keycode": "05"},
+                    {"keycode": "06"},
+                    {"keycode": "07"},
+                    {"keycode": "08"},
+                    {"keycode": "09"},
+                    {"keycode": "0A"},
+                    {"keycode": "0B"},
+                    {"keycode": "0C"}, // -_ key
+                    {"keycode": "0D"}, // =+ key
+                    {"keycode": "0E", "width": 2, "color": "dark", "icon":"backspace", "audio":"backspace"}
+                ],
+                [
+                    {"keycode": "0F", "width": 1.5, "color": "dark", "icon":"tab"},
+                    {"keycode": "10", "respectCapsLock": true},
+                    {"keycode": "11", "respectCapsLock": true},
+                    {"keycode": "12", "respectCapsLock": true},
+                    {"keycode": "13", "respectCapsLock": true},
+                    {"keycode": "14", "respectCapsLock": true},
+                    {"keycode": "15", "respectCapsLock": true},
+                    {"keycode": "16", "respectCapsLock": true},
+                    {"keycode": "17", "respectCapsLock": true},
+                    {"keycode": "18", "respectCapsLock": true},
+                    {"keycode": "19", "respectCapsLock": true},
+                    {"keycode": "1A"}, // [{ key
+                    {"keycode": "1B"}, // ]} key
+                    {"keycode": "2B", "width": 1.5} // \| key
+                ],
+                [
+                    {"keycode": "3A", "width": 1.75, "color": "dark", "toggle": true, "icon":"caps"},
+                    {"keycode": "1E", "respectCapsLock": true},
+                    {"keycode": "1F", "respectCapsLock": true},
+                    {"keycode": "20", "respectCapsLock": true},
+                    {"keycode": "21", "respectCapsLock": true},
+                    {"keycode": "22", "respectCapsLock": true},
+                    {"keycode": "23", "respectCapsLock": true},
+                    {"keycode": "24", "respectCapsLock": true},
+                    {"keycode": "25", "respectCapsLock": true},
+                    {"keycode": "26", "respectCapsLock": true},
+                    {"keycode": "27"}, // ;: key
+                    {"keycode": "28"}, // '" key
+                    {"keycode": "1C", "width": 2.3, "color": "dark", "icon":"enter", "audio":"enter"}
+                ],
+                [
+                    {"keycode": "2A", "isDoubleTappable": true, "width": 2.25, "color": "dark", "sticky":true, "icon": "up", "iconSize":38},
+                    {"keycode": "2C", "respectCapsLock": true},
+                    {"keycode": "2D", "respectCapsLock": true},
+                    {"keycode": "2E", "respectCapsLock": true},
+                    {"keycode": "2F", "respectCapsLock": true},
+                    {"keycode": "30", "respectCapsLock": true},
+                    {"keycode": "31", "respectCapsLock": true},
+                    {"keycode": "32", "respectCapsLock": true},
+                    {"keycode": "33"},
+                    {"keycode": "34"},
+                    {"keycode": "35"}, // /? key
+                    {"keycode":"36", "isDoubleTappable": true, "width": 2.85, "color": "dark", "sticky":true, "icon": "up", "iconSize":38}
+                ],
+                [
+                    {"keycode": "1D", "width": 1.5, "color": "dark", "sticky":true, "label": "ctrl", "fontSize": 24},
+                    {"keycode": "E05B", "color": "dark", "icon":"windows", "sticky":true, "iconSize":56},
+                    {"keycode": "38", "isDoubleTappable": true, "width": 1.5,  "color": "dark", "sticky":true, "label": "alt", "fontSize": 24}, // LAlt Key
+                    {"keycode": "39", "width": 6.315, "icon":"spacebar", "audio":"spacebar"},
+                    {"keycode": "E038", "isDoubleTappable": true, "width": 1.5, "color": "dark", "sticky":true, "label": "alt", "fontSize": 24}, // RAlt Key
+                    {"keycode": "E05C", "color": "dark", "sticky":true, "icon":"windows", "iconSize":56},
+                    {"keycode": "E05D", "color": "dark", "icon":"context"}, // Context menu key
+                    {"keycode": "E01D", "width": 1.5, "color": "dark", "sticky":true, "label": "ctrl", "fontSize": 24}
+                ]
+            ],
+            "isoRows":
+            [
+                [
+                    {"keycode": "01", "color":"dark", "label": "esc", "fontSize": 24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "3B", "color":"dark", "label":"F1", "fontSize":24},
+                    {"keycode": "3C", "color":"dark", "label":"F2", "fontSize":24},
+                    {"keycode": "3D", "color":"dark", "label":"F3", "fontSize":24},
+                    {"keycode": "3E", "color":"dark", "label":"F4", "fontSize":24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "3F", "color":"dark", "label":"F5", "fontSize":24},
+                    {"keycode": "40", "color":"dark", "label":"F6", "fontSize":24},
+                    {"keycode": "41", "color":"dark", "label":"F7", "fontSize":24},
+                    {"keycode": "42", "color":"dark", "label":"F8", "fontSize":24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "43", "color":"dark", "label":"F9", "fontSize":24},
+                    {"keycode": "44", "color":"dark", "label":"F10", "fontSize":24},
+                    {"keycode": "57", "color":"dark", "label":"F11", "fontSize":24},
+                    {"keycode": "58", "color":"dark", "label":"F12", "fontSize":24}
+                ],
+                [
+                    {"keycode": "29"}, // tilde
+                    {"keycode": "02"},
+                    {"keycode": "03"},
+                    {"keycode": "04"},
+                    {"keycode": "05"},
+                    {"keycode": "06"},
+                    {"keycode": "07"},
+                    {"keycode": "08"},
+                    {"keycode": "09"},
+                    {"keycode": "0A"},
+                    {"keycode": "0B"},
+                    {"keycode": "0C"}, // -_ key
+                    {"keycode": "0D"}, // =+ key
+                    {"keycode": "0E", "width": 2, "color": "dark", "icon":"backspace", "audio":"backspace"}
+                ],
+                [
+                    {"keycode": "0F", "width": 1.5, "color": "dark", "icon":"tab"},
+                    {"keycode": "10", "respectCapsLock": true},
+                    {"keycode": "11", "respectCapsLock": true},
+                    {"keycode": "12", "respectCapsLock": true},
+                    {"keycode": "13", "respectCapsLock": true},
+                    {"keycode": "14", "respectCapsLock": true},
+                    {"keycode": "15", "respectCapsLock": true},
+                    {"keycode": "16", "respectCapsLock": true},
+                    {"keycode": "17", "respectCapsLock": true},
+                    {"keycode": "18", "respectCapsLock": true},
+                    {"keycode": "19", "respectCapsLock": true},
+                    {"keycode": "1A"}, // [{ key
+                    {"keycode": "1B"}, // ]} key
+                    {"keycode": "1C", "width": 1.3, "height": 2.055, "color": "dark", "icon":"enter", "audio":"enter"}
+                ],
+                [
+                    {"keycode": "3A", "width": 1.5, "color": "dark", "toggle": true, "icon":"caps"},
+                    {"keycode": "1E", "respectCapsLock": true},
+                    {"keycode": "1F", "respectCapsLock": true},
+                    {"keycode": "20", "respectCapsLock": true},
+                    {"keycode": "21", "respectCapsLock": true},
+                    {"keycode": "22", "respectCapsLock": true},
+                    {"keycode": "23", "respectCapsLock": true},
+                    {"keycode": "24", "respectCapsLock": true},
+                    {"keycode": "25", "respectCapsLock": true},
+                    {"keycode": "26", "respectCapsLock": true},
+                    {"keycode": "27"}, // ;: key
+                    {"keycode": "28"}, // '" key
+                    {"keycode": "2B"}, // \| key
+                    {"spacer": true, "width": 1.3}
+                ],
+                [
+                    {"keycode": "2A", "isDoubleTappable": true, "width": 1.5, "color": "dark", "sticky":true, "icon": "up", "iconSize":38},
+                    {"keycode": "56"}, // OEM 102
+                    {"keycode": "2C", "respectCapsLock": true},
+                    {"keycode": "2D", "respectCapsLock": true},
+                    {"keycode": "2E", "respectCapsLock": true},
+                    {"keycode": "2F", "respectCapsLock": true},
+                    {"keycode": "30", "respectCapsLock": true},
+                    {"keycode": "31", "respectCapsLock": true},
+                    {"keycode": "32", "respectCapsLock": true},
+                    {"keycode": "33"},
+                    {"keycode": "34"},
+                    {"keycode": "35"}, // /? key
+                    {"keycode":"36", "isDoubleTappable": true, "width": 2.366, "color": "dark", "sticky":true, "icon": "up", "iconSize":38}
+                ],
+                [
+                    {"keycode": "1D", "width": 1.5, "color": "dark", "sticky":true, "label": "ctrl", "fontSize": 24},
+                    {"keycode": "E05B", "color": "dark", "icon":"windows", "sticky":true, "iconSize":56},
+                    {"keycode": "38", "isDoubleTappable": true, "width": 1.5,  "color": "dark", "sticky":true, "label": "alt", "fontSize": 24}, // LAlt Key
+                    {"keycode": "39", "width": 6.315, "icon":"spacebar", "audio":"spacebar"},
+                    {"keycode": "E038", "isDoubleTappable": true, "width": 1.5, "color": "dark", "sticky":true, "label": "alt", "fontSize": 24}, // RAlt Key
+                    {"keycode": "E05C", "color": "dark", "sticky":true, "icon":"windows", "iconSize":56},
+                    {"keycode": "E05D", "color": "dark", "icon":"context"}, // Context menu key
+                    {"keycode": "E01D", "width": 1.5, "color": "dark", "sticky":true, "label": "ctrl", "fontSize": 24}
+                ]
+            ],
+            "jisRows":
+            [
+                [
+                    {"keycode": "01", "color":"dark", "label": "esc", "fontSize": 24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "3B", "color":"dark", "label":"F1", "fontSize":24},
+                    {"keycode": "3C", "color":"dark", "label":"F2", "fontSize":24},
+                    {"keycode": "3D", "color":"dark", "label":"F3", "fontSize":24},
+                    {"keycode": "3E", "color":"dark", "label":"F4", "fontSize":24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "3F", "color":"dark", "label":"F5", "fontSize":24},
+                    {"keycode": "40", "color":"dark", "label":"F6", "fontSize":24},
+                    {"keycode": "41", "color":"dark", "label":"F7", "fontSize":24},
+                    {"keycode": "42", "color":"dark", "label":"F8", "fontSize":24},
+                    {"spacer": true, "width": 0.63},
+                    {"keycode": "43", "color":"dark", "label":"F9", "fontSize":24},
+                    {"keycode": "44", "color":"dark", "label":"F10", "fontSize":24},
+                    {"keycode": "57", "color":"dark", "label":"F11", "fontSize":24},
+                    {"keycode": "58", "color":"dark", "label":"F12", "fontSize":24}
+                ],
+                [
+                    {"keycode": "29"}, // tilde
+                    {"keycode": "02", "secondaryLabel": "ぬ"},
+                    {"keycode": "03", "secondaryLabel": "ふ"},
+                    {"keycode": "04", "secondaryLabel": "あ"},
+                    {"keycode": "05", "secondaryLabel": "う"},
+                    {"keycode": "06", "secondaryLabel": "え"},
+                    {"keycode": "07", "secondaryLabel": "お"},
+                    {"keycode": "08", "secondaryLabel": "や"},
+                    {"keycode": "09", "secondaryLabel": "ゆ"},
+                    {"keycode": "0A", "secondaryLabel": "よ"},
+                    {"keycode": "0B", "secondaryLabel": "わ"},
+                    {"keycode": "0C", "secondaryLabel": "ほ"}, // -_ key
+                    {"keycode": "0D", "secondaryLabel": "へ"}, // =+ key
+                    {"keycode": "7D", "secondaryLabel": "ー"},
+                    {"keycode": "0E", "width": 1, "color": "dark", "icon":"backspace", "audio":"backspace"}
+                ],
+                [
+                    {"keycode": "0F", "width": 1.5, "color": "dark", "icon":"tab"},
+                    {"keycode": "10", "respectCapsLock": true, "secondaryLabel": "た"},
+                    {"keycode": "11", "respectCapsLock": true, "secondaryLabel": "て"},
+                    {"keycode": "12", "respectCapsLock": true, "secondaryLabel": "い"},
+                    {"keycode": "13", "respectCapsLock": true, "secondaryLabel": "す"},
+                    {"keycode": "14", "respectCapsLock": true, "secondaryLabel": "か"},
+                    {"keycode": "15", "respectCapsLock": true, "secondaryLabel": "ん"},
+                    {"keycode": "16", "respectCapsLock": true, "secondaryLabel": "な"},
+                    {"keycode": "17", "respectCapsLock": true, "secondaryLabel": "に"},
+                    {"keycode": "18", "respectCapsLock": true, "secondaryLabel": "ら"},
+                    {"keycode": "19", "respectCapsLock": true, "secondaryLabel": "せ"},
+                    {"keycode": "1A"}, // [{ key
+                    {"keycode": "1B"}, // ]} key
+                    {"keycode": "2B", "secondaryLabel": "む", "width": 1.5} // \| key
+                ],
+                [
+                    {"keycode": "3A", "width": 1.75, "color": "dark", "toggle": true, "icon":"caps"},
+                    {"keycode": "1E", "respectCapsLock": true, "secondaryLabel": "ち"},
+                    {"keycode": "1F", "respectCapsLock": true, "secondaryLabel": "と"},
+                    {"keycode": "20", "respectCapsLock": true, "secondaryLabel": "し"},
+                    {"keycode": "21", "respectCapsLock": true, "secondaryLabel": "は"},
+                    {"keycode": "22", "respectCapsLock": true, "secondaryLabel": "き"},
+                    {"keycode": "23", "respectCapsLock": true, "secondaryLabel": "く"},
+                    {"keycode": "24", "respectCapsLock": true, "secondaryLabel": "ま"},
+                    {"keycode": "25", "respectCapsLock": true, "secondaryLabel": "の"},
+                    {"keycode": "26", "respectCapsLock": true, "secondaryLabel": "り"},
+                    {"keycode": "27", "secondaryLabel": "れ"}, // ;: key
+                    {"keycode": "28", "secondaryLabel": "け"}, // '" key
+                    {"keycode": "1C", "width": 2.3, "color": "dark", "icon":"enter", "audio":"enter"}
+                ],
+                [
+                    {"keycode": "2A", "isDoubleTappable": true, "width": 1.66, "color": "dark", "sticky":true, "icon": "up", "iconSize":38},
+                    {"keycode": "2C", "respectCapsLock": true, "secondaryLabel": "つ"},
+                    {"keycode": "2D", "respectCapsLock": true, "secondaryLabel": "さ"},
+                    {"keycode": "2E", "respectCapsLock": true, "secondaryLabel": "そ"},
+                    {"keycode": "2F", "respectCapsLock": true, "secondaryLabel": "ひ"},
+                    {"keycode": "30", "respectCapsLock": true, "secondaryLabel": "こ"},
+                    {"keycode": "31", "respectCapsLock": true, "secondaryLabel": "み"},
+                    {"keycode": "32", "respectCapsLock": true, "secondaryLabel": "も"},
+                    {"keycode": "33", "secondaryLabel": "ね"},
+                    {"keycode": "34", "secondaryLabel": "る"},
+                    {"keycode": "35", "secondaryLabel": "め"}, // /? key
+                    {"keycode": "73", "secondaryLabel": "ろ"},
+                    {"keycode":"36", "isDoubleTappable": true, "width": 2.5, "color": "dark", "sticky":true, "icon": "up", "iconSize":38}
+                ],
+                [
+                    {"keycode": "1D", "width": 1.5, "color": "dark", "sticky":true, "label": "ctrl", "fontSize": 24},
+                    {"keycode": "E05B", "color": "dark", "icon":"windows", "sticky":true, "iconSize":56},
+                    {"keycode": "38", "isDoubleTappable": true, "width": 1.5,  "color": "dark", "sticky":true, "label": "alt", "fontSize": 24}, // LAlt Key
+                    {"keycode": "39", "width": 6.315, "icon":"spacebar", "audio":"spacebar"},
+                    {"keycode": "E038", "isDoubleTappable": true, "width": 1.5, "color": "dark", "sticky":true, "label": "alt", "fontSize": 24}, // RAlt Key
+                    {"keycodes": ["2A", "38"], "label": "IME", "color": "dark"},
+                    {"keycode": "E05D", "color": "dark", "icon":"context"}, // Context menu key
+                    {"keycode": "E01D", "width": 1.5, "color": "dark", "sticky":true, "label": "ctrl", "fontSize": 24}
+                ]
+            ]
+        },
+        "navigationGroup":
+        {
+            "rows":
+            [
+                [
+                    {"keycode": "54", "label":"PRNT", "fontSize":20},
+                    {"keycode": "46", "label":"SCRLLK", "fontSize":20},
+                    {"keycode": "E11D", "label":"PAUSE", "fontSize":20}
+                ],
+                [
+                    {"keycode": "E052", "label":"INS", "fontSize":20},
+                    {"keycode": "E047", "label":"HOME", "fontSize":20},
+                    {"keycode": "E049", "label":"PGUP", "fontSize":20}
+                ],
+                [
+                    {"keycode": "E053", "label":"DEL", "fontSize":20},
+                    {"keycode": "E04F", "label":"END", "fontSize":20},
+                    {"keycode": "E051", "label":"PGDN", "fontSize":20}
+                ],
+                [
+                    {"spacer": true}
+                ],
+                [
+                    {"spacer": true},
+                    {"keycode": "E048", "icon":"up", "iconSize":38},
+                    {"spacer": true}
+                ],
+                [
+                    {"keycode": "E04B", "icon":"left", "iconSize":38},
+                    {"keycode": "E050", "icon":"down", "iconSize":38},
+                    {"keycode": "E04D", "icon":"right", "iconSize":38}
+                ]
+            ]
+        },
+        "minimalNavigationGroup":
+        {
+            "rows":
+            [
+                [
+                    {"keycode": "54", "label":"PRNT", "fontSize":20}
+                ],
+                [
+                    {"keycode": "E047", "label":"HOME", "fontSize":20}
+                ],
+                [
+                    {"keycode": "E049", "label":"PGUP", "fontSize":20}
+                ],
+                [
+                    {"keycode": "E051", "label":"PGDN", "fontSize":20}
+                ],
+                [
+                    {"keycode": "E053", "label":"DEL", "fontSize":20}
+                ],
+                [
+                    {"spacer": "true"}
+                ]
+            ]
+        },
+        "numpadGroup":
+        {
+            "rows":
+            [
+                [
+                    {"spacer": true}
+                ],
+                [
+                    {"keycode": "NUMLOCK",  "useVirtualKeyCode": true, "label":"NUMLK", "fontSize":20},
+                    {"keycode": "DIVIDE",   "useVirtualKeyCode": true},
+                    {"keycode": "MULTIPLY", "useVirtualKeyCode": true},
+                    {"keycode": "SUBTRACT", "useVirtualKeyCode": true}
+                ],
+                [
+                    {"keycode": "NUMPAD7",  "useVirtualKeyCode": true, "label": "7"},
+                    {"keycode": "NUMPAD8",  "useVirtualKeyCode": true, "label": "8"},
+                    {"keycode": "NUMPAD9",  "useVirtualKeyCode": true, "label": "9"},
+                    {"keycode": "ADD",      "useVirtualKeyCode": true, "height": 2.055}
+                ],
+                [
+                    {"keycode": "NUMPAD4",  "useVirtualKeyCode": true, "label": "4"},
+                    {"keycode": "NUMPAD5",  "useVirtualKeyCode": true, "label": "5"},
+                    {"keycode": "NUMPAD6",  "useVirtualKeyCode": true, "label": "6"},
+                    {"spacer": true}
+                ],
+                [
+                    {"keycode": "NUMPAD1",  "useVirtualKeyCode": true, "label": "1"},
+                    {"keycode": "NUMPAD2",  "useVirtualKeyCode": true, "label": "2"},
+                    {"keycode": "NUMPAD3",  "useVirtualKeyCode": true, "label": "3"},
+                    {"keycode": "RETURN",   "useVirtualKeyCode": true, "icon":"enter", "height": 2.055}
+                ],
+                [
+                    {"keycode": "NUMPAD0",  "useVirtualKeyCode": true, "label": "0", "width": 2.055},
+                    {"keycode": "DECIMAL",  "useVirtualKeyCode": true, "label": "."},
+                    {"spacer": true}
+                ]
+            ]
+        }
+    }
+}

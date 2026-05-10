@@ -5,5 +5,5 @@ cef/
 tmp/
 node_modules/
 .cursor/
-resources/Keyboard.json
-research/aardvark/src/thirdparty/
+research/aardvark/
+agents.md
