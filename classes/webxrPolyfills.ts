@@ -136,6 +136,8 @@ export function installWebXRHostPolyfills(
         super(type, init);
         this.detail = init?.detail as T;
       }
+
+      initCustomEvent() {}
     } as typeof CustomEvent;
   }
 }

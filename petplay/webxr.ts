@@ -7,12 +7,15 @@ import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
 import { getCrashOnDroppedFrameMode, WebXRHost } from "../classes/webxrhost.ts";
 import {
-  tryCreateOpenVrOverlayFramePacer,
   type OpenVrHmdEmulationPose,
   type OpenVrOverlayFramePacer,
+  tryCreateOpenVrOverlayFramePacer,
 } from "../classes/openVrOverlayFramePacing.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
-import { WebXROverlayRaylib, type NativeOpenVrRaylibDebugFrame } from "../classes/webxrOverlayRaylib.ts";
+import {
+  type NativeOpenVrRaylibDebugFrame,
+  WebXROverlayRaylib,
+} from "../classes/webxrOverlayRaylib.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
@@ -359,48 +362,48 @@ new PostMan(
                * then webxr *reads* the SAB in this callback (legacy path).
                */
               onBeforeExternalControllerApply = function webxrIngestControllerSabAndCheckStale() {
-                  const buf = state.controllerSharedStateSab;
-                  const host = state.host;
-                  if (!buf || !host) return;
-                  const read = readControllerStateSab(buf);
-                  if (!read) return;
-                  const { data, writeSeq, motion } = read;
-                  const fc = host.getStatus().frameCount;
-                  const h = hashControllerPoseMatrices(data);
-                  const maxMotion = Math.max(
-                    motion.leftLin,
-                    motion.leftAng,
-                    motion.rightLin,
-                    motion.rightAng,
-                  );
-                  const STALE_MOTION_FLOOR = 0.02;
-                  if (
-                    crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
-                  ) {
-                    const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
-                      h === state.lastRafControllerPoseHash;
-                    const writerStarved = writeSeq > 0 &&
-                      state.lastControllerSabWriteSeq >= 0 &&
-                      writeSeq === state.lastControllerSabWriteSeq;
-                    if (writerStarved) {
-                      throw new Error(
-                        `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
-                          `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
-                      );
-                    }
-                    if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
-                      throw new Error(
-                        `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
-                          `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
-                          `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
-                      );
-                    }
+                const buf = state.controllerSharedStateSab;
+                const host = state.host;
+                if (!buf || !host) return;
+                const read = readControllerStateSab(buf);
+                if (!read) return;
+                const { data, writeSeq, motion } = read;
+                const fc = host.getStatus().frameCount;
+                const h = hashControllerPoseMatrices(data);
+                const maxMotion = Math.max(
+                  motion.leftLin,
+                  motion.leftAng,
+                  motion.rightLin,
+                  motion.rightAng,
+                );
+                const STALE_MOTION_FLOOR = 0.02;
+                if (
+                  crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
+                ) {
+                  const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
+                    h === state.lastRafControllerPoseHash;
+                  const writerStarved = writeSeq > 0 &&
+                    state.lastControllerSabWriteSeq >= 0 &&
+                    writeSeq === state.lastControllerSabWriteSeq;
+                  if (writerStarved) {
+                    throw new Error(
+                      `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
+                        `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
+                    );
                   }
-                  state.lastRafControllerPoseHash = h;
-                  state.lastControllerSabWriteSeq = writeSeq;
-                  host.setControllerData(data);
-                  publishControllerSnapshot(data);
-                };
+                  if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
+                    throw new Error(
+                      `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
+                        `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
+                        `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
+                    );
+                  }
+                }
+                state.lastRafControllerPoseHash = h;
+                state.lastControllerSabWriteSeq = writeSeq;
+                host.setControllerData(data);
+                publishControllerSnapshot(data);
+              };
             } catch (error) {
               LogChannel.log(
                 "webxrv2",
@@ -911,6 +914,12 @@ async function uploadWebGpuSceneFrame() {
   }
 }
 
+function shouldSignalHostFromRaylibPace(
+  pace: ReturnType<OpenVrOverlayFramePacer["getLastPaceResult"]>,
+): boolean {
+  return pace.ok && pace.waitedForVsync && pace.skippedDisplayFrames === 0;
+}
+
 function hasAnyOverlayMode(): boolean {
   return includesRaylibOverlay(state.overlayRenderMode) ||
     includesWebGpuOverlay(state.overlayRenderMode);
@@ -933,8 +942,9 @@ async function uploadRaylibShadowFrame() {
   }
 
   const prepStartedAt = performance.now();
+  let signalHostAfterPresent = false;
   if (state.nativeRaylibPacer) {
-    state.nativeRaylibPacer.paceToDisplayAndRefreshPoses();
+    const pace = await state.nativeRaylibPacer.paceToDisplayAndRefreshPosesYielding();
     state.nativeRaylibPacer.maybeLogFps();
     state.host.applyDirectOpenVrShadowPose(state.nativeRaylibPacer.getCachedHmdEmulation());
     // Single source of OpenVR HMD + controller pose for the entire app. The Raylib
@@ -945,8 +955,11 @@ async function uploadRaylibShadowFrame() {
       getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand),
       getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand),
     );
-    // Signal webxrhost that external pacer has advanced (synchronizes rAF timing)
-    state.host.signalExternalPacerAdvanced();
+    signalHostAfterPresent = shouldSignalHostFromRaylibPace(pace);
+    if (signalHostAfterPresent && state.host.getStatus().frameCount === 0) {
+      state.host.signalExternalPacerAdvanced();
+      signalHostAfterPresent = false;
+    }
   }
   const sourceFrame = state.host.captureShadowFrame();
   if (!sourceFrame) {
@@ -1014,6 +1027,9 @@ async function uploadRaylibShadowFrame() {
   }
   state.raylibOverlay.setTextureHandle(state.raylibOverlayRaylib.getTextureHandle());
   state.raylibOverlay.present();
+  if (signalHostAfterPresent) {
+    state.host.signalExternalPacerAdvanced();
+  }
   const openvrMs = performance.now() - openvrT0;
   const handlerMs = performance.now() - handlerT0;
 
@@ -1065,9 +1081,7 @@ function openVrLookRotationFromWorldHmd(worldFromHmd: Float32Array): Float32Arra
 
 function projectionHalfFov(matrix: Float32Array): number {
   const m5 = Number(matrix[5] ?? 0);
-  return Number.isFinite(m5) && m5 !== 0
-    ? Math.atan(1 / m5)
-    : ((112 / 2) * (Math.PI / 180));
+  return Number.isFinite(m5) && m5 !== 0 ? Math.atan(1 / m5) : ((112 / 2) * (Math.PI / 180));
 }
 
 function nativeDebugProjectionMatrix(): Float32Array {
@@ -1099,7 +1113,10 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
   );
   state.nativeRaylibLeftControllerIndex = leftControllerIndex;
   if (trace) {
-    LogChannel.log("webxrv2", `[webxr] native debug frame: controller index=${leftControllerIndex}`);
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] native debug frame: controller index=${leftControllerIndex}`,
+    );
   }
   const leftController = pacer.getCachedTrackedDevicePose(leftControllerIndex);
   const worldFromHmd = new THREE.Matrix4().fromArray(hmd.matrix as unknown as number[]);
@@ -1144,7 +1161,9 @@ function getNativeRaylibControllerPose(
   }
 
   const isLeft = role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
-  let index = isLeft ? state.nativeRaylibLeftControllerIndex : state.nativeRaylibRightControllerIndex;
+  let index = isLeft
+    ? state.nativeRaylibLeftControllerIndex
+    : state.nativeRaylibRightControllerIndex;
   if (index == null || index === OpenVR.k_unTrackedDeviceIndexInvalid) {
     index = vr.GetTrackedDeviceIndexForControllerRole(role);
     if (isLeft) {
@@ -1431,7 +1450,10 @@ function maybeLogOverlayPerf() {
   const ovrUITD = state.raylibOvrUiTextDrawnMetric.flush();
 
   // Combine left/right eye metrics
-  const combineSamples = (left: IntervalMetricSample | null, right: IntervalMetricSample | null): IntervalMetricSample | null => {
+  const combineSamples = (
+    left: IntervalMetricSample | null,
+    right: IntervalMetricSample | null,
+  ): IntervalMetricSample | null => {
     if (!left && !right) return null;
     if (!left) return right;
     if (!right) return left;

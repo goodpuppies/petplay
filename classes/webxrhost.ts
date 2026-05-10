@@ -32,8 +32,8 @@ import {
   tryCreateOpenVrOverlayFramePacer,
 } from "./openVrOverlayFramePacing.ts";
 import {
-  DirectOpenVrInputSource,
   type DirectOpenVrInputSnapshot,
+  DirectOpenVrInputSource,
 } from "./directOpenVrInputSource.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
@@ -880,6 +880,11 @@ export class WebXRHost {
   private xrRafSlowFrameCount = 0;
   private vrCompositorPointer: number | bigint | null = null;
   private externalPacerTimestamp = 0;
+  private externalPacerFrameSeq = 0;
+  private consumedExternalPacerFrameSeq = 0;
+  private externalPacerXrTickPending = false;
+  private requestExternalPacerXrTick: (() => void) | null = null;
+  private externalPacerSyntheticAdvanceTime = 0;
   private useExternalPacerTiming = false;
   private onBeforeExternalControllerApply: (() => void) | undefined;
   private onInProcessControllerFrame: ((data: ExternalControllerData) => void) | undefined;
@@ -938,6 +943,12 @@ export class WebXRHost {
     this.lastLayerInfo = null;
     this.lastXrCallbackAt = 0;
     this.lastXrSessionRafWallAt = 0;
+    this.externalPacerTimestamp = 0;
+    this.externalPacerFrameSeq = 0;
+    this.consumedExternalPacerFrameSeq = 0;
+    this.externalPacerXrTickPending = false;
+    this.requestExternalPacerXrTick = null;
+    this.externalPacerSyntheticAdvanceTime = 0;
     this.lastSlowXrFrameLogAt = 0;
     this.xrRafMaxIntervalMs = 0;
     this.xrRafSlowFrameCount = 0;
@@ -1004,7 +1015,8 @@ export class WebXRHost {
     this.alphaEnabled = options.alpha ?? this.sessionMode === "immersive-ar";
     const useOverlayPacing = options.useOpenVrOverlayFramePacing !== false;
     // Detect raylib mode: if OpenVR pacer is disabled but we have OpenVR pointers, raylib will drive timing
-    this.useExternalPacerTiming = !useOverlayPacing && (this.vrSystemPointer != null || this.vrCompositorPointer != null);
+    this.useExternalPacerTiming = !useOverlayPacing &&
+      (this.vrSystemPointer != null || this.vrCompositorPointer != null);
     const crashOnDrop = getCrashOnDroppedFrameMode();
     this.crashOnDroppedXrRaf = crashOnDrop.xrRaf;
     this.crashOnDroppedXrRafStrict = crashOnDrop.xrRafStrict;
@@ -1054,7 +1066,8 @@ export class WebXRHost {
         : nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
         ? 1000 / nom
         : 16;
-    // Use 0ms delay when external pacer is active (raylib mode) - rAF loop will be delayed until warmup completes
+    // Use 0ms delay when external pacer is active (raylib mode); the manual loop consumes at
+    // most one XR tick per external pacer pulse so this stays low-latency without running ahead.
     const actualPollIntervalMs = this.useExternalPacerTiming ? 0 : rafPolyfillIntervalMs;
     const polyfill: WebXrHostPolyfillOptions = {
       pollIntervalMs: actualPollIntervalMs,
@@ -1068,6 +1081,10 @@ export class WebXRHost {
           ? (openVrPace === "fast"
             ? "OpenVR fast pace (single GetTimeSinceLastVsync; IWER rAF delay=0)"
             : "OpenVR display pacing (Aardvark-style wait for new vsync index; IWER rAF delay=0)")
+          : this.useExternalPacerTiming
+          ? `external OpenVR pacer (IWER rAF delay=${
+            actualPollIntervalMs.toFixed(0)
+          }ms; one XR tick per pacer pulse)`
           : `polyfill=${rafPolyfillIntervalMs.toFixed(3)}ms (~${
             (1000 / rafPolyfillIntervalMs).toFixed(1)
           }Hz)`) +
@@ -1413,6 +1430,8 @@ export class WebXRHost {
     this.nominalHmdDisplayHz = null;
     this.vrCompositorPointer = null;
     this.openVrOverlayPacer = null;
+    this.externalPacerXrTickPending = false;
+    this.requestExternalPacerXrTick = null;
     this.crashOnDroppedXrRaf = false;
     this.crashOnDroppedXrRafStrict = false;
     this.onBeforeExternalControllerApply = undefined;
@@ -1787,18 +1806,64 @@ export class WebXRHost {
     }
 
     this.xrFrameRequestActive = true;
-    const tick = (time: number, frame: XRFrame) => {
+    let tick: (time: number, frame: XRFrame) => void;
+    const requestNextTick = (delayMs = 0) => {
+      if (!this.running || !this.session) {
+        this.xrFrameRequestActive = false;
+        this.externalPacerXrTickPending = false;
+        return;
+      }
+      if (delayMs <= 0) {
+        if (this.useExternalPacerTiming) {
+          this.externalPacerXrTickPending = true;
+        }
+        this.session.requestAnimationFrame(tick);
+        return;
+      }
+      this.xrSimTickDelayTimeout = setTimeout(() => {
+        this.xrSimTickDelayTimeout = null;
+        if (this.useExternalPacerTiming) {
+          this.externalPacerXrTickPending = true;
+        }
+        this.session?.requestAnimationFrame(tick);
+      }, delayMs);
+    };
+    this.requestExternalPacerXrTick = () => {
+      if (
+        !this.running || !this.session || !this.useExternalPacerTiming ||
+        this.externalPacerXrTickPending
+      ) {
+        return;
+      }
+      requestNextTick();
+    };
+    tick = (time: number, frame: XRFrame) => {
       const tickT0 = performance.now();
       if (!this.running || !this.session) {
         this.xrFrameRequestActive = false;
+        this.externalPacerXrTickPending = false;
         return;
       }
 
-      // Skip frame if external pacer hasn't advanced (raylib mode synchronization)
-      // Threshold of 25ms allows for some setTimeout overhead but prevents running ahead of pacer
-      if (this.useExternalPacerTiming && this.externalPacerTimestamp > 0 && tickT0 - this.externalPacerTimestamp > 25) {
-        // External pacer hasn't paced recently, skip this frame
-        this.session.requestAnimationFrame(tick);
+      if (this.useExternalPacerTiming) {
+        this.externalPacerXrTickPending = false;
+        const hasUnconsumedPacerPulse =
+          this.externalPacerFrameSeq !== this.consumedExternalPacerFrameSeq;
+        const pacerAgeMs = this.externalPacerTimestamp > 0
+          ? tickT0 - this.externalPacerTimestamp
+          : Number.POSITIVE_INFINITY;
+        if (!hasUnconsumedPacerPulse || pacerAgeMs > 25) {
+          if (pacerAgeMs > 25) {
+            this.consumedExternalPacerFrameSeq = this.externalPacerFrameSeq;
+          }
+          return;
+        }
+        this.consumedExternalPacerFrameSeq = this.externalPacerFrameSeq;
+      }
+
+      if (!this.running || !this.session) {
+        this.xrFrameRequestActive = false;
+        this.externalPacerXrTickPending = false;
         return;
       }
 
@@ -1887,7 +1952,7 @@ export class WebXRHost {
       (this.renderer as XrPoseOnlyRenderer | null)?.xr?.updateFromFrame?.(frame);
       const t2 = performance.now();
       try {
-        advance(time);
+        advance(this.getAdvanceTimestamp(time, expectedMs));
       } finally {
         currentXRFrame.value = undefined;
       }
@@ -1931,18 +1996,24 @@ export class WebXRHost {
       }
 
       const minInterval = this.xrSimTickMinIntervalMs;
-      if (minInterval == null) {
-        this.session.requestAnimationFrame(tick);
+      if (this.useExternalPacerTiming) {
+        // External Raylib/OpenVR mode is edge-triggered by `signalExternalPacerAdvanced`.
+        // Do not poll here; even a 1ms timer loop can disturb the pacer's wait-for-vsync cadence.
+      } else if (minInterval == null) {
+        requestNextTick();
       } else {
         const wait = Math.max(0, minInterval - (performance.now() - tickT0));
-        this.xrSimTickDelayTimeout = setTimeout(() => {
-          this.xrSimTickDelayTimeout = null;
-          this.session?.requestAnimationFrame(tick);
-        }, wait);
+        requestNextTick(wait);
       }
     };
 
-    this.session.requestAnimationFrame(tick);
+    if (this.useExternalPacerTiming) {
+      if (this.externalPacerFrameSeq !== this.consumedExternalPacerFrameSeq) {
+        this.requestExternalPacerXrTick?.();
+      }
+    } else {
+      requestNextTick();
+    }
   }
 
   /**
@@ -1951,6 +2022,21 @@ export class WebXRHost {
    */
   signalExternalPacerAdvanced(): void {
     this.externalPacerTimestamp = performance.now();
+    this.externalPacerFrameSeq++;
+    this.requestExternalPacerXrTick?.();
+  }
+
+  private getAdvanceTimestamp(time: number, expectedMs: number): number {
+    if (!this.useExternalPacerTiming) {
+      return time;
+    }
+    if (this.externalPacerSyntheticAdvanceTime === 0) {
+      this.externalPacerSyntheticAdvanceTime = time;
+      return time;
+    }
+    const stepMs = expectedMs > 0 && Number.isFinite(expectedMs) ? expectedMs : 1000 / 90;
+    this.externalPacerSyntheticAdvanceTime += stepMs;
+    return this.externalPacerSyntheticAdvanceTime;
   }
 
   private async inspectProjectionLayer(device: GPUDevice) {
@@ -2379,65 +2465,65 @@ export class WebXRHost {
       // DirectOpenVrInputSource doesn't support buttons yet, so we pass 0 for all button states
       const leftPoseData: OpenVrPoseActionData = snapshot.controllers.left
         ? {
-            bActive: 1,
-            activeOrigin: 0n,
-            pose: {
-              mDeviceToAbsoluteTracking: {
-                m: this.quaternionToMatrix3x4(
-                  snapshot.controllers.left.quaternion,
-                  snapshot.controllers.left.position,
-                ),
-              },
-              vVelocity: { v: [0, 0, 0] },
-              vAngularVelocity: { v: [0, 0, 0] },
-              eTrackingResult: 0,
-              bPoseIsValid: 1,
-              bDeviceIsConnected: 1,
+          bActive: 1,
+          activeOrigin: 0n,
+          pose: {
+            mDeviceToAbsoluteTracking: {
+              m: this.quaternionToMatrix3x4(
+                snapshot.controllers.left.quaternion,
+                snapshot.controllers.left.position,
+              ),
             },
-          }
+            vVelocity: { v: [0, 0, 0] },
+            vAngularVelocity: { v: [0, 0, 0] },
+            eTrackingResult: 0,
+            bPoseIsValid: 1,
+            bDeviceIsConnected: 1,
+          },
+        }
         : {
-            bActive: 0,
-            activeOrigin: 0n,
-            pose: {
-              mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
-              vVelocity: { v: [0, 0, 0] },
-              vAngularVelocity: { v: [0, 0, 0] },
-              eTrackingResult: 0,
-              bPoseIsValid: 0,
-              bDeviceIsConnected: 0,
-            },
-          };
+          bActive: 0,
+          activeOrigin: 0n,
+          pose: {
+            mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
+            vVelocity: { v: [0, 0, 0] },
+            vAngularVelocity: { v: [0, 0, 0] },
+            eTrackingResult: 0,
+            bPoseIsValid: 0,
+            bDeviceIsConnected: 0,
+          },
+        };
 
       const rightPoseData: OpenVrPoseActionData = snapshot.controllers.right
         ? {
-            bActive: 1,
-            activeOrigin: 0n,
-            pose: {
-              mDeviceToAbsoluteTracking: {
-                m: this.quaternionToMatrix3x4(
-                  snapshot.controllers.right.quaternion,
-                  snapshot.controllers.right.position,
-                ),
-              },
-              vVelocity: { v: [0, 0, 0] },
-              vAngularVelocity: { v: [0, 0, 0] },
-              eTrackingResult: 0,
-              bPoseIsValid: 1,
-              bDeviceIsConnected: 1,
+          bActive: 1,
+          activeOrigin: 0n,
+          pose: {
+            mDeviceToAbsoluteTracking: {
+              m: this.quaternionToMatrix3x4(
+                snapshot.controllers.right.quaternion,
+                snapshot.controllers.right.position,
+              ),
             },
-          }
+            vVelocity: { v: [0, 0, 0] },
+            vAngularVelocity: { v: [0, 0, 0] },
+            eTrackingResult: 0,
+            bPoseIsValid: 1,
+            bDeviceIsConnected: 1,
+          },
+        }
         : {
-            bActive: 0,
-            activeOrigin: 0n,
-            pose: {
-              mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
-              vVelocity: { v: [0, 0, 0] },
-              vAngularVelocity: { v: [0, 0, 0] },
-              eTrackingResult: 0,
-              bPoseIsValid: 0,
-              bDeviceIsConnected: 0,
-            },
-          };
+          bActive: 0,
+          activeOrigin: 0n,
+          pose: {
+            mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
+            vVelocity: { v: [0, 0, 0] },
+            vAngularVelocity: { v: [0, 0, 0] },
+            eTrackingResult: 0,
+            bPoseIsValid: 0,
+            bDeviceIsConnected: 0,
+          },
+        };
 
       // Buttons from DirectOpenVrInputSource (currently stubbed to 0)
       const leftTriggerData: OpenVrDigitalActionData = {
@@ -2529,7 +2615,6 @@ export class WebXRHost {
       [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), position[2]],
     ];
   }
-
 
   private updateControllerState(
     controller: XrControllerBridge | undefined,
@@ -2736,7 +2821,9 @@ export class WebXRHost {
     );
   }
 
-  private getOverlayLookRotationMatrixFromWorldHmd(worldFromHmdValues: ArrayLike<number>): Float32Array {
+  private getOverlayLookRotationMatrixFromWorldHmd(
+    worldFromHmdValues: ArrayLike<number>,
+  ): Float32Array {
     const hmdFromWorld = new THREE.Matrix4()
       .fromArray(worldFromHmdValues as unknown as number[])
       .invert();
