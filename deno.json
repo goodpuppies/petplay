@@ -34,6 +34,7 @@
     "@win32/km": "https://win32.deno.dev/0.4.1/UI.Input.KeyboardAndMouse"
   },
   "tasks": {
+    "preconf": "deno run -A utils/preconf.ts",
     "vitebuild": "cd submodules/frontend && deno task build",
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
