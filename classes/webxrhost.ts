@@ -31,6 +31,10 @@ import {
   type OpenVrOverlayPaceMode,
   tryCreateOpenVrOverlayFramePacer,
 } from "./openVrOverlayFramePacing.ts";
+import {
+  DirectOpenVrInputSource,
+  type DirectOpenVrInputSnapshot,
+} from "./directOpenVrInputSource.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
@@ -157,6 +161,12 @@ export type WebXRShadowFrame = {
   /** Debug-only raw OpenVR left controller position, drawn directly by Raylib. */
   raylibDebugLeftControllerPosition?: Float32Array;
 };
+
+export type {
+  DirectOpenVrControllerPose,
+  DirectOpenVrHmdPose,
+  DirectOpenVrInputSnapshot,
+} from "./directOpenVrInputSource.ts";
 
 const POLL_INTERVAL_MS = 16;
 const XR_CONNECT_RETRY_MS = 16;
@@ -391,17 +401,6 @@ function getWebxrRaylibControllerDebugEnabled(): boolean {
     ?.trim()
     .toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-type RaylibControllerDebugSource = "action" | "device";
-
-function getWebxrRaylibControllerDebugSource(): RaylibControllerDebugSource {
-  const raw = Deno.args
-    .find((a) => a.startsWith("--webxr-raylib-controller-debug-source="))
-    ?.split("=", 2)[1]
-    ?.trim()
-    .toLowerCase();
-  return raw === "device" ? "device" : "action";
 }
 
 function getWebxrOpenVrPaceFromArgs(): OpenVrOverlayPaceMode {
@@ -949,8 +948,8 @@ export class WebXRHost {
   private readonly emulatedControllerPosLerp = getWebxrControllerPosLerpFromArgs();
   private readonly emulatedControllerMaxHandMps = getWebxrControllerMaxHandMpsFromArgs();
   private readonly raylibDebugControllerCube = getWebxrRaylibControllerDebugEnabled();
-  private readonly raylibDebugControllerSource = getWebxrRaylibControllerDebugSource();
-  private latestRaylibDebugLeftControllerPosition: Float32Array | null = null;
+  /** App-wide single source of OpenVR HMD + controller pose (allocation-free). */
+  private readonly directOpenVrInputSource = new DirectOpenVrInputSource();
   private directRaylibOpenVrHmdPoseLogged = false;
   private emulatedControllerApplyPrevWallAt = 0;
   private readonly emulatedControllerPosLeft = new THREE.Vector3();
@@ -1548,10 +1547,11 @@ export class WebXRHost {
       rightEyeProjectionMatrix: new Float32Array(pose.rightEyeProjectionMatrix),
       halfFovInRadians: pose.halfFovInRadians,
       ipdMeters: pose.ipdMeters,
-      ...(this.raylibDebugControllerCube && this.latestRaylibDebugLeftControllerPosition
+      ...(this.raylibDebugControllerCube &&
+          this.directOpenVrInputSource.hasLeftController()
         ? {
           raylibDebugLeftControllerPosition: new Float32Array(
-            this.latestRaylibDebugLeftControllerPosition,
+            this.directOpenVrInputSource.getSnapshot().controllers.left!.position,
           ),
         }
         : {}),
@@ -1582,8 +1582,30 @@ export class WebXRHost {
     };
   }
 
-  applyDirectRaylibDebugLeftControllerPosition(position: Float32Array | null) {
-    this.latestRaylibDebugLeftControllerPosition = position ? new Float32Array(position) : null;
+  /**
+   * Forward to {@link DirectOpenVrInputSource.update}. Thin wrapper so callers
+   * don't need a direct reference to the source. Allocation-free.
+   */
+  updateDirectOpenVrInputs(
+    hmd: OpenVrHmdEmulationPose | null,
+    leftController: OpenVrHmdEmulationPose | null,
+    rightController: OpenVrHmdEmulationPose | null,
+  ): void {
+    this.directOpenVrInputSource.update(hmd, leftController, rightController);
+  }
+
+  /**
+   * Read-only snapshot accessor for downstream consumers. The returned
+   * snapshot identity is stable across frames; its inner `Float32Array` fields
+   * are shared mutating buffers. Not yet wired to r3f.
+   */
+  getDirectOpenVrInputs(): DirectOpenVrInputSnapshot {
+    return this.directOpenVrInputSource.getSnapshot();
+  }
+
+  /** Direct access to the shared source instance for consumers that need its helpers. */
+  getDirectOpenVrInputSource(): DirectOpenVrInputSource {
+    return this.directOpenVrInputSource;
   }
 
   getRaythreeSceneContext(): {
@@ -2494,7 +2516,6 @@ export class WebXRHost {
         rightGrabData,
       ];
       this.onInProcessControllerFrame?.(frameTuple);
-      this.updateRaylibDebugControllerDevicePosition(vrInput, leftPoseData);
 
       this.updateControllerState(
         this.xrDevice.controllers.left,
@@ -2524,40 +2545,6 @@ export class WebXRHost {
         this.endEmulatedControllerDataFrame();
       }
     }
-  }
-
-  private updateRaylibDebugControllerDevicePosition(
-    vrInput: OpenVR.IVRInput,
-    leftPoseData: OpenVrPoseActionData,
-  ) {
-    if (
-      !this.raylibDebugControllerCube ||
-      this.raylibDebugControllerSource !== "device" ||
-      !this.openVrOverlayPacer ||
-      !leftPoseData?.activeOrigin
-    ) {
-      return;
-    }
-
-    const [originInfoPtr, originInfoView] = createStruct<OpenVR.InputOriginInfo>(
-      null,
-      OpenVR.InputOriginInfoStruct,
-    );
-    const error = vrInput.GetOriginTrackedDeviceInfo(
-      leftPoseData.activeOrigin,
-      originInfoPtr,
-      OpenVR.InputOriginInfoStruct.byteSize,
-    );
-    if (error !== OpenVR.InputError.VRInputError_None) {
-      return;
-    }
-
-    const info = OpenVR.InputOriginInfoStruct.read(originInfoView);
-    const pose = this.openVrOverlayPacer.getCachedTrackedDevicePose(info.trackedDeviceIndex);
-    if (!pose) {
-      return;
-    }
-    this.latestRaylibDebugLeftControllerPosition = new Float32Array(pose.position);
   }
 
   private ensureOpenVrInput(): OpenVR.IVRInput | null {
@@ -2811,7 +2798,6 @@ export class WebXRHost {
     if (!isConnected) {
       if (handedness === "left") {
         this.emulatedControllerPosInited.left = false;
-        this.latestRaylibDebugLeftControllerPosition = null;
       } else {
         this.emulatedControllerPosInited.right = false;
       }
@@ -2830,13 +2816,6 @@ export class WebXRHost {
     const rawX = m[0][3];
     const rawY = m[1][3];
     const rawZ = m[2][3];
-    if (
-      this.raylibDebugControllerCube &&
-      this.raylibDebugControllerSource === "action" &&
-      handedness === "left"
-    ) {
-      this.latestRaylibDebugLeftControllerPosition = new Float32Array([rawX, rawY, rawZ]);
-    }
     const lerpA = this.emulatedControllerPosLerp;
     const vMax = this.emulatedControllerMaxHandMps;
     const lastRaw = handedness === "left"
