@@ -290,6 +290,12 @@ export class DirectOpenVrInputSource {
     this.rightBuffers.grab[0] = grabR.bState ? 1 : 0;
     this.leftBuffers.trigger[0] = trigL.bState ? 1 : 0;
     this.rightBuffers.trigger[0] = trigR.bState ? 1 : 0;
+
+    // Sync scalar snapshot properties (they are not live references like Float32Arrays)
+    this.leftView.grab = this.leftBuffers.grab[0];
+    this.leftView.trigger = this.leftBuffers.trigger[0];
+    this.rightView.grab = this.rightBuffers.grab[0];
+    this.rightView.trigger = this.rightBuffers.trigger[0];
   }
 
   /** Reset IVRInput state so the source stops reading actions. */
