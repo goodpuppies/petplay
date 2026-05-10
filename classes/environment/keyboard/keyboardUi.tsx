@@ -68,6 +68,7 @@ export type KeyCapChromeProps =
     transformTranslateZ?: number;
     transformScaleX?: number;
     transformScaleY?: number;
+    visualRef?: React.Ref<unknown>;
   }
   & Pick<
     EventHandlersProperties,
@@ -88,6 +89,7 @@ export function KeyCapChrome(
     transformTranslateZ,
     transformScaleX,
     transformScaleY,
+    visualRef,
     ...events
   }: KeyCapChromeProps,
 ) {
@@ -106,6 +108,7 @@ export function KeyCapChrome(
       {...events}
     >
       <Container
+        ref={visualRef}
         pixelSize={pixelSize}
         minWidth={minWidth}
         minHeight={minHeight}

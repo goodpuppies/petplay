@@ -1,17 +1,16 @@
 /**
  * Bridge from the live R3F / WebGPU `THREE.Scene` to the data consumed by
- * `WebXROverlayRaylib` in the **webxrOverlay** worker.
+ * `WebXROverlayRaylib` in the webxr hot loop.
  *
  * - **Raythree** (`RaythreeExtractor` here): CPU walk of the scene graph in
  *   this process. It must run wherever the Three.js `Object3D` tree lives
- *   (the webxr worker); it cannot be moved to another worker by sending
- *   “the scene” — `Object3D` is not `structuredClone`able.
- * - **Raylib** (`WebXROverlayRaylib.renderExtraction`): runs in `webxrOverlay`
- *   from `ExtractionResult` + pose matrices (already serialized in the
- *   `PostMessage` payload). That part is already off the webxr hot path.
+ *   (the webxr worker); it cannot be moved by sending “the scene” because
+ *   `Object3D` is not `structuredClone`able.
+ * - **Raylib** (`WebXROverlayRaylib.renderExtraction`): now runs synchronously
+ *   from this payload in the same webxr overlay pump iteration.
  */
 import * as THREE from "three";
-import { RaythreeExtractor, type ExtractionResult } from "../submodules/raythree/src/lib.ts";
+import { type ExtractionResult, RaythreeExtractor } from "../submodules/raythree/src/lib.ts";
 import type { WebXRShadowFrame } from "./webxrhost.ts";
 import type { IntervalMetric } from "./intervalMetric.ts";
 import { extractWebXRRaythreeUi, type WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";

@@ -1,4 +1,4 @@
-import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
+import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
@@ -25,6 +25,15 @@ const state = actorState({
   lastHmd: null as OpenVR.HmdMatrix34 | null,
   captureFrames: 0,
 });
+
+function getWebxrFrameLogsEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
 
 type StartDesktopPayload = {
   /** Unique OpenVR overlay key. */
@@ -60,79 +69,102 @@ function setTransformSafe(transform: OpenVR.HmdMatrix34) {
   setOverlayTransformAbsolute(state.overlayClass, state.overlayHandle, transform);
 }
 
-new PostMan(state, {
-  __INIT__: (_payload: void) => {
-    PostMan.setTopic("muffin");
-  },
-  INITOVROVERLAY: (payload: bigint) => {
-    const systemPtr = Deno.UnsafePointer.create(payload);
-    state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-    LogChannel.log("actor", `[displayInstance] IVROverlay ready (${state.id})`);
-  },
-  STARTDESKTOP: (payload: StartDesktopPayload) => {
-    if (!state.overlayClass) {
-      throw new Error("Call INITOVROVERLAY before STARTDESKTOP");
-    }
-    void startDesktopOpenVrOverlay(payload);
-  },
-  SYNCDISPLAYPOSE: (sync: SyncDisplayPosePayload) => {
-    if (!state.overlayClass || !state.overlayHandle) return;
-    if (state.lastHmd && matrixEquals(state.lastHmd, sync.hmd) && state.lastWidthMeters === sync.widthMeters) {
-      return;
-    }
-    if (state.lastWidthMeters !== sync.widthMeters) {
-      const wErr = state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, sync.widthMeters);
-      if (wErr !== OpenVR.OverlayError.VROverlayError_None) {
-        LogChannel.log("actor", `[displayInstance] SetOverlayWidthInMeters: ${OpenVR.OverlayError[wErr]}`);
+new PostMan(
+  state,
+  {
+    __INIT__: (_payload: void) => {
+      PostMan.setTopic("muffin");
+    },
+    INITOVROVERLAY: (payload: bigint) => {
+      const systemPtr = Deno.UnsafePointer.create(payload);
+      state.overlayClass = new OpenVR.IVROverlay(systemPtr);
+      LogChannel.log("actor", `[displayInstance] IVROverlay ready (${state.id})`);
+    },
+    STARTDESKTOP: (payload: StartDesktopPayload) => {
+      if (!state.overlayClass) {
+        throw new Error("Call INITOVROVERLAY before STARTDESKTOP");
       }
-      state.lastWidthMeters = sync.widthMeters;
-    }
-    setTransformSafe(sync.hmd);
-    state.lastHmd = sync.hmd;
-  },
-  SETFRAMEDATA: (framePayload: SetFrameDataPayload) => {
-    if (!state.isRunning) return;
-    if (!state.textureStructPtr) throw new Error("no texture struct");
-    if (!state.overlayClass) throw new Error("no overlay");
-    if (!framePayload.pixels) throw new Error("pixels undefined");
+      void startDesktopOpenVrOverlay(payload);
+    },
+    SYNCDISPLAYPOSE: (sync: SyncDisplayPosePayload) => {
+      if (!state.overlayClass || !state.overlayHandle) return;
+      if (
+        state.lastHmd && matrixEquals(state.lastHmd, sync.hmd) &&
+        state.lastWidthMeters === sync.widthMeters
+      ) {
+        return;
+      }
+      if (state.lastWidthMeters !== sync.widthMeters) {
+        const wErr = state.overlayClass.SetOverlayWidthInMeters(
+          state.overlayHandle,
+          sync.widthMeters,
+        );
+        if (wErr !== OpenVR.OverlayError.VROverlayError_None) {
+          LogChannel.log(
+            "actor",
+            `[displayInstance] SetOverlayWidthInMeters: ${OpenVR.OverlayError[wErr]}`,
+          );
+        }
+        state.lastWidthMeters = sync.widthMeters;
+      }
+      setTransformSafe(sync.hmd);
+      state.lastHmd = sync.hmd;
+    },
+    SETFRAMEDATA: (framePayload: SetFrameDataPayload) => {
+      if (!state.isRunning) return;
+      if (!state.textureStructPtr) throw new Error("no texture struct");
+      if (!state.overlayClass) throw new Error("no overlay");
+      if (!framePayload.pixels) throw new Error("pixels undefined");
 
-    let pixelsArray: Uint8Array;
-    if (framePayload.encoding === "base64") {
-      const buffer = Buffer.from(framePayload.pixels as string, "base64");
-      pixelsArray = new Uint8Array(
-        buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      let pixelsArray: Uint8Array;
+      if (framePayload.encoding === "base64") {
+        const buffer = Buffer.from(framePayload.pixels as string, "base64");
+        pixelsArray = new Uint8Array(
+          buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+        );
+      } else {
+        pixelsArray = new Uint8Array(framePayload.pixels as number[]);
+      }
+      if (!state.glManager) throw new Error("glManager is null");
+      state.glManager.createTextureFromData(pixelsArray, framePayload.width, framePayload.height);
+      const error = state.overlayClass.SetOverlayTexture(
+        state.overlayHandle,
+        state.textureStructPtr,
       );
-    } else {
-      pixelsArray = new Uint8Array(framePayload.pixels as number[]);
-    }
-    if (!state.glManager) throw new Error("glManager is null");
-    state.glManager.createTextureFromData(pixelsArray, framePayload.width, framePayload.height);
-    const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, state.textureStructPtr);
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-      LogChannel.log("actor", `[displayInstance] SetOverlayTexture: ${OpenVR.OverlayError[error]}`);
-    }
-  },
-  GETOVERLAYLOCATION: () => {
-    if (!state.overlayClass || !state.overlayHandle) return;
-    return getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
-  },
-  SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
-    setTransformSafe(payload);
-  },
-  STOP: async () => {
-    state.isRunning = false;
-    if (state.screenCapturer) {
-      await state.screenCapturer.dispose();
-      state.screenCapturer = null;
-    }
-  },
-} as const);
+      if (error !== OpenVR.OverlayError.VROverlayError_None) {
+        LogChannel.log(
+          "actor",
+          `[displayInstance] SetOverlayTexture: ${OpenVR.OverlayError[error]}`,
+        );
+      }
+    },
+    GETOVERLAYLOCATION: () => {
+      if (!state.overlayClass || !state.overlayHandle) return;
+      return getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
+    },
+    SETOVERLAYLOCATION: (payload: OpenVR.HmdMatrix34) => {
+      setTransformSafe(payload);
+    },
+    STOP: async () => {
+      state.isRunning = false;
+      if (state.screenCapturer) {
+        await state.screenCapturer.dispose();
+        state.screenCapturer = null;
+      }
+    },
+  } as const,
+);
 
 function initScreenCapturer(): ScreenCapturer {
+  const logStats = getWebxrFrameLogsEnabled();
   return new ScreenCapturer({
     debug: false,
     onStats: ({ fps, avgLatency }) => {
-      LogChannel.log("screencap", `Display overlay — ${fps.toFixed(1)} fps, ${avgLatency.toFixed(1)} ms`);
+      if (!logStats) return;
+      LogChannel.log(
+        "screencap",
+        `Display overlay — ${fps.toFixed(1)} fps, ${avgLatency.toFixed(1)} ms`,
+      );
     },
     executablePath: "./resources/screen-streamer",
   });
@@ -149,7 +181,10 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
   state.glManager.createTextureFromData(pixels, width, height);
 }
 
-async function deskCapLoop(overlay: OpenVR.IVROverlay, textureStructPtr: Deno.PointerValue<OpenVR.Texture>) {
+async function deskCapLoop(
+  overlay: OpenVR.IVROverlay,
+  textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
+) {
   if (!state.screenCapturer) return;
   const maxFrames = state.captureFrames;
   const continuous = maxFrames === 0;
@@ -225,9 +260,15 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   setTransformSafe(idTransform);
 
   if (config.enableMouseInput !== false) {
-    const im = overlay.SetOverlayInputMethod(overlayHandle, OpenVR.OverlayInputMethod.VROverlayInputMethod_Mouse);
+    const im = overlay.SetOverlayInputMethod(
+      overlayHandle,
+      OpenVR.OverlayInputMethod.VROverlayInputMethod_Mouse,
+    );
     if (im !== OpenVR.OverlayError.VROverlayError_None) {
-      LogChannel.log("actor", `[displayInstance] SetOverlayInputMethod: ${OpenVR.OverlayError[im]}`);
+      LogChannel.log(
+        "actor",
+        `[displayInstance] SetOverlayInputMethod: ${OpenVR.OverlayError[im]}`,
+      );
     }
   }
 
@@ -247,10 +288,16 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
     state.screenCapturer = initScreenCapturer();
     void deskCapLoop(overlay, textureStructPtr);
   } else {
-    LogChannel.log("actor", "[displayInstance] overlay up without local capture; use SETFRAMEDATA for texture");
+    LogChannel.log(
+      "actor",
+      "[displayInstance] overlay up without local capture; use SETFRAMEDATA for texture",
+    );
   }
 
-  LogChannel.log("actor", `[displayInstance] desktop overlay started key=${overlayKey} handle=${overlayHandle}`);
+  LogChannel.log(
+    "actor",
+    `[displayInstance] desktop overlay started key=${overlayKey} handle=${overlayHandle}`,
+  );
 }
 
 globalThis.addEventListener("unload", async () => {

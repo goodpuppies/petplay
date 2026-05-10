@@ -2,14 +2,15 @@ import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
-import { ActorId } from "../submodules/stageforge/src/lib/types.ts";
+import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 import { MainStdinHandler } from "../classes/mainStdinHandler.ts";
 import { OverlayRenderMode } from "./webxr.ts";
+import type { api as openVrApi } from "./OpenVR.ts";
 
 const state = actorState({
   name: "main",
-  ivroverlay: null as null | string,
+  ivroverlay: null as null | bigint,
   origin: null as null | ActorId,
   overlays: [] as string[],
   inputstate: null as actionData | null,
@@ -49,39 +50,21 @@ async function main() {
   const startTime = performance.now();
   LogChannel.log("default", "creating scene");
 
-  const ivr = await PostMan.create("./OpenVR.ts", import.meta.url);
-  const ivrsystem = await PostMan.PostMessage({
-    target: ivr,
-    type: "GETOPENVRPTR",
-    payload: null,
-  }, true);
-  const ivroverlay = await PostMan.PostMessage({
-    target: ivr,
-    type: "GETOVERLAYPTR",
-    payload: null,
-  }, true);
-  const ivrinput = await PostMan.PostMessage({
-    target: ivr,
-    type: "GETINPUTPTR",
-    payload: null,
-  }, true);
-  state.ivroverlay = ivroverlay as string;
+  const ivr = await PostMan.create<typeof openVrApi>("./OpenVR.ts", import.meta.url);
+  const ivrsystem = await ivr.GETOPENVRPTR();
+  const ivroverlay = await ivr.GETOVERLAYPTR();
+  const ivrinput = await ivr.GETINPUTPTR();
+  state.ivroverlay = ivroverlay;
 
   const hmd = await PostMan.create("./hmd.ts", import.meta.url);
-  const input = await PostMan.create("./controllers.ts", import.meta.url);
   const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
   state.origin = origin;
-  const laser = await PostMan.create("./laser.ts", import.meta.url);
+  //const laser = await PostMan.create("./laser.ts", import.meta.url);
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
   const displayInstance = await PostMan.create("./displayInstance.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
 
-  PostMan.PostMessage({
-    target: input,
-    type: "INITINPUT",
-    payload: [ivrinput, ivroverlay],
-  });
   PostMan.PostMessage({
     target: [hmd],
     type: "INITOPENVR",
@@ -93,14 +76,10 @@ async function main() {
     payload: null,
   }, true) as number | null;
 
-  const compositorPtr = await PostMan.PostMessage({
-    target: ivr,
-    type: "GETCOMPOSITORPTR",
-    payload: null,
-  }, true) as bigint | null;
+  const compositorPtr = await ivr.GETCOMPOSITORPTR();
 
   PostMan.PostMessage({
-    target: [origin, laser, displayInstance],
+    target: [origin, displayInstance],
     type: "INITOVROVERLAY",
     payload: ivroverlay,
   });
@@ -114,9 +93,9 @@ async function main() {
       debugWindow: false,
       sessionMode: "immersive-ar",
       alpha: true,
-      overlayPointer: ivroverlay as number,
-      vrSystemPointer: ivrsystem as number,
-      controllerActor: input,
+      overlayPointer: ivroverlay,
+      vrSystemPointer: ivrsystem,
+      controllerActor: null,
       wristMenuActor: wristMenu,
       displayInstanceActor: displayInstance,
       overlayKey: "petplay.webxr.overlay",
@@ -153,11 +132,11 @@ async function main() {
     type: "ASSIGNHMD",
     payload: hmd,
   });
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: laser,
     type: "ASSIGNINPUT",
     payload: input,
-  });
+  }); */
   // Temporarily disable VRC origin updates into the WebXR scene. The
   // scene will fall back to identity until the raythree-based path
   // replaces the current ad-hoc ghost renderer/origin plumbing.
@@ -169,17 +148,17 @@ async function main() {
       texture: "./resources/PetPlay.png",
     },
   });
-  PostMan.PostMessage({
+  /* PostMan.PostMessage({
     target: laser,
     type: "STARTLASERS",
     payload: null,
-  });
+  }); */
 
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
   LogChannel.log("default", `scene created in ${timeElapsed} ms`);
 
-  inputloop(input);
+  // inputloop is intentionally not started while WebXR owns IVRInput sampling.
 }
 
 async function spawnOverlay(name: string): Promise<ActorId> {

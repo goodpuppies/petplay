@@ -1,4 +1,4 @@
-import { actorState, collectTransferables, PostMan } from "../submodules/stageforge/mod.ts";
+import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { wait } from "../classes/utils.ts";
@@ -6,17 +6,15 @@ import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
 import { getCrashOnDroppedFrameMode, WebXRHost } from "../classes/webxrhost.ts";
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
+import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
-import {
-  type WebXRRaythreeRenderPayload,
-  WebXRRaythreeSceneBridge,
-} from "../classes/webxrRaythreeScene.ts";
+import { WebXRRaythreeSceneBridge } from "../classes/webxrRaythreeScene.ts";
 import {
   CONTROLLER_SAB_BYTE_LENGTH,
-  hashControllerPoseMatrices,
   type ControllerExternalDataTuple,
+  hashControllerPoseMatrices,
   initControllerStateSab,
   readControllerStateSab,
   writeControllerStateSab,
@@ -25,6 +23,15 @@ import {
   setShadowControllerPose,
   setVRCOriginFromHmdMatrix34,
 } from "../classes/webxrShadowScene.ts";
+
+function getWebxrFrameLogsEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
 
 type SupportedSessionMode = "immersive-vr" | "immersive-ar";
 export type OverlayRenderMode = "webgpu" | "raylib" | "both";
@@ -73,10 +80,11 @@ const state = actorState({
   startup: null as Promise<void> | null,
   webGpuOverlay: null as OpenVrOverlayTexture | null,
   webGpuOverlayGl: null as WebXROverlayGl | null,
+  raylibOverlay: null as OpenVrOverlayTexture | null,
+  raylibOverlayRaylib: null as WebXROverlayRaylib | null,
   webGpuOverlayConfig: null as OverlayConfig | null,
   raylibOverlayConfig: null as OverlayConfig | null,
   overlayRenderMode: "raylib" as OverlayRenderMode,
-  overlayActor: null as string | null,
   overlayLoop: null as Promise<void> | null,
   controllerLoop: null as Promise<void> | null,
   controllerRunning: false,
@@ -95,6 +103,7 @@ const state = actorState({
   uploadedFrames: 0,
   waitLogCounter: 0,
   overlayFpsCounter: new FpsCounter(),
+  frameLogsEnabled: false,
   lastOverlayFpsLogAt: 0,
   lastPerfLogAt: 0,
   uploadMetric: new IntervalMetric(),
@@ -108,13 +117,11 @@ const state = actorState({
   raythreeUiMetric: new IntervalMetric(),
   /** `captureShadowFrame` + `getRaythreeSceneContext` in webxr worker. */
   raylibHostPrepMetric: new IntervalMetric(),
-  /** `PostMessage` to webxrOverlay only (structured clone + queue; coalesced to latest in flight). */
-  raylibPostMsgMetric: new IntervalMetric(),
-  /** `webxrOverlay`: full `RENDERWEBXRRAYTHREEFRAME` handler until after `SetOverlayTexture`. */
+  /** Full in-process Raylib overlay handler until after `SetOverlayTexture`. */
   raylibOvrHandlerMetric: new IntervalMetric(),
-  /** `WebXROverlayRaylib.renderRaythreeFrame` in overlay worker. */
+  /** `WebXROverlayRaylib.renderRaythreeFrame` in the webxr worker. */
   raylibOvrRenderMetric: new IntervalMetric(),
-  /** `setTextureHandle` + `SetOverlayTexture` in overlay worker (excludes raylib compositor). */
+  /** `setTextureHandle` + `SetOverlayTexture` in the webxr worker (excludes raylib compositor). */
   raylibOvrOpenvrMetric: new IntervalMetric(),
   raylibOvrEyeLeftMetric: new IntervalMetric(),
   raylibOvrEyeRightMetric: new IntervalMetric(),
@@ -150,10 +157,6 @@ const state = actorState({
   raylibOvrUiTextCountMetric: new IntervalMetric(),
   raylibOvrUiPanelDrawnMetric: new IntervalMetric(),
   raylibOvrUiTextDrawnMetric: new IntervalMetric(),
-  /** True after `RENDERWEBXRRAYTHREEFRAME` until overlay `RAYLIBOVERLAYFRAMEACK`. */
-  raylibFrameInFlight: false,
-  /** Latest built payload; dropped in favor of newer until sent (no message queue buildup). */
-  raylibFramePending: null as WebXRRaythreeRenderPayload | null,
   /** OpenVR HMD nominal Hz (for fps log context; from `hmd` actor). */
   nominalHmdDisplayHz: null as number | null,
   raythreeSceneBridge: new WebXRRaythreeSceneBridge(),
@@ -165,44 +168,6 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
     },
-    RAYLIBOVERLAYFRAMEACK: (payload: RaylibOverlayFrameAckPayload | void | null) => {
-      if (payload) {
-        state.raylibOvrHandlerMetric.record(payload.handlerMs);
-        state.raylibOvrRenderMetric.record(payload.renderMs);
-        state.raylibOvrOpenvrMetric.record(payload.openvrMs);
-        state.raylibOvrEyeLeftMetric.record(payload.renderLeftMs);
-        state.raylibOvrEyeRightMetric.record(payload.renderRightMs);
-        state.raylibOvrEyeLSyncMetric.record(payload.renderLeftSyncMs);
-        state.raylibOvrEyeLPrepMetric.record(payload.renderLeftPrepMs);
-        state.raylibOvrEyeLOpaqueMetric.record(payload.renderLeftOpaqueMs);
-        state.raylibOvrEyeLXparentMetric.record(payload.renderLeftXparentMs);
-        state.raylibOvrEyeLUiMetric.record(payload.renderLeftUiMs);
-        state.raylibOvrEyeLUiSortMetric.record(payload.renderLeftUiSortPrepMs);
-        state.raylibOvrEyeLUiPanMetric.record(payload.renderLeftUiPanelsMs);
-        state.raylibOvrEyeLUiTxtMetric.record(payload.renderLeftUiTextMs);
-        state.raylibOvrEyeLEndMetric.record(payload.renderLeftEndMs);
-        state.raylibOvrEyeRSyncMetric.record(payload.renderRightSyncMs);
-        state.raylibOvrEyeRPrepMetric.record(payload.renderRightPrepMs);
-        state.raylibOvrEyeROpaqueMetric.record(payload.renderRightOpaqueMs);
-        state.raylibOvrEyeRXparentMetric.record(payload.renderRightXparentMs);
-        state.raylibOvrEyeRUiMetric.record(payload.renderRightUiMs);
-        state.raylibOvrEyeRUiSortMetric.record(payload.renderRightUiSortPrepMs);
-        state.raylibOvrEyeRUiPanMetric.record(payload.renderRightUiPanelsMs);
-        state.raylibOvrEyeRUiTxtMetric.record(payload.renderRightUiTextMs);
-        state.raylibOvrEyeREndMetric.record(payload.renderRightEndMs);
-        state.raylibOvrCombineMetric.record(payload.renderCombineMs);
-        state.raylibOvrSyncMetric.record(payload.renderSyncMs);
-        state.raylibOvrDrawMetric.record(payload.renderDrawMs);
-        state.raylibOvrBatchGeoMetric.record(payload.batchGeometries);
-        state.raylibOvrBatchMatMetric.record(payload.batchMaterials);
-        state.raylibOvrUiPanelCountMetric.record(payload.uiPanelCount);
-        state.raylibOvrUiTextCountMetric.record(payload.uiTextCount);
-        state.raylibOvrUiPanelDrawnMetric.record(payload.uiPanelDrawn);
-        state.raylibOvrUiTextDrawnMetric.record(payload.uiTextDrawn);
-      }
-      state.raylibFrameInFlight = false;
-      tryFlushPendingRaylibFrame();
-    },
     STARTWEBXR: (payload: StartWebXRPayload | null) => {
       if (!state.host) {
         state.host = new WebXRHost();
@@ -210,6 +175,7 @@ new PostMan(
       state.controllerActor = payload?.controllerActor ?? null;
       state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib";
       state.nominalHmdDisplayHz = payload?.hmdDisplayFrequencyHz ?? null;
+      state.frameLogsEnabled = getWebxrFrameLogsEnabled();
       if (!state.startup) {
         state.startup = (async () => {
           await initializeOverlay(payload ?? null);
@@ -251,8 +217,8 @@ new PostMan(
             })();
             const STALE_MOTION_FLOOR = 0.02;
             if (crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
-              const samePoseTwoRafs =
-                state.lastRafControllerPoseHash != null && h === state.lastRafControllerPoseHash;
+              const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
+                h === state.lastRafControllerPoseHash;
               const writerStarved = writeSeq > 0 &&
                 state.lastControllerSabWriteSeq >= 0 &&
                 writeSeq === state.lastControllerSabWriteSeq;
@@ -314,9 +280,11 @@ new PostMan(
                     motion.rightAng,
                   );
                   const STALE_MOTION_FLOOR = 0.02;
-                  if (crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
-                    const samePoseTwoRafs =
-                      state.lastRafControllerPoseHash != null && h === state.lastRafControllerPoseHash;
+                  if (
+                    crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
+                  ) {
+                    const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
+                      h === state.lastRafControllerPoseHash;
                     const writerStarved = writeSeq > 0 &&
                       state.lastControllerSabWriteSeq >= 0 &&
                       writeSeq === state.lastControllerSabWriteSeq;
@@ -348,24 +316,25 @@ new PostMan(
             }
           }
 
-          const onInProcessControllerFrame: ((d: ControllerDataPayload) => void) | undefined = vrInputPaced
-            ? (d) => {
-              const buf = state.controllerSharedStateSab;
-              if (buf) {
-                writeControllerStateSab(buf, d);
-                const read = readControllerStateSab(buf);
-                if (read) {
-                  if (crashOnDropMode.controllerSabStale) {
-                    runControllerStaleChecks(d, read.writeSeq);
-                  } else {
-                    state.lastRafControllerPoseHash = hashControllerPoseMatrices(d);
-                    state.lastControllerSabWriteSeq = read.writeSeq;
+          const onInProcessControllerFrame: ((d: ControllerDataPayload) => void) | undefined =
+            vrInputPaced
+              ? (d) => {
+                const buf = state.controllerSharedStateSab;
+                if (buf) {
+                  writeControllerStateSab(buf, d);
+                  const read = readControllerStateSab(buf);
+                  if (read) {
+                    if (crashOnDropMode.controllerSabStale) {
+                      runControllerStaleChecks(d, read.writeSeq);
+                    } else {
+                      state.lastRafControllerPoseHash = hashControllerPoseMatrices(d);
+                      state.lastControllerSabWriteSeq = read.writeSeq;
+                    }
                   }
                 }
+                publishControllerSnapshot(d);
               }
-              publishControllerSnapshot(d);
-            }
-            : undefined;
+              : undefined;
 
           await state.host!.start({
             width: payload?.width,
@@ -381,7 +350,9 @@ new PostMan(
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
             nominalHmdDisplayHz: payload?.hmdDisplayFrequencyHz ?? null,
-            onBeforeExternalControllerApply: vrInputPaced ? undefined : onBeforeExternalControllerApply,
+            onBeforeExternalControllerApply: vrInputPaced
+              ? undefined
+              : onBeforeExternalControllerApply,
             onInProcessControllerFrame: vrInputPaced ? onInProcessControllerFrame : undefined,
           });
         })().catch((error) => {
@@ -447,16 +418,12 @@ new PostMan(
       state.webGpuOverlay = null;
       state.webGpuOverlayGl?.cleanup();
       state.webGpuOverlayGl = null;
+      state.raylibOverlay?.cleanup();
+      state.raylibOverlay = null;
+      state.raylibOverlayRaylib?.cleanup();
+      state.raylibOverlayRaylib = null;
       state.webGpuOverlayConfig = null;
       state.raylibOverlayConfig = null;
-      if (state.overlayActor) {
-        PostMan.PostMessage({
-          target: state.overlayActor,
-          type: "STOPWEBXROVERLAY",
-          payload: null,
-        });
-        state.overlayActor = null;
-      }
       state.controllerActor = null;
       state.lastUploadedHostFrameCount = -1;
       state.uploadedFrames = 0;
@@ -472,7 +439,6 @@ new PostMan(
       state.raythreeRightEyeMetric.reset();
       state.raythreeUiMetric.reset();
       state.raylibHostPrepMetric.reset();
-      state.raylibPostMsgMetric.reset();
       state.raylibOvrHandlerMetric.reset();
       state.raylibOvrRenderMetric.reset();
       state.raylibOvrOpenvrMetric.reset();
@@ -505,8 +471,6 @@ new PostMan(
       state.raylibOvrUiTextCountMetric.reset();
       state.raylibOvrUiPanelDrawnMetric.reset();
       state.raylibOvrUiTextDrawnMetric.reset();
-      state.raylibFrameInFlight = false;
-      state.raylibFramePending = null;
       state.nominalHmdDisplayHz = null;
     },
   } as const,
@@ -517,18 +481,14 @@ globalThis.addEventListener("unload", () => {
   state.overlayRunning = false;
   state.webGpuOverlay?.cleanup();
   state.webGpuOverlayGl?.cleanup();
+  state.raylibOverlay?.cleanup();
+  state.raylibOverlayRaylib?.cleanup();
   state.webGpuOverlay = null;
   state.webGpuOverlayGl = null;
+  state.raylibOverlay = null;
+  state.raylibOverlayRaylib = null;
   state.webGpuOverlayConfig = null;
   state.raylibOverlayConfig = null;
-  if (state.overlayActor) {
-    PostMan.PostMessage({
-      target: state.overlayActor,
-      type: "STOPWEBXROVERLAY",
-      payload: null,
-    });
-    state.overlayActor = null;
-  }
   void state.host?.stop();
 });
 
@@ -651,7 +611,9 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
 
   if (includesWebGpuOverlay(overlayMode) && !state.webGpuOverlayGl) {
     const overlayGl = new WebXROverlayGl();
-    overlayGl.initialize(buildOverlayName(payload.overlayName, "WebGPU") ?? "PetPlay WebXR Overlay WebGPU");
+    overlayGl.initialize(
+      buildOverlayName(payload.overlayName, "WebGPU") ?? "PetPlay WebXR Overlay WebGPU",
+    );
     state.webGpuOverlayGl = overlayGl;
     state.webGpuOverlayConfig = {
       overlayPointer: payload.overlayPointer,
@@ -665,58 +627,24 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
     };
   }
 
-  if (includesRaylibOverlay(overlayMode) && !state.overlayActor) {
-    state.overlayActor = await PostMan.create("./webxrOverlay.ts", import.meta.url);
-    LogChannel.log("webxrv2", `[webxr] overlay actor ready id=${state.overlayActor}`);
+  if (includesRaylibOverlay(overlayMode) && !state.raylibOverlayRaylib) {
+    const raylibOverlay = new WebXROverlayRaylib();
+    const overlayName = buildOverlayName(payload.overlayName, "Raylib") ??
+      "PetPlay WebXR Overlay Raylib";
+    raylibOverlay.initialize(overlayName);
+    state.raylibOverlayRaylib = raylibOverlay;
     state.raylibOverlayConfig = {
       overlayPointer: payload.overlayPointer,
       overlayKey: buildOverlayKey(payload.overlayKey, "raylib"),
-      overlayName: buildOverlayName(payload.overlayName, "Raylib"),
+      overlayName,
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
       sortOrder: 20,
       attachToHmd: true,
     };
-    PostMan.PostMessage({
-      target: state.overlayActor,
-      type: "STARTWEBXROVERLAY",
-      payload: {
-        overlayPointer: payload.overlayPointer,
-        webxrActor: state.id,
-        overlayKey: state.raylibOverlayConfig.overlayKey,
-        overlayName: state.raylibOverlayConfig.overlayName,
-        overlayWidthInMeters: state.raylibOverlayConfig.overlayWidthInMeters,
-        overlayDistance: state.raylibOverlayConfig.overlayDistance,
-        sortOrder: state.raylibOverlayConfig.sortOrder,
-      },
-    });
+    LogChannel.log("webxrv2", "[webxr] raylib overlay running in webxr worker hot loop");
   }
-}
-
-/**
- * At most one `RENDERWEBXRRAYTHREEFRAME` in the Stageforge queue; newer frames
- * replace `raylibFramePending` until the overlay acks.
- */
-function tryFlushPendingRaylibFrame(): void {
-  if (state.raylibFrameInFlight) {
-    return;
-  }
-  if (!state.overlayActor || !state.raylibFramePending) {
-    return;
-  }
-  const toSend = state.raylibFramePending;
-  state.raylibFramePending = null;
-  state.raylibFrameInFlight = true;
-  const postStartedAt = performance.now();
-  PostMan.PostMessage({
-    target: state.overlayActor,
-    type: "RENDERWEBXRRAYTHREEFRAME",
-    payload: toSend,
-    transfer: collectTransferables(toSend),
-  });
-  state.raylibPostMsgMetric.record(performance.now() - postStartedAt);
-  state.presentMetric.record(0);
 }
 
 function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
@@ -738,6 +666,60 @@ function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
   state.webGpuOverlay = nextOverlay;
 }
 
+function ensureRaylibOverlayForFrame() {
+  if (state.raylibOverlay || !state.raylibOverlayRaylib || !state.raylibOverlayConfig) {
+    return;
+  }
+
+  const nextOverlay = new OpenVrOverlayTexture(state.raylibOverlayConfig.overlayPointer);
+  nextOverlay.initialize(state.raylibOverlayRaylib.getTextureHandle(), {
+    key: state.raylibOverlayConfig.overlayKey,
+    name: state.raylibOverlayConfig.overlayName,
+    widthInMeters: state.raylibOverlayConfig.overlayWidthInMeters,
+    distance: state.raylibOverlayConfig.overlayDistance,
+    mode: state.raylibOverlayConfig.overlayMode ?? "quad",
+    sortOrder: state.raylibOverlayConfig.sortOrder,
+    attachToHmd: state.raylibOverlayConfig.attachToHmd,
+    flipVertical: false,
+  });
+  state.raylibOverlay = nextOverlay;
+}
+
+function recordRaylibOverlayMetrics(payload: RaylibOverlayFrameAckPayload) {
+  state.raylibOvrHandlerMetric.record(payload.handlerMs);
+  state.raylibOvrRenderMetric.record(payload.renderMs);
+  state.raylibOvrOpenvrMetric.record(payload.openvrMs);
+  state.raylibOvrEyeLeftMetric.record(payload.renderLeftMs);
+  state.raylibOvrEyeRightMetric.record(payload.renderRightMs);
+  state.raylibOvrEyeLSyncMetric.record(payload.renderLeftSyncMs);
+  state.raylibOvrEyeLPrepMetric.record(payload.renderLeftPrepMs);
+  state.raylibOvrEyeLOpaqueMetric.record(payload.renderLeftOpaqueMs);
+  state.raylibOvrEyeLXparentMetric.record(payload.renderLeftXparentMs);
+  state.raylibOvrEyeLUiMetric.record(payload.renderLeftUiMs);
+  state.raylibOvrEyeLUiSortMetric.record(payload.renderLeftUiSortPrepMs);
+  state.raylibOvrEyeLUiPanMetric.record(payload.renderLeftUiPanelsMs);
+  state.raylibOvrEyeLUiTxtMetric.record(payload.renderLeftUiTextMs);
+  state.raylibOvrEyeLEndMetric.record(payload.renderLeftEndMs);
+  state.raylibOvrEyeRSyncMetric.record(payload.renderRightSyncMs);
+  state.raylibOvrEyeRPrepMetric.record(payload.renderRightPrepMs);
+  state.raylibOvrEyeROpaqueMetric.record(payload.renderRightOpaqueMs);
+  state.raylibOvrEyeRXparentMetric.record(payload.renderRightXparentMs);
+  state.raylibOvrEyeRUiMetric.record(payload.renderRightUiMs);
+  state.raylibOvrEyeRUiSortMetric.record(payload.renderRightUiSortPrepMs);
+  state.raylibOvrEyeRUiPanMetric.record(payload.renderRightUiPanelsMs);
+  state.raylibOvrEyeRUiTxtMetric.record(payload.renderRightUiTextMs);
+  state.raylibOvrEyeREndMetric.record(payload.renderRightEndMs);
+  state.raylibOvrCombineMetric.record(payload.renderCombineMs);
+  state.raylibOvrSyncMetric.record(payload.renderSyncMs);
+  state.raylibOvrDrawMetric.record(payload.renderDrawMs);
+  state.raylibOvrBatchGeoMetric.record(payload.batchGeometries);
+  state.raylibOvrBatchMatMetric.record(payload.batchMaterials);
+  state.raylibOvrUiPanelCountMetric.record(payload.uiPanelCount);
+  state.raylibOvrUiTextCountMetric.record(payload.uiTextCount);
+  state.raylibOvrUiPanelDrawnMetric.record(payload.uiPanelDrawn);
+  state.raylibOvrUiTextDrawnMetric.record(payload.uiTextDrawn);
+}
+
 function buildRaylibModeLabel(): string {
   if (state.overlayRenderMode === "both") {
     return "raylib-ghost+webgpu-scene";
@@ -752,7 +734,13 @@ function buildWebGpuModeLabel(): string {
   return "webgpu-scene";
 }
 
-function logFirstOverlayUpload(modeLabel: string, width: number, height: number, outputWidth: number, outputHeight: number) {
+function logFirstOverlayUpload(
+  modeLabel: string,
+  width: number,
+  height: number,
+  outputWidth: number,
+  outputHeight: number,
+) {
   LogChannel.log(
     "webxrv2",
     `[webxr] overlay upload started eye=${width}x${height} output=${outputWidth}x${outputHeight} mode=${modeLabel}`,
@@ -799,11 +787,12 @@ async function uploadWebGpuSceneFrame() {
 }
 
 function hasAnyOverlayMode(): boolean {
-  return includesRaylibOverlay(state.overlayRenderMode) || includesWebGpuOverlay(state.overlayRenderMode);
+  return includesRaylibOverlay(state.overlayRenderMode) ||
+    includesWebGpuOverlay(state.overlayRenderMode);
 }
 
 async function uploadRaylibShadowFrame() {
-  if (!state.host || !state.overlayActor) {
+  if (!state.host || !state.raylibOverlayRaylib) {
     return false;
   }
 
@@ -828,9 +817,6 @@ async function uploadRaylibShadowFrame() {
     );
   }
 
-  // Timings: Raythree extract must stay in this worker (see webxrRaythreeScene.ts).
-  // `PostMessage` to webxrOverlay is coalesced: at most one in flight; latest payload wins
-  // (see `tryFlushPendingRaylibFrame` + `RAYLIBOVERLAYFRAMEACK`).
   const extractStartedAt = performance.now();
   const raythreeProbes = {
     sceneMatrix: state.raythreeSceneMatrixMetric,
@@ -845,8 +831,55 @@ async function uploadRaylibShadowFrame() {
     raythreeProbes,
   );
   state.raythreeExtractMetric.record(performance.now() - extractStartedAt);
-  state.raylibFramePending = payload;
-  tryFlushPendingRaylibFrame();
+
+  const handlerT0 = performance.now();
+  const rt = state.raylibOverlayRaylib.renderRaythreeFrame(payload);
+  const renderMs = rt.totalMs;
+
+  const openvrT0 = performance.now();
+  ensureRaylibOverlayForFrame();
+  if (!state.raylibOverlay) {
+    throw new Error("OpenVR Raylib overlay not initialized");
+  }
+  state.raylibOverlay.setTextureHandle(state.raylibOverlayRaylib.getTextureHandle());
+  state.raylibOverlay.present();
+  const openvrMs = performance.now() - openvrT0;
+  const handlerMs = performance.now() - handlerT0;
+
+  recordRaylibOverlayMetrics({
+    handlerMs,
+    renderMs,
+    openvrMs,
+    renderLeftMs: rt.leftMs,
+    renderRightMs: rt.rightMs,
+    renderLeftSyncMs: rt.renderLeftSyncMs,
+    renderLeftPrepMs: rt.renderLeftPrepMs,
+    renderLeftOpaqueMs: rt.renderLeftOpaqueMs,
+    renderLeftXparentMs: rt.renderLeftXparentMs,
+    renderLeftUiMs: rt.renderLeftUiMs,
+    renderLeftUiSortPrepMs: rt.renderLeftUiSortPrepMs,
+    renderLeftUiPanelsMs: rt.renderLeftUiPanelsMs,
+    renderLeftUiTextMs: rt.renderLeftUiTextMs,
+    renderLeftEndMs: rt.renderLeftEndMs,
+    renderRightSyncMs: rt.renderRightSyncMs,
+    renderRightPrepMs: rt.renderRightPrepMs,
+    renderRightOpaqueMs: rt.renderRightOpaqueMs,
+    renderRightXparentMs: rt.renderRightXparentMs,
+    renderRightUiMs: rt.renderRightUiMs,
+    renderRightUiSortPrepMs: rt.renderRightUiSortPrepMs,
+    renderRightUiPanelsMs: rt.renderRightUiPanelsMs,
+    renderRightUiTextMs: rt.renderRightUiTextMs,
+    renderRightEndMs: rt.renderRightEndMs,
+    renderCombineMs: rt.combineMs,
+    renderSyncMs: rt.renderSyncMs,
+    renderDrawMs: rt.renderDrawMs,
+    batchGeometries: rt.batchGeometries,
+    batchMaterials: rt.batchMaterials,
+    uiPanelCount: rt.uiPanelCount,
+    uiTextCount: rt.uiTextCount,
+    uiPanelDrawn: rt.uiPanelDrawn,
+    uiTextDrawn: rt.uiTextDrawn,
+  });
   return true;
 }
 
@@ -866,9 +899,7 @@ async function pumpOverlayFrames() {
     ) {
       if (hostStatus.frameCount > state.lastUploadedHostFrameCount + 1) {
         throw new Error(
-          `[webxr] overlay path missed host frame(s): lastUploadAtHostFrame=${
-            state.lastUploadedHostFrameCount
-          } now=${hostStatus.frameCount} (one host tick advanced without a matching overlay run)`,
+          `[webxr] overlay path missed host frame(s): lastUploadAtHostFrame=${state.lastUploadedHostFrameCount} now=${hostStatus.frameCount} (one host tick advanced without a matching overlay run)`,
         );
       }
     }
@@ -877,8 +908,10 @@ async function pumpOverlayFrames() {
       continue;
     }
 
-    const canUseRaylib = includesRaylibOverlay(state.overlayRenderMode) && Boolean(state.overlayActor);
-    const canUseWebGpu = includesWebGpuOverlay(state.overlayRenderMode) && Boolean(state.webGpuOverlayGl);
+    const canUseRaylib = includesRaylibOverlay(state.overlayRenderMode) &&
+      Boolean(state.raylibOverlayRaylib);
+    const canUseWebGpu = includesWebGpuOverlay(state.overlayRenderMode) &&
+      Boolean(state.webGpuOverlayGl);
     if (!canUseRaylib && !canUseWebGpu) {
       await wait(10);
       continue;
@@ -906,7 +939,7 @@ async function pumpOverlayFrames() {
       state.lastUploadedHostFrameCount = hostStatus.frameCount;
       state.overlayFpsCounter.mark();
       const now = performance.now();
-      if (now - state.lastOverlayFpsLogAt >= 1000) {
+      if (state.frameLogsEnabled && now - state.lastOverlayFpsLogAt >= 1000) {
         state.lastOverlayFpsLogAt = now;
         const nom = state.nominalHmdDisplayHz;
         const tail = nom != null && Number.isFinite(nom)
@@ -962,6 +995,9 @@ function fmtPerfCount(
 }
 
 function maybeLogOverlayPerf() {
+  if (!state.frameLogsEnabled) {
+    return;
+  }
   const now = performance.now();
   if (now - state.lastPerfLogAt < 1000) {
     return;
@@ -977,7 +1013,6 @@ function maybeLogOverlayPerf() {
   const rayR = state.raythreeRightEyeMetric.flush();
   const rayUi = state.raythreeUiMetric.flush();
   const hostPrep = state.raylibHostPrepMetric.flush();
-  const postMsg = state.raylibPostMsgMetric.flush();
   const ovrH = state.raylibOvrHandlerMetric.flush();
   const ovrR = state.raylibOvrRenderMetric.flush();
   const ovrO = state.raylibOvrOpenvrMetric.flush();
@@ -1012,9 +1047,10 @@ function maybeLogOverlayPerf() {
   const ovrUITD = state.raylibOvrUiTextDrawnMetric.flush();
   if (
     !uploadSample && !presentSample && !frameSample && !raythreeSample &&
-    !sceneMx && !rayL && !rayR && !rayUi && !hostPrep && !postMsg &&
+    !sceneMx && !rayL && !rayR && !rayUi && !hostPrep &&
     !ovrH && !ovrR && !ovrO && !ovrEL && !ovrER && !ovrLSy && !ovrLPr && !ovrLOp && !ovrLXp &&
-    !ovrLUi && !ovrLUiS && !ovrLUiP && !ovrLUiT && !ovrLEd && !ovrRSy && !ovrRPr && !ovrROp && !ovrRXp &&
+    !ovrLUi && !ovrLUiS && !ovrLUiP && !ovrLUiT && !ovrLEd && !ovrRSy && !ovrRPr && !ovrROp &&
+    !ovrRXp &&
     !ovrRUi && !ovrRUiS && !ovrRUiP && !ovrRUiT && !ovrREd &&
     !ovrCb && !ovrSy && !ovrDr && !ovrBG && !ovrBM && !ovrUIPC && !ovrUITC && !ovrUIPD && !ovrUITD
   ) {
@@ -1030,7 +1066,6 @@ function maybeLogOverlayPerf() {
       fmtPerfInterval("rt-left", rayL),
       fmtPerfInterval("rt-right", rayR),
       fmtPerfInterval("rt-ui", rayUi),
-      fmtPerfInterval("overlay-post", postMsg),
       fmtPerfInterval("rl-ovr-handler", ovrH),
       fmtPerfInterval("rl-ovr-render", ovrR),
       fmtPerfInterval("rl-ovr-eyeL", ovrEL),

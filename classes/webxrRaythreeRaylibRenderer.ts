@@ -167,6 +167,10 @@ type UiTextMeshCacheEntry = {
   version: number;
 };
 
+type DynamicNativeMesh = NativeMesh & {
+  vertexCount: number;
+};
+
 const MSDF_ATLAS_PATH = new URL(
   "../submodules/threewebxrwebgpudeno/vendor/three-msdf-text-utils/demo/fonts/roboto/roboto-regular.png",
   import.meta.url,
@@ -197,12 +201,25 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly worldMatrix = new THREE.Matrix4();
   private readonly sortMatrix = new THREE.Matrix4();
   private readonly sortVector = new THREE.Vector3();
-  private readonly transparentInstanceScratch: Array<RenderInstance | InstancedRenderInstance> =
-    [];
+  private readonly transparentInstanceScratch: Array<RenderInstance | InstancedRenderInstance> = [];
   /** Filled from the current view matrix per frame; `getWorldMatrixViewDepth` reads it (do not re-enter before a sort has finished). */
   private readonly raylibMatrixScratch: raylibBindings.Matrix = {
-    m0: 1, m1: 0, m2: 0, m3: 0, m4: 0, m5: 1, m6: 0, m7: 0, m8: 0, m9: 0, m10: 1, m11: 0, m12: 0, m13: 0,
-    m14: 0, m15: 1,
+    m0: 1,
+    m1: 0,
+    m2: 0,
+    m3: 0,
+    m4: 0,
+    m5: 1,
+    m6: 0,
+    m7: 0,
+    m8: 0,
+    m9: 0,
+    m10: 1,
+    m11: 0,
+    m12: 0,
+    m13: 0,
+    m14: 0,
+    m15: 1,
   };
   private readonly uiMvpP = new THREE.Matrix4();
   private readonly uiMvpV = new THREE.Matrix4();
@@ -216,7 +233,7 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly uiPanelBatchShader: UiPanelBatchShader;
   private readonly uiPanelBatchMaterialBytes: Uint8Array;
   private readonly uiPanelBatchMaterial: raylibBindings.Material;
-  private uiTextBatchMesh: NativeMesh | null = null;
+  private uiTextBatchMesh: DynamicNativeMesh | null = null;
   private textBatchPoolPos = new Float32Array(0);
   private textBatchPoolN = new Float32Array(0);
   private textBatchPoolUv = new Float32Array(0);
@@ -226,10 +243,29 @@ export class WebXRRaythreeRaylibRenderer {
   private uiPanelDataTexture: raylibBindings.Texture2D | null = null;
   private uiPanelDataTexH = 0;
   private uiPanelDataTexW = 9;
-  private uiPanelBatchMesh: NativeMesh | null = null;
+  private uiPanelBatchMesh: DynamicNativeMesh | null = null;
+  private uiPanelBatchPoolPos = new Float32Array(0);
+  private uiPanelBatchPoolN = new Float32Array(0);
+  private uiPanelBatchPoolUv = new Float32Array(0);
+  private uiPanelBatchPoolC = new Uint8Array(0);
   private readonly clipV4 = new THREE.Vector4();
   private readonly identityMatrix16 = new Float32Array([
-    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
   ]);
   private lastBatchedTextAtlasId = 0;
   private readonly loggedTextCounts = new Set<number>();
@@ -517,7 +553,8 @@ export class WebXRRaythreeRaylibRenderer {
     applyLighting(this.lightingShader, frame);
     this.maybeLogProjectionSummary(frame);
     const viewMatrix = (matrices?.viewMatrix ?? frame.camera.viewMatrix) as Float32Array;
-    const projectionMatrix = (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as Float32Array;
+    const projectionMatrix =
+      (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as Float32Array;
     this.sortMatrix.fromArray(viewMatrix as unknown as number[]);
     const scratch = this.transparentInstanceScratch;
     scratch.length = 0;
@@ -538,7 +575,9 @@ export class WebXRRaythreeRaylibRenderer {
     raylib.H.ClearBackground(toRaylibColor(background));
     raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
     raylib.H.rlSetMatrixProjection(
-      this.matrixForDraw((matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as ArrayLike<number>),
+      this.matrixForDraw(
+        (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as ArrayLike<number>,
+      ),
     );
     raylib.H.rlSetMatrixModelview(
       this.matrixForDraw(viewMatrix),
@@ -657,7 +696,7 @@ export class WebXRRaythreeRaylibRenderer {
     });
     const texts = [...ui.texts].sort((left, right) =>
       this.getWorldMatrixViewDepth(right.worldMatrix) -
-        this.getWorldMatrixViewDepth(left.worldMatrix)
+      this.getWorldMatrixViewDepth(left.worldMatrix)
     );
     const t1 = performance.now();
 
@@ -1217,15 +1256,12 @@ export class WebXRRaythreeRaylibRenderer {
       return null;
     }
     raylib.H.UpdateTexture(this.uiPanelDataTexture, up);
-    if (this.uiPanelBatchMesh !== null) {
-      this.unloadNativeMesh(this.uiPanelBatchMesh);
-      this.uiPanelBatchMesh = null;
-    }
     const vCount = 6 * drawn.length;
-    const pos = new Float32Array(vCount * 3);
-    const nrm = new Float32Array(vCount * 3);
-    const uv = new Float32Array(vCount * 2);
-    const col = new Uint8Array(vCount * 4);
+    this.ensureUiPanelBatchPool(vCount);
+    const pos = this.uiPanelBatchPoolPos;
+    const nrm = this.uiPanelBatchPoolN;
+    const uv = this.uiPanelBatchPoolUv;
+    const col = this.uiPanelBatchPoolC;
     for (let pi = 0; pi < drawn.length; pi++) {
       const panel = drawn[pi]!;
       this.worldMatrix.fromArray(panel.worldMatrix as unknown as number[]);
@@ -1255,31 +1291,14 @@ export class WebXRRaythreeRaylibRenderer {
         col[o4 + 3] = 255;
       }
     }
-    const triCount = vCount / 3;
-    const meshHandle = raylibBindings.Mesh.createPointer({
-      vertexCount: vCount,
-      triangleCount: triCount,
-      vertices: pointerAddress(pos),
-      texcoords: pointerAddress(uv),
-      texcoords2: ZERO_POINTER,
-      normals: pointerAddress(nrm),
-      tangents: ZERO_POINTER,
-      colors: pointerAddress(col),
-      indices: ZERO_POINTER,
-      animVertices: ZERO_POINTER,
-      animNormals: ZERO_POINTER,
-      boneIds: ZERO_POINTER,
-      boneWeights: ZERO_POINTER,
-      boneMatrices: ZERO_POINTER,
-      boneCount: 0,
-      vaoId: 0,
-      vboId: ZERO_POINTER,
-    } as unknown as raylibBindings.Mesh);
-    raylib.H.UploadMesh(meshHandle.pointer, false);
-    const uploaded = meshHandle.read();
-    const sanitized = sanitizeUploadedMesh(uploaded);
-    meshHandle.write(sanitized);
-    this.uiPanelBatchMesh = { mesh: sanitized };
+    this.uiPanelBatchMesh = this.updateOrCreateDynamicMesh(
+      this.uiPanelBatchMesh,
+      vCount,
+      pos,
+      uv,
+      nrm,
+      col,
+    );
     if (this.uiPanelBatchShader.mvpLoc >= 0) {
       raylib.H.SetShaderValueMatrix(
         this.uiPanelBatchShader.shader,
@@ -1326,6 +1345,17 @@ export class WebXRRaythreeRaylibRenderer {
       this.matrixForDraw(this.identityMatrix16),
     );
     return drawn.length;
+  }
+
+  private ensureUiPanelBatchPool(vertexCount: number): void {
+    if (this.uiPanelBatchPoolPos.length >= vertexCount * 3) {
+      return;
+    }
+    const cap = Math.max(Math.ceil(vertexCount * 1.2), 1024);
+    this.uiPanelBatchPoolPos = new Float32Array(cap * 3);
+    this.uiPanelBatchPoolN = new Float32Array(cap * 3);
+    this.uiPanelBatchPoolUv = new Float32Array(cap * 2);
+    this.uiPanelBatchPoolC = new Uint8Array(cap * 4);
   }
 
   private ensureTextBatchPool(vertexCount: number): void {
@@ -1441,19 +1471,74 @@ export class WebXRRaythreeRaylibRenderer {
         wx++;
       }
     }
-    if (this.uiTextBatchMesh !== null) {
-      this.unloadNativeMesh(this.uiTextBatchMesh);
-      this.uiTextBatchMesh = null;
+    this.uiTextBatchMesh = this.updateOrCreateDynamicMesh(
+      this.uiTextBatchMesh,
+      totalV,
+      this.textBatchPoolPos,
+      this.textBatchPoolUv,
+      this.textBatchPoolN,
+      this.textBatchPoolC,
+    );
+    raylib.H.DrawMesh(
+      this.uiTextBatchMesh.mesh,
+      this.uiTextBatchMaterial,
+      this.matrixForDraw(this.identityMatrix16),
+    );
+    return work.length;
+  }
+
+  private updateOrCreateDynamicMesh(
+    existing: DynamicNativeMesh | null,
+    vertexCount: number,
+    positions: Float32Array,
+    uvs: Float32Array,
+    normals: Float32Array,
+    colors: Uint8Array,
+  ): DynamicNativeMesh {
+    if (existing !== null && existing.vertexCount === vertexCount) {
+      raylib.H.UpdateMeshBuffer(
+        existing.mesh,
+        0,
+        bufferPointer(positions.subarray(0, vertexCount * 3)),
+        vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT,
+        0,
+      );
+      raylib.H.UpdateMeshBuffer(
+        existing.mesh,
+        1,
+        bufferPointer(uvs.subarray(0, vertexCount * 2)),
+        vertexCount * 2 * Float32Array.BYTES_PER_ELEMENT,
+        0,
+      );
+      raylib.H.UpdateMeshBuffer(
+        existing.mesh,
+        2,
+        bufferPointer(normals.subarray(0, vertexCount * 3)),
+        vertexCount * 3 * Float32Array.BYTES_PER_ELEMENT,
+        0,
+      );
+      raylib.H.UpdateMeshBuffer(
+        existing.mesh,
+        3,
+        bufferPointer(colors.subarray(0, vertexCount * 4)),
+        vertexCount * 4 * Uint8Array.BYTES_PER_ELEMENT,
+        0,
+      );
+      return existing;
     }
-    const th = raylibBindings.Mesh.createPointer({
-      vertexCount: totalV,
-      triangleCount: totalV / 3,
-      vertices: pointerAddress(this.textBatchPoolPos.subarray(0, totalV * 3)),
-      texcoords: pointerAddress(this.textBatchPoolUv.subarray(0, totalV * 2)),
+
+    if (existing !== null) {
+      this.unloadNativeMesh(existing);
+    }
+    const meshHandle = raylibBindings.Mesh.createPointer({
+      vertexCount,
+      triangleCount: vertexCount / 3,
+      vertices: pointerAddress(positions.subarray(0, vertexCount * 3)),
+      texcoords: pointerAddress(uvs.subarray(0, vertexCount * 2)),
       texcoords2: ZERO_POINTER,
-      normals: pointerAddress(this.textBatchPoolN.subarray(0, totalV * 3)),
+      normals: pointerAddress(normals.subarray(0, vertexCount * 3)),
       tangents: ZERO_POINTER,
-      colors: pointerAddress(this.textBatchPoolC.subarray(0, totalV * 4)),
+      colors: pointerAddress(colors.subarray(0, vertexCount * 4)),
       indices: ZERO_POINTER,
       animVertices: ZERO_POINTER,
       animNormals: ZERO_POINTER,
@@ -1464,17 +1549,11 @@ export class WebXRRaythreeRaylibRenderer {
       vaoId: 0,
       vboId: ZERO_POINTER,
     } as unknown as raylibBindings.Mesh);
-    raylib.H.UploadMesh(th.pointer, false);
-    const uText = th.read();
-    const sText = sanitizeUploadedMesh(uText);
-    th.write(sText);
-    this.uiTextBatchMesh = { mesh: sText };
-    raylib.H.DrawMesh(
-      this.uiTextBatchMesh.mesh,
-      this.uiTextBatchMaterial,
-      this.matrixForDraw(this.identityMatrix16),
-    );
-    return work.length;
+    raylib.H.UploadMesh(meshHandle.pointer, false);
+    const uploaded = meshHandle.read();
+    const sanitized = sanitizeUploadedMesh(uploaded);
+    meshHandle.write(sanitized);
+    return { mesh: sanitized, vertexCount };
   }
 
   private unloadNativeMesh(nativeMesh: NativeMesh): void {
@@ -2547,6 +2626,11 @@ function pointerAddress(value: unknown): bigint {
     return ZERO_POINTER;
   }
   return Deno.UnsafePointer.value(pointer);
+}
+
+function bufferPointer(value: unknown): raylibBindings.VoidPointer {
+  return (Deno.UnsafePointer.of(value as BufferSource) ??
+    ZERO_POINTER) as unknown as raylibBindings.VoidPointer;
 }
 
 function pointerFromAddress(address: unknown): Deno.PointerValue<unknown> {

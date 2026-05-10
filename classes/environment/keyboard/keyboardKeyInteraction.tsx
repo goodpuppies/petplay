@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import { Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { KeyCapChrome } from "./keyboardUi.tsx";
 import type { NormalizedKeyFace } from "./types.ts";
-import { keyTextColor } from "./theme.ts";
+import { keyTextColor, tokenBackground, tokenBorderColor } from "./theme.ts";
 
 const requestAnimFrame: (c: (t: number) => void) => number = (c) =>
   (globalThis as unknown as { requestAnimationFrame: (c: (t: number) => void) => number })
@@ -21,6 +21,47 @@ const KEY_DEPRESS_Z = -32;
  * (release does not have to finish). Increase for a slower return to the rest pose.
  */
 const KEY_RELEASE_EASE_MS = 200;
+
+type ImperativeUIKitRef = {
+  setProperties?: (props: Record<string, unknown>) => void;
+};
+
+type TextMeshRef = {
+  material?: { color?: string };
+  userData?: {
+    raythreeUiText?: {
+      color?: [number, number, number, number];
+    };
+  };
+};
+
+function hexColorToRgb01(color: string): [number, number, number] | null {
+  const match = /^#?([0-9a-f]{6})$/i.exec(color);
+  if (match == null) {
+    return null;
+  }
+  const value = Number.parseInt(match[1], 16);
+  return [
+    ((value >> 16) & 0xff) / 255,
+    ((value >> 8) & 0xff) / 255,
+    (value & 0xff) / 255,
+  ];
+}
+
+function setTextMeshColor(ref: React.RefObject<TextMeshRef | null>, color: string): void {
+  const mesh = ref.current;
+  if (mesh == null) {
+    return;
+  }
+  if (mesh.material != null) {
+    mesh.material.color = color;
+  }
+  const rgb = hexColorToRgb01(color);
+  if (rgb != null && mesh.userData?.raythreeUiText != null) {
+    const alpha = mesh.userData.raythreeUiText.color?.[3] ?? 1;
+    mesh.userData.raythreeUiText.color = [rgb[0], rgb[1], rgb[2], alpha];
+  }
+}
 
 function easeOutCubic(t: number): number {
   const u = 1 - Math.max(0, Math.min(1, t));
@@ -71,14 +112,14 @@ export function InteractiveKeyCap(
     latched = false,
   }: InteractiveKeyCapProps,
 ) {
-  const [depress, setDepress] = useState(0);
-  const [hovered, setHovered] = useState(false);
+  const visualRef = useRef<ImperativeUIKitRef | null>(null);
+  const primaryTextRef = useRef<TextMeshRef | null>(null);
+  const secondaryTextRef = useRef<TextMeshRef | null>(null);
+  const hoveredRef = useRef(false);
   const releaseRafRef = useRef<number | null>(null);
   const depressRef = useRef(0);
-  depressRef.current = depress;
 
-  /** Any depress in (0,1] uses the “lit” / pressed look so easing does not step through hover in mid-travel. */
-  const litSurface = hovered || latched || depress > 0;
+  const litSurface = latched;
   const tc = keyTextColor(face.colorToken, litSurface);
   const font = Math.max(10, face.fontSize);
 
@@ -96,12 +137,12 @@ export function InteractiveKeyCap(
       const u = (now - start) / KEY_RELEASE_EASE_MS;
       if (u >= 1) {
         depressRef.current = 0;
-        setDepress(0);
+        applyCurrentVisual();
         releaseRafRef.current = null;
         return;
       }
       const e = 1 - easeOutCubic(u);
-      setDepress(t0 * e);
+      updateDepressVisual(t0 * e);
       releaseRafRef.current = requestAnimFrame(step);
     };
     releaseRafRef.current = requestAnimFrame(step);
@@ -123,22 +164,67 @@ export function InteractiveKeyCap(
     [],
   );
 
-  const scaleP = 1 + (KEY_CLICK_SCALE - 1) * depress;
-  const zP = KEY_DEPRESS_Z * depress;
+  const baseBorderWidth = litSurface ? 2 : 1;
+  const baseBackgroundColor = tokenBackground(face.colorToken, litSurface);
+  const baseBorderColor = tokenBorderColor(face.colorToken, litSurface);
+
+  const isVisualLit = (value: number): boolean => latched || hoveredRef.current || value > 0;
+
+  const visualPropsForDepress = (value: number): Record<string, unknown> => {
+    const pressed = isVisualLit(value);
+    return {
+      backgroundColor: tokenBackground(face.colorToken, pressed),
+      borderColor: tokenBorderColor(face.colorToken, pressed),
+      borderWidth: pressed ? 2 : 1,
+      transformScaleX: value > 0 ? 1 + (KEY_CLICK_SCALE - 1) * value : undefined,
+      transformScaleY: value > 0 ? 1 + (KEY_CLICK_SCALE - 1) * value : undefined,
+      transformTranslateZ: value > 0 ? KEY_DEPRESS_Z * value : undefined,
+    };
+  };
+
+  const applyTextVisual = (value: number) => {
+    const color = keyTextColor(face.colorToken, isVisualLit(value));
+    setTextMeshColor(primaryTextRef, color);
+    setTextMeshColor(secondaryTextRef, color);
+  };
+
+  const syncTextRef = (
+    targetRef: React.MutableRefObject<TextMeshRef | null>,
+    mesh: TextMeshRef | null,
+  ) => {
+    targetRef.current = mesh;
+    if (mesh != null) {
+      setTextMeshColor(targetRef, keyTextColor(face.colorToken, isVisualLit(depressRef.current)));
+    }
+  };
+
+  const updateDepressVisual = (value: number) => {
+    depressRef.current = value;
+    visualRef.current?.setProperties?.(visualPropsForDepress(value));
+    applyTextVisual(value);
+  };
+
+  const applyCurrentVisual = () => {
+    visualRef.current?.setProperties?.(visualPropsForDepress(depressRef.current));
+    applyTextVisual(depressRef.current);
+  };
+
+  useEffect(() => {
+    applyCurrentVisual();
+  }, [baseBackgroundColor, baseBorderColor, baseBorderWidth]);
 
   return (
     <KeyCapChrome
+      visualRef={visualRef}
       face={face}
       minWidth={minWidth}
       minHeight={minHeight}
       pixelSize={pixelSize}
       pressedVisual={litSurface}
-      transformScaleX={depress > 0 ? scaleP : undefined}
-      transformScaleY={depress > 0 ? scaleP : undefined}
-      transformTranslateZ={depress > 0 ? zP : undefined}
       onPointerOver={(e) => {
         if (!isTriggerLikePointer(e)) return;
-        setHovered(true);
+        hoveredRef.current = true;
+        applyCurrentVisual();
       }}
       onPointerDown={(e) => {
         if (!isPrimaryActivation(e)) return;
@@ -146,8 +232,7 @@ export function InteractiveKeyCap(
         cancelReleaseRaf();
         onTestPointerDown?.(face);
         onActivate(face);
-        depressRef.current = 1;
-        setDepress(1);
+        updateDepressVisual(1);
       }}
       onPointerUp={(e) => {
         if (!isTriggerLikePointer(e)) return;
@@ -155,7 +240,8 @@ export function InteractiveKeyCap(
       }}
       onPointerOut={(e) => {
         if (!isTriggerLikePointer(e)) return;
-        setHovered(false);
+        hoveredRef.current = false;
+        applyCurrentVisual();
         beginRelease();
       }}
     >
@@ -169,6 +255,7 @@ export function InteractiveKeyCap(
         borderWidth={0}
       >
         <Text
+          ref={(mesh: TextMeshRef | null) => syncTextRef(primaryTextRef, mesh)}
           color={tc}
           fontSize={font * 0.9}
           pixelSize={pixelSize}
@@ -179,6 +266,7 @@ export function InteractiveKeyCap(
         {face.hasSecondary && face.displayAlt
           ? (
             <Text
+              ref={(mesh: TextMeshRef | null) => syncTextRef(secondaryTextRef, mesh)}
               color={tc}
               fontSize={font * 0.58}
               pixelSize={pixelSize}

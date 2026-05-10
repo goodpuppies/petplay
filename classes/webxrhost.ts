@@ -26,9 +26,9 @@ import { IntervalMetric } from "./intervalMetric.ts";
 import { tempFile } from "./utils.ts";
 import { installWebXRHostPolyfills, type WebXrHostPolyfillOptions } from "./webxrPolyfills.ts";
 import {
-  tryCreateOpenVrOverlayFramePacer,
   type OpenVrOverlayFramePacer,
   type OpenVrOverlayPaceMode,
+  tryCreateOpenVrOverlayFramePacer,
 } from "./openVrOverlayFramePacing.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
@@ -277,6 +277,15 @@ export function getLogSlowXrFrames(): boolean {
   return true;
 }
 
+function getWebxrFrameLogsEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
 const DEFAULT_XRAF_STRICT_INTERVAL_MULT = 1.12;
 
 /**
@@ -424,7 +433,10 @@ function getWebxrSimTickHzFromArgs(): number | "display" | null {
   if (Number.isFinite(n) && n >= 30 && n <= 240) {
     return n;
   }
-  LogChannel.log("webxrv2", `[webxrhost] invalid --webxr-sim-tick-hz=${raw}, not capping sim ticks`);
+  LogChannel.log(
+    "webxrv2",
+    `[webxrhost] invalid --webxr-sim-tick-hz=${raw}, not capping sim ticks`,
+  );
   return null;
 }
 
@@ -521,6 +533,237 @@ type XrDeviceBridge = {
   };
 };
 
+type XrPoseOnlyRenderer = {
+  xr: XrPoseOnlyManager;
+  backend: { isWebGPUBackend: true };
+  domElement: unknown;
+  hasInitialized: () => true;
+  init: () => Promise<void>;
+  render: (scene: THREE.Object3D, camera: THREE.Camera) => void;
+  setSize: (width: number, height: number) => void;
+  getSize: (target: THREE.Vector2) => THREE.Vector2;
+  setPixelRatio: (value: number) => void;
+  getPixelRatio: () => number;
+  setViewport: (...args: unknown[]) => void;
+  getViewport: (target: THREE.Vector4) => THREE.Vector4;
+  setScissor: (...args: unknown[]) => void;
+  getScissor: (target: THREE.Vector4) => THREE.Vector4;
+  setScissorTest: (value: boolean) => void;
+  getScissorTest: () => boolean;
+  setClearColor: (...args: unknown[]) => void;
+  getClearColor: (target: THREE.Color) => THREE.Color;
+  getClearAlpha: () => number;
+  clear: (...args: unknown[]) => void;
+  setAnimationLoop: (callback: XRFrameRequestCallback | null) => void;
+  dispose: () => void;
+  initialized: true;
+};
+
+class XrPoseOnlyManager extends EventTarget {
+  enabled = true;
+  isPresenting = false;
+  cameraAutoUpdate = true;
+  private foveation = 0;
+  private referenceSpaceType: XRReferenceSpaceType = "local-floor";
+  private session: XRSession | null = null;
+  private referenceSpace: XRReferenceSpace | null = null;
+  private readonly camera = new THREE.ArrayCamera([
+    new THREE.PerspectiveCamera(),
+    new THREE.PerspectiveCamera(),
+  ]);
+
+  setReferenceSpaceType(type: XRReferenceSpaceType) {
+    this.referenceSpaceType = type;
+  }
+
+  async setSession(session: XRSession | null) {
+    if (this.session === session) {
+      return;
+    }
+    if (!session) {
+      this.session = null;
+      this.referenceSpace = null;
+      this.isPresenting = false;
+      this.dispatchEvent(new Event("sessionend"));
+      return;
+    }
+
+    this.session = session;
+    this.referenceSpace = await session.requestReferenceSpace(this.referenceSpaceType);
+    const bindingCtor = (globalThis as unknown as {
+      XRGPUBinding?: new (session: XRSession, device: unknown) => {
+        createProjectionLayer: (init?: Record<string, unknown>) => XRLayer;
+      };
+    }).XRGPUBinding;
+    if (!bindingCtor) {
+      throw new Error("XRGPUBinding unavailable for pose-only WebXR renderer");
+    }
+    const binding = new bindingCtor(session, createPoseOnlyGpuDevice());
+    session.updateRenderState({
+      layers: [binding.createProjectionLayer({ textureType: "texture-array" })],
+    });
+    this.isPresenting = true;
+    this.dispatchEvent(new Event("sessionstart"));
+  }
+
+  getSession(): XRSession | null {
+    return this.session;
+  }
+
+  getReferenceSpace(): XRReferenceSpace | null {
+    return this.referenceSpace;
+  }
+
+  getReferenceSpaceType(): XRReferenceSpaceType {
+    return this.referenceSpaceType;
+  }
+
+  getBaseLayer(): XRLayer | null {
+    return this.session?.renderState.layers?.[0] ?? this.session?.renderState.baseLayer ?? null;
+  }
+
+  setFoveation(value: number) {
+    this.foveation = value;
+  }
+
+  getFoveation(): number {
+    return this.foveation;
+  }
+
+  setAnimationLoop(_callback: XRFrameRequestCallback | null) {
+    // WebXRHost owns the manual XR rAF loop.
+  }
+
+  updateFromFrame(frame: XRFrame) {
+    const referenceSpace = this.referenceSpace;
+    if (!referenceSpace) {
+      return;
+    }
+    const pose = frame.getViewerPose(referenceSpace);
+    if (!pose) {
+      return;
+    }
+
+    const cameras = this.camera.cameras as THREE.PerspectiveCamera[];
+    for (let i = 0; i < 2; i++) {
+      const view = pose.views[i];
+      const camera = cameras[i];
+      if (!view || !camera) {
+        continue;
+      }
+      camera.matrix.fromArray(view.transform.matrix);
+      camera.matrix.decompose(camera.position, camera.quaternion, camera.scale);
+      camera.matrixWorld.copy(camera.matrix);
+      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+      camera.projectionMatrix.fromArray(view.projectionMatrix);
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      camera.updateMatrixWorld(true);
+    }
+
+    this.camera.matrix.fromArray(pose.transform.matrix);
+    this.camera.matrix.decompose(this.camera.position, this.camera.quaternion, this.camera.scale);
+    this.camera.matrixWorld.copy(this.camera.matrix);
+    this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+    this.camera.updateMatrixWorld(true);
+  }
+
+  getCamera(): THREE.ArrayCamera {
+    return this.camera;
+  }
+
+  updateCamera(_camera: THREE.PerspectiveCamera) {
+    // updateFromFrame already owns the XR camera matrices.
+  }
+}
+
+function createPoseOnlyGpuDevice() {
+  const texture = {
+    createView: () => ({}),
+    destroy: () => {},
+  };
+  return {
+    createTexture: () => texture,
+  };
+}
+
+function createXrPoseOnlyRenderer(
+  canvas: unknown,
+  width: number,
+  height: number,
+): XrPoseOnlyRenderer {
+  const xr = new XrPoseOnlyManager();
+  const size = new THREE.Vector2(width, height);
+  const viewport = new THREE.Vector4(0, 0, width, height);
+  const scissor = new THREE.Vector4(0, 0, width, height);
+  const clearColor = new THREE.Color(0, 0, 0);
+  let pixelRatio = 1;
+  let clearAlpha = 1;
+  let scissorTest = false;
+  return {
+    xr,
+    backend: { isWebGPUBackend: true },
+    domElement: canvas,
+    hasInitialized: () => true,
+    init: async () => {},
+    render: (scene, camera) => {
+      if (scene.matrixWorldAutoUpdate === true) {
+        scene.updateMatrixWorld();
+      }
+      if (camera.parent === null && camera.matrixWorldAutoUpdate === true) {
+        camera.updateMatrixWorld();
+      }
+    },
+    setSize: (nextWidth, nextHeight) => {
+      size.set(nextWidth, nextHeight);
+      viewport.set(0, 0, nextWidth, nextHeight);
+      scissor.set(0, 0, nextWidth, nextHeight);
+    },
+    getSize: (target) => target.copy(size),
+    setPixelRatio: (value) => {
+      pixelRatio = value;
+    },
+    getPixelRatio: () => pixelRatio,
+    setViewport: (...args) => {
+      if (args.length >= 4) {
+        viewport.set(Number(args[0]), Number(args[1]), Number(args[2]), Number(args[3]));
+      } else if (args[0] instanceof THREE.Vector4) {
+        viewport.copy(args[0]);
+      }
+    },
+    getViewport: (target) => target.copy(viewport),
+    setScissor: (...args) => {
+      if (args.length >= 4) {
+        scissor.set(Number(args[0]), Number(args[1]), Number(args[2]), Number(args[3]));
+      } else if (args[0] instanceof THREE.Vector4) {
+        scissor.copy(args[0]);
+      }
+    },
+    getScissor: (target) => target.copy(scissor),
+    setScissorTest: (value) => {
+      scissorTest = value;
+    },
+    getScissorTest: () => scissorTest,
+    setClearColor: (...args) => {
+      if (args[0] instanceof THREE.Color) {
+        clearColor.copy(args[0]);
+      } else if (args[0] != null) {
+        clearColor.set(args[0] as THREE.ColorRepresentation);
+      }
+      if (typeof args[1] === "number") {
+        clearAlpha = args[1];
+      }
+    },
+    getClearColor: (target) => target.copy(clearColor),
+    getClearAlpha: () => clearAlpha,
+    clear: () => {},
+    setAnimationLoop: () => {},
+    dispose: () => {
+      void xr.setSession(null);
+    },
+    initialized: true,
+  };
+}
+
 function createStructBuffer<T>(byteSize: number): {
   pointer: Deno.PointerValue<T>;
   view: DataView<ArrayBuffer>;
@@ -541,7 +784,7 @@ export class WebXRHost {
   private lastError: Error | null = null;
   private root: ReturnType<typeof createRoot> | null = null;
   private rootStore: { getState: () => unknown } | null = null;
-  private renderer: THREE.WebGPURenderer | null = null;
+  private renderer: THREE.WebGPURenderer | XrPoseOnlyRenderer | null = null;
   private xrDevice: XrDeviceBridge | null = null;
   private session: XRSession | null = null;
   private surfaceHost: WebXRSurfaceHost | null = null;
@@ -608,6 +851,7 @@ export class WebXRHost {
   private outputRightReadbackRing: TextureReadbackRing | null = null;
   private outputStereoReadbackRing: StereoTextureReadbackRing | null = null;
   private xrFpsCounter = new FpsCounter();
+  private frameLogsEnabled = false;
   private lastFpsLogAt = 0;
   private lastPerfLogAt = 0;
   /** Time between `session.requestAnimationFrame` invocations (wall clock; reflects compositor rate). */
@@ -717,6 +961,7 @@ export class WebXRHost {
     this.lastHeartbeatAt = 0;
     this.lastFpsLogAt = 0;
     this.lastPerfLogAt = 0;
+    this.frameLogsEnabled = getWebxrFrameLogsEnabled();
     this.layerReadyLogged = false;
     this.resetEmulatedControllerPositionSmoothing();
     this.xrSessionRafWallIntervalMetric.reset();
@@ -750,9 +995,7 @@ export class WebXRHost {
     {
       const simFromOpt = options.simTickHz;
       const simFromArg = getWebxrSimTickHzFromArgs();
-      const simMode: number | "display" | null = simFromOpt !== undefined
-        ? simFromOpt
-        : simFromArg;
+      const simMode: number | "display" | null = simFromOpt !== undefined ? simFromOpt : simFromArg;
       if (simMode === "display") {
         const nom = this.nominalHmdDisplayHz;
         this.xrSimTickMinIntervalMs = 1000 /
@@ -763,9 +1006,9 @@ export class WebXRHost {
       if (this.xrSimTickMinIntervalMs != null) {
         LogChannel.log(
           "webxrv2",
-          `[webxrhost] XR sim tick min ${
-            this.xrSimTickMinIntervalMs.toFixed(2)
-          }ms (~${(1000 / this.xrSimTickMinIntervalMs).toFixed(0)} Hz) — set --webxr-sim-tick-hz=display or 75 to reduce micro judder when sim (fast pace) outruns the overlay/HMD`,
+          `[webxrhost] XR sim tick min ${this.xrSimTickMinIntervalMs.toFixed(2)}ms (~${
+            (1000 / this.xrSimTickMinIntervalMs).toFixed(0)
+          } Hz) — set --webxr-sim-tick-hz=display or 75 to reduce micro judder when sim (fast pace) outruns the overlay/HMD`,
         );
       }
     }
@@ -793,9 +1036,7 @@ export class WebXRHost {
     if (crashOnDrop.vsync || crashOnDrop.overlay || crashOnDrop.xrRaf || crashOnDrop.xrRafStrict) {
       LogChannel.log(
         "webxrv2",
-        `[webxrhost] --webxr-crash-on-dropped-frame: vsync=${crashOnDrop.vsync} overlay=${
-          crashOnDrop.overlay
-        } xr-raf=${crashOnDrop.xrRaf} xr-raf-strict=${crashOnDrop.xrRafStrict}${
+        `[webxrhost] --webxr-crash-on-dropped-frame: vsync=${crashOnDrop.vsync} overlay=${crashOnDrop.overlay} xr-raf=${crashOnDrop.xrRaf} xr-raf-strict=${crashOnDrop.xrRafStrict}${
           crashOnDrop.xrRafStrict
             ? ` (mult=${this.xrRafStrictIntervalMult.toFixed(3)} nominal=${
               this.nominalHmdDisplayHz != null
@@ -807,7 +1048,10 @@ export class WebXRHost {
       );
     }
     if (this.logSlowXrFrames) {
-      LogChannel.log("webxrv2", "[webxrhost] --webxr-log-slow-frames enabled (throttled soft logs)");
+      LogChannel.log(
+        "webxrv2",
+        "[webxrhost] --webxr-log-slow-frames enabled (throttled soft logs)",
+      );
     }
     const hostHeartbeatPollMs = 16;
     const nom = this.nominalHmdDisplayHz;
@@ -818,11 +1062,12 @@ export class WebXRHost {
         "[webxrhost] --webxr-polyfill-hz ignored when OpenVR pacer is active (rAF delay=0; use --webxr-openvr-pace=fast for a higher sim tick rate)",
       );
     }
-    const rafPolyfillIntervalMs = polyfillHzOverride != null && Number.isFinite(polyfillHzOverride) && polyfillHzOverride > 0
-      ? 1000 / polyfillHzOverride
-      : nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
-      ? 1000 / nom
-      : 16;
+    const rafPolyfillIntervalMs =
+      polyfillHzOverride != null && Number.isFinite(polyfillHzOverride) && polyfillHzOverride > 0
+        ? 1000 / polyfillHzOverride
+        : nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
+        ? 1000 / nom
+        : 16;
     const polyfill: WebXrHostPolyfillOptions = {
       pollIntervalMs: rafPolyfillIntervalMs,
       openVrVsyncDrivesRaf: this.openVrOverlayPacer != null,
@@ -835,33 +1080,44 @@ export class WebXRHost {
           ? (openVrPace === "fast"
             ? "OpenVR fast pace (single GetTimeSinceLastVsync; IWER rAF delay=0)"
             : "OpenVR display pacing (Aardvark-style wait for new vsync index; IWER rAF delay=0)")
-          : `polyfill=${rafPolyfillIntervalMs.toFixed(3)}ms (~${(1000 / rafPolyfillIntervalMs).toFixed(1)}Hz)`) +
+          : `polyfill=${rafPolyfillIntervalMs.toFixed(3)}ms (~${
+            (1000 / rafPolyfillIntervalMs).toFixed(1)
+          }Hz)`) +
         `; IWER XRSession uses global rAF`,
     );
 
     try {
-      const adapter = await navigator.gpu.requestAdapter();
-      assert(adapter, "No WebGPU adapter available");
+      const useRealWebGpuRenderer = !this.skipWebGpuXrDraw;
+      let device: GPUDevice | ReturnType<typeof createPoseOnlyGpuDevice>;
+      let preferredFormat = "bgra8unorm";
+      if (useRealWebGpuRenderer) {
+        const adapter = await navigator.gpu.requestAdapter();
+        assert(adapter, "No WebGPU adapter available");
 
-      const device = await adapter.requestDevice();
-      const preferredFormat = navigator.gpu.getPreferredCanvasFormat();
-      this.device = device;
-      if (this.readbackMode === "stereo") {
-        this.outputStereoReadbackRing = new StereoTextureReadbackRing(device, this.ringSize);
+        const gpuDevice = await adapter.requestDevice();
+        preferredFormat = navigator.gpu.getPreferredCanvasFormat();
+        this.device = gpuDevice;
+        if (this.readbackMode === "stereo") {
+          this.outputStereoReadbackRing = new StereoTextureReadbackRing(gpuDevice, this.ringSize);
+        } else {
+          this.outputLeftReadbackRing = new TextureReadbackRing(gpuDevice, this.ringSize);
+          this.outputRightReadbackRing = new TextureReadbackRing(gpuDevice, this.ringSize);
+        }
+        gpuDevice.addEventListener("uncapturederror", (event: Event) => {
+          const gpuEvent = event as Event & {
+            error?: { message?: string; constructor?: { name?: string } };
+          };
+          const errorName = gpuEvent.error?.constructor?.name ?? "GPUError";
+          this.lastError = new Error(
+            `Uncaptured WebGPU error (${errorName}): ${gpuEvent.error?.message ?? "unknown"}`,
+          );
+        });
+        device = gpuDevice;
       } else {
-        this.outputLeftReadbackRing = new TextureReadbackRing(device, this.ringSize);
-        this.outputRightReadbackRing = new TextureReadbackRing(device, this.ringSize);
+        this.device = null;
+        device = createPoseOnlyGpuDevice();
       }
       this.overlayUploadFormat = preferredFormat.startsWith("bgra") ? "bgra" : "rgba";
-      device.addEventListener("uncapturederror", (event: Event) => {
-        const gpuEvent = event as Event & {
-          error?: { message?: string; constructor?: { name?: string } };
-        };
-        const errorName = gpuEvent.error?.constructor?.name ?? "GPUError";
-        this.lastError = new Error(
-          `Uncaptured WebGPU error (${errorName}): ${gpuEvent.error?.message ?? "unknown"}`,
-        );
-      });
 
       this.surfaceHost = new WebXRSurfaceHost();
       this.surfaceHost.initialize(
@@ -874,12 +1130,12 @@ export class WebXRHost {
         "webxrv2",
         `[webxrhost] surface=${this.width}x${this.height} debugWindow=${
           this.debugWindowEnabled ? "yes" : "no"
-        } session=${this.sessionMode} alpha=${this.alphaEnabled ? "yes" : "no"} capture=${
-          this.captureMode
-        } readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
+        } session=${this.sessionMode} alpha=${
+          this.alphaEnabled ? "yes" : "no"
+        } capture=${this.captureMode} readback=${this.readbackMode} ringSize=${this.ringSize} queueDebug=${this.queueDebugMode}`,
       );
       const canvas = this.surfaceHost.getCanvas();
-      const context = this.surfaceHost.getContext();
+      const context = useRealWebGpuRenderer ? this.surfaceHost.getContext() : null;
 
       const iwerModulePath = new URL(
         "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js",
@@ -954,6 +1210,18 @@ export class WebXRHost {
       this.root = createRoot(canvas);
       await this.root.configure({
         renderer: (async (props: Record<string, unknown>) => {
+          if (!useRealWebGpuRenderer) {
+            const renderer = createXrPoseOnlyRenderer(canvas, this.width, this.height);
+            renderer.xr.enabled = true;
+            renderer.xr.setReferenceSpaceType(getReferenceSpaceType(this.sessionMode));
+            renderer.setSize(this.width, this.height);
+            this.renderer = renderer;
+            LogChannel.log(
+              "webxrv2",
+              "[webxrhost] using pose-only renderer shim (no WebGPU renderer in raylib-only mode)",
+            );
+            return renderer;
+          }
           const rendererOptions: Record<string, unknown> = {
             ...props,
             canvas,
@@ -987,9 +1255,9 @@ export class WebXRHost {
           XR,
           { store },
           React.createElement(WebXRScene, {
-          XROrigin,
-          displayInstanceActor: options.displayInstanceActor ?? null,
-        }),
+            XROrigin,
+            displayInstanceActor: options.displayInstanceActor ?? null,
+          }),
         ),
       );
       this.rootStore = rootStore;
@@ -1002,7 +1270,10 @@ export class WebXRHost {
       }
 
       this.session = await this.enterXrWhenReady(
-        store as unknown as { enterAR: () => Promise<XRSession>; enterVR: () => Promise<XRSession> },
+        store as unknown as {
+          enterAR: () => Promise<XRSession>;
+          enterVR: () => Promise<XRSession>;
+        },
         this.sessionMode,
       );
       assert(this.session, `Failed to enter ${this.sessionMode} session`);
@@ -1017,11 +1288,11 @@ export class WebXRHost {
           this.renderer?.xr.isPresenting ? "yes" : "no"
         } alpha=${this.alphaEnabled ? "yes" : "no"}${
           this.skipWebGpuXrDraw
-            ? " webgpuSceneDraw=no (raylib-only; use overlay \"both\"/\"webgpu\" to draw the projection layer)"
+            ? ' webgpuSceneDraw=no (raylib-only; use overlay "both"/"webgpu" to draw the projection layer)'
             : ""
         }`,
       );
-      this.startManualXrFrameLoop(rootStore, device);
+      this.startManualXrFrameLoop(rootStore, this.device);
 
       while (this.running) {
         if (this.lastError) {
@@ -1478,7 +1749,7 @@ export class WebXRHost {
     rootStore: {
       getState: () => unknown;
     },
-    device: GPUDevice,
+    device: GPUDevice | null,
   ) {
     if (!this.session || this.xrFrameRequestActive) {
       return;
@@ -1509,11 +1780,10 @@ export class WebXRHost {
 
       const wallNow = performance.now();
       const nom = this.nominalHmdDisplayHz;
-      const expectedMs = nom != null && nom > 0 && Number.isFinite(nom)
-        ? 1000 / nom
-        : 1000 / 90;
-      const rafIntervalMs =
-        this.lastXrSessionRafWallAt > 0 ? wallNow - this.lastXrSessionRafWallAt : 0;
+      const expectedMs = nom != null && nom > 0 && Number.isFinite(nom) ? 1000 / nom : 1000 / 90;
+      const rafIntervalMs = this.lastXrSessionRafWallAt > 0
+        ? wallNow - this.lastXrSessionRafWallAt
+        : 0;
       if (rafIntervalMs > 0 && this.frameCount >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
         if (this.crashOnDroppedXrRafStrict) {
           const limitMs = expectedMs * this.xrRafStrictIntervalMult;
@@ -1522,7 +1792,9 @@ export class WebXRHost {
               `[webxrhost] XR rAF strict: interval ${rafIntervalMs.toFixed(2)}ms > ${
                 limitMs.toFixed(2)
               }ms ` +
-                `(${this.xrRafStrictIntervalMult.toFixed(3)}× nominal ${expectedMs.toFixed(2)}ms; ` +
+                `(${this.xrRafStrictIntervalMult.toFixed(3)}× nominal ${
+                  expectedMs.toFixed(2)
+                }ms; ` +
                 `~${(1000 / rafIntervalMs).toFixed(1)} Hz effective vs ${
                   nom != null && nom > 0 && Number.isFinite(nom) ? `${nom.toFixed(0)}` : "90"
                 } Hz nominal)`,
@@ -1533,7 +1805,9 @@ export class WebXRHost {
           const limitMs = expectedMs * 1.85;
           if (rafIntervalMs > limitMs) {
             throw new Error(
-              `[webxrhost] XR rAF wall gap ${rafIntervalMs.toFixed(2)}ms > ${limitMs.toFixed(1)}ms ` +
+              `[webxrhost] XR rAF wall gap ${rafIntervalMs.toFixed(2)}ms > ${
+                limitMs.toFixed(1)
+              }ms ` +
                 `(~${(1000 / rafIntervalMs).toFixed(1)} Hz effective vs nominal ${
                   nom?.toFixed(0) ?? "90"
                 } Hz)`,
@@ -1556,9 +1830,7 @@ export class WebXRHost {
             "webxrv2",
             `[webxrhost] slow XR rAF interval ${rafIntervalMs.toFixed(1)}ms (nominal ${
               expectedMs.toFixed(2)
-            }ms; ~${(1000 / rafIntervalMs).toFixed(0)} Hz effective) frameCount=${
-              this.frameCount
-            }`,
+            }ms; ~${(1000 / rafIntervalMs).toFixed(0)} Hz effective) frameCount=${this.frameCount}`,
           );
         }
       }
@@ -1572,6 +1844,7 @@ export class WebXRHost {
       // useFrame callbacks; stash it on the bridge so our useFrame shim can
       // inject it as the third arg downstream.
       currentXRFrame.value = frame;
+      (this.renderer as XrPoseOnlyRenderer | null)?.xr?.updateFromFrame?.(frame);
       const t2 = performance.now();
       try {
         advance(time);
@@ -1585,7 +1858,7 @@ export class WebXRHost {
       this.frameCount++;
       this.xrFpsCounter.mark(this.lastXrCallbackAt);
       this.xrAdvanceMetric.record(performance.now() - advanceStartedAt);
-      if (this.lastXrCallbackAt - this.lastFpsLogAt >= 1000) {
+      if (this.frameLogsEnabled && this.lastXrCallbackAt - this.lastFpsLogAt >= 1000) {
         this.lastFpsLogAt = this.lastXrCallbackAt;
         {
           const measured = this.xrFpsCounter.getFps();
@@ -1610,7 +1883,7 @@ export class WebXRHost {
         );
       }
 
-      if (!this.inspected && !this.inspectionPending && this.frameCount >= 3) {
+      if (device && !this.inspected && !this.inspectionPending && this.frameCount >= 3) {
         this.inspectionPending = true;
         void this.inspectProjectionLayer(device).finally(() => {
           this.inspectionPending = false;
@@ -1662,6 +1935,9 @@ export class WebXRHost {
   }
 
   private maybeLogPerf() {
+    if (!this.frameLogsEnabled) {
+      return;
+    }
     const now = performance.now();
     if (now - this.lastPerfLogAt < 1000) {
       return;
@@ -1682,7 +1958,8 @@ export class WebXRHost {
     const mapRangeSample = this.mapRangeMetric.flush();
     const captureSample = this.captureMetric.flush();
     if (
-      !rafWallSample && !advanceSample && !hmdSample && !controllerSample && !r3fSample && !poseSample &&
+      !rafWallSample && !advanceSample && !hmdSample && !controllerSample && !r3fSample &&
+      !poseSample &&
       !readySignalSample && !readbackSample &&
       !queueAgeSample && !gpuReadySample && !shelfSample &&
       !mapRangeSample && !captureSample
@@ -1710,7 +1987,9 @@ export class WebXRHost {
     }
     if (controllerSample) {
       parts.push(
-        `ctrl=${controllerSample.avgMs.toFixed(2)}ms avg ${controllerSample.maxMs.toFixed(2)}ms max`,
+        `ctrl=${controllerSample.avgMs.toFixed(2)}ms avg ${
+          controllerSample.maxMs.toFixed(2)
+        }ms max`,
       );
     }
     if (r3fSample) {
@@ -1891,7 +2170,9 @@ export class WebXRHost {
       OpenVR.k_unTrackedDeviceIndex_Hmd * OpenVR.TrackedDevicePoseStruct.byteSize,
       OpenVR.TrackedDevicePoseStruct.byteSize,
     );
-    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(poseView) as unknown as OpenVR.TrackedDevicePose;
+    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(
+      poseView,
+    ) as unknown as OpenVR.TrackedDevicePose;
     if (!hmdPose.bPoseIsValid) {
       return null;
     }
@@ -1899,10 +2180,22 @@ export class WebXRHost {
     const m = hmdPose.mDeviceToAbsoluteTracking.m;
     return {
       matrix: new Float32Array([
-        m[0][0], m[1][0], m[2][0], 0,
-        m[0][1], m[1][1], m[2][1], 0,
-        m[0][2], m[1][2], m[2][2], 0,
-        m[0][3], m[1][3], m[2][3], 1,
+        m[0][0],
+        m[1][0],
+        m[2][0],
+        0,
+        m[0][1],
+        m[1][1],
+        m[2][1],
+        0,
+        m[0][2],
+        m[1][2],
+        m[2][2],
+        0,
+        m[0][3],
+        m[1][3],
+        m[2][3],
+        1,
       ]),
       position: [m[0][3], m[1][3], m[2][3]],
       quaternion: this.matrix3x4ToQuaternion(m),
@@ -1945,7 +2238,9 @@ export class WebXRHost {
         new THREE.Matrix4().copy(rightCamera.matrixWorld).invert().elements,
       ),
       rightEyeProjectionMatrix: new Float32Array(rightCamera.projectionMatrix.elements),
-      halfFovInRadians: this.projectionMatrixToHalfFovInRadians(leftCamera.projectionMatrix.elements),
+      halfFovInRadians: this.projectionMatrixToHalfFovInRadians(
+        leftCamera.projectionMatrix.elements,
+      ),
       ipdMeters,
     };
   }
@@ -2046,20 +2341,37 @@ export class WebXRHost {
         this.rightPoseState,
         this.rightHandPathHandle,
       );
-      this.readDigitalAction(vrInput, this.triggerLeftHandle, this.leftTriggerState, this.leftHandPathHandle);
+      this.readDigitalAction(
+        vrInput,
+        this.triggerLeftHandle,
+        this.leftTriggerState,
+        this.leftHandPathHandle,
+      );
       this.readDigitalAction(
         vrInput,
         this.triggerRightHandle,
         this.rightTriggerState,
         this.rightHandPathHandle,
       );
-      this.readDigitalAction(vrInput, this.grabLeftHandle, this.leftGrabState, this.leftHandPathHandle);
-      this.readDigitalAction(vrInput, this.grabRightHandle, this.rightGrabState, this.rightHandPathHandle);
+      this.readDigitalAction(
+        vrInput,
+        this.grabLeftHandle,
+        this.leftGrabState,
+        this.leftHandPathHandle,
+      );
+      this.readDigitalAction(
+        vrInput,
+        this.grabRightHandle,
+        this.rightGrabState,
+        this.rightHandPathHandle,
+      );
 
       const leftPoseData = OpenVR.InputPoseActionDataStruct.read(this.leftPoseState.view);
       const rightPoseData = OpenVR.InputPoseActionDataStruct.read(this.rightPoseState.view);
       const leftTriggerData = OpenVR.InputDigitalActionDataStruct.read(this.leftTriggerState.view);
-      const rightTriggerData = OpenVR.InputDigitalActionDataStruct.read(this.rightTriggerState.view);
+      const rightTriggerData = OpenVR.InputDigitalActionDataStruct.read(
+        this.rightTriggerState.view,
+      );
       const leftGrabData = OpenVR.InputDigitalActionDataStruct.read(this.leftGrabState.view);
       const rightGrabData = OpenVR.InputDigitalActionDataStruct.read(this.rightGrabState.view);
 
@@ -2112,9 +2424,7 @@ export class WebXRHost {
     }
 
     const inputPointer = Deno.UnsafePointer.create(
-      typeof this.vrInputPointer === "bigint"
-        ? this.vrInputPointer
-        : BigInt(this.vrInputPointer),
+      typeof this.vrInputPointer === "bigint" ? this.vrInputPointer : BigInt(this.vrInputPointer),
     );
     if (!inputPointer) {
       return null;
@@ -2175,22 +2485,28 @@ export class WebXRHost {
 
     let hErr = vrInput.GetInputSourceHandle("/user/hand/left", this.leftHandPathHandlePtr);
     if (hErr === OpenVR.InputError.VRInputError_None) {
-      this.leftHandPathHandle = new Deno.UnsafePointerView(this.leftHandPathHandlePtr).getBigUint64();
+      this.leftHandPathHandle = new Deno.UnsafePointerView(this.leftHandPathHandlePtr)
+        .getBigUint64();
     } else {
       this.leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
       LogChannel.log(
         "webxrv2",
-        `[webxrhost] GetInputSourceHandle /user/hand/left: ${OpenVR.InputError[hErr] ?? hErr} — using unbounded actions`,
+        `[webxrhost] GetInputSourceHandle /user/hand/left: ${
+          OpenVR.InputError[hErr] ?? hErr
+        } — using unbounded actions`,
       );
     }
     hErr = vrInput.GetInputSourceHandle("/user/hand/right", this.rightHandPathHandlePtr);
     if (hErr === OpenVR.InputError.VRInputError_None) {
-      this.rightHandPathHandle = new Deno.UnsafePointerView(this.rightHandPathHandlePtr).getBigUint64();
+      this.rightHandPathHandle = new Deno.UnsafePointerView(this.rightHandPathHandlePtr)
+        .getBigUint64();
     } else {
       this.rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
       LogChannel.log(
         "webxrv2",
-        `[webxrhost] GetInputSourceHandle /user/hand/right: ${OpenVR.InputError[hErr] ?? hErr} — using unbounded actions`,
+        `[webxrhost] GetInputSourceHandle /user/hand/right: ${
+          OpenVR.InputError[hErr] ?? hErr
+        } — using unbounded actions`,
       );
     }
 
@@ -2342,7 +2658,8 @@ export class WebXRHost {
 
     const pose = poseData?.pose;
     const tracking = pose?.mDeviceToAbsoluteTracking?.m;
-    const isConnected = Boolean(poseData?.bActive) && Boolean(pose?.bPoseIsValid) && Array.isArray(tracking);
+    const isConnected = Boolean(poseData?.bActive) && Boolean(pose?.bPoseIsValid) &&
+      Array.isArray(tracking);
     controller.connected = isConnected;
     controller.updateButtonValue?.("trigger", triggerData?.bState ? 1 : 0);
     controller.updateButtonValue?.("squeeze", grabData?.bState ? 1 : 0);
@@ -2423,10 +2740,10 @@ export class WebXRHost {
   private matrix3x4ToQuaternion(
     matrix:
       | [
-          [number, number, number, number],
-          [number, number, number, number],
-          [number, number, number, number],
-        ]
+        [number, number, number, number],
+        [number, number, number, number],
+        [number, number, number, number],
+      ]
       | number[][],
   ): [number, number, number, number] {
     const m00 = matrix[0][0];

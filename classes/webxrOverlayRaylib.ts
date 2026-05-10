@@ -26,6 +26,12 @@ function getRaylibNativeEyeSize(): number {
   return 3560;
 }
 
+function getRaylibNativeEyeSizeCandidates(): number[] {
+  const preferred = getRaylibNativeEyeSize();
+  const candidates = [preferred, 2048, 1536, 1280, 1024, 768, 512];
+  return [...new Set(candidates.filter((v) => v <= preferred || v === preferred))];
+}
+
 /** No MSAA: offscreen compositor + hidden 1×1 context; `RenderTexture2D` paths don't use the window sample buffer anyway. */
 const DEFAULT_WINDOW_FLAGS = raylib.ConfigFlags.FLAG_WINDOW_HIDDEN;
 const CONTEXT_WINDOW_WIDTH = 1;
@@ -98,6 +104,7 @@ export class WebXROverlayRaylib {
   private outputUvScaleLocation = -1;
   private outputUvOffsetLocation = -1;
   private readonly uniqueId = crypto.randomUUID().slice(0, 8);
+  private resolvedEyeSize: number | null = null;
 
   initialize(name = "WebXR Overlay") {
     if (this.windowInitialized) {
@@ -126,14 +133,15 @@ export class WebXROverlayRaylib {
 
     LogChannel.log(
       "webxrv2",
-      `[webxr] raylib compositor ready hidden=yes context=${CONTEXT_WINDOW_WIDTH}x${CONTEXT_WINDOW_HEIGHT} eye=${
-        getRaylibNativeEyeSize()
-      }x${getRaylibNativeEyeSize()}`,
+      `[webxr] raylib compositor ready hidden=yes context=${CONTEXT_WINDOW_WIDTH}x${CONTEXT_WINDOW_HEIGHT} eye=${getRaylibNativeEyeSize()}x${getRaylibNativeEyeSize()} max`,
     );
     LogChannel.log(
       "webxrv2",
       `[webxr] raylib combine shader locs lookRotation=${this.lookRotationLocation} halfFov=${this.halfFovLocation} outputUvScale=${this.outputUvScaleLocation} outputUvOffset=${this.outputUvOffsetLocation}`,
     );
+
+    const eye = getRaylibNativeEyeSize();
+    this.ensureTexture(eye, eye, eye, eye);
   }
 
   getTextureHandle(): number {
@@ -160,6 +168,30 @@ export class WebXROverlayRaylib {
     );
   }
 
+  private tryEnsureTexture(
+    renderEyeWidth: number,
+    renderEyeHeight: number,
+    outputEyeWidth: number,
+    outputEyeHeight: number,
+  ): boolean {
+    this.renderWidth = renderEyeWidth;
+    this.renderHeight = renderEyeHeight;
+    this.outputEyeWidth = outputEyeWidth;
+    this.outputEyeHeight = outputEyeHeight;
+    this.leftEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
+    this.rightEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
+    this.outputTarget = raylib.H.LoadRenderTexture(outputEyeWidth * 2, outputEyeHeight * 2);
+
+    for (const target of [this.leftEyeTarget, this.rightEyeTarget, this.outputTarget]) {
+      if (!target || !raylib.H.IsRenderTextureValid(target)) {
+        this.unloadTargets();
+        return false;
+      }
+      raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_BILINEAR);
+    }
+    return true;
+  }
+
   ensureTexture(
     renderEyeWidth: number,
     renderEyeHeight: number,
@@ -180,24 +212,24 @@ export class WebXROverlayRaylib {
       this.unloadTargets();
     }
 
-    this.renderWidth = renderEyeWidth;
-    this.renderHeight = renderEyeHeight;
-    this.outputEyeWidth = outputEyeWidth;
-    this.outputEyeHeight = outputEyeHeight;
-    this.leftEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
-    this.rightEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
-    this.outputTarget = raylib.H.LoadRenderTexture(outputEyeWidth * 2, outputEyeHeight * 2);
-
-    for (const target of [this.leftEyeTarget, this.rightEyeTarget, this.outputTarget]) {
-      if (!target || !raylib.H.IsRenderTextureValid(target)) {
-        throw new Error(
-          `raylib render texture initialization failed renderEye=${renderEyeWidth}x${renderEyeHeight} output=${
-            outputEyeWidth * 2
-          }x${outputEyeHeight * 2}`,
-        );
+    for (const eye of getRaylibNativeEyeSizeCandidates()) {
+      if (this.tryEnsureTexture(eye, eye, eye, eye)) {
+        if (this.resolvedEyeSize !== eye) {
+          this.resolvedEyeSize = eye;
+          LogChannel.log(
+            "webxrv2",
+            `[webxr] raylib render target eye=${eye}x${eye} output=${eye * 2}x${eye * 2}`,
+          );
+        }
+        return;
       }
-      raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_BILINEAR);
     }
+
+    throw new Error(
+      `raylib render texture initialization failed renderEye=${renderEyeWidth}x${renderEyeHeight} output=${
+        outputEyeWidth * 2
+      }x${outputEyeHeight * 2}`,
+    );
   }
 
   /** @returns wall ms breakdown; `left+right+combine` may slightly exceed `total` (timer overhead). */
@@ -235,7 +267,7 @@ export class WebXROverlayRaylib {
     uiPanelDrawn: number;
     uiTextDrawn: number;
   } {
-    const eye = getRaylibNativeEyeSize();
+    const eye = this.resolvedEyeSize ?? getRaylibNativeEyeSize();
     const renderT0 = performance.now();
     this.ensureTexture(eye, eye, eye, eye);
 
@@ -264,8 +296,7 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=left`,
         payload.ui,
-      )
-    );
+      ));
     const leftMs = performance.now() - tLeft0;
 
     const tRight0 = performance.now();
@@ -280,8 +311,7 @@ export class WebXROverlayRaylib {
         `frame=${payload.frame.frameCount} eye=right`,
         payload.ui,
         { skipAssetSync: skipRightAssetSync },
-      )
-    );
+      ));
     const rightMs = performance.now() - tRight0;
 
     const renderSyncMs = leftB.syncMs + rightB.syncMs;

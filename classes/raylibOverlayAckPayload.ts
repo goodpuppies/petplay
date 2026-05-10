@@ -1,6 +1,6 @@
-/** Timings from `webxrOverlay` → `webxr` after each `RENDERWEBXRRAYTHREEFRAME`. */
+/** Timings for one Raylib overlay render/present pass. */
 export type RaylibOverlayFrameAckPayload = {
-  /** `RENDERWEBXRRAYTHREEFRAME` handler wall time (receive → after `SetOverlayTexture`). */
+  /** Handler wall time from before Raylib render through after `SetOverlayTexture`. */
   handlerMs: number;
   /** `WebXROverlayRaylib.renderRaythreeFrame` (two eyes + varggles combine to output texture). */
   renderMs: number;

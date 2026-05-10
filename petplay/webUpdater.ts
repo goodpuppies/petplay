@@ -1,4 +1,4 @@
-import { PostMan, actorState } from "../submodules/stageforge/mod.ts";
+import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenGLManager } from "../classes/openglManager.ts";
@@ -18,46 +18,46 @@ const state = actorState({
   currentFrame: null as WebxrFrame | null,
   hmdpose: null as OpenVR.TrackedDevicePose | null,
   vrSystem: null as OpenVR.IVRSystem | null,
-  socket: null as WebSocket | null, 
-  
+  socket: null as WebSocket | null,
+
   // Sequential pose ID counter
   nextPoseId: 1,
-  
+
   // Store a history of poses with timestamps and IDs for proper frame-pose synchronization
   poseHistory: [] as Array<{
-    id: number,
-    timestamp: number, 
-    pose: OpenVR.TrackedDevicePose
+    id: number;
+    timestamp: number;
+    pose: OpenVR.TrackedDevicePose;
   }>,
-  
+
   // Map of pose IDs to poses for fast lookup
   poseMap: new Map<number, OpenVR.TrackedDevicePose>(),
-  
+
   MAX_POSE_HISTORY: 100, // Store a large history for debugging
-  
+
   // Get pose by its exact ID
-  getPoseById: function(poseId: number): OpenVR.TrackedDevicePose | null {
+  getPoseById: function (poseId: number): OpenVR.TrackedDevicePose | null {
     // Fast lookup from map
     const pose = this.poseMap.get(poseId);
     if (pose) {
       //console.log(`Found exact pose match for ID: ${poseId}`);
       return pose;
     }
-    
+
     console.log(`No pose found for ID: ${poseId}`);
     return this.hmdpose; // Fallback to current pose
   },
-  
+
   // For compatibility - get the closest historical pose to a timestamp
-  getClosestPose: function(frameTimestamp: number): OpenVR.TrackedDevicePose | null {
+  getClosestPose: function (frameTimestamp: number): OpenVR.TrackedDevicePose | null {
     if (this.poseHistory.length === 0) {
       return this.hmdpose; // Fallback to current pose if no history
     }
-    
+
     // Find pose with closest timestamp
     let closestPose = this.poseHistory[0];
     let minTimeDiff = Math.abs(closestPose.timestamp - frameTimestamp);
-    
+
     for (let i = 1; i < this.poseHistory.length; i++) {
       const timeDiff = Math.abs(this.poseHistory[i].timestamp - frameTimestamp);
       if (timeDiff < minTimeDiff) {
@@ -65,69 +65,91 @@ const state = actorState({
         closestPose = this.poseHistory[i];
       }
     }
-    
+
     console.log(`Using closest pose with time diff: ${minTimeDiff}ms`);
     return closestPose.pose;
   },
-  
+
   // Get the exact historical pose matching a timestamp
-  getExactPose: function(poseTimestamp: number): OpenVR.TrackedDevicePose | null {
+  getExactPose: function (poseTimestamp: number): OpenVR.TrackedDevicePose | null {
     if (this.poseHistory.length === 0) {
-      console.log("no history")
+      console.log("no history");
       return this.hmdpose; // Fallback to current pose if no history
     }
-    
+
     // Try to find exact match first
-    const exactMatch = this.poseHistory.find(p => p.timestamp === poseTimestamp);
+    const exactMatch = this.poseHistory.find((p) => p.timestamp === poseTimestamp);
     if (exactMatch) {
-      console.log("exact")
+      console.log("exact");
       return exactMatch.pose;
     }
-    console.log("miss")
-    
+    console.log("miss");
+
     // If no exact match, fall back to closest pose
     return this.getClosestPose(poseTimestamp);
-  }
+  },
 });
 
-new PostMan(state, {
-  __INIT__: (_payload: void) => {
-    PostMan.setTopic("muffin")
-  },
-  STARTUPDATER: (payload: { overlayclass: bigint, overlayhandle: bigint, framesource?: string }) => {
-    state.overlayClass = new OpenVR.IVROverlay(Deno.UnsafePointer.create(payload.overlayclass));
-    state.overlayHandle = payload.overlayhandle
-    console.log("we have overlayhandle", state.overlayHandle)
-    main()
-  },
-  INITOPENVR: (payload) => {
-    const ptrn = payload;
-    const systemPtr = Deno.UnsafePointer.create(ptrn); 
-    state.vrSystem = new OpenVR.IVRSystem(systemPtr);  
-
-    LogChannel.log("actor", `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`);
+function getWebxrFrameLogsEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
+  if (raw == null) {
+    return false;
   }
-} as const);
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+new PostMan(
+  state,
+  {
+    __INIT__: (_payload: void) => {
+      PostMan.setTopic("muffin");
+    },
+    STARTUPDATER: (
+      payload: { overlayclass: bigint; overlayhandle: bigint; framesource?: string },
+    ) => {
+      state.overlayClass = new OpenVR.IVROverlay(Deno.UnsafePointer.create(payload.overlayclass));
+      state.overlayHandle = payload.overlayhandle;
+      console.log("we have overlayhandle", state.overlayHandle);
+      main();
+    },
+    INITOPENVR: (payload) => {
+      const ptrn = payload;
+      const systemPtr = Deno.UnsafePointer.create(ptrn);
+      state.vrSystem = new OpenVR.IVRSystem(systemPtr);
+
+      LogChannel.log(
+        "actor",
+        `OpenVR system initialized in actor ${state.id} with pointer ${ptrn}`,
+      );
+    },
+  } as const,
+);
 
 function INITIPCCAP(): CefCapturer {
-  const capturer = new CefCapturer ({
-    debug: false, 
+  const logStats = getWebxrFrameLogsEnabled();
+  const capturer = new CefCapturer({
+    debug: false,
     onStats: ({ fps, avgLatency }) => {
-      LogChannel.log("screencap", `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`);
+      if (!logStats) return;
+      LogChannel.log(
+        "screencap",
+        `IPC Capture Stats - FPS: ${fps.toFixed(1)} | Latency: ${avgLatency.toFixed(1)}ms`,
+      );
     },
   });
-  
+
   return capturer;
 }
 
 function IpcCapLoop(
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) {
-  console.log("IpcCapLoop starting - using push notifications")
-  if (!state.glManager) throw new Error("no gl manager")
+  console.log("IpcCapLoop starting - using push notifications");
+  if (!state.glManager) throw new Error("no gl manager");
 
   let lastFrameEnd = performance.now();
-  
+
   let processingFrame = false;
   const sourceVerticalHalfFOVRadians = (112.0 / 2.0) * (Math.PI / 180.0);
 
@@ -142,18 +164,18 @@ function IpcCapLoop(
       //console.log("still processing frame")
       return;
     }
-    const frameStart = performance.now()
+    const frameStart = performance.now();
 
     try {
       // Set flag to prevent parallel processing
       processingFrame = true;
 
-      if (!state.Capturer) throw new Error("no framesource or ipc capturer")
-      if (!state.overlayClass) throw new Error("no overlay")
-      if (!state.overlayHandle) throw new Error("no overlay")
+      if (!state.Capturer) throw new Error("no framesource or ipc capturer");
+      if (!state.overlayClass) throw new Error("no overlay");
+      if (!state.overlayHandle) throw new Error("no overlay");
 
       // Get latest frame with minimal overhead
-      if (!state.Capturer) throw new Error("no ipc capturer")
+      if (!state.Capturer) throw new Error("no ipc capturer");
 
       if (state.currentFrame === null) {
         //console.log("no frame available"); // Less noisy log
@@ -162,7 +184,11 @@ function IpcCapLoop(
       }
 
       let t0 = performance.now();
-      const textureData = createTextureFromData(state.currentFrame.data, state.currentFrame.width, state.currentFrame.height) as [Uint8Array, number, number, Float32Array];
+      const textureData = createTextureFromData(
+        state.currentFrame.data,
+        state.currentFrame.width,
+        state.currentFrame.height,
+      ) as [Uint8Array, number, number, Float32Array];
       // Destructure the typed result
       const [pixelsX, width, height, finalCurrentPose] = textureData;
       let t1 = performance.now();
@@ -173,13 +199,15 @@ function IpcCapLoop(
       const eyeWidth = width / 2;
       const requiredEyeSize = eyeWidth * height * 4;
       if (!leftPixels || leftPixels.byteLength !== requiredEyeSize) {
-        console.log(`Allocating/Reallocating eye buffers: ${eyeWidth}x${height} (${requiredEyeSize} bytes)`);
+        console.log(
+          `Allocating/Reallocating eye buffers: ${eyeWidth}x${height} (${requiredEyeSize} bytes)`,
+        );
         leftPixels = new Uint8Array(requiredEyeSize);
         rightPixels = new Uint8Array(requiredEyeSize);
       }
 
       // Call the modified splitSBSTexture
-      splitSBSTexture(pixelsX, width , height, leftPixels, rightPixels as Uint8Array);
+      splitSBSTexture(pixelsX, width, height, leftPixels, rightPixels as Uint8Array);
       t1 = performance.now();
       //console.log(`splitSBSTexture took ${t1 - t0} ms`);
 
@@ -192,23 +220,23 @@ function IpcCapLoop(
         height as number,
         finalCurrentPose as Float32Array, // Render pose
         sourceVerticalHalfFOVRadians,
-        finalCurrentPose as Float32Array // Current pose for reprojection
+        finalCurrentPose as Float32Array, // Current pose for reprojection
       );
       t1 = performance.now();
       //console.log(`renderPanoramaFromData took ${t1 - t0} ms`);
-
 
       // Update the texture in the overlay
       //console.log("frame up")
       t0 = performance.now();
       const error = state.overlayClass.SetOverlayTexture(state.overlayHandle, textureStructPtr);
-      if (error !== OpenVR.OverlayError.VROverlayError_None) throw new Error("Error setting overlay texture");
+      if (error !== OpenVR.OverlayError.VROverlayError_None) {
+        throw new Error("Error setting overlay texture");
+      }
       t1 = performance.now();
       //console.log(`SetOverlayTexture took ${t1 - t0} ms`);
-      const frameEnd = performance.now()
+      const frameEnd = performance.now();
       //console.log(`full frame took ${frameEnd - frameStart} ms`);
       //state.overlayClass.WaitFrameSync(100)
-
     } catch (error) {
       console.error("Error processing frame:", error);
     } finally {
@@ -249,18 +277,22 @@ function IpcCapLoop(
   }
 }
 
-function createTextureFromData(pixels: Uint8Array, width: number, height: number, renderPose?: OpenVR.TrackedDevicePose | null) {
-  if (!state.overlayClass || !state.overlayHandle) throw new Error("Missing required state properties for texture creation");
-  if (!state.vrSystem) throw new Error("no vr system")
+function createTextureFromData(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  renderPose?: OpenVR.TrackedDevicePose | null,
+) {
+  if (!state.overlayClass || !state.overlayHandle) {
+    throw new Error("Missing required state properties for texture creation");
+  }
+  if (!state.vrSystem) throw new Error("no vr system");
 
-
-  
   //const renderHmdPose = renderPose || state.hmdpose!; //fallback to current pose in state
-  const currentHmdPose = gethmdpose()
-   
-  //if (!renderHmdPose.bPoseIsValid) throw new Error("Invalid tracking data");
-  if ( !currentHmdPose.bPoseIsValid) throw new Error("Invalid tracking data");
+  const currentHmdPose = gethmdpose();
 
+  //if (!renderHmdPose.bPoseIsValid) throw new Error("Invalid tracking data");
+  if (!currentHmdPose.bPoseIsValid) throw new Error("Invalid tracking data");
 
   //const renderHmdMatVR = renderHmdPose.mDeviceToAbsoluteTracking.m;
   // 1. Convert OpenVR matrix (row-major) to Column-Major Float32Array (HMD -> World)
@@ -273,97 +305,127 @@ function createTextureFromData(pixels: Uint8Array, width: number, height: number
 
   const currentHmdMatVR = currentHmdPose.mDeviceToAbsoluteTracking.m;
   const currentUniverseFromHmd_ColMajor = new Float32Array([
-    currentHmdMatVR[0][0], currentHmdMatVR[1][0], currentHmdMatVR[2][0], 0,
-    currentHmdMatVR[0][1], currentHmdMatVR[1][1], currentHmdMatVR[2][1], 0,
-    currentHmdMatVR[0][2], currentHmdMatVR[1][2], currentHmdMatVR[2][2], 0,
-    0, 0, 0, 1
+    currentHmdMatVR[0][0],
+    currentHmdMatVR[1][0],
+    currentHmdMatVR[2][0],
+    0,
+    currentHmdMatVR[0][1],
+    currentHmdMatVR[1][1],
+    currentHmdMatVR[2][1],
+    0,
+    currentHmdMatVR[0][2],
+    currentHmdMatVR[1][2],
+    currentHmdMatVR[2][2],
+    0,
+    0,
+    0,
+    0,
+    1,
   ]);
 
-
   //const hmdFromUniverse_ColMajor = invertMatrix4(renderUniverseFromHmd_ColMajor)!;
- // const finalRenderPose = scaleMatrix4(hmdFromUniverse_ColMajor, [1, 1, -1]);
+  // const finalRenderPose = scaleMatrix4(hmdFromUniverse_ColMajor, [1, 1, -1]);
 
   const currentHmdFromUniverse_ColMajor = invertMatrix4(currentUniverseFromHmd_ColMajor)!;
   const finalCurrentPose = scaleMatrix4(currentHmdFromUniverse_ColMajor, [1, 1, -1]);
 
   if (width % 2 !== 0) throw new Error("Input texture width is not even");
-  return [pixels, width, height, finalCurrentPose ]
-
+  return [pixels, width, height, finalCurrentPose];
 }
 
 function main() {
-  if (!state.overlayClass) throw new Error("no overlayclass")
-  if (!state.overlayHandle) throw new Error("no overlayhandle")
-  
-
+  if (!state.overlayClass) throw new Error("no overlayclass");
+  if (!state.overlayHandle) throw new Error("no overlayhandle");
 
   state.Capturer = INITIPCCAP();
-  state.Capturer.start() 
+  state.Capturer.start();
 
   state.isRunning = true;
-  
+
   INITGL();
 
   const texture = state.glManager!.getPanoramaTexture();
-  if (!texture) { throw new Error("texture is null"); }
+  if (!texture) throw new Error("texture is null");
 
   const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
-  const [boundsPtr, _boudsView] = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct)
+  const [boundsPtr, _boudsView] = createStruct<OpenVR.TextureBounds>(
+    bounds,
+    OpenVR.TextureBoundsStruct,
+  );
   state.overlayClass.SetOverlayTextureBounds(state.overlayHandle, boundsPtr);
-  state.overlayClass.SetOverlayFlag(state.overlayHandle, OpenVR.OverlayFlags.VROverlayFlags_Panorama, false)
-  state.overlayClass.SetOverlayFlag(state.overlayHandle, OpenVR.OverlayFlags.VROverlayFlags_StereoPanorama, true)
-  state.overlayClass.SetOverlaySortOrder(state.overlayHandle, 9999) //we are privileged
+  state.overlayClass.SetOverlayFlag(
+    state.overlayHandle,
+    OpenVR.OverlayFlags.VROverlayFlags_Panorama,
+    false,
+  );
+  state.overlayClass.SetOverlayFlag(
+    state.overlayHandle,
+    OpenVR.OverlayFlags.VROverlayFlags_StereoPanorama,
+    true,
+  );
+  state.overlayClass.SetOverlaySortOrder(state.overlayHandle, 9999); //we are privileged
 
-
-  state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 3)
+  state.overlayClass.SetOverlayWidthInMeters(state.overlayHandle, 3);
 
   const idtransform: OpenVR.HmdMatrix34 = {
     m: [
       [1, 0, 0, 0],
       [0, 1, 0, 0],
-      [0, 0, 1, -1]
-    ]
-  }
-  const [transformptr, _transview] = createStruct<OpenVR.HmdMatrix34>(idtransform, OpenVR.HmdMatrix34Struct)
+      [0, 0, 1, -1],
+    ],
+  };
+  const [transformptr, _transview] = createStruct<OpenVR.HmdMatrix34>(
+    idtransform,
+    OpenVR.HmdMatrix34Struct,
+  );
 
-  state.overlayClass.SetOverlayTransformTrackedDeviceRelative(state.overlayHandle, OpenVR.k_unTrackedDeviceIndex_Hmd, transformptr)
+  state.overlayClass.SetOverlayTransformTrackedDeviceRelative(
+    state.overlayHandle,
+    OpenVR.k_unTrackedDeviceIndex_Hmd,
+    transformptr,
+  );
 
   const textureData = {
     handle: BigInt(texture[0]),
     eType: OpenVR.TextureType.TextureType_OpenGL,
     eColorSpace: OpenVR.ColorSpace.ColorSpace_Auto,
   };
-  const [textureStructPtr, _textureStructView ] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct)
+  const [textureStructPtr, _textureStructView] = createStruct<OpenVR.Texture>(
+    textureData,
+    OpenVR.TextureStruct,
+  );
   IpcCapLoop(textureStructPtr);
-
-
 }
 
 globalThis.addEventListener("unload", cleanup);
 
 async function cleanup() {
   state.isRunning = false;
-  if (state.Capturer) { 
-    await state.Capturer.dispose(); 
-    state.Capturer = null; 
+  if (state.Capturer) {
+    await state.Capturer.dispose();
+    state.Capturer = null;
   }
 }
 
 //#region helpers
 function gethmdpose() {
-  if (!state.vrSystem) throw new Error("no vr system")
-  const poseArrayBuffer = new ArrayBuffer(OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount);
-  const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
+  if (!state.vrSystem) throw new Error("no vr system");
+  const poseArrayBuffer = new ArrayBuffer(
+    OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount,
+  );
+  const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<
+    OpenVR.TrackedDevicePose
+  >;
   state.vrSystem.GetDeviceToAbsoluteTrackingPose(
     OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
     0.0,
     posePtr,
-    OpenVR.k_unMaxTrackedDeviceCount
+    OpenVR.k_unMaxTrackedDeviceCount,
   );
   const poseView = new DataView(
     poseArrayBuffer,
     OpenVR.k_unTrackedDeviceIndex_Hmd * OpenVR.TrackedDevicePoseStruct.byteSize,
-    OpenVR.TrackedDevicePoseStruct.byteSize
+    OpenVR.TrackedDevicePoseStruct.byteSize,
   );
   return OpenVR.TrackedDevicePoseStruct.read(poseView) as unknown as OpenVR.TrackedDevicePose;
 }
@@ -371,6 +433,6 @@ function gethmdpose() {
 function INITGL(name?: string) {
   state.glManager = new OpenGLManager();
   state.glManager.initializePanoramic(name, 4096, 4096);
-  if (!state.glManager) { throw new Error("glManager is null"); }
+  if (!state.glManager) throw new Error("glManager is null");
 }
 //#endregion
