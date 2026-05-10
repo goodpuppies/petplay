@@ -37,7 +37,7 @@ function getRaylibNativeEyeSize(): number {
   if (Number.isFinite(n) && n >= 64 && n <= 4096) {
     return n;
   }
-  return 3560;
+  return 2560;
 }
 
 function getRaylibNativeEyeSizeCandidates(): number[] {

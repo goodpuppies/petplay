@@ -29,10 +29,14 @@ export type DirectOpenVrHmdPose = {
 };
 
 export type DirectOpenVrControllerPose = {
-  /** XYZ world position. */
+  /** XYZ world-space position (meters). */
   position: Float32Array;
   /** XYZW world-orientation quaternion. */
   quaternion: Float32Array;
+  /** Trigger button state (0-1). */
+  trigger: number;
+  /** Grab/squeeze button state (0-1). */
+  grab: number;
 };
 
 export type DirectOpenVrInputSnapshot = {
@@ -52,10 +56,14 @@ export class DirectOpenVrInputSource {
   private readonly leftBuffers = {
     position: new Float32Array(3),
     quaternion: new Float32Array(4),
+    trigger: new Float32Array(1),
+    grab: new Float32Array(1),
   };
   private readonly rightBuffers = {
     position: new Float32Array(3),
     quaternion: new Float32Array(4),
+    trigger: new Float32Array(1),
+    grab: new Float32Array(1),
   };
 
   private readonly hmdView: DirectOpenVrHmdPose = {
@@ -66,10 +74,14 @@ export class DirectOpenVrInputSource {
   private readonly leftView: DirectOpenVrControllerPose = {
     position: this.leftBuffers.position,
     quaternion: this.leftBuffers.quaternion,
+    trigger: this.leftBuffers.trigger[0],
+    grab: this.leftBuffers.grab[0],
   };
   private readonly rightView: DirectOpenVrControllerPose = {
     position: this.rightBuffers.position,
     quaternion: this.rightBuffers.quaternion,
+    trigger: this.rightBuffers.trigger[0],
+    grab: this.rightBuffers.grab[0],
   };
 
   private hmdValid = false;

@@ -113,8 +113,6 @@ type StartWebXRPayload = {
   hmdDisplayFrequencyHz?: number | null;
   /** `GETCOMPOSITORPTR` from the OpenVR actor; optional for Aardvark-style overlay display pacing. */
   vrCompositorPointer?: bigint | null;
-  /** `GETINPUTPTR` from the OpenVR actor — OpenVR input is sampled in the **webxr** rAF (see `WebXRHost`) so poses match display timing; optional SAB still mirrors to `controllers` for laser/GC. */
-  vrInputPointer?: number | bigint | null;
 };
 
 type ControllerDataPayload = ControllerExternalDataTuple;
@@ -303,10 +301,6 @@ new PostMan(
 
           let onBeforeExternalControllerApply: (() => void) | undefined;
           state.controllerSharedStateSab = null;
-          const effectiveVrInputPointer = state.disableHostOpenVrInput
-            ? null
-            : payload?.vrInputPointer ?? null;
-          const vrInputPaced = effectiveVrInputPointer != null;
 
           const runControllerStaleChecks = (data: ControllerDataPayload, writeSeq: number) => {
             const host = state.host;
@@ -352,28 +346,19 @@ new PostMan(
             const sab = new SharedArrayBuffer(CONTROLLER_SAB_BYTE_LENGTH);
             initControllerStateSab(sab);
             try {
-              if (vrInputPaced) {
-                await PostMan.PostMessage({
-                  target: state.controllerActor,
-                  type: "SETCONTROLLERSHAREDSTATE",
-                  payload: { sab, webxrPacedWriter: true },
-                }, true);
-              } else {
-                await PostMan.PostMessage({
-                  target: state.controllerActor,
-                  type: "SETCONTROLLERSHAREDSTATE",
-                  payload: sab,
-                }, true);
-              }
+              await PostMan.PostMessage({
+                target: state.controllerActor,
+                type: "SETCONTROLLERSHAREDSTATE",
+                payload: sab,
+              }, true);
               state.controllerSharedStateSab = sab;
               state.lastControllerSabWriteSeq = -1;
               state.lastRafControllerPoseHash = null;
-              if (!vrInputPaced) {
-                /**
-                 * OpenVR samples run in the `controllers` actor (see `scheduleControllerSabFrame`),
-                 * then webxr *reads* the SAB in this callback (legacy path).
-                 */
-                onBeforeExternalControllerApply = function webxrIngestControllerSabAndCheckStale() {
+              /**
+               * OpenVR samples run in the `controllers` actor (see `scheduleControllerSabFrame`),
+               * then webxr *reads* the SAB in this callback (legacy path).
+               */
+              onBeforeExternalControllerApply = function webxrIngestControllerSabAndCheckStale() {
                   const buf = state.controllerSharedStateSab;
                   const host = state.host;
                   if (!buf || !host) return;
@@ -416,7 +401,6 @@ new PostMan(
                   host.setControllerData(data);
                   publishControllerSnapshot(data);
                 };
-              }
             } catch (error) {
               LogChannel.log(
                 "webxrv2",
@@ -425,25 +409,7 @@ new PostMan(
             }
           }
 
-          const onInProcessControllerFrame: ((d: ControllerDataPayload) => void) | undefined =
-            vrInputPaced
-              ? (d) => {
-                const buf = state.controllerSharedStateSab;
-                if (buf) {
-                  writeControllerStateSab(buf, d);
-                  const read = readControllerStateSab(buf);
-                  if (read) {
-                    if (crashOnDropMode.controllerSabStale) {
-                      runControllerStaleChecks(d, read.writeSeq);
-                    } else {
-                      state.lastRafControllerPoseHash = hashControllerPoseMatrices(d);
-                      state.lastControllerSabWriteSeq = read.writeSeq;
-                    }
-                  }
-                }
-                publishControllerSnapshot(d);
-              }
-              : undefined;
+          const onInProcessControllerFrame = undefined;
 
           await state.host!.start({
             width: payload?.width,
@@ -451,7 +417,6 @@ new PostMan(
             title: payload?.title,
             debugWindow: payload?.debugWindow,
             vrSystemPointer: payload?.vrSystemPointer,
-            vrInputPointer: effectiveVrInputPointer,
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayInstanceActor: payload?.displayInstanceActor,
@@ -463,10 +428,8 @@ new PostMan(
               ? false
               : undefined,
             disableOpenVrHmdPose: state.raylibOpenVrPacedRaythree,
-            onBeforeExternalControllerApply: vrInputPaced
-              ? undefined
-              : onBeforeExternalControllerApply,
-            onInProcessControllerFrame: vrInputPaced ? onInProcessControllerFrame : undefined,
+            onBeforeExternalControllerApply: onBeforeExternalControllerApply,
+            onInProcessControllerFrame: onInProcessControllerFrame,
           });
         })().catch((error) => {
           LogChannel.log("webxrv2", `[webxr] startup failed: ${error}`);
@@ -628,8 +591,6 @@ function publishControllerSnapshot(data: ControllerDataPayload | null) {
   }
   const leftPose = data[0];
   const rightPose = data[1];
-  const leftTrigger = data[2];
-  const rightTrigger = data[3];
 
   setShadowControllerPose(
     "left",
@@ -640,7 +601,7 @@ function publishControllerSnapshot(data: ControllerDataPayload | null) {
         [number, number, number, number],
       ])
       : null,
-    Boolean(leftTrigger?.bState),
+    false, // Buttons are always false since DirectOpenVrInputSource doesn't support them yet
   );
   setShadowControllerPose(
     "right",
@@ -651,7 +612,7 @@ function publishControllerSnapshot(data: ControllerDataPayload | null) {
         [number, number, number, number],
       ])
       : null,
-    Boolean(rightTrigger?.bState),
+    false, // Buttons are always false since DirectOpenVrInputSource doesn't support them yet
   );
 }
 
