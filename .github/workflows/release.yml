@@ -24,13 +24,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Preconfigure
         run: deno run -A utils/preconf.ts
 
       - name: Install dependencies
-        run: deno install
+        run: deno install --allow-import
 
       - name: Build executable
         run: deno run build
