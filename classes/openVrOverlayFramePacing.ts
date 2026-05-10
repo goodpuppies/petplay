@@ -125,6 +125,7 @@ export class OpenVrOverlayFramePacer {
   private secondsVsyncToPhotonsCache: number | null = null;
   private readonly fpsCounter = new FpsCounter();
   private lastFpsLogAt = 0;
+  private readonly logVsyncSpin: boolean;
   private lastPaceResult: OpenVrOverlayPaceResult = {
     ok: false,
     frameIndex: 0n,
@@ -142,12 +143,14 @@ export class OpenVrOverlayFramePacer {
     crashOnVsyncIndexGap = false,
     paceMode: OpenVrOverlayPaceMode = "vsync",
     label = "pacer",
+    logVsyncSpin = false,
   ) {
     this.vr = vr;
     this.compositor = compositor;
     this.crashOnVsyncIndexGap = crashOnVsyncIndexGap;
     this.paceMode = paceMode;
     this.label = label;
+    this.logVsyncSpin = logVsyncSpin;
     const n = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
     this.poseArrayBuffer = new ArrayBuffer(n);
     this.posePtr = Deno.UnsafePointer.of(this.poseArrayBuffer) as Deno.PointerValue<
@@ -283,8 +286,7 @@ export class OpenVrOverlayFramePacer {
       previousFrameIndex = last;
       currentFrameIndex = newIndex;
 
-      // Log vsync timing for debugging
-      if (this.paceToDisplayCallCount % 30 === 0 || spinTime > 5) {
+      if (this.logVsyncSpin && (this.paceToDisplayCallCount % 30 === 0 || spinTime > 5)) {
         const yieldPart = yieldedMs > 0 ? `, yielded=${yieldedMs.toFixed(2)}ms` : "";
         LogChannel.log(
           "webxrv2",
@@ -453,6 +455,7 @@ export function tryCreateOpenVrOverlayFramePacer(
   crashOnVsyncIndexGap = false,
   paceMode: OpenVrOverlayPaceMode = "vsync",
   label = "pacer",
+  logVsyncSpin = false,
 ): OpenVrOverlayFramePacer | null {
   if (!enabled || systemPointer == null) {
     return null;
@@ -465,13 +468,13 @@ export function tryCreateOpenVrOverlayFramePacer(
   }
   const vr = new OpenVR.IVRSystem(sp);
   if (compositorPointer == null) {
-    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label);
+    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label, logVsyncSpin);
   }
   const cp = Deno.UnsafePointer.create(
     typeof compositorPointer === "bigint" ? compositorPointer : BigInt(compositorPointer),
   );
   if (cp == null) {
-    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label);
+    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label, logVsyncSpin);
   }
   return new OpenVrOverlayFramePacer(
     vr,
@@ -479,5 +482,6 @@ export function tryCreateOpenVrOverlayFramePacer(
     crashOnVsyncIndexGap,
     paceMode,
     label,
+    logVsyncSpin,
   );
 }
