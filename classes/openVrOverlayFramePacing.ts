@@ -144,30 +144,40 @@ export class OpenVrOverlayFramePacer {
       const last = this.lastVsyncFrameIndex;
       let spins = 0;
       let newIndex = last;
+      const spinStart = performance.now();
       while (newIndex === last) {
         if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
           return;
         }
         newIndex = frameBuf[0];
         if (++spins > MAX_VSYNC_POLLS) {
+          const spinTime = performance.now() - spinStart;
+          LogChannel.log("webxrv2", `[${this.label}] vsync spin timeout: spins=${spins}, time=${spinTime.toFixed(2)}ms, last=${last}, newIndex=${newIndex}`);
           return;
         }
       }
+      const spinTime = performance.now() - spinStart;
 
       if (last + 1n < newIndex) {
         this.framesSkipped++;
+        const skipped = newIndex - last - 1n;
         if (
           this.crashOnVsyncIndexGap && last !== 0n &&
           this.paceToDisplayCallCount > WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
         ) {
           throw new Error(
             `[openVrOverlayFramePacer] vsync frame index gap: last=${last} new=${newIndex} (dropped ${
-              newIndex - last - 1n
+              skipped
             } display frame(s); set --webxr-crash-on-dropped-frame=off to disable)`,
           );
         }
       }
       this.lastVsyncFrameIndex = newIndex;
+
+      // Log vsync timing for debugging
+      if (this.paceToDisplayCallCount % 30 === 0 || spinTime > 5) {
+        LogChannel.log("webxrv2", `[${this.label}] vsync: spins=${spins}, time=${spinTime.toFixed(2)}ms, idx=${newIndex}, skipped=${this.framesSkipped}`);
+      }
 
       this.vr.GetTimeSinceLastVsync(pSec, pFrame);
     } else {
@@ -207,6 +217,8 @@ export class OpenVrOverlayFramePacer {
       OpenVR.k_unTrackedDeviceIndex_Hmd,
     );
   }
+
+  private async inspectProjectionLayer(device: GPUDevice) {}
 
   getCachedHmdEmulation(): OpenVrHmdEmulationPose | null {
     return this.lastHmd;

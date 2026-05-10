@@ -879,6 +879,8 @@ export class WebXRHost {
   private xrRafMaxIntervalMs = 0;
   private xrRafSlowFrameCount = 0;
   private vrCompositorPointer: number | bigint | null = null;
+  private externalPacerTimestamp = 0;
+  private useExternalPacerTiming = false;
   private onBeforeExternalControllerApply: (() => void) | undefined;
   private onInProcessControllerFrame: ((data: ExternalControllerData) => void) | undefined;
   private latestShadowPose: {
@@ -1001,6 +1003,8 @@ export class WebXRHost {
     this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
     this.alphaEnabled = options.alpha ?? this.sessionMode === "immersive-ar";
     const useOverlayPacing = options.useOpenVrOverlayFramePacing !== false;
+    // Detect raylib mode: if OpenVR pacer is disabled but we have OpenVR pointers, raylib will drive timing
+    this.useExternalPacerTiming = !useOverlayPacing && (this.vrSystemPointer != null || this.vrCompositorPointer != null);
     const crashOnDrop = getCrashOnDroppedFrameMode();
     this.crashOnDroppedXrRaf = crashOnDrop.xrRaf;
     this.crashOnDroppedXrRafStrict = crashOnDrop.xrRafStrict;
@@ -1050,8 +1054,10 @@ export class WebXRHost {
         : nom != null && Number.isFinite(nom) && nom > 0 && nom < 1000
         ? 1000 / nom
         : 16;
+    // Use 0ms delay when external pacer is active (raylib mode) - rAF loop will be delayed until warmup completes
+    const actualPollIntervalMs = this.useExternalPacerTiming ? 0 : rafPolyfillIntervalMs;
     const polyfill: WebXrHostPolyfillOptions = {
-      pollIntervalMs: rafPolyfillIntervalMs,
+      pollIntervalMs: actualPollIntervalMs,
       openVrVsyncDrivesRaf: this.openVrOverlayPacer != null,
     };
     installWebXRHostPolyfills(this.width, this.height, polyfill);
@@ -1788,6 +1794,14 @@ export class WebXRHost {
         return;
       }
 
+      // Skip frame if external pacer hasn't advanced (raylib mode synchronization)
+      // Threshold of 25ms allows for some setTimeout overhead but prevents running ahead of pacer
+      if (this.useExternalPacerTiming && this.externalPacerTimestamp > 0 && tickT0 - this.externalPacerTimestamp > 25) {
+        // External pacer hasn't paced recently, skip this frame
+        this.session.requestAnimationFrame(tick);
+        return;
+      }
+
       // OpenVR pacing + IVRInput: when IWER exposes `setBeforeFrameStartHook`, they run in
       // `applyOpenVrTrackingBeforeIwerOnFrameStart` **before** `XRTrackedInput.onFrameStart`
       // (see iwer `XRSession.ts`). Otherwise keep the legacy path here (older iwer build).
@@ -1929,6 +1943,14 @@ export class WebXRHost {
     };
 
     this.session.requestAnimationFrame(tick);
+  }
+
+  /**
+   * Signal that an external pacer (e.g., raylib overlay) has advanced to a new frame.
+   * Used to synchronize webxrhost's rAF loop with the external pacer's timing.
+   */
+  signalExternalPacerAdvanced(): void {
+    this.externalPacerTimestamp = performance.now();
   }
 
   private async inspectProjectionLayer(device: GPUDevice) {

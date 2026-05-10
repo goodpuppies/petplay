@@ -938,13 +938,15 @@ async function uploadRaylibShadowFrame() {
     state.nativeRaylibPacer.maybeLogFps();
     state.host.applyDirectOpenVrShadowPose(state.nativeRaylibPacer.getCachedHmdEmulation());
     // Single source of OpenVR HMD + controller pose for the entire app. The Raylib
-    // debug cube reads from this via `captureShadowFrame`; future consumers (r3f /
+    // debug cube reads from this via `captureShadowPose`; future consumers (r3f /
     // iwer bridge) will read from `host.getDirectOpenVrInputSource()`.
     state.host.updateDirectOpenVrInputs(
       state.nativeRaylibPacer.getCachedHmdEmulation(),
       getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand),
       getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand),
     );
+    // Signal webxrhost that external pacer has advanced (synchronizes rAF timing)
+    state.host.signalExternalPacerAdvanced();
   }
   const sourceFrame = state.host.captureShadowFrame();
   if (!sourceFrame) {
