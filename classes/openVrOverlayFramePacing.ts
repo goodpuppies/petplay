@@ -8,6 +8,8 @@
  */
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
+import { FpsCounter } from "./fpsCounter.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 
 const MAX_VSYNC_POLLS = 2_000_000;
 
@@ -88,6 +90,7 @@ export class OpenVrOverlayFramePacer {
   private readonly compositor: OpenVR.IVRCompositor | null;
   private readonly crashOnVsyncIndexGap: boolean;
   private readonly paceMode: OpenVrOverlayPaceMode;
+  private readonly label: string;
   private lastVsyncFrameIndex: bigint = 0n;
   private framesSkipped = 0;
   private paceToDisplayCallCount = 0;
@@ -97,17 +100,21 @@ export class OpenVrOverlayFramePacer {
   private readonly posePtr: Deno.PointerValue<OpenVR.TrackedDevicePose>;
   private displayHzCache: number | null = null;
   private secondsVsyncToPhotonsCache: number | null = null;
+  private readonly fpsCounter = new FpsCounter();
+  private lastFpsLogAt = 0;
 
   constructor(
     vr: OpenVR.IVRSystem,
     compositor: OpenVR.IVRCompositor | null,
     crashOnVsyncIndexGap = false,
     paceMode: OpenVrOverlayPaceMode = "vsync",
+    label = "pacer",
   ) {
     this.vr = vr;
     this.compositor = compositor;
     this.crashOnVsyncIndexGap = crashOnVsyncIndexGap;
     this.paceMode = paceMode;
+    this.label = label;
     const n = OpenVR.TrackedDevicePoseStruct.byteSize * OpenVR.k_unMaxTrackedDeviceCount;
     this.poseArrayBuffer = new ArrayBuffer(n);
     this.posePtr = Deno.UnsafePointer.of(this.poseArrayBuffer) as Deno.PointerValue<OpenVR.TrackedDevicePose>;
@@ -122,6 +129,7 @@ export class OpenVrOverlayFramePacer {
    */
   paceToDisplayAndRefreshPoses(): void {
     this.paceToDisplayCallCount++;
+    this.fpsCounter.mark(performance.now());
     if (this.compositor != null && !this.compositor.CanRenderScene()) {
       return;
     }
@@ -219,6 +227,16 @@ export class OpenVrOverlayFramePacer {
     return this.framesSkipped;
   }
 
+  maybeLogFps(): void {
+    const now = performance.now();
+    if (now - this.lastFpsLogAt >= 1000) {
+      this.lastFpsLogAt = now;
+      const fps = this.fpsCounter.getFps();
+      const mode = this.paceMode === "vsync" ? "vsync" : "fast";
+      LogChannel.log("fps", `[${this.label}] ${fps.toFixed(1)} Hz (${mode})`);
+    }
+  }
+
   private readHmdPoseAtIndex(
     index: number,
   ): OpenVrHmdEmulationPose | null {
@@ -258,6 +276,7 @@ export function tryCreateOpenVrOverlayFramePacer(
   /** When `true`, `paceToDisplayAndRefreshPoses` throws if the vsync index skips (after the first sample). */
   crashOnVsyncIndexGap = false,
   paceMode: OpenVrOverlayPaceMode = "vsync",
+  label = "pacer",
 ): OpenVrOverlayFramePacer | null {
   if (!enabled || systemPointer == null) {
     return null;
@@ -270,18 +289,19 @@ export function tryCreateOpenVrOverlayFramePacer(
   }
   const vr = new OpenVR.IVRSystem(sp);
   if (compositorPointer == null) {
-    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode);
+    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label);
   }
   const cp = Deno.UnsafePointer.create(
     typeof compositorPointer === "bigint" ? compositorPointer : BigInt(compositorPointer),
   );
   if (cp == null) {
-    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode);
+    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label);
   }
   return new OpenVrOverlayFramePacer(
     vr,
     new OpenVR.IVRCompositor(cp),
     crashOnVsyncIndexGap,
     paceMode,
+    label,
   );
 }

@@ -764,6 +764,7 @@ function initializeRaylibOpenVrPacer(payload: StartWebXRPayload | null, label: s
     true,
     false,
     "vsync",
+    "raylib-pacer",
   );
   if (!state.nativeRaylibPacer) {
     throw new Error(`failed to create OpenVR pacer for ${label}`);
@@ -934,6 +935,7 @@ async function uploadRaylibShadowFrame() {
   const prepStartedAt = performance.now();
   if (state.nativeRaylibPacer) {
     state.nativeRaylibPacer.paceToDisplayAndRefreshPoses();
+    state.nativeRaylibPacer.maybeLogFps();
     state.host.applyDirectOpenVrShadowPose(state.nativeRaylibPacer.getCachedHmdEmulation());
     // Single source of OpenVR HMD + controller pose for the entire app. The Raylib
     // debug cube reads from this via `captureShadowFrame`; future consumers (r3f /
@@ -1082,6 +1084,7 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
   const trace = state.nativeRaylibDebugTraceFirstFrame;
   if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: pace");
   pacer.paceToDisplayAndRefreshPoses();
+  pacer.maybeLogFps();
   if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: read hmd");
   const hmd = pacer.getCachedHmdEmulation();
   if (!hmd) {
@@ -1416,7 +1419,7 @@ function maybeLogOverlayPerf() {
   const ovrRUiT = state.raylibOvrEyeRUiTxtMetric.flush();
   const ovrREd = state.raylibOvrEyeREndMetric.flush();
   const ovrCb = state.raylibOvrCombineMetric.flush();
-  const ovrSy = state.raylibOvrSyncMetric.flush();
+  const ovrSync = state.raylibOvrSyncMetric.flush();
   const ovrDr = state.raylibOvrDrawMetric.flush();
   const ovrBG = state.raylibOvrBatchGeoMetric.flush();
   const ovrBM = state.raylibOvrBatchMatMetric.flush();
@@ -1424,14 +1427,35 @@ function maybeLogOverlayPerf() {
   const ovrUITC = state.raylibOvrUiTextCountMetric.flush();
   const ovrUIPD = state.raylibOvrUiPanelDrawnMetric.flush();
   const ovrUITD = state.raylibOvrUiTextDrawnMetric.flush();
+
+  // Combine left/right eye metrics
+  const combineSamples = (left: IntervalMetricSample | null, right: IntervalMetricSample | null): IntervalMetricSample | null => {
+    if (!left && !right) return null;
+    if (!left) return right;
+    if (!right) return left;
+    return {
+      avgMs: (left.avgMs + right.avgMs) / 2,
+      maxMs: Math.max(left.maxMs, right.maxMs),
+      count: left.count + right.count,
+    };
+  };
+
+  const ovrEye = combineSamples(ovrEL, ovrER);
+  const ovrEyeSy = combineSamples(ovrLSy, ovrRSy);
+  const ovrPr = combineSamples(ovrLPr, ovrRPr);
+  const ovrOp = combineSamples(ovrLOp, ovrROp);
+  const ovrXp = combineSamples(ovrLXp, ovrRXp);
+  const ovrUi = combineSamples(ovrLUi, ovrRUi);
+  const ovrUiS = combineSamples(ovrLUiS, ovrRUiS);
+  const ovrUiP = combineSamples(ovrLUiP, ovrRUiP);
+  const ovrUiT = combineSamples(ovrLUiT, ovrRUiT);
+  const ovrEd = combineSamples(ovrLEd, ovrREd);
   if (
     !uploadSample && !presentSample && !frameSample && !raythreeSample &&
     !sceneMx && !rayL && !rayR && !rayUi && !hostPrep &&
-    !ovrH && !ovrR && !ovrO && !ovrEL && !ovrER && !ovrLSy && !ovrLPr && !ovrLOp && !ovrLXp &&
-    !ovrLUi && !ovrLUiS && !ovrLUiP && !ovrLUiT && !ovrLEd && !ovrRSy && !ovrRPr && !ovrROp &&
-    !ovrRXp &&
-    !ovrRUi && !ovrRUiS && !ovrRUiP && !ovrRUiT && !ovrREd &&
-    !ovrCb && !ovrSy && !ovrDr && !ovrBG && !ovrBM && !ovrUIPC && !ovrUITC && !ovrUIPD && !ovrUITD
+    !ovrH && !ovrR && !ovrO && !ovrEye && !ovrEyeSy && !ovrPr && !ovrOp && !ovrXp &&
+    !ovrUi && !ovrUiS && !ovrUiP && !ovrUiT && !ovrEd &&
+    !ovrCb && !ovrSync && !ovrDr && !ovrBG && !ovrBM && !ovrUIPC && !ovrUITC && !ovrUIPD && !ovrUITD
   ) {
     return;
   }
@@ -1447,27 +1471,17 @@ function maybeLogOverlayPerf() {
       fmtPerfInterval("rt-ui", rayUi),
       fmtPerfInterval("rl-ovr-handler", ovrH),
       fmtPerfInterval("rl-ovr-render", ovrR),
-      fmtPerfInterval("rl-ovr-eyeL", ovrEL),
-      fmtPerfInterval("rl-ovrL-sy", ovrLSy),
-      fmtPerfInterval("rl-ovrL-pr", ovrLPr),
-      fmtPerfInterval("rl-ovrL-opq", ovrLOp),
-      fmtPerfInterval("rl-ovrL-xp", ovrLXp),
-      fmtPerfInterval("rl-ovrL-ui", ovrLUi),
-      fmtPerfInterval("rl-ovrL-uiS", ovrLUiS),
-      fmtPerfInterval("rl-ovrL-uiP", ovrLUiP),
-      fmtPerfInterval("rl-ovrL-uiT", ovrLUiT),
-      fmtPerfInterval("rl-ovrL-end", ovrLEd),
-      fmtPerfInterval("rl-ovr-eyeR", ovrER),
-      fmtPerfInterval("rl-ovrR-sy", ovrRSy),
-      fmtPerfInterval("rl-ovrR-pr", ovrRPr),
-      fmtPerfInterval("rl-ovrR-opq", ovrROp),
-      fmtPerfInterval("rl-ovrR-xp", ovrRXp),
-      fmtPerfInterval("rl-ovrR-ui", ovrRUi),
-      fmtPerfInterval("rl-ovrR-uiS", ovrRUiS),
-      fmtPerfInterval("rl-ovrR-uiP", ovrRUiP),
-      fmtPerfInterval("rl-ovrR-uiT", ovrRUiT),
-      fmtPerfInterval("rl-ovrR-end", ovrREd),
-      fmtPerfInterval("rl-ovr-sync", ovrSy),
+      fmtPerfInterval("rl-ovr-eye", ovrEye),
+      fmtPerfInterval("rl-ovr-sy", ovrEyeSy),
+      fmtPerfInterval("rl-ovr-pr", ovrPr),
+      fmtPerfInterval("rl-ovr-opq", ovrOp),
+      fmtPerfInterval("rl-ovr-xp", ovrXp),
+      fmtPerfInterval("rl-ovr-ui", ovrUi),
+      fmtPerfInterval("rl-ovr-uiS", ovrUiS),
+      fmtPerfInterval("rl-ovr-uiP", ovrUiP),
+      fmtPerfInterval("rl-ovr-uiT", ovrUiT),
+      fmtPerfInterval("rl-ovr-end", ovrEd),
+      fmtPerfInterval("rl-ovr-sync", ovrSync),
       fmtPerfInterval("rl-ovr-draw", ovrDr),
       fmtPerfCount("rl-ovr-geoBatch", ovrBG),
       fmtPerfCount("rl-ovr-matBatch", ovrBM),

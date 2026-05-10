@@ -1013,6 +1013,7 @@ export class WebXRHost {
       useOverlayPacing,
       crashOnDrop.vsync,
       openVrPace,
+      "webxrhost-pacer",
     );
     if (crashOnDrop.vsync || crashOnDrop.overlay || crashOnDrop.xrRaf || crashOnDrop.xrRafStrict) {
       LogChannel.log(
@@ -1792,6 +1793,7 @@ export class WebXRHost {
       // (see iwer `XRSession.ts`). Otherwise keep the legacy path here (older iwer build).
       if (!this.openVrDrivenBeforeIwerFrameStart) {
         this.openVrOverlayPacer?.paceToDisplayAndRefreshPoses();
+        this.openVrOverlayPacer?.maybeLogFps();
         this.onBeforeExternalControllerApply?.();
         const tHmd = performance.now();
         this.updateEmulatedHeadsetFromOpenVr();
@@ -2122,6 +2124,7 @@ export class WebXRHost {
       return;
     }
     this.openVrOverlayPacer?.paceToDisplayAndRefreshPoses();
+    this.openVrOverlayPacer?.maybeLogFps();
     this.onBeforeExternalControllerApply?.();
     const tHmd = performance.now();
     this.updateEmulatedHeadsetFromOpenVr();
