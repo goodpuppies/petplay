@@ -40,6 +40,8 @@ import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLa
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { useFrame as useR3FFrame } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu"
+// @ts-ignore no types for vendored JS build output
+import * as iwerModule from "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js";
 
 type OpenVrPoseActionData = ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>;
 type OpenVrDigitalActionData = ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>;
@@ -1153,11 +1155,6 @@ export class WebXRHost {
       const canvas = this.surfaceHost.getCanvas();
       const context = useRealWebGpuRenderer ? this.surfaceHost.getContext() : null;
 
-      const iwerModulePath = new URL(
-        "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js",
-        import.meta.url,
-      ).href;
-      const iwerModule = await import(iwerModulePath);
       const XRDevice = iwerModule.XRDevice as new (
         device: unknown,
         options: Record<string, unknown>,

@@ -328,10 +328,12 @@ export class WebXRRaythreeRaylibRenderer {
       return this.uiMsdfAtlas;
     }
     try {
-      const pathname = Deno.build.os === "windows"
-        ? decodeURIComponent(MSDF_ATLAS_PATH.pathname.replace(/^\/+/, ""))
-        : decodeURIComponent(MSDF_ATLAS_PATH.pathname);
-      const image = raylib.H.LoadImage(pathname);
+      const atlasBytes = Deno.readFileSync(MSDF_ATLAS_PATH);
+      const image = raylib.H.LoadImageFromMemory(
+        ".png",
+        Deno.UnsafePointer.of(atlasBytes) as Deno.PointerValue<number>,
+        atlasBytes.length,
+      );
       // three-msdf-text-utils uses texture.flipY=true; match that upload convention in raylib.
       const imageHandle = raylibBindings.Image.createPointer(image);
       raylib.H.ImageFlipVertical(imageHandle.pointer);
@@ -344,7 +346,7 @@ export class WebXRRaythreeRaylibRenderer {
       this.uiMsdfAtlas = texture;
       LogChannel.log(
         "webxrv2",
-        `[webxr] msdf atlas loaded ${flippedImage.width}x${flippedImage.height} path=${pathname}`,
+        `[webxr] msdf atlas loaded ${flippedImage.width}x${flippedImage.height}`,
       );
       return this.uiMsdfAtlas;
     } catch (error) {
@@ -2756,8 +2758,12 @@ type UiRlglSymbols = {
 let uiRlglLibrary: Deno.DynamicLibrary<UiRlglSymbols> | undefined;
 
 function getUiRlglSymbols(): Deno.DynamicLibrary<UiRlglSymbols>["symbols"] {
+  const raylibDllUrl = new URL("../resources/raylib.dll", import.meta.url);
+  const raylibDllPath = Deno.build.os === "windows"
+    ? decodeURIComponent(raylibDllUrl.pathname.replace(/^\/+/, ""))
+    : decodeURIComponent(raylibDllUrl.pathname);
   uiRlglLibrary ??= Deno.dlopen(
-    raylibBindings.getDefaultRaylibLibraryName(),
+    raylibDllPath,
     {
       rlUnloadVertexArray: {
         parameters: ["u32"],

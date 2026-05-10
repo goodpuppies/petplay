@@ -78,10 +78,10 @@ function getRaylibBypassRaythreeEnabled(): boolean {
   return !(v === "0" || v === "false" || v === "off" || v === "no");
 }
 
-function getRaylibOpenVrPacedRaythreeEnabled(): boolean {
+function getRaylibOpenVrPacedRaythreeEnabled(defaultValue = false): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-openvr-paced-raythree"));
   if (raw == null) {
-    return false;
+    return defaultValue;
   }
   const v = raw.split("=", 2)[1]?.trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off" || v === "no");
@@ -258,7 +258,7 @@ new PostMan(
       state.raylibBypassRaythree = payload?.raylibBypassRaythree ??
         getRaylibBypassRaythreeEnabled();
       state.raylibOpenVrPacedRaythree = payload?.raylibOpenVrPacedRaythree ??
-        getRaylibOpenVrPacedRaythreeEnabled();
+        getRaylibOpenVrPacedRaythreeEnabled(state.overlayRenderMode === "raylib");
       if (!state.startup) {
         state.startup = (async () => {
           await initializeOverlay(payload ?? null);

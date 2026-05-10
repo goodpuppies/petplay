@@ -60,7 +60,7 @@ function getRaylibBypassRaythreeEnabled(): boolean {
 function getRaylibOpenVrPacedRaythreeEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-openvr-paced-raythree"));
   if (raw == null) {
-    return false;
+    return WEBXR_OVERLAY_MODE === "raylib";
   }
   const v = raw.split("=", 2)[1]?.trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off" || v === "no");

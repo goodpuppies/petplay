@@ -155,6 +155,17 @@ new PostMan(
   } as const,
 );
 
+let screenStreamerTempPath: string | null = null;
+
+function getScreenStreamerPath(): string {
+  if (screenStreamerTempPath) return screenStreamerTempPath;
+  const url = new URL("../resources/screen-streamer.exe", import.meta.url);
+  const bytes = Deno.readFileSync(url);
+  screenStreamerTempPath = Deno.makeTempFileSync({ suffix: ".exe" });
+  Deno.writeFileSync(screenStreamerTempPath, bytes);
+  return screenStreamerTempPath;
+}
+
 function initScreenCapturer(): ScreenCapturer {
   const logStats = getWebxrFrameLogsEnabled();
   return new ScreenCapturer({
@@ -166,7 +177,7 @@ function initScreenCapturer(): ScreenCapturer {
         `Display overlay — ${fps.toFixed(1)} fps, ${avgLatency.toFixed(1)} ms`,
       );
     },
-    executablePath: "./resources/screen-streamer",
+    executablePath: getScreenStreamerPath(),
   });
 }
 
