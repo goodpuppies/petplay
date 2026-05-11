@@ -11,6 +11,7 @@ import {
 import { updateShadowSceneMesh } from "../webxrShadowScene.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
+import { windowsSystemDisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
 
 // deno-lint-ignore no-explicit-any
@@ -100,6 +101,7 @@ export function WebXRScene(
       <DisplayInstance
         position={[-0.75, 1.2, -1.45]}
         displayInstanceActor={displayInstanceActor}
+        onMouse={windowsSystemDisplayMouseSink}
       />
       {/*
         World-space keyboard: default pose matches petplay/keyboard/keyboard.ts constants;

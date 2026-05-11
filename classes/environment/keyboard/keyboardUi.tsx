@@ -1,6 +1,7 @@
-import React, { forwardRef, useCallback, useEffect, useMemo, useState } from "react";
+import React, { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
-import type * as THREE from "three/webgpu";
+import * as THREE from "three/webgpu";
+import { useThree } from "@react-three/fiber/webgpu";
 import { Container, Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import type { NormalizedKeyFace } from "./types.ts";
 import type { EventHandlersProperties } from "../../../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/events.ts";
@@ -34,6 +35,185 @@ const LAYOUT_CHROME: { backgroundColor: "transparent"; borderWidth: 0 } = {
   backgroundColor: "transparent",
   borderWidth: 0,
 };
+
+export const KEYCAP_FRONT_RENDER_ORDER = 20000;
+export const KEYCAP_FRONT_RENDER_PROPS = {
+  depthTest: false,
+  depthWrite: false,
+  renderOrder: KEYCAP_FRONT_RENDER_ORDER,
+} as const;
+const POKER_KEY_HIT_DEPTH = 0.05;
+const POKER_KEY_HIT_FRONT_Z = -0.012;
+const POKER_KEY_PRESS_SPHERE_Z = -0.028;
+const POKER_KEY_PRESS_SPHERE_MIN_RADIUS = 0.018;
+const POKER_KEY_PRESS_SPHERE_RADIUS_FACTOR = 0.36;
+const POKER_KEY_PRESS_OVERLAP = 0.004;
+const POKER_KEY_PRESS_DWELL_MS = 35;
+const POKER_KEY_PRESS_INWARD_VELOCITY = -0.018;
+const POKER_DEBUG_KEY_SCAN_CODE = "23";
+const POKER_DEBUG_RENDER_ORDER = 31000;
+
+type PokerKeyDebugVisuals = {
+  group: THREE.Group;
+  boxHelper: THREE.Box3Helper;
+  frontPlane: THREE.Mesh;
+  backPlane: THREE.Mesh;
+  pressSphere: THREE.Mesh;
+  sphere: THREE.Mesh;
+  centerDot: THREE.Mesh;
+  closestDot: THREE.Mesh;
+  line: THREE.Line;
+  linePosition: THREE.BufferAttribute;
+  statusMaterial: THREE.MeshBasicMaterial;
+};
+
+function keyHasPokerDebug(face: NormalizedKeyFace): boolean {
+  return face.scanCodeHex.toUpperCase() === POKER_DEBUG_KEY_SCAN_CODE;
+}
+
+function setDebugMaterialState(
+  material: THREE.MeshBasicMaterial,
+  pressReady: boolean,
+  overlapping: boolean,
+): void {
+  material.color.setHex(
+    pressReady ? 0x00ff66 : overlapping ? 0xffcc00 : 0xff3355,
+  );
+  material.opacity = pressReady ? 0.55 : 0.35;
+}
+
+function createPokerKeyDebugVisuals(
+  box: THREE.Box3,
+  halfWidth: number,
+  halfHeight: number,
+  pressSphereRadius: number,
+): PokerKeyDebugVisuals {
+  const group = new THREE.Group();
+  group.name = "H-key poker debug";
+  group.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  group.userData.raythreeHudOverUi = true;
+
+  const boxHelper = new THREE.Box3Helper(box, 0x00d1ff);
+  boxHelper.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  const boxHelperMaterial = boxHelper.material as THREE.LineBasicMaterial;
+  boxHelperMaterial.depthTest = false;
+  boxHelperMaterial.depthWrite = false;
+  group.add(boxHelper);
+
+  const planeGeometry = new THREE.PlaneGeometry(halfWidth * 2, halfHeight * 2);
+  const frontPlane = new THREE.Mesh(
+    planeGeometry,
+    new THREE.MeshBasicMaterial({
+      color: 0x00ff66,
+      transparent: true,
+      opacity: 0.16,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  frontPlane.position.z = box.max.z;
+  frontPlane.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  group.add(frontPlane);
+
+  const backPlane = new THREE.Mesh(
+    planeGeometry.clone(),
+    new THREE.MeshBasicMaterial({
+      color: 0xff3355,
+      transparent: true,
+      opacity: 0.12,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  backPlane.position.z = box.min.z;
+  backPlane.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  group.add(backPlane);
+
+  const pressSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(pressSphereRadius, 20, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0x00ff66,
+      transparent: true,
+      opacity: 0.18,
+      depthTest: false,
+      depthWrite: false,
+      wireframe: true,
+    }),
+  );
+  pressSphere.position.z = POKER_KEY_PRESS_SPHERE_Z;
+  pressSphere.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  group.add(pressSphere);
+
+  const statusMaterial = new THREE.MeshBasicMaterial({
+    color: 0xff3355,
+    transparent: true,
+    opacity: 0.35,
+    depthTest: false,
+    depthWrite: false,
+    wireframe: true,
+  });
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 8), statusMaterial);
+  sphere.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  sphere.visible = false;
+  group.add(sphere);
+
+  const centerDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.004, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  centerDot.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  centerDot.visible = false;
+  group.add(centerDot);
+
+  const closestDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.004, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: 0x00d1ff,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  closestDot.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  closestDot.visible = false;
+  group.add(closestDot);
+
+  const lineGeometry = new THREE.BufferGeometry();
+  const linePosition = new THREE.BufferAttribute(new Float32Array(6), 3);
+  lineGeometry.setAttribute("position", linePosition);
+  const line = new THREE.Line(
+    lineGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  line.renderOrder = POKER_DEBUG_RENDER_ORDER;
+  line.visible = false;
+  group.add(line);
+
+  return {
+    group,
+    boxHelper,
+    frontPlane,
+    backPlane,
+    pressSphere,
+    sphere,
+    centerDot,
+    closestDot,
+    line,
+    linePosition,
+    statusMaterial,
+  };
+}
 
 export const DEFAULT_KEYBOARD_JSON_URL = new URL(
   "../../../resources/Keyboard.json",
@@ -96,15 +276,132 @@ export function KeyCapChrome(
   const fill = tokenBackground(face.colorToken, pressedVisual);
   const borderC = tokenBorderColor(face.colorToken, pressedVisual);
   const tc = keyTextColor(face.colorToken, pressedVisual);
+  const scene = useThree((state) => state.scene);
+  const outerRef = useRef<
+    THREE.Object3D & {
+      spherecast?: (sphere: THREE.Sphere, intersects: THREE.Intersection[]) => void;
+    } | null
+  >(null);
+
+  useEffect(() => {
+    const object = outerRef.current;
+    if (object == null) return;
+    const halfWidth = 0.5 * minWidth * pixelSize;
+    const halfHeight = 0.5 * minHeight * pixelSize;
+    const pressBackZ = POKER_KEY_HIT_FRONT_Z - POKER_KEY_HIT_DEPTH;
+    const pressSphereRadius = Math.max(
+      POKER_KEY_PRESS_SPHERE_MIN_RADIUS,
+      Math.min(halfWidth, halfHeight) * POKER_KEY_PRESS_SPHERE_RADIUS_FACTOR,
+    );
+    const pressSphereCenter = new THREE.Vector3(0, 0, POKER_KEY_PRESS_SPHERE_Z);
+    const box = new THREE.Box3(
+      new THREE.Vector3(-halfWidth, -halfHeight, pressBackZ),
+      new THREE.Vector3(halfWidth, halfHeight, POKER_KEY_HIT_FRONT_Z),
+    );
+    const debugVisuals = keyHasPokerDebug(face)
+      ? createPokerKeyDebugVisuals(box, halfWidth, halfHeight, pressSphereRadius)
+      : null;
+    if (debugVisuals != null) {
+      debugVisuals.group.matrixAutoUpdate = false;
+      scene.add(debugVisuals.group);
+    }
+    const inverse = new THREE.Matrix4();
+    const localCenter = new THREE.Vector3();
+    const closestLocal = new THREE.Vector3();
+    const closestWorld = new THREE.Vector3();
+    const worldScale = new THREE.Vector3();
+    const previousLocalCenter = new THREE.Vector3();
+    let hasPreviousLocalCenter = false;
+    let previousTimestamp = 0;
+    let overlapStartedAt = 0;
+    object.spherecast = (sphere, intersects) => {
+      const now = performance.now();
+      object.updateWorldMatrix(true, false);
+      inverse.copy(object.matrixWorld).invert();
+      localCenter.copy(sphere.center).applyMatrix4(inverse);
+      object.matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), worldScale);
+      const localRadius = sphere.radius /
+        Math.max(worldScale.x, worldScale.y, worldScale.z, 1e-6);
+      closestLocal.copy(localCenter).clamp(box.min, box.max);
+      closestWorld.copy(closestLocal).applyMatrix4(object.matrixWorld);
+      const worldDistance = closestWorld.distanceTo(sphere.center);
+      const pressDistance = localCenter.distanceTo(pressSphereCenter);
+      const overlap = pressSphereRadius + localRadius - pressDistance;
+      const overlapping = overlap >= POKER_KEY_PRESS_OVERLAP;
+      if (!overlapping) {
+        overlapStartedAt = 0;
+      } else if (overlapStartedAt === 0) {
+        overlapStartedAt = now;
+      }
+      const dtSeconds = hasPreviousLocalCenter
+        ? Math.max((now - previousTimestamp) / 1000, 1e-6)
+        : 0;
+      const velocityZ = hasPreviousLocalCenter
+        ? (localCenter.z - previousLocalCenter.z) / dtSeconds
+        : 0;
+      const movingIntoKey = velocityZ <= POKER_KEY_PRESS_INWARD_VELOCITY;
+      const dwellReady = overlapping && now - overlapStartedAt >= POKER_KEY_PRESS_DWELL_MS;
+      const pressReady = overlapping && (movingIntoKey || dwellReady);
+      if (debugVisuals != null) {
+        debugVisuals.group.matrix.copy(object.matrixWorld);
+        debugVisuals.group.matrixWorld.copy(object.matrixWorld);
+        debugVisuals.group.matrixWorldNeedsUpdate = true;
+        setDebugMaterialState(debugVisuals.statusMaterial, pressReady, overlapping);
+        debugVisuals.sphere.visible = true;
+        debugVisuals.sphere.position.copy(localCenter);
+        debugVisuals.sphere.scale.setScalar(localRadius);
+        debugVisuals.centerDot.visible = true;
+        debugVisuals.centerDot.position.copy(localCenter);
+        debugVisuals.closestDot.visible = true;
+        debugVisuals.closestDot.position.copy(pressSphereCenter);
+        debugVisuals.line.visible = true;
+        debugVisuals.linePosition.setXYZ(0, localCenter.x, localCenter.y, localCenter.z);
+        debugVisuals.linePosition.setXYZ(
+          1,
+          pressSphereCenter.x,
+          pressSphereCenter.y,
+          pressSphereCenter.z,
+        );
+        debugVisuals.linePosition.needsUpdate = true;
+      }
+      previousLocalCenter.copy(localCenter);
+      previousTimestamp = now;
+      hasPreviousLocalCenter = true;
+      if (worldDistance > sphere.radius) {
+        return;
+      }
+      intersects.push({
+        distance: pressReady ? 0 : Math.max(worldDistance, sphere.radius),
+        object,
+        point: closestWorld.clone(),
+        localPoint: closestLocal.clone(),
+        uv: new THREE.Vector2(
+          (closestLocal.x - box.min.x) / Math.max(1e-6, box.max.x - box.min.x),
+          (closestLocal.y - box.min.y) / Math.max(1e-6, box.max.y - box.min.y),
+        ),
+        normal: new THREE.Vector3(0, 0, 1),
+      } as THREE.Intersection);
+    };
+    return () => {
+      if (object.spherecast != null) {
+        object.spherecast = undefined;
+      }
+      if (debugVisuals != null) {
+        scene.remove(debugVisuals.group);
+      }
+    };
+  }, [face, minHeight, minWidth, pixelSize, scene]);
 
   return (
     <Container
+      ref={outerRef}
       pixelSize={pixelSize}
       minWidth={minWidth}
       minHeight={minHeight}
       alignItems="center"
       justifyContent="center"
       {...LAYOUT_CHROME}
+      {...KEYCAP_FRONT_RENDER_PROPS}
       {...events}
     >
       <Container
@@ -124,9 +421,16 @@ export function KeyCapChrome(
         transformTranslateZ={transformTranslateZ}
         transformScaleX={transformScaleX}
         transformScaleY={transformScaleY}
+        {...KEYCAP_FRONT_RENDER_PROPS}
       >
         {children ?? (
-          <Text color={tc} fontSize={face.fontSize} pixelSize={pixelSize} textAlign="center">
+          <Text
+            color={tc}
+            fontSize={face.fontSize}
+            pixelSize={pixelSize}
+            textAlign="center"
+            {...KEYCAP_FRONT_RENDER_PROPS}
+          >
             {"·"}
           </Text>
         )}

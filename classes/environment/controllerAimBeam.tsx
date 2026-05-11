@@ -29,7 +29,8 @@ const BEAM_THICKNESS = 0.002;
  * path among scene objects.
  */
 export function ConstantControllerAimBeam(
-  { length = 0.95, color = 0x5ec8ff, opacity = 1, renderOrder = 9999 }: ConstantControllerAimBeamProps,
+  { length = 0.95, color = 0x5ec8ff, opacity = 1, renderOrder = 9999 }:
+    ConstantControllerAimBeamProps,
 ) {
   const threeColor = useMemo(() => new THREE.Color(color), [color]);
   const opaque = opacity >= 0.999;
@@ -47,7 +48,7 @@ export function ConstantControllerAimBeam(
       <meshBasicMaterial
         color={threeColor}
         toneMapped={false}
-        depthTest={false}
+        depthTest
         depthWrite={false}
         transparent={!opaque}
         opacity={opacity}

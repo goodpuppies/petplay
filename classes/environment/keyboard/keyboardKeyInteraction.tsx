@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
-import { KeyCapChrome } from "./keyboardUi.tsx";
+import { KEYCAP_FRONT_RENDER_PROPS, KeyCapChrome } from "./keyboardUi.tsx";
 import type { NormalizedKeyFace } from "./types.ts";
 import { keyTextColor, tokenBackground, tokenBorderColor } from "./theme.ts";
 
@@ -21,6 +21,8 @@ const KEY_DEPRESS_Z = -32;
  * (release does not have to finish). Increase for a slower return to the rest pose.
  */
 const KEY_RELEASE_EASE_MS = 200;
+const KEY_PRIMARY_LABEL_SCALE = 1.15;
+const KEY_SECONDARY_LABEL_SCALE = 0.72;
 
 type ImperativeUIKitRef = {
   setProperties?: (props: Record<string, unknown>) => void;
@@ -257,9 +259,10 @@ export function InteractiveKeyCap(
         <Text
           ref={(mesh: TextMeshRef | null) => syncTextRef(primaryTextRef, mesh)}
           color={tc}
-          fontSize={font * 0.9}
+          fontSize={font * KEY_PRIMARY_LABEL_SCALE}
           pixelSize={pixelSize}
           textAlign="center"
+          {...KEYCAP_FRONT_RENDER_PROPS}
         >
           {currentLabel}
         </Text>
@@ -268,9 +271,10 @@ export function InteractiveKeyCap(
             <Text
               ref={(mesh: TextMeshRef | null) => syncTextRef(secondaryTextRef, mesh)}
               color={tc}
-              fontSize={font * 0.58}
+              fontSize={font * KEY_SECONDARY_LABEL_SCALE}
               pixelSize={pixelSize}
               textAlign="center"
+              {...KEYCAP_FRONT_RENDER_PROPS}
             >
               {face.displayAlt}
             </Text>

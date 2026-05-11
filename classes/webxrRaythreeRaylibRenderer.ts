@@ -117,6 +117,8 @@ type NativeMaterial = {
   depthTest: boolean;
   /** Mirrors Three `Material.depthWrite`. */
   depthWrite: boolean;
+  /** Mirrors Three `Material.colorWrite`; false draws depth-only occluders. */
+  colorWrite: boolean;
 };
 
 type LightingShader = {
@@ -993,11 +995,15 @@ export class WebXRRaythreeRaylibRenderer {
   ): void {
     const restoreDepthTest = !material.depthTest;
     const restoreDepthMask = !material.depthWrite;
+    const restoreColorMask = !material.colorWrite;
     if (restoreDepthTest) {
       setUiDepthTestEnabled(false);
     }
     if (restoreDepthMask) {
       setUiDepthMaskEnabled(false);
+    }
+    if (restoreColorMask) {
+      setUiColorMaskEnabled(false);
     }
     try {
       if (material.wireframe) {
@@ -1057,6 +1063,9 @@ export class WebXRRaythreeRaylibRenderer {
       if (restoreDepthMask) {
         setUiDepthMaskEnabled(true);
       }
+      if (restoreColorMask) {
+        setUiColorMaskEnabled(true);
+      }
     }
   }
 
@@ -1103,7 +1112,7 @@ export class WebXRRaythreeRaylibRenderer {
     }
     transparent.sort((a, b) => this.getInstanceViewDepth(b) - this.getInstanceViewDepth(a));
     setUiDepthMaskEnabled(false);
-    setUiDepthTestEnabled(false);
+    setUiDepthTestEnabled(true);
     setUiBackfaceCullingEnabled(false);
     try {
       for (const list of [opaque, transparent]) {
@@ -1118,7 +1127,6 @@ export class WebXRRaythreeRaylibRenderer {
       }
     } finally {
       setUiBackfaceCullingEnabled(true);
-      setUiDepthTestEnabled(true);
       setUiDepthMaskEnabled(true);
     }
   }
@@ -1610,6 +1618,7 @@ function createNativeMaterial(
     wireframe: asset.state.wireframe === true,
     depthTest: asset.state.depthTest !== false,
     depthWrite: asset.state.depthWrite !== false,
+    colorWrite: asset.state.colorWrite !== false,
   };
 }
 
@@ -2753,6 +2762,10 @@ type UiRlglSymbols = {
     parameters: [];
     result: "void";
   };
+  rlColorMask: {
+    parameters: ["bool", "bool", "bool", "bool"];
+    result: "void";
+  };
 };
 
 let uiRlglLibrary: Deno.DynamicLibrary<UiRlglSymbols> | undefined;
@@ -2805,6 +2818,10 @@ function getUiRlglSymbols(): Deno.DynamicLibrary<UiRlglSymbols>["symbols"] {
         parameters: [],
         result: "void",
       },
+      rlColorMask: {
+        parameters: ["bool", "bool", "bool", "bool"],
+        result: "void",
+      },
     } satisfies UiRlglSymbols,
   );
   return uiRlglLibrary.symbols;
@@ -2835,6 +2852,10 @@ function setUiBackfaceCullingEnabled(enabled: boolean): void {
     return;
   }
   symbols.rlDisableBackfaceCulling();
+}
+
+function setUiColorMaskEnabled(enabled: boolean): void {
+  getUiRlglSymbols().rlColorMask(enabled, enabled, enabled, enabled);
 }
 
 /** Toggles `rlEnableWireMode` / `rlDisableWireMode` (desktop GL; no-op on GLES). */

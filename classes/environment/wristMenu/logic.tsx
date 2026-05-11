@@ -4,11 +4,16 @@ import * as THREE from "three/webgpu";
 import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
 import { useXRInputSourceStateContext, XRSpace } from "@pmndrs/xr";
-import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
+import type {
+  AllowedPointerEventsType,
+  PointerEvent as PenPointerEvent,
+} from "@pmndrs/pointer-events";
 import { PetplayDefaultXRController } from "../petplayXrController.tsx";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { WristMenuUi } from "./ui.tsx";
 import type { WristMenuButtonId, WristMenuStateSnapshot } from "./types.ts";
+import { setToolEditMode } from "../toolEditMode.ts";
+import { setControllerLaserEnabled } from "../controllerLaserMode.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -45,16 +50,28 @@ export type WristMenuPanelProps = {
 function wristMenuPointerEventsForHost(
   host: "left" | "right",
 ): AllowedPointerEventsType {
-  return (_id, _pointerType, st) => {
-    if (st == null || typeof st !== "object" || !("inputSource" in st)) {
-      return true;
-    }
-    const h = (st as { inputSource?: { handedness: XRHandedness } }).inputSource?.handedness;
-    if (h !== "left" && h !== "right") {
-      return true;
-    }
-    return h !== host;
-  };
+  return (_id, _pointerType, st) => !isPointerStateFromHostHand(st, host);
+}
+
+function isPointerStateFromHostHand(
+  pointerState: unknown,
+  host: "left" | "right",
+): boolean {
+  if (
+    pointerState == null || typeof pointerState !== "object" || !("inputSource" in pointerState)
+  ) {
+    return false;
+  }
+  const h = (pointerState as { inputSource?: { handedness?: XRHandedness } }).inputSource
+    ?.handedness;
+  return h === host;
+}
+
+function isPointerEventFromHostHand(
+  event: PenPointerEvent,
+  host: "left" | "right" | undefined,
+): boolean {
+  return host != null && isPointerStateFromHostHand(event.pointerState, host);
 }
 
 function formatClock(date: Date) {
@@ -162,6 +179,20 @@ export function WristMenuPanel(
     };
   }, [actorId, initialState]);
 
+  useEffect(() => {
+    setToolEditMode(buttonState.musicActive);
+    return () => {
+      setToolEditMode(false);
+    };
+  }, [buttonState.musicActive]);
+
+  useEffect(() => {
+    setControllerLaserEnabled(!buttonState.layersActive);
+    return () => {
+      setControllerLaserEnabled(true);
+    };
+  }, [buttonState.layersActive]);
+
   const handleToggle = useCallback((id: WristMenuButtonId) => {
     if (!actorId) {
       setButtonState((current) => applyToggle(current, id));
@@ -187,7 +218,10 @@ export function WristMenuPanel(
       scale={scale}
       userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}
     >
-      <Handle>
+      <Handle
+        filter={(e: PenPointerEvent) =>
+          e.pointerType !== "poker" && !isPointerEventFromHostHand(e, hostHandedness)}
+      >
         <WristMenuUi
           clock={formatClock(currentDate)}
           dateLabel={formatDate(currentDate)}
@@ -206,10 +240,13 @@ export function WristMenuPanel(
 export function WristMenuControllerHud({ actorId }: { actorId?: string | null }) {
   const xrState = useXRInputSourceStateContext();
   const h = xrState.inputSource.handedness;
-  const hostHandedness: "left" | "right" | undefined = h === "left" || h === "right" ? h : undefined;
+  const hostHandedness: "left" | "right" | undefined = h === "left" || h === "right"
+    ? h
+    : undefined;
   return (
     <>
       <PetplayDefaultXRController
+        model={false}
         rayPointer={{
           minDistance: -1,
         }}

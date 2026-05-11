@@ -39,7 +39,7 @@ import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { useFrame as useR3FFrame } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu"
+import { useFrame as useR3FFrame, getScheduler  } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu"
 // @ts-ignore no types for vendored JS build output
 import * as iwerModule from "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js";
 
@@ -181,6 +181,7 @@ const XR_CONNECT_ERROR_FRAGMENT = "not connected to three.js";
 const CONTROLLER_ROTATION_OFFSET = new THREE.Quaternion().setFromEuler(
   new THREE.Euler(-0.7, 0, 0, "XYZ"),
 );
+const CONTROLLER_BACK_OFFSET_METERS = 0.055;
 
 type SupportedSessionMode = "immersive-vr" | "immersive-ar";
 
@@ -1222,6 +1223,55 @@ export class WebXRHost {
 
       // @ts-expect-error #TODO
       this.root = createRoot(canvas);
+
+            function patchR3FSchedulerTiming() {
+        const scheduler = getScheduler() as any
+        if (scheduler.__petplayTimingPatched) return scheduler.__petplayStats as Map<string, any>
+
+        const stats = new Map<string, { calls: number; total: number; max: number }>()
+        const origRegister = scheduler.register.bind(scheduler)
+
+        scheduler.register = (callback: any, options: any = {}) => {
+          const id = options.id ?? "(unknown)"
+          const phase = options.phase ?? "update"
+          const label = `${phase}:${id}${options.system ? ":system" : ""}`
+
+          return origRegister((state: any, delta: number) => {
+            const t0 = performance.now()
+            try {
+              return callback(state, delta)
+            } finally {
+              const dt = performance.now() - t0
+              const s = stats.get(label) ?? { calls: 0, total: 0, max: 0 }
+              s.calls++
+              s.total += dt
+              s.max = Math.max(s.max, dt)
+              stats.set(label, s)
+            }
+          }, options)
+        }
+
+        scheduler.__petplayTimingPatched = true
+        scheduler.__petplayStats = stats
+        return stats
+      }
+
+      function logR3FSchedulerTiming(stats: Map<string, { calls: number; total: number; max: number }>) {
+        console.table(
+          [...stats.entries()]
+            .map(([job, s]) => ({
+              job,
+              calls: s.calls,
+              avg: +(s.total / Math.max(1, s.calls)).toFixed(3),
+              max: +s.max.toFixed(3),
+            }))
+            .sort((a, b) => b.avg - a.avg),
+        )
+      }
+
+      const stats = patchR3FSchedulerTiming()
+      setInterval(() => logR3FSchedulerTiming(stats), 1000)
+
       await this.root.configure({
         renderer: (async (props: Record<string, unknown>) => {
           if (!useRealWebGpuRenderer) {
@@ -1285,6 +1335,8 @@ export class WebXRHost {
         return null
       }
 
+
+
       const rootStore = this.root.render(
         React.createElement(
           XR,
@@ -1297,6 +1349,16 @@ export class WebXRHost {
           }),
         ),
       );
+
+      const rootId = rootStore.getState().internal.rootId
+      const scheduler = getScheduler() as any
+
+      console.log("[R3F]", {
+        rootId,
+        renderClaimed: scheduler.hasUserJobsInPhase?.("render", rootId),
+        jobs: scheduler.getJobIds?.(),
+      })
+
       this.rootStore = rootStore;
       rootStore.getState().xr.disconnect();
 
@@ -2720,15 +2782,20 @@ export class WebXRHost {
       }
     }
     lastRaw.set(rawX, rawY, rawZ);
+    this.tempEmulatedControllerPosTarget.set(0, 0, CONTROLLER_BACK_OFFSET_METERS)
+      .applyQuaternion(correctedQuaternion);
+    const ox = this.tempEmulatedControllerPosTarget.x;
+    const oy = this.tempEmulatedControllerPosTarget.y;
+    const oz = this.tempEmulatedControllerPosTarget.z;
     if (lerpA <= 0) {
-      controller.position?.set?.(tx, ty, tz);
+      controller.position?.set?.(tx + ox, ty + oy, tz + oz);
     } else if (!inited) {
       smooth.set(tx, ty, tz);
-      controller.position?.set?.(smooth.x, smooth.y, smooth.z);
+      controller.position?.set?.(smooth.x + ox, smooth.y + oy, smooth.z + oz);
     } else {
       this.tempEmulatedControllerPosTarget.set(tx, ty, tz);
       smooth.lerp(this.tempEmulatedControllerPosTarget, lerpA);
-      controller.position?.set?.(smooth.x, smooth.y, smooth.z);
+      controller.position?.set?.(smooth.x + ox, smooth.y + oy, smooth.z + oz);
     }
     if (handedness === "left") {
       this.emulatedControllerPosInited.left = true;

@@ -1,22 +1,24 @@
 import { Pointer, type RayPointerOptions } from "@pmndrs/pointer-events";
 import {
   CombinedPointer,
+  defaultRayPointerOpacity,
   DefaultXRControllerGrabPointer,
   type DefaultXRControllerOptions,
   type DefaultXRInputSourceGrabPointerOptions,
   type DefaultXRInputSourceRayPointerOptions,
   DefaultXRInputSourceTeleportPointer,
   PointerCursorModel,
-  XRControllerModel,
-  XRSpace,
-  defaultRayPointerOpacity,
   usePointerXRInputSourceEvents,
   useRayPointer,
   useXRInputSourceStateContext,
+  XRControllerModel,
+  XRSpace,
 } from "@pmndrs/xr";
 import { useFrame } from "@react-three/fiber/webgpu";
 import React, { forwardRef, Suspense, useImperativeHandle, useMemo, useRef } from "react";
 import { MeshBasicMaterial, Object3D } from "three/webgpu";
+import { HandPoker } from "./handPoker.tsx";
+import { useControllerLaserEnabled } from "./controllerLaserMode.ts";
 
 function spreadable<T>(value: true | T | undefined): T | undefined {
   if (value === true || value === undefined) {
@@ -36,7 +38,10 @@ type HudRayModelOptions = {
 };
 
 /** Match [ConstantControllerAimBeam](controllerAimBeam.tsx); options can override via `rayPointer.rayModel`. */
-const PETPLAY_RAY_DEFAULTS: Pick<HudRayModelOptions, "maxLength" | "size" | "color" | "renderOrder"> = {
+const PETPLAY_RAY_DEFAULTS: Pick<
+  HudRayModelOptions,
+  "maxLength" | "size" | "color" | "renderOrder"
+> = {
   maxLength: 0.95,
   size: 0.002,
   color: 0x5ec8ff,
@@ -84,37 +89,44 @@ function updateHudRayModel(
   mesh.updateMatrix();
 }
 
-const HudPointerRayModel = forwardRef<Object3D, HudRayModelOptions & { pointer: Pointer }>((props, ref) => {
-  const material = useMemo(
-    () =>
-      new MeshBasicMaterial({
-        transparent: true,
-        toneMapped: false,
-        depthTest: false,
-        depthWrite: false,
-      }),
-    [],
-  );
-  const internalRef = useRef<Object3D>(null);
-  useImperativeHandle(ref, () => internalRef.current!);
-  useFrame(() => {
-    if (internalRef.current != null) {
-      updateHudRayModel(internalRef.current as unknown as AimSegmentObject, material, props.pointer, props);
-    }
-  });
-  return (
-    <mesh
-      matrixAutoUpdate={false}
-      renderOrder={props.renderOrder ?? 2}
-      ref={internalRef}
-      material={material as never}
-      userData={{ raythreeHudOverUi: true }}
-      {...({ pointerEvents: "none" } as Record<string, unknown>)}
-    >
-      <boxGeometry />
-    </mesh>
-  );
-});
+const HudPointerRayModel = forwardRef<Object3D, HudRayModelOptions & { pointer: Pointer }>(
+  (props, ref) => {
+    const material = useMemo(
+      () =>
+        new MeshBasicMaterial({
+          transparent: true,
+          toneMapped: false,
+          depthTest: true,
+          depthWrite: false,
+        }),
+      [],
+    );
+    const internalRef = useRef<Object3D>(null);
+    useImperativeHandle(ref, () => internalRef.current!);
+    useFrame(() => {
+      if (internalRef.current != null) {
+        updateHudRayModel(
+          internalRef.current as unknown as AimSegmentObject,
+          material,
+          props.pointer,
+          props,
+        );
+      }
+    });
+    return (
+      <mesh
+        matrixAutoUpdate={false}
+        renderOrder={props.renderOrder ?? 2}
+        ref={internalRef}
+        material={material as never}
+        userData={{ raythreeHudOverUi: true }}
+        {...({ pointerEvents: "none" } as Record<string, unknown>)}
+      >
+        <boxGeometry />
+      </mesh>
+    );
+  },
+);
 
 function PetplayDefaultXRInputSourceRayPointer(props: DefaultXRInputSourceRayPointerOptions) {
   const state = useXRInputSourceStateContext();
@@ -134,7 +146,7 @@ function PetplayDefaultXRInputSourceRayPointer(props: DefaultXRInputSourceRayPoi
           {...rayOpts}
         />
       )}
-      {cursorModelOptions !== false && (
+      {cursorModelOptions != null && cursorModelOptions !== false && (
         <PointerCursorModel
           pointer={pointer}
           opacity={defaultRayPointerOpacity}
@@ -165,9 +177,14 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
   const grabPointerOptions = props.grabPointer;
   const rayPointerOptions = props.rayPointer;
   const teleportPointerOptions = props.teleportPointer ?? false;
+  const laserEnabled = useControllerLaserEnabled();
 
   const rayP = (spreadable(rayPointerOptions) ?? {}) as DefaultXRInputSourceRayPointerOptions;
   const grabO = (spreadable(grabPointerOptions) ?? {}) as DefaultXRInputSourceGrabPointerOptions;
+  const grabPointerProps: DefaultXRInputSourceGrabPointerOptions = {
+    cursorModel: false,
+    ...grabO,
+  };
   const minD = rayP.minDistance ?? 0.2;
   const {
     cursorModel: _gcm,
@@ -181,6 +198,7 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
 
   return (
     <>
+      <HandPoker />
       {modelOptions !== false && (
         <Suspense>
           <XRControllerModel {...spreadable(modelOptions)} />
@@ -188,14 +206,16 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
       )}
       {grabPointerOptions !== false && (
         <CombinedPointer>
-          <DefaultXRControllerGrabPointer {...spreadable(grabPointerOptions)} />
-          <PetplayGrabRayPointer
-            {...(grabForRay as RayPointerOptions)}
-            minDistance={minD}
-          />
+          <DefaultXRControllerGrabPointer {...grabPointerProps} />
+          {laserEnabled && (
+            <PetplayGrabRayPointer
+              {...(grabForRay as RayPointerOptions)}
+              minDistance={minD}
+            />
+          )}
         </CombinedPointer>
       )}
-      {rayPointerOptions !== false && (
+      {rayPointerOptions !== false && laserEnabled && (
         <PetplayDefaultXRInputSourceRayPointer
           {...rayP}
           makeDefault

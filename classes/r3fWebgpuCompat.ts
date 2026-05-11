@@ -1,9 +1,6 @@
 export * from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu";
 
-import {
-  useFrame as useWebGPUFrame,
-  useStore,
-} from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu";
+import { useFrame as useWebGPUFrame, useStore } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu";
 import type {
   FrameNextCallback,
   FrameNextState,
@@ -62,17 +59,21 @@ export function useFrame(
   const wrappedCallback: FrameNextCallback = (state, delta) => {
     elapsed += delta;
 
+    if (hasUsableClock(state)) {
+      callback(state, delta, currentXRFrame.value);
+      return;
+    }
+
     const fallbackState = store.getState();
-    const rootState = hasUsableClock(state)
-      ? state
-      : ({
-        ...fallbackState,
-        ...(typeof state === "object" && state !== null ? state as object : {}),
-        clock: {
-          getElapsedTime: () => elapsed,
-          getDelta: () => delta,
-        },
-      } as unknown as FrameNextState);
+
+    const rootState = {
+      ...fallbackState,
+      ...(typeof state === "object" && state !== null ? state as object : {}),
+      clock: {
+        getElapsedTime: () => elapsed,
+        getDelta: () => delta,
+      },
+    } as unknown as FrameNextState;
 
     callback(rootState, delta, currentXRFrame.value);
   };

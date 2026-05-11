@@ -5,8 +5,8 @@ import * as THREE from "three/webgpu";
 import {
   extend,
   type ThreeToJSXElements,
-  type UseFrameNextOptions,
   useFrame,
+  type UseFrameNextOptions,
 } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
@@ -32,6 +32,14 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   /** Optional actor id for future overlay / bridge correlation. */
   displayInstanceActor?: string | null;
 };
+
+export {
+  createWindowsSystemDisplayMouseSink,
+  releaseWindowsSyntheticDisplayMouseState,
+  releaseWindowsSyntheticDisplayMouseStateWithKm,
+  windowsSystemDisplayMouseSink,
+} from "./mouse.ts";
+export type { DisplayMouseLogicEvent, DisplayMouseSink } from "./mouse.ts";
 
 function hmd34ApproxEqual(
   a: { m: number[][] },
@@ -101,11 +109,22 @@ export function DisplayInstance(
       decompScale.current,
     );
     rigidWorld.current.compose(decompPos.current, decompQuat.current, unitScale.current);
-    const hmd = hmd34FromColumnMajor4x4(rigidWorld.current.elements as unknown as {
-      0: number; 4: number; 8: number; 12: number;
-      1: number; 5: number; 9: number; 13: number;
-      2: number; 6: number; 10: number; 14: number;
-    });
+    const hmd = hmd34FromColumnMajor4x4(
+      rigidWorld.current.elements as unknown as {
+        0: number;
+        4: number;
+        8: number;
+        12: number;
+        1: number;
+        5: number;
+        9: number;
+        13: number;
+        2: number;
+        6: number;
+        10: number;
+        14: number;
+      },
+    );
     p0.current.set(-localHalfW, 0, 0);
     p1.current.set(localHalfW, 0, 0);
     p0.current.applyMatrix4(obj.matrixWorld);
@@ -113,7 +132,10 @@ export function DisplayInstance(
     const widthMeters = p0.current.distanceTo(p1.current);
 
     if (lastSentHmd.current && lastSentWidth.current !== null) {
-      if (hmd34ApproxEqual(hmd, lastSentHmd.current) && Math.abs(lastSentWidth.current - widthMeters) < 0.0001) {
+      if (
+        hmd34ApproxEqual(hmd, lastSentHmd.current) &&
+        Math.abs(lastSentWidth.current - widthMeters) < 0.0001
+      ) {
         return;
       }
     }
@@ -134,14 +156,18 @@ export function DisplayInstance(
     <group
       position={position}
       rotation={rotation}
-      userData={{ displayInstance: true, aspect: "16:9", displayInstanceActor: displayInstanceActor ?? null }}
+      userData={{
+        displayInstance: true,
+        aspect: "16:9",
+        displayInstanceActor: displayInstanceActor ?? null,
+      }}
     >
       <Handle
         handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
         multitouch
         scale={{ uniform: true }}
         // Same as KeyboardPanel: no translate from trigger; squeeze grab-ray only.
-        filter={(e: PenPointerEvent) => e.pointerType !== "ray"}
+        filter={(e: PenPointerEvent) => e.pointerType !== "ray" && e.pointerType !== "poker"}
       >
         <DisplayInstanceFrame ref={handleRef} {...frameProps} />
       </Handle>

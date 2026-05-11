@@ -86,11 +86,20 @@ function SignalHighIcon() {
   );
 }
 
-function ControllerFrame({ children }: { children?: React.ReactNode }) {
+function ControllerFrame(
+  { children, pointerEventsType }: {
+    children?: React.ReactNode;
+    pointerEventsType?: AllowedPointerEventsType;
+  },
+) {
   const [hovered, setHovered] = useState(false);
 
   return (
-    <group onPointerOver={() => setHovered(true)} onPointerOut={() => setHovered(false)}>
+    <group
+      {...({ pointerEventsType } as Record<string, unknown>)}
+      onPointerOver={() => setHovered(true)}
+      onPointerOut={() => setHovered(false)}
+    >
       {children}
       <mesh raycast={() => null} renderOrder={1}>
         <boxGeometry args={[0.4, 0.2, 0.04]} />
@@ -145,7 +154,7 @@ export function WristMenuUi(
 ) {
   const pe: AllowedPointerEventsType = pointerEventsType ?? "all";
   return (
-    <ControllerFrame>
+    <ControllerFrame pointerEventsType={pe}>
       <Container
         pixelSize={0.001}
         pointerEventsType={pe}

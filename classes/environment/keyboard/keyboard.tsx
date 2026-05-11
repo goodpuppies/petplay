@@ -10,8 +10,8 @@ import {
 } from "./defaultLayoutPreload.ts";
 import {
   DEFAULT_KEYBOARD_JSON_URL,
-  DEFAULT_KEYBOARD_PIXEL_SIZE,
   DEFAULT_KEYBOARD_LAYOUT_MODE,
+  DEFAULT_KEYBOARD_PIXEL_SIZE,
   KeyboardFromJson,
 } from "./keyboardUi.tsx";
 import { keyboardContentBoundsUnits } from "./keyboardLayout.ts";
@@ -33,8 +33,8 @@ export const DEFAULT_KEYBOARD_SCALE: [number, number, number] = [0.38, 0.38, 0.3
 
 export {
   DEFAULT_KEYBOARD_JSON_URL,
-  DEFAULT_KEYBOARD_PIXEL_SIZE,
   DEFAULT_KEYBOARD_LAYOUT_MODE,
+  DEFAULT_KEYBOARD_PIXEL_SIZE,
 } from "./keyboardUi.tsx";
 
 const FALLBACK_GRAB: readonly [number, number, number] = [0.5, 0.2, 0.04];
@@ -81,8 +81,9 @@ export function KeyboardPanel(
   }, [layoutUrl]);
 
   const boundsUnits = useMemo(
-    () =>
-      (layoutReady != null ? keyboardContentBoundsUnits(layoutReady, layoutFormat, layoutMode) : null),
+    () => (layoutReady != null
+      ? keyboardContentBoundsUnits(layoutReady, layoutFormat, layoutMode)
+      : null),
     [layoutReady, layoutFormat, layoutMode],
   );
 
@@ -110,7 +111,7 @@ export function KeyboardPanel(
             handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
             multitouch
             scale={{ uniform: true }}
-            filter={(e) => e.pointerType !== "ray"}
+            filter={(e) => e.pointerType !== "ray" && e.pointerType !== "poker"}
           >
             <GrabBox
               ref={handleRef}

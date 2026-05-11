@@ -1,6 +1,7 @@
 import { PostalService } from "../submodules/stageforge/mod.ts"
 import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
 import { asyncPrompt, createTemp, destroyTemp, wait, ensuredenodir } from "../classes/utils.ts";
+import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
 
 ensuredenodir()
@@ -25,6 +26,7 @@ function tryBeginExit(): boolean {
  */
 async function petplaySharedShutdown(): Promise<void> {
   if (Deno.build.os === "windows") {
+    await releaseWindowsSyntheticDisplayMouseState();
     await releaseWindowsSyntheticKeyboardState();
   }
   await wait(EXIT_STABILIZE_MS);
