@@ -47,9 +47,7 @@ const POKER_KEY_HIT_FRONT_Z = -0.012;
 const POKER_KEY_PRESS_SPHERE_Z = -0.028;
 const POKER_KEY_PRESS_SPHERE_MIN_RADIUS = 0.018;
 const POKER_KEY_PRESS_SPHERE_RADIUS_FACTOR = 0.36;
-const POKER_KEY_PRESS_OVERLAP = 0.004;
-const POKER_KEY_PRESS_DWELL_MS = 35;
-const POKER_KEY_PRESS_INWARD_VELOCITY = -0.018;
+const POKER_KEY_PRESS_OVERLAP_THRESHOLD = 0.005;
 const POKER_DEBUG_KEY_SCAN_CODE = "23";
 const POKER_DEBUG_RENDER_ORDER = 31000;
 
@@ -310,12 +308,8 @@ export function KeyCapChrome(
     const closestLocal = new THREE.Vector3();
     const closestWorld = new THREE.Vector3();
     const worldScale = new THREE.Vector3();
-    const previousLocalCenter = new THREE.Vector3();
-    let hasPreviousLocalCenter = false;
-    let previousTimestamp = 0;
-    let overlapStartedAt = 0;
+    let isPressed = false;
     object.spherecast = (sphere, intersects) => {
-      const now = performance.now();
       object.updateWorldMatrix(true, false);
       inverse.copy(object.matrixWorld).invert();
       localCenter.copy(sphere.center).applyMatrix4(inverse);
@@ -327,26 +321,27 @@ export function KeyCapChrome(
       const worldDistance = closestWorld.distanceTo(sphere.center);
       const pressDistance = localCenter.distanceTo(pressSphereCenter);
       const overlap = pressSphereRadius + localRadius - pressDistance;
-      const overlapping = overlap >= POKER_KEY_PRESS_OVERLAP;
-      if (!overlapping) {
-        overlapStartedAt = 0;
-      } else if (overlapStartedAt === 0) {
-        overlapStartedAt = now;
+
+      // Press when transitioning from 0 overlap to high overlap
+      // Rearm only when overlap returns to 0
+      const atThreshold = overlap >= POKER_KEY_PRESS_OVERLAP_THRESHOLD;
+      const atZero = overlap <= 0;
+
+      let pressReady = false;
+      if (!isPressed && atThreshold) {
+        // Transition from 0 to high overlap - trigger press
+        isPressed = true;
+        pressReady = true;
+      } else if (isPressed && atZero) {
+        // Return to 0 overlap - rearm
+        isPressed = false;
       }
-      const dtSeconds = hasPreviousLocalCenter
-        ? Math.max((now - previousTimestamp) / 1000, 1e-6)
-        : 0;
-      const velocityZ = hasPreviousLocalCenter
-        ? (localCenter.z - previousLocalCenter.z) / dtSeconds
-        : 0;
-      const movingIntoKey = velocityZ <= POKER_KEY_PRESS_INWARD_VELOCITY;
-      const dwellReady = overlapping && now - overlapStartedAt >= POKER_KEY_PRESS_DWELL_MS;
-      const pressReady = overlapping && (movingIntoKey || dwellReady);
+
       if (debugVisuals != null) {
         debugVisuals.group.matrix.copy(object.matrixWorld);
         debugVisuals.group.matrixWorld.copy(object.matrixWorld);
         debugVisuals.group.matrixWorldNeedsUpdate = true;
-        setDebugMaterialState(debugVisuals.statusMaterial, pressReady, overlapping);
+        setDebugMaterialState(debugVisuals.statusMaterial, pressReady, atThreshold);
         debugVisuals.sphere.visible = true;
         debugVisuals.sphere.position.copy(localCenter);
         debugVisuals.sphere.scale.setScalar(localRadius);
@@ -364,12 +359,7 @@ export function KeyCapChrome(
         );
         debugVisuals.linePosition.needsUpdate = true;
       }
-      previousLocalCenter.copy(localCenter);
-      previousTimestamp = now;
-      hasPreviousLocalCenter = true;
-      if (worldDistance > sphere.radius) {
-        return;
-      }
+
       intersects.push({
         distance: pressReady ? 0 : Math.max(worldDistance, sphere.radius),
         object,

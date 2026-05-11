@@ -192,9 +192,11 @@ export function WristMenuUi(
           <Container padding={14} flexGrow={1} />
 
           <Container flexDirection="row" gap={8} alignItems="center" flexShrink={0}>
-            <MenuButton active={layersActive} onClick={() => onToggle?.("layers")}>
+            {
+              /* <MenuButton active={layersActive} onClick={() => onToggle?.("layers")}>
               <LayersIcon />
-            </MenuButton>
+            </MenuButton> */
+            }
             <MenuButton active={musicActive} onClick={() => onToggle?.("music")}>
               <MusicIcon />
             </MenuButton>

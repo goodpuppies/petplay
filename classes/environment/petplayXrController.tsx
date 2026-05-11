@@ -42,11 +42,13 @@ const PETPLAY_RAY_DEFAULTS: Pick<
   HudRayModelOptions,
   "maxLength" | "size" | "color" | "renderOrder"
 > = {
-  maxLength: 0.95,
+  maxLength: 0.15,
   size: 0.002,
   color: 0x5ec8ff,
   renderOrder: 9999,
 };
+
+const EXTENDED_RAY_MAX_LENGTH = 0.95;
 
 type AimSegmentObject = {
   visible: boolean;
@@ -81,7 +83,15 @@ function updateHudRayModel(
     : (options.opacity ?? 0.4);
 
   mesh.visible = true;
-  const maxLen = options.maxLength ?? 1;
+
+  // Check if pointing at interactive elements (keyboard, etc.)
+  const isPointingAtInteractive = intersection?.object?.userData?.keyboard === true ||
+    intersection?.object?.userData?.handPoker === true ||
+    intersection?.object?.userData?.wristMenuActor != null;
+
+  // Use extended length when pointing at interactive elements
+  const maxLen = isPointingAtInteractive ? EXTENDED_RAY_MAX_LENGTH : (options.maxLength ?? 0.15);
+
   const length = intersection == null ? maxLen : Math.min(maxLen, intersection.distance);
   mesh.position.z = -length / 2;
   const size = options.size ?? 0.005;
@@ -198,7 +208,7 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
 
   return (
     <>
-      <HandPoker />
+      {/* <HandPoker /> */}
       {modelOptions !== false && (
         <Suspense>
           <XRControllerModel {...spreadable(modelOptions)} />
