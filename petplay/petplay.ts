@@ -1,10 +1,10 @@
-import { PostalService } from "../submodules/stageforge/mod.ts"
-import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts"
-import { asyncPrompt, createTemp, destroyTemp, wait, ensuredenodir } from "../classes/utils.ts";
+import { PostalService } from "../submodules/stageforge/mod.ts";
+import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts";
+import { asyncPrompt, createTemp, destroyTemp, ensuredenodir, wait } from "../classes/utils.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
 
-ensuredenodir()
+ensuredenodir();
 createTemp(import.meta.dirname!);
 console.log("Press Ctrl-C to close");
 
@@ -81,9 +81,10 @@ PostalService.performanceLoggingActive = false;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
 const mainAddress = await postalservice.add("./main.ts", import.meta.url);
+postalservice.setRootActor(mainAddress, "MAIN", null);
 
 postalservice.PostMessage({
-  target:  mainAddress,
+  target: mainAddress,
   type: "MAIN",
   payload: null,
 });
@@ -92,11 +93,12 @@ if (import.meta.main) {
   while (true) {
     const msgD = await asyncPrompt() ?? "";
     const msg = msgD.replace(/\r/g, "");
+    const currentMainAddress = postalservice.getRootActorId() ?? mainAddress;
     postalservice.PostMessage({
-      target: mainAddress,
+      target: currentMainAddress,
       type: "STDIN",
       payload: msg,
     });
-    await wait(10)
+    await wait(10);
   }
 }

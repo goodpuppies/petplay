@@ -2,7 +2,7 @@ import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
-import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
+import { type ActorId, resolveActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { multiplyMatrix } from "../classes/matrixutils.ts";
 import { MainStdinHandler } from "../classes/mainStdinHandler.ts";
 import { OverlayRenderMode } from "./webxr.ts";
@@ -126,12 +126,29 @@ async function createOpenVrScene() {
 
   const hmd = await PostMan.create("./hmd.ts", import.meta.url);
   const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
+  const cameraOrigin = await PostMan.create("./VRCOriginCamera.ts", import.meta.url);
   state.origin = origin;
   //const laser = await PostMan.create("./laser.ts", import.meta.url);
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
   const displayInstance = await PostMan.create("./displayInstance.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
+  const agentRepl = await PostMan.create("./agentRepl.ts", import.meta.url);
+  const actorRegistry = {
+    main: state.id,
+    openvr: resolveActorId(ivr),
+    hmd: resolveActorId(hmd),
+    origin: resolveActorId(origin),
+    cameraOrigin: resolveActorId(cameraOrigin),
+    wristMenu: resolveActorId(wristMenu),
+    displayInstance: resolveActorId(displayInstance),
+    webxr: resolveActorId(webxr),
+    agentRepl: resolveActorId(agentRepl),
+  };
+  LogChannel.log("actorroute", {
+    event: "main-actor-registry",
+    actorRegistry,
+  });
 
   PostMan.PostMessage({
     target: [hmd],
@@ -205,6 +222,26 @@ async function createOpenVrScene() {
     type: "ASSIGNHMD",
     payload: hmd,
   });
+  PostMan.PostMessage({
+    target: origin,
+    type: "ASSIGNVRC",
+    payload: actorRegistry.cameraOrigin,
+  });
+  PostMan.PostMessage({
+    target: origin,
+    type: "ADDOVERLAY",
+    payload: actorRegistry.webxr,
+  });
+  PostMan.PostMessage({
+    target: cameraOrigin,
+    type: "ASSIGNWEBXR",
+    payload: webxr,
+  });
+  PostMan.PostMessage({
+    target: actorRegistry.agentRepl,
+    type: "REGISTER_ACTORS",
+    payload: actorRegistry,
+  });
   /* PostMan.PostMessage({
     target: laser,
     type: "ASSIGNINPUT",
@@ -220,6 +257,11 @@ async function createOpenVrScene() {
       name: "originoverlay",
       texture: "./resources/PetPlay.png",
     },
+  });
+  PostMan.PostMessage({
+    target: cameraOrigin,
+    type: "STARTCAMERAORIGIN",
+    payload: null,
   });
   /* PostMan.PostMessage({
     target: laser,

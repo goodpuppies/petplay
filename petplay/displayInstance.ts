@@ -151,6 +151,7 @@ new PostMan(
         await state.screenCapturer.dispose();
         state.screenCapturer = null;
       }
+      return true;
     },
   } as const,
 );

@@ -32,6 +32,15 @@ import {
   setShadowControllerPose,
   setVRCOriginFromHmdMatrix34,
 } from "../classes/webxrShadowScene.ts";
+import {
+  type Matrix34Tuple,
+  setVrcCameraDebugPose,
+  setVrcCameraLookAtTargetEstimate,
+  setVrcCameraOriginEstimate,
+  setVrcLegacyOriginDebugMatrix,
+  type Vec3Tuple,
+  type VrcCameraDebugPose,
+} from "../classes/vrcCameraDebugState.ts";
 
 function getWebxrFrameLogsEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
@@ -475,13 +484,28 @@ new PostMan(
     },
     ORIGINUPDATE: (payload: OpenVR.HmdMatrix34 | null) => {
       if (!payload) return;
+      const matrix = payload.m as Matrix34Tuple;
+      setVrcLegacyOriginDebugMatrix(matrix);
       setVRCOriginFromHmdMatrix34(
-        payload.m as [
-          [number, number, number, number],
-          [number, number, number, number],
-          [number, number, number, number],
-        ],
+        matrix,
       );
+    },
+    VRCCAMERADEBUGUPDATE: (
+      payload: {
+        cameraPose?: VrcCameraDebugPose | null;
+        originEstimate?: Vec3Tuple | null;
+        lookAtTargetEstimate?: Vec3Tuple | null;
+      },
+    ) => {
+      if (payload.cameraPose) {
+        setVrcCameraDebugPose(payload.cameraPose);
+      }
+      if ("originEstimate" in payload) {
+        setVrcCameraOriginEstimate(payload.originEstimate ?? null);
+      }
+      if ("lookAtTargetEstimate" in payload) {
+        setVrcCameraLookAtTargetEstimate(payload.lookAtTargetEstimate ?? null);
+      }
     },
     STOPWEBXR: async (_payload: void) => {
       state.controllerRunning = false;
@@ -572,6 +596,7 @@ new PostMan(
       state.raylibOvrUiPanelDrawnMetric.reset();
       state.raylibOvrUiTextDrawnMetric.reset();
       state.nominalHmdDisplayHz = null;
+      return true;
     },
   } as const,
 );

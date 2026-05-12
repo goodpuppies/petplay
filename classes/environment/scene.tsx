@@ -5,10 +5,11 @@ import * as TSL from "three/tsl";
 import {
   extend,
   type ThreeToJSXElements,
-  type UseFrameNextOptions,
   useFrame,
+  type UseFrameNextOptions,
 } from "@react-three/fiber/webgpu";
 import { updateShadowSceneMesh } from "../webxrShadowScene.ts";
+import { getVrcCameraDebugSnapshot } from "../vrcCameraDebugState.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
 import { windowsSystemDisplayMouseSink } from "./displayInstance/mouse.ts";
@@ -40,6 +41,119 @@ function RoomWireBox({ color }: { color: THREE.Color }) {
     <lineSegments geometry={geometry as unknown as THREE.BufferGeometry}>
       <lineBasicMaterial color={color} />
     </lineSegments>
+  );
+}
+
+function VrcCameraDebugVisuals() {
+  const cameraGroupRef = useRef<THREE.Group>(null!);
+  const lookAtTargetRef = useRef<THREE.Mesh>(null!);
+  const legacyOriginRef = useRef<THREE.Group>(null!);
+
+  const frameOpts = React.useMemo<UseFrameNextOptions>(
+    () => ({ id: "petplay-vrc-camera-debug" }),
+    [],
+  );
+
+  useFrame(() => {
+    const snapshot = getVrcCameraDebugSnapshot();
+    const pose = snapshot.relativeCameraPose;
+
+    if (pose) {
+      cameraGroupRef.current.visible = true;
+      cameraGroupRef.current.position.set(
+        pose.position[0],
+        pose.position[1],
+        pose.position[2],
+      );
+      cameraGroupRef.current.rotation.set(
+        THREE.MathUtils.degToRad(pose.rotationDeg[0]),
+        THREE.MathUtils.degToRad(pose.rotationDeg[1]),
+        THREE.MathUtils.degToRad(pose.rotationDeg[2]),
+      );
+    } else {
+      cameraGroupRef.current.visible = false;
+    }
+
+    if (snapshot.lookAtTargetEstimate) {
+      lookAtTargetRef.current.visible = true;
+      lookAtTargetRef.current.position.set(
+        snapshot.lookAtTargetEstimate[0],
+        snapshot.lookAtTargetEstimate[1],
+        snapshot.lookAtTargetEstimate[2],
+      );
+    } else {
+      lookAtTargetRef.current.visible = false;
+    }
+
+    if (snapshot.legacyOriginMatrix) {
+      const m = snapshot.legacyOriginMatrix;
+      legacyOriginRef.current.visible = true;
+      legacyOriginRef.current.matrix.set(
+        m[0][0],
+        m[0][1],
+        m[0][2],
+        m[0][3],
+        m[1][0],
+        m[1][1],
+        m[1][2],
+        m[1][3],
+        m[2][0],
+        m[2][1],
+        m[2][2],
+        m[2][3],
+        0,
+        0,
+        0,
+        1,
+      );
+    } else {
+      legacyOriginRef.current.visible = false;
+    }
+  }, frameOpts);
+
+  return (
+    <>
+      <group ref={cameraGroupRef} visible={false}>
+        <mesh>
+          <sphereGeometry args={[0.08, 16, 12]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0x00d1ff)} />
+        </mesh>
+        <mesh position={[0, 0, -0.18]}>
+          <boxGeometry args={[0.03, 0.03, 0.36]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0x6ee7ff)} />
+        </mesh>
+        <mesh position={[0.13, 0, 0]}>
+          <boxGeometry args={[0.26, 0.02, 0.02]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0xff5c7a)} />
+        </mesh>
+        <mesh position={[0, 0.13, 0]}>
+          <boxGeometry args={[0.02, 0.26, 0.02]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0x7cff6b)} />
+        </mesh>
+      </group>
+      <mesh ref={lookAtTargetRef} visible={false}>
+        <torusGeometry args={[0.18, 0.008, 12, 48]} />
+        <meshBasicNodeMaterial colorNode={TSL.color(0xffd166)} />
+      </mesh>
+      <group ref={legacyOriginRef} visible={false} matrixAutoUpdate={false}>
+        <mesh>
+          <torusGeometry args={[0.24, 0.01, 12, 48]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0xff4fd8)} />
+        </mesh>
+        <mesh position={[0.18, 0, 0]}>
+          <boxGeometry args={[0.36, 0.025, 0.025]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0xff5c7a)} />
+        </mesh>
+        <mesh position={[0, 0.18, 0]}>
+          <boxGeometry args={[0.025, 0.36, 0.025]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0x7cff6b)} />
+        </mesh>
+        <mesh position={[0, 0, 0.18]}>
+          <boxGeometry args={[0.025, 0.025, 0.36]} />
+          <meshBasicNodeMaterial colorNode={TSL.color(0x62a8ff)} />
+        </mesh>
+      </group>
+    </>
   );
 }
 
@@ -96,6 +210,7 @@ export function WebXRScene(
         <torusGeometry args={[0.12, 0.012, 16, 48]} />
         <meshBasicNodeMaterial colorNode={TSL.color(0xff8b3d)} />
       </mesh>
+      <VrcCameraDebugVisuals />
       {/* <RoomWireBox color={roomLineColor} /> */}
 
       <DisplayInstance
@@ -103,10 +218,12 @@ export function WebXRScene(
         displayInstanceActor={displayInstanceActor}
         onMouse={windowsSystemDisplayMouseSink}
       />
-      {/*
+      {
+        /*
         World-space keyboard: default pose matches petplay/keyboard/keyboard.ts constants;
         reorient with controller ray for typing toward the 16:9 overlay.
-      */}
+      */
+      }
       <KeyboardPanel onKey={windowsSystemKeyboardSink} />
     </>
   );
