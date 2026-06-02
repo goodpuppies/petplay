@@ -39,7 +39,10 @@ import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { useFrame as useR3FFrame, getScheduler  } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu"
+import {
+  getScheduler,
+  useFrame as useR3FFrame,
+} from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu";
 // @ts-ignore no types for vendored JS build output
 import * as iwerModule from "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js";
 
@@ -1224,53 +1227,54 @@ export class WebXRHost {
       // @ts-expect-error #TODO
       this.root = createRoot(canvas);
 
-            function patchR3FSchedulerTiming() {
-        const scheduler = getScheduler() as any
-        if (scheduler.__petplayTimingPatched) return scheduler.__petplayStats as Map<string, any>
+      function patchR3FSchedulerTiming() {
+        const scheduler = getScheduler() as any;
+        if (scheduler.__petplayTimingPatched) return scheduler.__petplayStats as Map<string, any>;
 
-        const stats = new Map<string, { calls: number; total: number; max: number }>()
-        const origRegister = scheduler.register.bind(scheduler)
+        const stats = new Map<string, { calls: number; total: number; max: number }>();
+        const origRegister = scheduler.register.bind(scheduler);
 
         scheduler.register = (callback: any, options: any = {}) => {
-          const id = options.id ?? "(unknown)"
-          const phase = options.phase ?? "update"
-          const label = `${phase}:${id}${options.system ? ":system" : ""}`
+          const id = options.id ?? "(unknown)";
+          const phase = options.phase ?? "update";
+          const label = `${phase}:${id}${options.system ? ":system" : ""}`;
 
           return origRegister((state: any, delta: number) => {
-            const t0 = performance.now()
+            const t0 = performance.now();
             try {
-              return callback(state, delta)
+              return callback(state, delta);
             } finally {
-              const dt = performance.now() - t0
-              const s = stats.get(label) ?? { calls: 0, total: 0, max: 0 }
-              s.calls++
-              s.total += dt
-              s.max = Math.max(s.max, dt)
-              stats.set(label, s)
+              const dt = performance.now() - t0;
+              const s = stats.get(label) ?? { calls: 0, total: 0, max: 0 };
+              s.calls++;
+              s.total += dt;
+              s.max = Math.max(s.max, dt);
+              stats.set(label, s);
             }
-          }, options)
-        }
+          }, options);
+        };
 
-        scheduler.__petplayTimingPatched = true
-        scheduler.__petplayStats = stats
-        return stats
+        scheduler.__petplayTimingPatched = true;
+        scheduler.__petplayStats = stats;
+        return stats;
       }
 
-      function logR3FSchedulerTiming(stats: Map<string, { calls: number; total: number; max: number }>) {
-        console.table(
-          [...stats.entries()]
-            .map(([job, s]) => ({
-              job,
-              calls: s.calls,
-              avg: +(s.total / Math.max(1, s.calls)).toFixed(3),
-              max: +s.max.toFixed(3),
-            }))
-            .sort((a, b) => b.avg - a.avg),
-        )
+      function logR3FSchedulerTiming(
+        stats: Map<string, { calls: number; total: number; max: number }>,
+      ) {
+        const rows = [...stats.entries()]
+          .map(([job, s]) => ({
+            job,
+            calls: s.calls,
+            avg: +(s.total / Math.max(1, s.calls)).toFixed(3),
+            max: +s.max.toFixed(3),
+          }))
+          .sort((a, b) => b.avg - a.avg);
+        LogChannel.log("r3fjob", JSON.stringify(rows));
       }
 
-      const stats = patchR3FSchedulerTiming()
-      setInterval(() => logR3FSchedulerTiming(stats), 1000)
+      const stats = patchR3FSchedulerTiming();
+      setInterval(() => logR3FSchedulerTiming(stats), 1000);
 
       await this.root.configure({
         renderer: (async (props: Record<string, unknown>) => {
@@ -1314,28 +1318,26 @@ export class WebXRHost {
         //camera: { position: [0, 0, 0], fov: 75, near: 0.1, far: 100 },
       });
 
-      let sceneMountedResolve!: () => void
+      let sceneMountedResolve!: () => void;
       const sceneMounted = new Promise<void>((resolve) => {
-        sceneMountedResolve = resolve
-      })
+        sceneMountedResolve = resolve;
+      });
 
       function SceneMountedMarker() {
         React.useLayoutEffect(() => {
-          sceneMountedResolve()
-        }, [])
-        return null
+          sceneMountedResolve();
+        }, []);
+        return null;
       }
 
       function NoR3FDefaultRender() {
-        useR3FFrame(() => { }, {
+        useR3FFrame(() => {}, {
           id: "petplay-no-r3f-default-render",
           phase: "render",
-        })
+        });
 
-        return null
+        return null;
       }
-
-
 
       const rootStore = this.root.render(
         React.createElement(
@@ -1350,20 +1352,23 @@ export class WebXRHost {
         ),
       );
 
-      const rootId = rootStore.getState().internal.rootId
-      const scheduler = getScheduler() as any
+      const rootId = rootStore.getState().internal.rootId;
+      const scheduler = getScheduler() as any;
 
-      console.log("[R3F]", {
-        rootId,
-        renderClaimed: scheduler.hasUserJobsInPhase?.("render", rootId),
-        jobs: scheduler.getJobIds?.(),
-      })
+      LogChannel.log(
+        "r3fjob",
+        JSON.stringify({
+          rootId,
+          renderClaimed: scheduler.hasUserJobsInPhase?.("render", rootId),
+          jobs: scheduler.getJobIds?.(),
+        }),
+      );
 
       this.rootStore = rootStore;
       rootStore.getState().xr.disconnect();
 
       //await wait(0);
-      await sceneMounted
+      await sceneMounted;
       advance(performance.now());
       if (this.debugWindowEnabled) {
         this.surfaceHost.present();

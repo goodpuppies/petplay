@@ -291,7 +291,10 @@ new PostMan(
               state.overlayLoop = null;
             });
           }
-          if (includesRaylibOverlay(payload?.overlayRenderMode ?? "raylib")) {
+          if (
+            includesRaylibOverlay(payload?.overlayRenderMode ?? "raylib") &&
+            payload?.vrSystemPointer
+          ) {
             initializeRaylibOpenVrPacer(payload ?? null, "raylib overlay");
           }
           const overlayMode = payload?.overlayRenderMode ?? "raylib";

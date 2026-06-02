@@ -21,6 +21,19 @@ const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
 /** Raylib ghost only: `WebXRHost` skips WebGPU XR scene draws. Use `"both"` to compare to the live layer. */
 const WEBXR_OVERLAY_MODE = "raylib" as OverlayRenderMode;
 
+function isEnabledArg(name: string): boolean {
+  const raw = Deno.args.find((a) => a === name || a.startsWith(`${name}=`));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function getNoOpenVrEnabled(): boolean {
+  return isEnabledArg("--novr");
+}
+
 function getNativeRaylibOpenVrDebugEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
   if (raw == null) {
@@ -94,7 +107,17 @@ new PostMan(
 async function main() {
   const startTime = performance.now();
   LogChannel.log("default", "creating scene");
+  if (getNoOpenVrEnabled()) {
+    await createNoOpenVrScene();
+  } else {
+    await createOpenVrScene();
+  }
+  const endTime = performance.now();
+  const timeElapsed = Math.round(endTime - startTime);
+  LogChannel.log("default", `scene created in ${timeElapsed} ms`);
+}
 
+async function createOpenVrScene() {
   const ivr = await PostMan.create<typeof openVrApi>("./OpenVR.ts", import.meta.url);
   const ivrsystem = await ivr.GETOPENVRPTR();
   const ivroverlay = await ivr.GETOVERLAYPTR();
@@ -204,14 +227,47 @@ async function main() {
     payload: null,
   }); */
 
-  const endTime = performance.now();
-  const timeElapsed = Math.round(endTime - startTime);
-  LogChannel.log("default", `scene created in ${timeElapsed} ms`);
-
   // inputloop is intentionally not started while WebXR owns IVRInput sampling.
 }
 
+async function createNoOpenVrScene() {
+  LogChannel.log("default", "OpenVR actors disabled (--novr)");
+
+  const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
+  const webxr = await PostMan.create("./webxr.ts", import.meta.url);
+
+  PostMan.PostMessage({
+    target: webxr,
+    type: "STARTWEBXR",
+    payload: {
+      width: WEBXR_RENDER_WIDTH,
+      height: WEBXR_RENDER_HEIGHT,
+      title: "PetPlay WebXR",
+      debugWindow: false,
+      sessionMode: "immersive-ar",
+      alpha: true,
+      overlayPointer: null,
+      vrSystemPointer: null,
+      controllerActor: null,
+      wristMenuActor: wristMenu,
+      displayInstanceActor: null,
+      overlayRenderMode: "raylib" as OverlayRenderMode,
+      nativeRaylibDebug: false,
+      nativeRaylibDebugWithHost: false,
+      disableHostOpenVrInput: true,
+      raylibBypassRaythree: false,
+      raylibOpenVrPacedRaythree: false,
+      hmdDisplayFrequencyHz: null,
+      vrCompositorPointer: null,
+      vrInputPointer: null,
+    },
+  });
+}
+
 async function spawnOverlay(name: string): Promise<ActorId> {
+  if (getNoOpenVrEnabled()) {
+    throw new Error("Cannot spawn OpenVR overlay while --novr is enabled");
+  }
   LogChannel.log("actor", `Attempting to spawn overlay with name: ${name}`);
   const overlay = await PostMan.create("./genericoverlay.ts", import.meta.url);
   PostMan.PostMessage({

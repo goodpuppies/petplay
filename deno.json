@@ -7,7 +7,7 @@
     "jsxImportSource": "react",
     "lib": ["deno.window", "deno.unstable", "dom", "dom.iterable"]
   },
-  "nodeModulesDir":"auto",
+  "nodeModulesDir": "auto",
   "imports": {
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
     "@milly/namedpipe": "jsr:@milly/namedpipe@^1.1.0",
@@ -54,6 +54,12 @@
     },
     "dev": {
       "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev",
+      "dependencies": [
+        //"iwerbuild"
+      ]
+    },
+    "dev:novr": {
+      "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev --novr",
       "dependencies": [
         //"iwerbuild"
       ]
