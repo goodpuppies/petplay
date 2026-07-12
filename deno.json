@@ -26,10 +26,10 @@
     "@types/react": "npm:@types/react@^19.2.14",
     "react-dom": "npm:react-dom@^19.2.5",
     //three.js
-    "three": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@dev/build/three.webgpu.js",
-    "three/webgpu": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@dev/build/three.webgpu.js",
-    "three/addons/": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@dev/examples/jsm/",
-    "three/tsl": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@dev/build/three.tsl.js",
+    "three": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@30e9dd1b8ac9b9bec8f37a30a07bbed1dc63f392/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@30e9dd1b8ac9b9bec8f37a30a07bbed1dc63f392/build/three.webgpu.js",
+    "three/addons/": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@30e9dd1b8ac9b9bec8f37a30a07bbed1dc63f392/examples/jsm/",
+    "three/tsl": "https://cdn.jsdelivr.net/gh/mrdoob/three.js@30e9dd1b8ac9b9bec8f37a30a07bbed1dc63f392/build/three.tsl.js",
     "@types/three": "npm:@types/three@^0.182.0",
     "@win32/km": "https://win32.deno.dev/0.4.1/UI.Input.KeyboardAndMouse"
   },
