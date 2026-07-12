@@ -56,13 +56,16 @@ export const api = {
 new PostMan(state, api);
 
 function initializeOpenVR() {
+  console.log("[petplay boot] OpenVR: loading bindings");
   const success = OpenVR.initializeOpenVR("../resources/openvr_api.dll", import.meta.url);
   if (!success) throw new Error("failed to initialize openvr");
+  console.log("[petplay boot] OpenVR: calling VR_InitInternal");
 
   const initErrorPtr = P.Int32P<OpenVR.InitError>();
 
   OpenVR.VR_InitInternal(initErrorPtr, OpenVR.ApplicationType.VRApplication_Overlay);
   const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
+  console.log(`[petplay boot] OpenVR: VR_InitInternal returned ${OpenVR.InitError[initError]}`);
 
   if (initError !== OpenVR.InitError.VRInitError_None) {
     throw new Error(`Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`);
@@ -76,6 +79,7 @@ function initializeOpenVR() {
   if (interfaceError1 !== OpenVR.InitError.VRInitError_None) {
     throw new Error(`Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError1]}`);
   }
+  console.log("[petplay boot] OpenVR: IVRSystem interface acquired");
 
   const compositorPtr = OpenVR.VR_GetGenericInterface(
     stringToPointer(OpenVR.IVRCompositor_Version),

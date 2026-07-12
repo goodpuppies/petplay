@@ -1,5 +1,4 @@
 import { PostalService } from "../submodules/stageforge/mod.ts";
-import { IrohWebWorker, setupIrohDebugMode } from "../submodules/irohworker/IrohWorker.ts";
 import { asyncPrompt, createTemp, destroyTemp, ensuredenodir, wait } from "../classes/utils.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
@@ -9,6 +8,12 @@ createTemp(import.meta.dirname!);
 console.log("Press Ctrl-C to close");
 
 const EXIT_STABILIZE_MS = 3000;
+const STAGEFORGE_SIGNALING_URL = "ws://petplay.ddns.net:8080";
+
+function isStageforgeNetworkingEnabled(): boolean {
+  return Deno.args.includes("--stageforge-networking") ||
+    Deno.env.get("PETPLAY_STAGEFORGE_NETWORKING") === "1";
+}
 
 let petplayExiting = false;
 
@@ -95,12 +100,34 @@ PostalService.onActorWorkerError = (ev) => {
   void petplayFatalExit(ev.error ?? ev.message);
 };
 
-setupIrohDebugMode(false);
-const postalservice = new PostalService(IrohWebWorker);
+const stageforgeNetworkingEnabled = isStageforgeNetworkingEnabled();
+const postalservice = stageforgeNetworkingEnabled
+  ? await createNetworkedPostalService()
+  : new PostalService();
 
 PostalService.debugMode = false;
 PostalService.performanceLoggingActive = false;
-postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
+if (stageforgeNetworkingEnabled) {
+  console.log(`Stageforge networking enabled (${STAGEFORGE_SIGNALING_URL})`);
+  postalservice.initSignalingClient(STAGEFORGE_SIGNALING_URL);
+} else {
+  console.log(
+    "Stageforge networking disabled. Enable it with --stageforge-networking or PETPLAY_STAGEFORGE_NETWORKING=1.",
+  );
+}
+
+/**
+ * Iroh is only needed when Stageforge is allowed to create remote actor proxies.
+ * Keeping the import and worker wrapper behind this opt-in keeps local actors on
+ * Deno's native Worker implementation.
+ */
+async function createNetworkedPostalService(): Promise<PostalService> {
+  const { IrohWebWorker, setupIrohDebugMode } = await import(
+    "../submodules/irohworker/IrohWorker.ts"
+  );
+  setupIrohDebugMode(false);
+  return new PostalService(IrohWebWorker);
+}
 
 const mainAddress = await postalservice.add("./main.ts", import.meta.url);
 postalservice.setRootActor(mainAddress, "MAIN", null);

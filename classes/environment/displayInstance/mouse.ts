@@ -18,6 +18,21 @@ export type DisplayMouseLogicEvent = {
 
 export type DisplayMouseSink = (event: DisplayMouseLogicEvent) => void;
 
+const diagnostics = {
+  events: 0,
+  moves: 0,
+  buttonDowns: 0,
+  buttonUps: 0,
+  sendInputCalls: 0,
+  sendInputFailures: 0,
+  lastCursorPosition: null as { x: number; y: number } | null,
+  lastEvent: null as DisplayMouseLogicEvent | null,
+};
+
+export function getDisplayMouseDiagnostics() {
+  return { ...diagnostics };
+}
+
 type Win32Km = typeof import("@win32/km");
 
 const win32Km: Promise<Win32Km | null> = Deno.build.os === "windows"
@@ -29,14 +44,19 @@ type User32 = Deno.DynamicLibrary<{
     parameters: ["i32"];
     result: "i32";
   };
+  GetCursorPos: {
+    parameters: ["pointer"];
+    result: "bool";
+  };
 }>;
 
 let user32: User32 | null | undefined;
 
-const SM_XVIRTUALSCREEN = 76;
-const SM_YVIRTUALSCREEN = 77;
-const SM_CXVIRTUALSCREEN = 78;
-const SM_CYVIRTUALSCREEN = 79;
+// `screen-streamer` captures the primary display (currently 1920×1080), not
+// the combined virtual desktop. Mapping its UVs over every monitor produces a
+// visible offset whenever another display is attached.
+const SM_CXSCREEN = 0;
+const SM_CYSCREEN = 1;
 
 function sizeofInputForSendInput(): number {
   if (Deno.build.os !== "windows") {
@@ -56,6 +76,7 @@ function getUser32(): User32 | null {
   }
   user32 = Deno.dlopen("user32.dll", {
     GetSystemMetrics: { parameters: ["i32"], result: "i32" },
+    GetCursorPos: { parameters: ["pointer"], result: "bool" },
   });
   return user32;
 }
@@ -65,16 +86,16 @@ function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v));
 }
 
-function getVirtualScreenRect(): { x: number; y: number; width: number; height: number } {
+function getCapturedScreenRect(): { x: number; y: number; width: number; height: number } {
   const u32 = getUser32();
   if (u32 == null) {
     return { x: 0, y: 0, width: 1, height: 1 };
   }
-  const width = Math.max(1, u32.symbols.GetSystemMetrics(SM_CXVIRTUALSCREEN));
-  const height = Math.max(1, u32.symbols.GetSystemMetrics(SM_CYVIRTUALSCREEN));
+  const width = Math.max(1, u32.symbols.GetSystemMetrics(SM_CXSCREEN));
+  const height = Math.max(1, u32.symbols.GetSystemMetrics(SM_CYSCREEN));
   return {
-    x: u32.symbols.GetSystemMetrics(SM_XVIRTUALSCREEN),
-    y: u32.symbols.GetSystemMetrics(SM_YVIRTUALSCREEN),
+    x: 0,
+    y: 0,
     width,
     height,
   };
@@ -110,8 +131,18 @@ function packInputMouse(
 
 function sendInput(km: Win32Km, input: Uint8Array): void {
   const sent = km.SendInput(1, input, sizeofInputForSendInput());
+  diagnostics.sendInputCalls++;
   if (sent !== 1) {
+    diagnostics.sendInputFailures++;
     console.warn("[win32 display mouse] SendInput inserted 0/1");
+  }
+  const u32 = getUser32();
+  if (u32 != null) {
+    const point = new Int32Array(2);
+    const ptr = Deno.UnsafePointer.of(point);
+    if (ptr && u32.symbols.GetCursorPos(ptr)) {
+      diagnostics.lastCursorPosition = { x: point[0]!, y: point[1]! };
+    }
   }
 }
 
@@ -154,12 +185,12 @@ export async function releaseWindowsSyntheticDisplayMouseState(): Promise<void> 
 }
 
 function dispatch(km: Win32Km, ev: DisplayMouseLogicEvent): void {
-  const rect = getVirtualScreenRect();
+  const rect = getCapturedScreenRect();
   const px = rect.x + clamp01(ev.x) * (rect.width - 1);
   const py = rect.y + clamp01(ev.y) * (rect.height - 1);
   const ax = toAbsoluteMouseCoordinate(px, rect.x, rect.width);
   const ay = toAbsoluteMouseCoordinate(py, rect.y, rect.height);
-  let flags = km.MOUSEEVENTF_ABSOLUTE | km.MOUSEEVENTF_VIRTUALDESK | km.MOUSEEVENTF_MOVE;
+  let flags = km.MOUSEEVENTF_ABSOLUTE | km.MOUSEEVENTF_MOVE;
   if (ev.kind === "button") {
     flags |= mouseButtonFlags(km, ev.button, ev.pressed);
   }
@@ -171,6 +202,15 @@ export function createWindowsSystemDisplayMouseSink(): DisplayMouseSink {
     return () => {};
   }
   return (ev) => {
+    diagnostics.events++;
+    diagnostics.lastEvent = ev;
+    if (ev.kind === "move") {
+      diagnostics.moves++;
+    } else if (ev.pressed) {
+      diagnostics.buttonDowns++;
+    } else {
+      diagnostics.buttonUps++;
+    }
     void win32Km.then((km) => {
       if (km) dispatch(km, ev);
     });

@@ -73,7 +73,12 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
   }, [edgeGeometry]);
 
   const shellPointerMods = !shellRayPickable
-    ? ({ pointerEventsType: { deny: ["ray", "screen-mouse", "poker"] } } as Record<string, unknown>)
+    ? ({
+      // This hull exists solely for squeeze-grab. Explicitly allow that one
+      // pointer type so trigger rays always continue to the inner flat/key
+      // surface instead of ending at the box depth.
+      pointerEventsType: { allow: "grab" },
+    } as Record<string, unknown>)
     : {};
 
   return (
@@ -101,7 +106,10 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
                   <boxGeometry args={[width, height, depth]} />
                   <meshBasicMaterial
                     depthTest
-                    depthWrite
+                    // The hull is only a pointer/grab proxy. It must not write
+                    // invisible depth that clips controller lasers before they
+                    // reach interactive children inside the box.
+                    depthWrite={false}
                     colorWrite={false}
                     side={THREE.DoubleSide}
                   />

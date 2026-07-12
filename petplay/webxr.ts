@@ -3,6 +3,7 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import * as THREE from "three";
 import { wait } from "../classes/utils.ts";
+import { getDisplayMouseDiagnostics } from "../classes/environment/displayInstance/mouse.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
 import { getCrashOnDroppedFrameMode, WebXRHost } from "../classes/webxrhost.ts";
@@ -41,6 +42,20 @@ import {
   type Vec3Tuple,
   type VrcCameraDebugPose,
 } from "../classes/vrcCameraDebugState.ts";
+
+const WEBXR_SHUTDOWN_TIMEOUT_MS = 2_000;
+
+async function waitForWebXrShutdown(label: string, promise: Promise<unknown>): Promise<boolean> {
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      wait(WEBXR_SHUTDOWN_TIMEOUT_MS).then(() => false),
+    ]);
+  } catch (error) {
+    LogChannel.log("webxrv2", `[webxr] ${label} shutdown failed: ${error}`);
+    return false;
+  }
+}
 
 function getWebxrFrameLogsEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
@@ -614,6 +629,7 @@ function getWebXRStatus() {
     desktopViewControlAllowed: state.desktopViewControlAllowed,
     desktopViewControlEnabled: state.desktopViewControlEnabled,
     desktopViewOffset: state.desktopViewOffset,
+    displayMouse: getDisplayMouseDiagnostics(),
     overlayFps: state.overlayFpsCounter.getFps(),
     uploadedFrames: state.uploadedFrames,
     nominalHmdDisplayHz: state.nominalHmdDisplayHz,
@@ -638,15 +654,24 @@ function getWebXRStatus() {
 async function stopWebXR(): Promise<true> {
   state.controllerRunning = false;
   if (state.controllerLoop) {
-    await state.controllerLoop;
+    if (!await waitForWebXrShutdown("controller loop", state.controllerLoop)) {
+      LogChannel.log("webxrv2", "[webxr] controller loop did not stop; allowing worker termination");
+      return true;
+    }
   }
   state.overlayRunning = false;
   if (state.overlayLoop) {
-    await state.overlayLoop;
+    if (!await waitForWebXrShutdown("overlay loop", state.overlayLoop)) {
+      LogChannel.log("webxrv2", "[webxr] overlay loop did not stop; allowing worker termination");
+      return true;
+    }
   }
   if (state.host) {
     state.host.setControllerData(null);
-    await state.host.stop();
+    if (!await waitForWebXrShutdown("WebXR host", state.host.stop())) {
+      LogChannel.log("webxrv2", "[webxr] host did not stop; allowing worker termination");
+      return true;
+    }
     state.startup = null;
   }
   state.lastControllerSabWriteSeq = -1;

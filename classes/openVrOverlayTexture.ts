@@ -41,7 +41,23 @@ export class OpenVrOverlayTexture {
     const overlayHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
     const key = options.key ?? `petplay.webxr.${crypto.randomUUID()}`;
     const name = options.name ?? "PetPlay WebXR";
-    const createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
+    let createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
+
+    // A module reload can terminate the old worker before its OpenVR cleanup
+    // runs. SteamVR then retains the key and its stale texture. Replace that
+    // server-side overlay so the new renderer always owns the presented image.
+    if (createError === OpenVR.OverlayError.VROverlayError_KeyInUse) {
+      const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+      this.assertOverlayOk(this.overlayClass.FindOverlay(key, staleHandlePtr), "Find stale overlay");
+      const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
+      try {
+        this.overlayClass.HideOverlay(staleHandle);
+      } catch {
+        // The stale overlay may already be hidden while its old worker exits.
+      }
+      this.assertOverlayOk(this.overlayClass.DestroyOverlay(staleHandle), "Destroy stale overlay");
+      createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
+    }
 
     this.assertOverlayOk(createError, "CreateOverlay");
 

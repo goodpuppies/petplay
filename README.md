@@ -16,3 +16,8 @@ Setup:
 
 Usage: 
 1. `deno run dev`
+
+Stageforge networking and its Iroh worker wrapper are disabled by default, so local
+actors use native Deno workers. To connect to the Stageforge signaling server, use
+`deno task dev:network`, pass `--stageforge-networking` to a launch, or set
+`PETPLAY_STAGEFORGE_NETWORKING=1`.

@@ -26,6 +26,8 @@ export interface ScreenCapturerOptions {
   debug?: boolean;
   /** Callback for frame statistics (FPS, latency). Called every 30 frames if provided. */
   onStats?: (stats: { fps: number; avgLatency: number }) => void;
+  /** Called when the capture helper exits unexpectedly. */
+  onExit?: (status: Deno.CommandStatus) => void;
 }
 
 //#endregion
@@ -50,6 +52,7 @@ export interface ScreenCapturerOptions {
  * ```
  */
 export class ScreenCapturer {
+  private static readonly LISTENER_START_TIMEOUT_MS = 5_000;
 //#region privates
   private process: Deno.ChildProcess | null = null;
   private worker: Worker | null = null;
@@ -59,6 +62,8 @@ export class ScreenCapturer {
   private isStarted = false;
   private options: Required<ScreenCapturerOptions>;
   private startPromise: Promise<void> | null = null;
+  private processExit: Deno.CommandStatus | null = null;
+  private stopping = false;
 //#endregion
   /**
    * Creates a new ScreenCapturer instance and automatically starts the capture process.
@@ -70,6 +75,7 @@ export class ScreenCapturer {
       executablePath: options.executablePath ?? "./screen-streamer",
       debug: options.debug ?? false,
       onStats: options.onStats ?? (() => {}),
+      onExit: options.onExit ?? (() => {}),
     };
   }
 
@@ -111,8 +117,18 @@ export class ScreenCapturer {
     });
 
     // Wait for worker to be ready
-    await new Promise<void>((resolve, reject) => {
+    try {
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
       if (!this.worker) return reject(new Error("Worker not initialized"));
+
+      this.worker.onerror = (event) => {
+        event.preventDefault();
+        reject(new Error(`Capture receiver worker failed to load: ${event.message}`));
+      };
+      this.worker.onmessageerror = () => {
+        reject(new Error("Capture receiver worker could not deserialize a message"));
+      };
 
       this.worker.onmessage = (e: MessageEvent) => {
         const { type, data, width, height, receiveTime, error } = e.data;
@@ -141,15 +157,40 @@ export class ScreenCapturer {
 
       // Tell worker to start TCP server
       this.worker.postMessage({ type: 'connect', port: this.options.port });
-    });
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () => reject(new Error(`Capture receiver did not start listening within ${ScreenCapturer.LISTENER_START_TIMEOUT_MS}ms`)),
+            ScreenCapturer.LISTENER_START_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      this.worker?.terminate();
+      this.worker = null;
+      throw error;
+    }
 
     // Start the Rust process after worker is ready
     const command = new Deno.Command(this.options.executablePath, {
+      // The helper reads Enter to stop. Keep stdin open for its lifetime rather
+      // than giving it Deno.Command's closed default, which makes it exit at
+      // once as if the user had pressed Enter.
+      stdin: "piped",
       stdout: "piped",
       stderr: "piped",
     });
 
     this.process = command.spawn();
+    this.processExit = null;
+    const process = this.process;
+    void process.status.then((status) => {
+      if (this.process !== process) return;
+      this.processExit = status;
+      if (!this.stopping) {
+        this.options.onExit(status);
+      }
+    });
     
     // Handle process output
     this.process.stderr.pipeTo(new WritableStream({
@@ -179,11 +220,24 @@ export class ScreenCapturer {
     return this.frameData;
   }
 
+  getStatus() {
+    return {
+      started: this.isStarted,
+      starting: this.startPromise !== null,
+      workerActive: this.worker !== null,
+      processId: this.process?.pid ?? null,
+      processRunning: this.process !== null && this.processExit === null,
+      processExitCode: this.processExit?.code ?? null,
+      processSuccess: this.processExit?.success ?? null,
+    };
+  }
+
   /**
    * Stops the capture process and cleans up resources.
    * The instance cannot be reused after calling this method.
    */
   async dispose() {
+    this.stopping = true;
     this.isStarted = false;
     
     if (this.worker) {

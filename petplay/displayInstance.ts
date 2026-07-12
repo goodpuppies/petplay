@@ -4,9 +4,10 @@ import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { Buffer } from "node:buffer";
+import { join } from "@std/path";
 import { wait } from "../classes/utils.ts";
-import { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
-import { OpenGLManager } from "../classes/openglManager.ts";
+import type { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
+import type { OpenGLManager } from "../classes/openglManager.ts";
 import {
   getOverlayTransformAbsolute,
   setOverlayTransformAbsolute,
@@ -210,23 +211,49 @@ function getDisplayInstanceStatus() {
     overlayHandleActive: state.overlayHandle !== 0n,
     glReady: state.glManager != null,
     screenCaptureActive: state.screenCapturer != null,
+    screenCapture: state.screenCapturer?.getStatus() ?? null,
     hasTextureStruct: state.textureStructPtr != null,
     lastStartError: state.lastStartError,
   };
 }
 
-let screenStreamerTempPath: string | null = null;
+const SCREEN_STREAMER_PROCESS_NAME = "petplay-screen-streamer.exe";
+let screenStreamerPath: string | null = null;
 
 function getScreenStreamerPath(): string {
-  if (screenStreamerTempPath) return screenStreamerTempPath;
+  if (screenStreamerPath) return screenStreamerPath;
   const url = new URL("../resources/screen-streamer.exe", import.meta.url);
   const bytes = Deno.readFileSync(url);
-  screenStreamerTempPath = Deno.makeTempFileSync({ suffix: ".exe" });
-  Deno.writeFileSync(screenStreamerTempPath, bytes);
-  return screenStreamerTempPath;
+  const runtimeDir = join(Deno.cwd(), "tmp");
+  Deno.mkdirSync(runtimeDir, { recursive: true });
+  screenStreamerPath = join(runtimeDir, SCREEN_STREAMER_PROCESS_NAME);
+  Deno.writeFileSync(screenStreamerPath, bytes);
+  return screenStreamerPath;
 }
 
-function initScreenCapturer(): ScreenCapturer {
+/**
+ * A forced app exit can orphan the Rust capture helper on Windows. Use a stable
+ * executable name so the next display start can reliably remove only PetPlay's
+ * stale helper before opening its replacement.
+ */
+async function stopStaleScreenStreamer(): Promise<void> {
+  if (Deno.build.os !== "windows") return;
+  try {
+    await new Deno.Command("taskkill", {
+      args: ["/F", "/IM", SCREEN_STREAMER_PROCESS_NAME],
+      stdout: "null",
+      stderr: "null",
+    }).output();
+  } catch (error) {
+    LogChannel.log(
+      "actor",
+      `[displayInstance] stale capture cleanup skipped: ${error instanceof Error ? error.message : error}`,
+    );
+  }
+}
+
+async function initScreenCapturer(): Promise<ScreenCapturer> {
+  const { ScreenCapturer } = await import("../classes/ScreenCapturer/scclass.ts");
   const logStats = getWebxrFrameLogsEnabled();
   return new ScreenCapturer({
     debug: false,
@@ -238,10 +265,23 @@ function initScreenCapturer(): ScreenCapturer {
       );
     },
     executablePath: getScreenStreamerPath(),
+    onExit: (status) => {
+      if (!state.isRunning) return;
+      const message = `screen-streamer exited (code=${status.code}, success=${status.success})`;
+      LogChannel.error("actor", `[displayInstance] ${message}; restarting capture`);
+      void stopDesktopOverlay().then(() => {
+        state.lastStartError = message;
+        const config = state.lastStartConfig;
+        if (config) {
+          scheduleDeferredStartRetry(config);
+        }
+      });
+    },
   });
 }
 
-function initGl(overlayName: string) {
+async function initGl(overlayName: string) {
+  const { OpenGLManager } = await import("../classes/openglManager.ts");
   state.glManager = new OpenGLManager();
   state.glManager.initialize2D(overlayName);
   if (!state.glManager) throw new Error("glManager is null");
@@ -316,7 +356,7 @@ async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void>
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= START_DESKTOP_MAX_ATTEMPTS; attempt++) {
       try {
-        startDesktopOpenVrOverlay(config);
+        await startDesktopOpenVrOverlay(config);
         clearDeferredStartRetry();
         return;
       } catch (error) {
@@ -407,7 +447,7 @@ async function deskCapLoop(
   LogChannel.log("actor", `[displayInstance] screen capture loop ended (frames: ${frameCount})`);
 }
 
-function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
+async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   const overlay = state.overlayClass as OpenVR.IVROverlay;
   const overlayKey = config.overlayKey;
   const name = config.displayName;
@@ -418,7 +458,8 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   state.lastWidthMeters = -1;
   state.lastHmd = null;
 
-  initGl(overlayKey);
+  await stopStaleScreenStreamer();
+  await initGl(overlayKey);
   const createHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
   let err = overlay.CreateOverlay(overlayKey, name, createHandlePtr);
   let overlayHandle: bigint;
@@ -430,8 +471,22 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
     if (fErr !== OpenVR.OverlayError.VROverlayError_None) {
       throw new Error(`FindOverlay(${overlayKey}): ${OpenVR.OverlayError[fErr]}`);
     }
-    overlayHandle = new Deno.UnsafePointerView(findPtr).getBigUint64();
-    LogChannel.log("actor", `[displayInstance] reusing existing overlay key ${overlayKey}`);
+    const staleHandle = new Deno.UnsafePointerView(findPtr).getBigUint64();
+    try {
+      overlay.HideOverlay(staleHandle);
+    } catch {
+      // A stale overlay may already be hidden or detached.
+    }
+    const destroyErr = overlay.DestroyOverlay(staleHandle);
+    if (destroyErr !== OpenVR.OverlayError.VROverlayError_None) {
+      throw new Error(`Destroy stale overlay (${overlayKey}): ${OpenVR.OverlayError[destroyErr]}`);
+    }
+    err = overlay.CreateOverlay(overlayKey, name, createHandlePtr);
+    if (err !== OpenVR.OverlayError.VROverlayError_None) {
+      throw new Error(`RecreateOverlay: ${OpenVR.OverlayError[err]}`);
+    }
+    overlayHandle = new Deno.UnsafePointerView(createHandlePtr).getBigUint64();
+    LogChannel.log("actor", `[displayInstance] replaced stale overlay key ${overlayKey}`);
   } else {
     throw new Error(`CreateOverlay: ${OpenVR.OverlayError[err]}`);
   }
@@ -477,13 +532,14 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   state.textureStructPtr = textureStructPtr;
 
   if (config.runScreenCapture) {
-    state.screenCapturer = initScreenCapturer();
+    state.screenCapturer = await initScreenCapturer();
     void deskCapLoop(overlay, textureStructPtr).catch((error) => {
-      LogChannel.error(
-        "actor",
-        `[displayInstance] screen capture loop failed: ${error instanceof Error ? error.message : error}`,
-      );
-      void stopDesktopOverlay();
+      const message = error instanceof Error ? error.message : String(error);
+      LogChannel.error("actor", `[displayInstance] screen capture loop failed: ${message}`);
+      void stopDesktopOverlay().then(() => {
+        state.lastStartError = message;
+        scheduleDeferredStartRetry(config);
+      });
     });
   } else {
     LogChannel.log(

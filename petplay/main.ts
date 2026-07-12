@@ -1,4 +1,4 @@
-import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
@@ -18,6 +18,10 @@ const state = actorState({
 
 const WEBXR_RENDER_HEIGHT = 40;
 const WEBXR_RENDER_WIDTH = WEBXR_RENDER_HEIGHT * 2;
+const OPENVR_STARTUP_TIMEOUT_MS = 15_000;
+type OpenVrActor = {
+  GETCOMPOSITORPTR: () => Promise<bigint | null>;
+};
 /** Raylib ghost only: `WebXRHost` skips WebGPU XR scene draws. Use `"both"` to compare to the live layer. */
 const WEBXR_OVERLAY_MODE = "raylib" as OverlayRenderMode;
 
@@ -100,7 +104,10 @@ new PostMan(
   {
     MAIN: (_payload: string) => {
       PostMan.setTopic("muffin");
-      main();
+      void main().catch((error) => {
+        console.error("[petplay boot] startup failed:", error);
+        throw error;
+      });
     },
     STDIN: (payload: string) => {
       stdinHandler.handle(payload);
@@ -108,8 +115,26 @@ new PostMan(
   } as const,
 );
 
+async function withStartupTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${OPENVR_STARTUP_TIMEOUT_MS}ms`)),
+      OPENVR_STARTUP_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 async function main() {
   const startTime = performance.now();
+  console.log(`[petplay boot] main actor started (novr=${getNoOpenVrEnabled()})`);
   LogChannel.log("default", "creating scene");
   if (getNoOpenVrEnabled()) {
     await createNoOpenVrScene();
@@ -122,22 +147,54 @@ async function main() {
 }
 
 async function createOpenVrScene() {
-  const ivr = await PostMan.create<typeof openVrApi>("./OpenVR.ts", import.meta.url);
-  const ivrsystem = await ivr.GETOPENVRPTR();
-  const ivroverlay = await ivr.GETOVERLAYPTR();
-  const ivrinput = await ivr.GETINPUTPTR();
+  console.log("[petplay boot] creating OpenVR actor");
+  const ivr = await withStartupTimeout(
+    "Creating the OpenVR actor",
+    PostMan.create<typeof openVrApi>("./OpenVR.ts", import.meta.url),
+  );
+  const ivrActorId = resolveActorId(ivr);
+  try {
+    console.log("[petplay boot] OpenVR actor created; requesting IVRSystem");
+    const ivrsystem = await withStartupTimeout("Waiting for IVRSystem", ivr.GETOPENVRPTR());
+    console.log("[petplay boot] IVRSystem ready; requesting IVROverlay");
+    const ivroverlay = await withStartupTimeout("Waiting for IVROverlay", ivr.GETOVERLAYPTR());
+    console.log("[petplay boot] IVROverlay ready; requesting IVRInput");
+    const ivrinput = await withStartupTimeout("Waiting for IVRInput", ivr.GETINPUTPTR());
+    await continueOpenVrScene(ivr, ivrsystem, ivroverlay, ivrinput);
+  } catch (error) {
+    console.error(`[petplay boot] OpenVR startup failed; terminating ${ivrActorId}.`, error);
+    PostMan.PostMessage({ target: System, type: "MURDER", payload: ivrActorId });
+    throw error;
+  }
+}
+
+async function continueOpenVrScene(
+  ivr: OpenVrActor,
+  ivrsystem: bigint,
+  ivroverlay: bigint,
+  ivrinput: bigint,
+) {
+  console.log("[petplay boot] IVRInput ready; creating dependent actors");
   state.ivroverlay = ivroverlay;
 
+  console.log("[petplay boot] creating HMD actor");
   const hmd = await PostMan.create("./hmd.ts", import.meta.url);
+  console.log("[petplay boot] creating VRC origin actor");
   const origin = await PostMan.create("./VRCOrigin.ts", import.meta.url);
+  console.log("[petplay boot] creating VRC camera origin actor");
   const cameraOrigin = await PostMan.create("./VRCOriginCamera.ts", import.meta.url);
   state.origin = origin;
   //const laser = await PostMan.create("./laser.ts", import.meta.url);
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
+  console.log("[petplay boot] creating wrist-menu actor");
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
+  console.log("[petplay boot] creating display-instance actor");
   const displayInstance = await PostMan.create("./displayInstance.ts", import.meta.url);
+  console.log("[petplay boot] creating WebXR actor");
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
+  console.log("[petplay boot] creating Agent REPL actor");
   const agentRepl = await PostMan.create("./agentRepl.ts", import.meta.url);
+  console.log("[petplay boot] core actors created");
   const desktopControlEnabled = getDesktopControlEnabled();
   const desktopControl = desktopControlEnabled
     ? await PostMan.create("./desktopControlSurface.tsx", import.meta.url)

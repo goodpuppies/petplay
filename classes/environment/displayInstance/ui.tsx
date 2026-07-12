@@ -220,6 +220,9 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
               {...({
                 pointerEvents: "auto",
                 pointerEventsType: { allow: "ray" },
+                // Prefer the flat screen proxy over the surrounding GrabBox
+                // hull, even though the hull is a little closer to the hand.
+                pointerEventsOrder: 1,
               } as Record<string, unknown>)}
             >
               <planeGeometry args={[width, height]} />
