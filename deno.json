@@ -38,6 +38,7 @@
     "nulldriver:true": "deno run -A utils/null-driver-toggle.ts true",
     "nulldriver:false": "deno run -A utils/null-driver-toggle.ts false",
     "openvr:probe": "deno run -A utils/openvr-timing-probe.ts",
+    "audio:probe": "deno run -A utils/raylib-audio-context-probe.ts",
     "vitebuild": "cd submodules/frontend && deno task build",
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",

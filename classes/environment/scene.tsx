@@ -14,6 +14,7 @@ import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
 import { windowsSystemDisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
+import { SpatialAudioProvider } from "./spatialAudio.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -224,7 +225,9 @@ export function WebXRScene(
         reorient with controller ray for typing toward the 16:9 overlay.
       */
       }
-      <KeyboardPanel onKey={windowsSystemKeyboardSink} />
+      <SpatialAudioProvider>
+        <KeyboardPanel onKey={windowsSystemKeyboardSink} />
+      </SpatialAudioProvider>
     </>
   );
 }

@@ -22,6 +22,7 @@ import {
 } from "./keyboardLayout.ts";
 import { stripJsonComments } from "./parseJsonComments.ts";
 import { InteractiveKeyCap } from "./keyboardKeyInteraction.tsx";
+import { useSpatialAudio } from "../spatialAudio.tsx";
 import { scanCodeHexToNumber, usQwertyFromScan } from "./usLayout.ts";
 
 const DEFAULT_ROW_HEIGHT = 64;
@@ -581,6 +582,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     const sink: KeyboardSink = onKey ?? ((ev) => {
       console.log("[keyboard]", ev);
     });
+    const spatialAudio = useSpatialAudio();
 
     const emit = useCallback(
       (ev: KeyboardLogicEvent) => {
@@ -590,7 +592,12 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     );
 
     const handleKey = useCallback(
-      (face: NormalizedKeyFace) => {
+      (
+        face: NormalizedKeyFace,
+        source: THREE.Object3D | null,
+        worldPoint?: readonly [number, number, number],
+      ) => {
+        spatialAudio?.playAtObject(face.audio ?? "key", source, worldPoint);
         if (face.useVirtualKeyCode) {
           const s = face.displayMain;
           emit({
@@ -682,7 +689,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
           char: main.length === 1 ? main : undefined,
         });
       },
-      [emit, mods],
+      [emit, mods, spatialAudio],
     );
 
     if (raw == null) {

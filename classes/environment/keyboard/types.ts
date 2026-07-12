@@ -66,6 +66,8 @@ export type NormalizedKeyFace = {
   colorToken: "default" | "dark" | "error" | "confirm";
   icon?: string;
   iconSize?: number;
+  /** Named native cue from Keyboard.json, e.g. `enter` or `spacebar`. */
+  audio?: string;
   labelOverride?: string;
   respectCapsLock: boolean;
   toggle: boolean;

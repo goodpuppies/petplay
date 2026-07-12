@@ -4,6 +4,7 @@ import {
   windowsSystemKeyboardSink,
 } from "../classes/environment/keyboard/keyboard.tsx";
 import type { KeyboardSink } from "../classes/environment/keyboard/types.ts";
+import { SpatialAudioProvider } from "../classes/environment/spatialAudio.tsx";
 import {
   OrbitHandlesView,
   type RaylibR3FViewerSceneProps,
@@ -53,7 +54,9 @@ function KeyboardViewerScene(
         <planeGeometry args={[4.5, 4.5]} />
         <meshStandardMaterial color="#0e1522" roughness={1} metalness={0} />
       </mesh>
-      <KeyboardPanel onKey={keyboardSink} />
+      <SpatialAudioProvider>
+        <KeyboardPanel onKey={keyboardSink} />
+      </SpatialAudioProvider>
     </>
   );
 }

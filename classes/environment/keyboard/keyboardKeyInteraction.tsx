@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from "react";
+// @deno-types="@types/three/webgpu"
+import type * as THREE from "three/webgpu";
 import { Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { KEYCAP_FRONT_RENDER_PROPS, KeyCapChrome } from "./keyboardUi.tsx";
@@ -92,7 +94,11 @@ export type InteractiveKeyCapProps = {
   pixelSize: number;
   /** Legend with current shift/caps (US QWERTY) or a fixed `label` from JSON. */
   currentLabel: string;
-  onActivate: (face: NormalizedKeyFace) => void;
+  onActivate: (
+    face: NormalizedKeyFace,
+    source: THREE.Object3D | null,
+    worldPoint?: readonly [number, number, number],
+  ) => void;
   /** For testing: notify on any pointer down. */
   onTestPointerDown?: (face: NormalizedKeyFace) => void;
   /** Latched modifier (caps/shift/ctrl/alt/meta) — same visual as held. */
@@ -233,7 +239,12 @@ export function InteractiveKeyCap(
         // Cancel release rAF; new presses are not gated on release finishing.
         cancelReleaseRaf();
         onTestPointerDown?.(face);
-        onActivate(face);
+        const point = (e as unknown as { point?: { x?: number; y?: number; z?: number } }).point;
+        const worldPoint = point &&
+            Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)
+          ? [point.x!, point.y!, point.z!] as const
+          : undefined;
+        onActivate(face, (e.object as unknown as THREE.Object3D | undefined) ?? null, worldPoint);
         updateDepressVisual(1);
       }}
       onPointerUp={(e) => {
