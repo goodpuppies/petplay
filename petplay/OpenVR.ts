@@ -18,6 +18,15 @@ export const api = {
   __INIT__: (_payload: null) => {
     initializeOpenVR();
   },
+  __HEALTH__: (_payload: unknown) => {
+    return {
+      initialized: state.vrSystemPTR != null && state.overlayPTR != null && state.inputPTR != null,
+      vrSystemReady: state.vrSystemPTR != null,
+      compositorReady: state.compositorPTR != null,
+      overlayReady: state.overlayPTR != null,
+      inputReady: state.inputPTR != null,
+    };
+  },
   GETOPENVRPTR: (_payload: null) => {
     if (!state.vrSystemPTR) throw new Error("OpenVR system not initialized");
     const ivrsystem = state.vrSystemPTR;

@@ -895,8 +895,17 @@ export class OpenGLManager {
             this.outputTexture = null;
         }
         if (this.window) {
-            console.log("Closing window...");
-            this.window.close();
+            if (Deno.build.os === "windows") {
+                console.log("Skipping explicit window.close() on Windows to avoid GLFW DLL unload race.");
+            } else {
+                console.log("Closing window...");
+                try {
+                    this.window.close();
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    console.warn(`Window close failed during cleanup: ${message}`);
+                }
+            }
             this.window = null;
             console.log("Window closed.");
         }

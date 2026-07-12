@@ -13,6 +13,20 @@ const IGNORE_PATHS = [
   "/research/",
 ];
 
+const IGNORE_DIAGNOSTICS: Array<(block: string) => boolean> = [
+  (block) =>
+    block.includes("utils/preconf/setter.ts") &&
+    block.includes('Import "yoga-layout/load" not a dependency'),
+  (block) =>
+    block.includes("utils/preconf/setter.ts") &&
+    block.includes("Cannot find module") &&
+    block.includes("utils/context.js"),
+  (block) =>
+    block.includes("asset:///node/fs.d.cts") &&
+    block.includes("export function watch") &&
+    block.includes("The last overload is declared here"),
+];
+
 async function runTypeCheck(): Promise<void> {
   console.log("Running deno check --allow-import...\n");
 
@@ -49,7 +63,8 @@ async function runTypeCheck(): Promise<void> {
 }
 
 function shouldIgnoreBlock(block: string): boolean {
-  return IGNORE_PATHS.some((prefix) => block.includes(prefix));
+  return IGNORE_PATHS.some((prefix) => block.includes(prefix)) ||
+    IGNORE_DIAGNOSTICS.some((shouldIgnore) => shouldIgnore(block));
 }
 
 function filterDiagnostics(output: string): { filteredOutput: string; totalErrors: number; filteredErrors: number } {

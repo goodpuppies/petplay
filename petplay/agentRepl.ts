@@ -13,7 +13,8 @@ type MessageRequest = {
 };
 
 type ReloadRequest = {
-  actor: string;
+  actor?: string;
+  target?: string;
 };
 
 type RebootRequest = {
@@ -27,6 +28,14 @@ type CreateRequest = {
   base?: string | URL;
 };
 
+type ActorHealth = {
+  ok?: boolean;
+  actorId?: string;
+  name?: string;
+  details?: unknown;
+  error?: unknown;
+};
+
 const state = actorState({
   name: "agentRepl",
   registry: {} as ActorRegistry,
@@ -34,11 +43,19 @@ const state = actorState({
   port: getAgentReplPort(),
 });
 
+let server: Deno.HttpServer<Deno.NetAddr> | null = null;
+
 new PostMan(
   state,
   {
     __INIT__: (_payload: void) => {
       startServer();
+    },
+    __SHUTDOWN__: async (_payload: unknown) => {
+      await stopServer();
+    },
+    __HEALTH__: (_payload: unknown) => {
+      return getAgentReplHealth();
     },
     REGISTER_ACTORS: (payload: ActorRegistry) => {
       state.registry = { ...state.registry, ...payload };
@@ -67,6 +84,19 @@ function getRegistrySnapshot() {
 
 function resolveActor(value: string): ActorId {
   return (state.registry[value] ?? value) as ActorId;
+}
+
+function requiredString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Response(JSON.stringify({ ok: false, error: `Missing ${name}` }), {
+      status: 400,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+      },
+    });
+  }
+  return value;
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
@@ -114,8 +144,22 @@ function startServer() {
   }
   state.serverStarted = true;
 
-  Deno.serve({ hostname: "127.0.0.1", port: state.port }, handleRequest);
+  server = Deno.serve({ hostname: "127.0.0.1", port: state.port }, handleRequest);
   LogChannel.log("agentRepl", `agent REPL listening on http://127.0.0.1:${state.port}`);
+}
+
+globalThis.addEventListener("unload", () => {
+  void stopServer();
+});
+
+async function stopServer(): Promise<void> {
+  try {
+    await server?.shutdown();
+  } catch {
+    // Worker teardown can close the listener first.
+  }
+  server = null;
+  state.serverStarted = false;
 }
 
 function postReboot(body: RebootRequest): void {
@@ -131,6 +175,38 @@ function postReboot(body: RebootRequest): void {
       payload,
     });
   }, 0);
+}
+
+async function queryActorHealth(actorName: string, payload: unknown = null) {
+  const target = resolveActor(actorName);
+  if (target === state.id) {
+    return {
+      target,
+      health: {
+        ok: true,
+        actorId: state.id,
+        name: state.name,
+        addressBookSize: state.addressBook.size,
+        details: getAgentReplHealth(),
+      },
+    };
+  }
+  const result = await withTimeout(
+    PostMan.PostMessage({ target, type: "HEALTH", payload }, true),
+    3000,
+  ) as ActorHealth;
+  const health = result && typeof result === "object"
+    ? result
+    : { ok: false, error: "Actor returned empty health response" };
+  return { target, health };
+}
+
+function getAgentReplHealth() {
+  return {
+    listening: state.serverStarted,
+    port: state.port,
+    registeredActors: Object.keys(state.registry).length,
+  };
 }
 
 async function handleRequest(request: Request): Promise<Response> {
@@ -157,24 +233,58 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ registry: getRegistrySnapshot().actors, actors });
     }
 
+    if (request.method === "GET" && url.pathname === "/health/actor") {
+      const actor = url.searchParams.get("actor");
+      if (!actor) {
+        return json({ ok: false, error: "Missing actor query parameter" }, { status: 400 });
+      }
+      const result = await queryActorHealth(actor);
+      return json({ ok: result.health.ok !== false, ...result });
+    }
+
+    if (request.method === "GET" && url.pathname === "/health/actors") {
+      const entries = Object.entries(getRegistrySnapshot().actors);
+      const results = await Promise.all(entries.map(async ([name]) => {
+        try {
+          const result = await queryActorHealth(name);
+          return { name, target: result.target, health: result.health };
+        } catch (error) {
+          return {
+            name,
+            target: resolveActor(name),
+            health: {
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          };
+        }
+      }));
+      return json({
+        ok: results.every((entry) => entry.health.ok !== false),
+        actors: results,
+      });
+    }
+
     if (request.method === "POST" && url.pathname === "/message") {
       const body = await readJson<MessageRequest>(request);
-      const target = resolveActor(body.target);
+      const target = resolveActor(requiredString(body.target, "target"));
+      const type = requiredString(body.type, "type");
       const payload = body.payload ?? null;
       if (body.reply) {
         const result = await withTimeout(
-          PostMan.PostMessage({ target, type: body.type, payload }, true),
+          PostMan.PostMessage({ target, type, payload }, true),
           body.timeoutMs ?? 3000,
         );
-        return json({ ok: true, target, type: body.type, result });
+        return json({ ok: true, target, type, result });
       }
-      PostMan.PostMessage({ target, type: body.type, payload });
-      return json({ ok: true, target, type: body.type, sent: true });
+      PostMan.PostMessage({ target, type, payload });
+      return json({ ok: true, target, type, sent: true });
     }
 
     if (request.method === "POST" && url.pathname === "/reload") {
       const body = await readJson<ReloadRequest>(request);
-      const actorId = resolveActor(body.actor);
+      const actor = requiredString(body.actor ?? body.target, "actor");
+      const actorId = resolveActor(actor);
       const result = await PostMan.PostMessage({
         target: System,
         type: "RELOAD",
@@ -191,11 +301,12 @@ async function handleRequest(request: Request): Promise<Response> {
 
     if (request.method === "POST" && url.pathname === "/create") {
       const body = await readJson<CreateRequest>(request);
+      const actorname = requiredString(body.actorname, "actorname");
       const actorId = await PostMan.PostMessage({
         target: System,
         type: "CREATE",
         payload: {
-          actorname: body.actorname,
+          actorname,
           base: body.base,
         },
       }, true) as ActorId;
@@ -204,6 +315,9 @@ async function handleRequest(request: Request): Promise<Response> {
 
     return json({ ok: false, error: "Not found" }, { status: 404 });
   } catch (error) {
+    if (error instanceof Response) {
+      return error;
+    }
     const message = error instanceof Error ? error.message : String(error);
     return json({ ok: false, error: message }, { status: 500 });
   }

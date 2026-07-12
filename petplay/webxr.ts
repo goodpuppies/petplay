@@ -121,12 +121,18 @@ type StartWebXRPayload = {
   disableHostOpenVrInput?: boolean;
   raylibBypassRaythree?: boolean;
   raylibOpenVrPacedRaythree?: boolean;
+  desktopViewControlEnabled?: boolean;
   /** `GETHMDDISPLAYFREQUENCY` from the hmd actor (OpenVR `Prop_DisplayFrequency_Float`). */
   hmdDisplayFrequencyHz?: number | null;
   /** `GETCOMPOSITORPTR` from the OpenVR actor; optional for Aardvark-style overlay display pacing. */
   vrCompositorPointer?: bigint | null;
   /** `GETINPUTPTR` from the OpenVR actor; enables DirectOpenVrInputSource trigger/grab reads. */
   vrInputPointer?: number | bigint | null;
+};
+
+type DesktopViewOffsetPayload = {
+  offset?: Vec3Tuple;
+  enabled?: boolean;
 };
 
 type ControllerDataPayload = ControllerExternalDataTuple;
@@ -243,6 +249,10 @@ const state = actorState({
   /** OpenVR HMD nominal Hz (for fps log context; from `hmd` actor). */
   nominalHmdDisplayHz: null as number | null,
   raythreeSceneBridge: new WebXRRaythreeSceneBridge(),
+  lastStartPayload: null as StartWebXRPayload | null,
+  desktopViewControlAllowed: false,
+  desktopViewControlEnabled: false,
+  desktopViewOffset: [0, 0, 0] as Vec3Tuple,
 });
 
 new PostMan(
@@ -251,10 +261,58 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
     },
+    __SHUTDOWN__: async (_payload: unknown) => {
+      await stopWebXR();
+    },
+    __HEALTH__: (_payload: unknown) => {
+      return getWebXRStatus();
+    },
+    __SNAPSHOT__: (_payload: unknown) => {
+      return {
+        started: state.startup != null || state.host != null,
+        startPayload: state.lastStartPayload,
+        desktopViewControlAllowed: state.desktopViewControlAllowed,
+        desktopViewControlEnabled: state.desktopViewControlEnabled,
+        desktopViewOffset: state.desktopViewOffset,
+      };
+    },
+    __RESTORE__: (
+      payload: {
+        started?: boolean;
+        startPayload?: StartWebXRPayload | null;
+        desktopViewControlAllowed?: boolean;
+        desktopViewControlEnabled?: boolean;
+        desktopViewOffset?: Vec3Tuple;
+      } | null,
+    ) => {
+      state.desktopViewControlAllowed = payload?.desktopViewControlAllowed ?? false;
+      state.desktopViewControlEnabled = state.desktopViewControlAllowed &&
+        (payload?.desktopViewControlEnabled ?? false);
+      state.desktopViewOffset = payload?.desktopViewOffset ?? [0, 0, 0];
+      if (payload?.started !== true) {
+        return true;
+      }
+      setTimeout(() => {
+        PostMan.PostMessage({
+          target: state.id,
+          type: "STARTWEBXR",
+          payload: payload.startPayload ?? null,
+        });
+      }, 0);
+      return true;
+    },
     STARTWEBXR: (payload: StartWebXRPayload | null) => {
+      state.lastStartPayload = payload ?? null;
+      state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ?? false;
+      state.desktopViewControlEnabled = state.desktopViewControlAllowed;
+      if (!state.desktopViewControlEnabled) {
+        state.desktopViewOffset = [0, 0, 0];
+      }
       if (!state.host) {
         state.host = new WebXRHost();
       }
+      state.host.setDesktopViewControlEnabled(state.desktopViewControlEnabled);
+      state.host.setDesktopViewOffset(state.desktopViewOffset);
       state.controllerActor = payload?.controllerActor ?? null;
       state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib";
       state.nominalHmdDisplayHz = payload?.hmdDisplayFrequencyHz ?? null;
@@ -462,26 +520,6 @@ new PostMan(
         });
       }
     },
-    GETWEBXRSTATUS: (_payload: void) => {
-      const hostStatus = state.host?.getStatus() ?? {
-        running: false,
-        frameCount: 0,
-        xrFps: 0,
-        inspected: false,
-        lastInspection: null,
-        error: null,
-        lastLayerInfo: null,
-        xrRafMaxIntervalMs: 0,
-        xrRafSlowFrameCount: 0,
-        vsyncDisplayFramesSkipped: 0,
-      };
-      return {
-        ...hostStatus,
-        overlayFps: state.overlayFpsCounter.getFps(),
-        uploadedFrames: state.uploadedFrames,
-        nominalHmdDisplayHz: state.nominalHmdDisplayHz,
-      };
-    },
     ORIGINUPDATE: (payload: OpenVR.HmdMatrix34 | null) => {
       if (!payload) return;
       const matrix = payload.m as Matrix34Tuple;
@@ -507,96 +545,36 @@ new PostMan(
         setVrcCameraLookAtTargetEstimate(payload.lookAtTargetEstimate ?? null);
       }
     },
+    SETDESKTOPVIEWOFFSET: (payload: DesktopViewOffsetPayload | Vec3Tuple | null) => {
+      if (!Array.isArray(payload) && typeof payload?.enabled === "boolean") {
+        state.desktopViewControlEnabled = state.desktopViewControlAllowed && payload.enabled;
+        state.host?.setDesktopViewControlEnabled(state.desktopViewControlEnabled);
+        if (!state.desktopViewControlEnabled) {
+          state.desktopViewOffset = [0, 0, 0];
+          state.host?.setDesktopViewOffset(state.desktopViewOffset);
+          return state.desktopViewOffset;
+        }
+      }
+      if (!state.desktopViewControlEnabled) {
+        state.desktopViewOffset = [0, 0, 0];
+        state.host?.setDesktopViewOffset(state.desktopViewOffset);
+        return state.desktopViewOffset;
+      }
+      const offset = Array.isArray(payload) ? payload : payload?.offset;
+      if (
+        !offset ||
+        offset.length !== 3 ||
+        !offset.every((value) => typeof value === "number" && Number.isFinite(value))
+      ) {
+        return state.desktopViewOffset;
+      }
+      const nextOffset: Vec3Tuple = [offset[0], offset[1], offset[2]];
+      state.desktopViewOffset = nextOffset;
+      state.host?.setDesktopViewOffset(nextOffset);
+      return nextOffset;
+    },
     STOPWEBXR: async (_payload: void) => {
-      state.controllerRunning = false;
-      if (state.controllerLoop) {
-        await state.controllerLoop;
-      }
-      state.overlayRunning = false;
-      if (state.overlayLoop) {
-        await state.overlayLoop;
-      }
-      if (state.host) {
-        state.host.setControllerData(null);
-        await state.host.stop();
-        state.startup = null;
-      }
-      state.lastControllerSabWriteSeq = -1;
-      state.lastRafControllerPoseHash = null;
-      state.webGpuOverlay?.cleanup();
-      state.webGpuOverlay = null;
-      state.webGpuOverlayGl?.cleanup();
-      state.webGpuOverlayGl = null;
-      state.raylibOverlay?.cleanup();
-      state.raylibOverlay = null;
-      state.raylibOverlayRaylib?.cleanup();
-      state.raylibOverlayRaylib = null;
-      state.nativeRaylibPacer = null;
-      state.nativeRaylibVrSystem = null;
-      state.nativeRaylibLeftControllerIndex = null;
-      state.nativeRaylibRightControllerIndex = null;
-      state.nativeRaylibDebug = false;
-      state.nativeRaylibDebugWithHost = false;
-      state.nativeRaylibDebugTraceFirstFrame = false;
-      state.disableHostOpenVrInput = false;
-      state.raylibBypassRaythree = false;
-      state.raylibBypassRaythreeLogged = false;
-      state.raylibOpenVrPacedRaythree = false;
-      state.raylibOpenVrPacedRaythreeLogged = false;
-      state.raylibShadowNoSourceLogged = false;
-      state.raylibShadowNoSceneLogged = false;
-      state.raylibOpenVrPacedLastStatusLogAt = 0;
-      state.webGpuOverlayConfig = null;
-      state.raylibOverlayConfig = null;
-      state.controllerActor = null;
-      state.lastUploadedHostFrameCount = -1;
-      state.uploadedFrames = 0;
-      state.overlayFpsCounter.reset();
-      state.lastOverlayFpsLogAt = 0;
-      state.lastPerfLogAt = 0;
-      state.uploadMetric.reset();
-      state.presentMetric.reset();
-      state.frameMetric.reset();
-      state.raythreeExtractMetric.reset();
-      state.raythreeSceneMatrixMetric.reset();
-      state.raythreeLeftEyeMetric.reset();
-      state.raythreeRightEyeMetric.reset();
-      state.raythreeUiMetric.reset();
-      state.raylibHostPrepMetric.reset();
-      state.raylibOvrHandlerMetric.reset();
-      state.raylibOvrRenderMetric.reset();
-      state.raylibOvrOpenvrMetric.reset();
-      state.raylibOvrEyeLeftMetric.reset();
-      state.raylibOvrEyeRightMetric.reset();
-      state.raylibOvrEyeLSyncMetric.reset();
-      state.raylibOvrEyeLPrepMetric.reset();
-      state.raylibOvrEyeLOpaqueMetric.reset();
-      state.raylibOvrEyeLXparentMetric.reset();
-      state.raylibOvrEyeLUiMetric.reset();
-      state.raylibOvrEyeLUiSortMetric.reset();
-      state.raylibOvrEyeLUiPanMetric.reset();
-      state.raylibOvrEyeLUiTxtMetric.reset();
-      state.raylibOvrEyeLEndMetric.reset();
-      state.raylibOvrEyeRSyncMetric.reset();
-      state.raylibOvrEyeRPrepMetric.reset();
-      state.raylibOvrEyeROpaqueMetric.reset();
-      state.raylibOvrEyeRXparentMetric.reset();
-      state.raylibOvrEyeRUiMetric.reset();
-      state.raylibOvrEyeRUiSortMetric.reset();
-      state.raylibOvrEyeRUiPanMetric.reset();
-      state.raylibOvrEyeRUiTxtMetric.reset();
-      state.raylibOvrEyeREndMetric.reset();
-      state.raylibOvrCombineMetric.reset();
-      state.raylibOvrSyncMetric.reset();
-      state.raylibOvrDrawMetric.reset();
-      state.raylibOvrBatchGeoMetric.reset();
-      state.raylibOvrBatchMatMetric.reset();
-      state.raylibOvrUiPanelCountMetric.reset();
-      state.raylibOvrUiTextCountMetric.reset();
-      state.raylibOvrUiPanelDrawnMetric.reset();
-      state.raylibOvrUiTextDrawnMetric.reset();
-      state.nominalHmdDisplayHz = null;
-      return true;
+      return await stopWebXR();
     },
   } as const,
 );
@@ -616,6 +594,138 @@ globalThis.addEventListener("unload", () => {
   state.raylibOverlayConfig = null;
   void state.host?.stop();
 });
+
+function getWebXRStatus() {
+  const hostStatus = state.host?.getStatus() ?? {
+    running: false,
+    frameCount: 0,
+    xrFps: 0,
+    inspected: false,
+    lastInspection: null,
+    error: null,
+    lastLayerInfo: null,
+    xrRafMaxIntervalMs: 0,
+    xrRafSlowFrameCount: 0,
+    vsyncDisplayFramesSkipped: 0,
+    desktopViewOffset: state.desktopViewOffset,
+  };
+  return {
+    ...hostStatus,
+    desktopViewControlAllowed: state.desktopViewControlAllowed,
+    desktopViewControlEnabled: state.desktopViewControlEnabled,
+    desktopViewOffset: state.desktopViewOffset,
+    overlayFps: state.overlayFpsCounter.getFps(),
+    uploadedFrames: state.uploadedFrames,
+    nominalHmdDisplayHz: state.nominalHmdDisplayHz,
+    raylib: {
+      expected: state.overlayRenderMode === "raylib" || state.overlayRenderMode === "both",
+      configured: state.raylibOverlayConfig != null,
+      overlayReady: state.raylibOverlay != null,
+      rendererReady: state.raylibOverlayRaylib != null,
+      pacerReady: state.nativeRaylibPacer != null,
+      running: state.overlayRunning,
+      lastStatusLogAt: state.raylibOpenVrPacedLastStatusLogAt,
+    },
+    webgpu: {
+      expected: state.overlayRenderMode === "webgpu" || state.overlayRenderMode === "both",
+      configured: state.webGpuOverlayConfig != null,
+      overlayReady: state.webGpuOverlay != null,
+      rendererReady: state.webGpuOverlayGl != null,
+    },
+  };
+}
+
+async function stopWebXR(): Promise<true> {
+  state.controllerRunning = false;
+  if (state.controllerLoop) {
+    await state.controllerLoop;
+  }
+  state.overlayRunning = false;
+  if (state.overlayLoop) {
+    await state.overlayLoop;
+  }
+  if (state.host) {
+    state.host.setControllerData(null);
+    await state.host.stop();
+    state.startup = null;
+  }
+  state.lastControllerSabWriteSeq = -1;
+  state.lastRafControllerPoseHash = null;
+  state.webGpuOverlay?.cleanup();
+  state.webGpuOverlay = null;
+  state.webGpuOverlayGl?.cleanup();
+  state.webGpuOverlayGl = null;
+  state.raylibOverlay?.cleanup();
+  state.raylibOverlay = null;
+  state.raylibOverlayRaylib?.cleanup();
+  state.raylibOverlayRaylib = null;
+  state.nativeRaylibPacer = null;
+  state.nativeRaylibVrSystem = null;
+  state.nativeRaylibLeftControllerIndex = null;
+  state.nativeRaylibRightControllerIndex = null;
+  state.nativeRaylibDebug = false;
+  state.nativeRaylibDebugWithHost = false;
+  state.nativeRaylibDebugTraceFirstFrame = false;
+  state.disableHostOpenVrInput = false;
+  state.raylibBypassRaythree = false;
+  state.raylibBypassRaythreeLogged = false;
+  state.raylibOpenVrPacedRaythree = false;
+  state.raylibOpenVrPacedRaythreeLogged = false;
+  state.raylibShadowNoSourceLogged = false;
+  state.raylibShadowNoSceneLogged = false;
+  state.raylibOpenVrPacedLastStatusLogAt = 0;
+  state.webGpuOverlayConfig = null;
+  state.raylibOverlayConfig = null;
+  state.controllerActor = null;
+  state.lastUploadedHostFrameCount = -1;
+  state.uploadedFrames = 0;
+  state.overlayFpsCounter.reset();
+  state.lastOverlayFpsLogAt = 0;
+  state.lastPerfLogAt = 0;
+  state.uploadMetric.reset();
+  state.presentMetric.reset();
+  state.frameMetric.reset();
+  state.raythreeExtractMetric.reset();
+  state.raythreeSceneMatrixMetric.reset();
+  state.raythreeLeftEyeMetric.reset();
+  state.raythreeRightEyeMetric.reset();
+  state.raythreeUiMetric.reset();
+  state.raylibHostPrepMetric.reset();
+  state.raylibOvrHandlerMetric.reset();
+  state.raylibOvrRenderMetric.reset();
+  state.raylibOvrOpenvrMetric.reset();
+  state.raylibOvrEyeLeftMetric.reset();
+  state.raylibOvrEyeRightMetric.reset();
+  state.raylibOvrEyeLSyncMetric.reset();
+  state.raylibOvrEyeLPrepMetric.reset();
+  state.raylibOvrEyeLOpaqueMetric.reset();
+  state.raylibOvrEyeLXparentMetric.reset();
+  state.raylibOvrEyeLUiMetric.reset();
+  state.raylibOvrEyeLUiSortMetric.reset();
+  state.raylibOvrEyeLUiPanMetric.reset();
+  state.raylibOvrEyeLUiTxtMetric.reset();
+  state.raylibOvrEyeLEndMetric.reset();
+  state.raylibOvrEyeRSyncMetric.reset();
+  state.raylibOvrEyeRPrepMetric.reset();
+  state.raylibOvrEyeROpaqueMetric.reset();
+  state.raylibOvrEyeRXparentMetric.reset();
+  state.raylibOvrEyeRUiMetric.reset();
+  state.raylibOvrEyeRUiSortMetric.reset();
+  state.raylibOvrEyeRUiPanMetric.reset();
+  state.raylibOvrEyeRUiTxtMetric.reset();
+  state.raylibOvrEyeREndMetric.reset();
+  state.raylibOvrCombineMetric.reset();
+  state.raylibOvrSyncMetric.reset();
+  state.raylibOvrDrawMetric.reset();
+  state.raylibOvrBatchGeoMetric.reset();
+  state.raylibOvrBatchMatMetric.reset();
+  state.raylibOvrUiPanelCountMetric.reset();
+  state.raylibOvrUiTextCountMetric.reset();
+  state.raylibOvrUiPanelDrawnMetric.reset();
+  state.raylibOvrUiTextDrawnMetric.reset();
+  state.nominalHmdDisplayHz = null;
+  return true;
+}
 
 function publishControllerSnapshot(data: ControllerDataPayload | null) {
   if (!data) {

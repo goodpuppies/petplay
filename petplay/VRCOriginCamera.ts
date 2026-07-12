@@ -25,6 +25,7 @@ type OSCQueryHostInfo = {
 };
 
 type CoordinateMap = Record<string, number>;
+type OscOutboundArg = number | boolean | { type: "i" | "f"; value: number };
 type CameraRaySample = {
   position: Vec3Tuple;
   direction: Vec3Tuple;
@@ -35,22 +36,55 @@ type CameraPositionEstimate = {
   targetWorld: Vec3Tuple;
   originRelativeToTarget: Vec3Tuple;
   targetRelativeToFirstCamera: Vec3Tuple;
+  customObjectSyncTargetWorld: Vec3Tuple | null;
+  customObjectSyncOriginRelativeToTarget: Vec3Tuple | null;
+  targetErrorToCustomObjectSyncMeters: number | null;
   rmsError: number;
   maxError: number;
   sampleCount: number;
   baselineMeters: number;
   updatedAt: number;
 };
+type CameraPoseCommand = {
+  position: Vec3Tuple;
+  rotationDeg: Vec3Tuple;
+};
+type CameraOrbitConfig = {
+  radiusMeters?: number;
+  heightMeters?: number;
+  stepDeg?: number;
+  intervalMs?: number;
+  centerWorld?: Vec3Tuple;
+};
+type CameraOrbitRuntime = {
+  timerId: number;
+  centerWorld: Vec3Tuple;
+  angleRad: number;
+  radiusMeters: number;
+  heightMeters: number;
+  stepRad: number;
+  intervalMs: number;
+};
 
 const USER_CAMERA_POSE = "/usercamera/Pose";
 const USER_CAMERA_MODE = "/usercamera/Mode";
+const USER_CAMERA_LOOK_AT_ME = "/usercamera/LookAtMe";
 const CUSTOM_OBJECT_SYNC_PREFIX = "/avatar/parameters/CustomObjectSync/";
+const CUSTOM_OBJECT_SYNC_POSITION_X = `${CUSTOM_OBJECT_SYNC_PREFIX}PositionX`;
+const CUSTOM_OBJECT_SYNC_POSITION_Y = `${CUSTOM_OBJECT_SYNC_PREFIX}PositionY`;
+const CUSTOM_OBJECT_SYNC_POSITION_Z = `${CUSTOM_OBJECT_SYNC_PREFIX}PositionZ`;
 const DEFAULT_OSC_PORT = 9001;
 const DEFAULT_HTTP_PORT = 33776;
+const DEFAULT_VRCHAT_OSC_PORT = 9000;
 const MAX_POSITION_SAMPLES = 96;
 const MIN_POSITION_SAMPLES = 4;
 const MIN_SAMPLE_DISTANCE_METERS = 0.03;
 const MIN_SAMPLE_ANGLE_DEG = 0.35;
+const MAX_OSC_CAMERA_POSE_STALENESS_MS = 350;
+const DEFAULT_CAMERA_ORBIT_RADIUS_METERS = 1.1;
+const DEFAULT_CAMERA_ORBIT_HEIGHT_METERS = 0.05;
+const DEFAULT_CAMERA_ORBIT_STEP_DEG = 10;
+const DEFAULT_CAMERA_ORBIT_INTERVAL_MS = 120;
 
 const state = actorState({
   name: "vrc-origin-camera",
@@ -61,6 +95,7 @@ const state = actorState({
   positionEstimate: null as CameraPositionEstimate | null,
   visualBaselinePosition: null as Vec3Tuple | null,
   customObjectSyncCoordinates: {} as CoordinateMap,
+  cameraOrbit: null as CameraOrbitRuntime | null,
   lastDebugPostAt: 0,
 });
 
@@ -68,6 +103,20 @@ new PostMan(
   state,
   {
     __INIT__: (_payload: void) => {},
+    __SHUTDOWN__: async (_payload: unknown) => {
+      await stopCameraOrigin();
+    },
+    __HEALTH__: (_payload: unknown) => {
+      return {
+        driverRunning: state.driver != null,
+        hasLatestCameraPose: state.latestCameraPose != null,
+        hasPositionEstimate: state.positionEstimate != null,
+        positionSampleCount: state.positionSamples.length,
+        cameraOrbitRunning: state.cameraOrbit != null,
+        assignedWebxr: state.webxr != null,
+        lastDebugPostAt: state.lastDebugPostAt,
+      };
+    },
     ASSIGNWEBXR: (payload: ActorId) => {
       state.webxr = payload;
     },
@@ -77,6 +126,7 @@ new PostMan(
         name: "PetPlayCameraOrigin",
         httpPort: getAvailableTcpPort(DEFAULT_HTTP_PORT),
         oscPort: DEFAULT_OSC_PORT,
+        vrchatOscPort: DEFAULT_VRCHAT_OSC_PORT,
         onMessage: handleOscMessage,
       });
       state.driver.start().catch((error) => {
@@ -87,9 +137,7 @@ new PostMan(
       });
     },
     STOPCAMERAORIGIN: async (_payload: void) => {
-      await state.driver?.stop();
-      state.driver = null;
-      return true;
+      return await stopCameraOrigin();
     },
     GETCAMERAPOSE: (_payload: void) => state.latestCameraPose,
     GETCAMERAPOSITIONESTIMATE: (_payload: void) => state.positionEstimate,
@@ -100,10 +148,62 @@ new PostMan(
       postCameraDebugUpdate(null, state.latestCameraPose);
       return true;
     },
+    SETUSERCAMERAMODE: (payload: number) => {
+      sendCameraMode(payload);
+      return true;
+    },
+    SETUSERCAMERALOOKATME: (payload: boolean) => {
+      sendCameraLookAtMe(payload);
+      return true;
+    },
+    SETUSERCAMERAPOSE: (payload: CameraPoseCommand) => {
+      sendCameraPose(payload.position, payload.rotationDeg);
+      return true;
+    },
+    STARTCAMERAORBIT: (payload: CameraOrbitConfig | null) => {
+      const runtime = startCameraOrbit(payload ?? {});
+      return {
+        running: runtime != null,
+        centerWorld: runtime?.centerWorld ?? null,
+        radiusMeters: runtime?.radiusMeters ?? null,
+        intervalMs: runtime?.intervalMs ?? null,
+      };
+    },
+    STOPCAMERAORBIT: (_payload: void) => {
+      stopCameraOrbit();
+      return true;
+    },
+    GETCAMERAORBITSTATE: (_payload: void) => {
+      const orbit = state.cameraOrbit;
+      return orbit
+        ? {
+          running: true,
+          centerWorld: orbit.centerWorld,
+          radiusMeters: orbit.radiusMeters,
+          heightMeters: orbit.heightMeters,
+          intervalMs: orbit.intervalMs,
+          stepDeg: degreesFromRadians(orbit.stepRad),
+        }
+        : {
+          running: false,
+          centerWorld: null,
+          radiusMeters: null,
+          heightMeters: null,
+          intervalMs: null,
+          stepDeg: null,
+        };
+    },
     GETCUSTOMOBJECTSYNCCOORDINATE: (_payload: void) => state.customObjectSyncCoordinates,
     GETCOORDINATE: (_payload: void) => state.customObjectSyncCoordinates,
   } as const,
 );
+
+async function stopCameraOrigin(): Promise<true> {
+  stopCameraOrbit();
+  await state.driver?.stop();
+  state.driver = null;
+  return true;
+}
 
 function handleOscMessage(message: OscMessage): void {
   if (message.address.startsWith(CUSTOM_OBJECT_SYNC_PREFIX)) {
@@ -176,8 +276,41 @@ function updatePositionEstimate(pose: VrcCameraDebugPose): void {
 
   const estimate = fitCameraLookAtTarget(state.positionSamples);
   if (estimate) {
-    state.positionEstimate = estimate;
+    const customObjectSyncTargetWorld = decodeCustomObjectSyncTargetWorld();
+    const targetErrorToCustomObjectSyncMeters = customObjectSyncTargetWorld
+      ? distance(estimate.targetWorld, customObjectSyncTargetWorld)
+      : null;
+    state.positionEstimate = {
+      ...estimate,
+      customObjectSyncTargetWorld,
+      customObjectSyncOriginRelativeToTarget: customObjectSyncTargetWorld
+        ? [
+          -customObjectSyncTargetWorld[0],
+          -customObjectSyncTargetWorld[1],
+          -customObjectSyncTargetWorld[2],
+        ]
+        : null,
+      targetErrorToCustomObjectSyncMeters,
+    };
   }
+}
+
+function decodeCustomObjectSyncTargetWorld(): Vec3Tuple | null {
+  const x = state.customObjectSyncCoordinates[CUSTOM_OBJECT_SYNC_POSITION_X];
+  const y = state.customObjectSyncCoordinates[CUSTOM_OBJECT_SYNC_POSITION_Y];
+  const z = state.customObjectSyncCoordinates[CUSTOM_OBJECT_SYNC_POSITION_Z];
+  if (x == null || y == null || z == null) {
+    return null;
+  }
+  return [
+    transformCustomObjectCoordinate(x),
+    transformCustomObjectCoordinate(y),
+    transformCustomObjectCoordinate(z),
+  ];
+}
+
+function transformCustomObjectCoordinate(value: number): number {
+  return (value - 0.5) * 340;
 }
 
 function fitCameraLookAtTarget(samples: CameraRaySample[]): CameraPositionEstimate | null {
@@ -233,6 +366,9 @@ function fitCameraLookAtTarget(samples: CameraRaySample[]): CameraPositionEstima
       targetWorld[1] - visualBaselinePosition[1],
       targetWorld[2] - visualBaselinePosition[2],
     ],
+    customObjectSyncTargetWorld: null,
+    customObjectSyncOriginRelativeToTarget: null,
+    targetErrorToCustomObjectSyncMeters: null,
     rmsError: Math.sqrt(errorSquared / samples.length),
     maxError,
     sampleCount: samples.length,
@@ -246,7 +382,7 @@ function unityForwardFromEulerDeg(rotationDeg: Vec3Tuple): Vec3Tuple {
   const yaw = degreesToRadians(rotationDeg[1]);
   return [
     Math.sin(yaw) * Math.cos(pitch),
-    -Math.sin(pitch),
+    Math.sin(pitch),
     Math.cos(yaw) * Math.cos(pitch),
   ];
 }
@@ -296,7 +432,7 @@ function normalize(vector: Vec3Tuple): Vec3Tuple {
 }
 
 function angleBetweenDeg(a: Vec3Tuple, b: Vec3Tuple): number {
-  const value = Math.max(-1, Math.min(1, Math.abs(dot(a, b))));
+  const value = Math.max(-1, Math.min(1, dot(a, b)));
   return degreesFromRadians(Math.acos(value));
 }
 
@@ -339,9 +475,20 @@ class CameraOscQueryDriver {
       name: string;
       httpPort: number;
       oscPort: number;
+      vrchatOscPort: number;
       onMessage: (message: OscMessage) => void;
     },
   ) {}
+
+  sendMessage(address: string, args: OscOutboundArg[]): void {
+    if (!this.oscSocket) return;
+    const packet = encodeOscMessage(address, args);
+    void this.oscSocket.send(packet, {
+      hostname: "127.0.0.1",
+      port: this.options.vrchatOscPort,
+      transport: "udp",
+    });
+  }
 
   async start(): Promise<void> {
     this.httpServer = Deno.serve(
@@ -664,4 +811,149 @@ function encodeDnsName(name: string): Uint8Array {
 
 function sanitizeDnsLabel(label: string): string {
   return label.replaceAll(".", "-").replaceAll(" ", "-").slice(0, 63);
+}
+
+function sendCameraMode(mode: number): void {
+  state.driver?.sendMessage(USER_CAMERA_MODE, [{ type: "i", value: mode }]);
+}
+
+function sendCameraLookAtMe(enabled: boolean): void {
+  state.driver?.sendMessage(USER_CAMERA_LOOK_AT_ME, [enabled]);
+}
+
+function sendCameraPose(position: Vec3Tuple, rotationDeg: Vec3Tuple): void {
+  state.driver?.sendMessage(USER_CAMERA_POSE, [
+    { type: "f", value: position[0] },
+    { type: "f", value: position[1] },
+    { type: "f", value: position[2] },
+    { type: "f", value: rotationDeg[0] },
+    { type: "f", value: rotationDeg[1] },
+    { type: "f", value: rotationDeg[2] },
+  ]);
+}
+
+function startCameraOrbit(config: CameraOrbitConfig): CameraOrbitRuntime | null {
+  if (!state.driver || !state.latestCameraPose) {
+    return null;
+  }
+  stopCameraOrbit();
+
+  const pose = state.latestCameraPose;
+  const fallbackCenter = add(
+    pose.position,
+    scale(unityForwardFromEulerDeg(pose.rotationDeg), DEFAULT_CAMERA_ORBIT_RADIUS_METERS),
+  );
+  const centerWorld = config.centerWorld ?? state.positionEstimate?.targetWorld ?? fallbackCenter;
+  const radiusMeters = Math.max(0.25, config.radiusMeters ?? DEFAULT_CAMERA_ORBIT_RADIUS_METERS);
+  const heightMeters = config.heightMeters ?? DEFAULT_CAMERA_ORBIT_HEIGHT_METERS;
+  const intervalMs = Math.max(40, Math.round(config.intervalMs ?? DEFAULT_CAMERA_ORBIT_INTERVAL_MS));
+  const stepRad = degreesToRadians(config.stepDeg ?? DEFAULT_CAMERA_ORBIT_STEP_DEG);
+  const initialAngle = Math.atan2(pose.position[2] - centerWorld[2], pose.position[0] - centerWorld[0]);
+
+  sendCameraMode(6);
+  sendCameraLookAtMe(true);
+
+  const runtime: CameraOrbitRuntime = {
+    timerId: -1,
+    centerWorld: [...centerWorld],
+    angleRad: initialAngle,
+    radiusMeters,
+    heightMeters,
+    stepRad,
+    intervalMs,
+  };
+
+  runtime.timerId = setInterval(() => {
+    const latestPose = state.latestCameraPose;
+    if (!latestPose || !state.driver) return;
+    runtime.angleRad += runtime.stepRad;
+    const nextPosition: Vec3Tuple = [
+      runtime.centerWorld[0] + Math.cos(runtime.angleRad) * runtime.radiusMeters,
+      runtime.centerWorld[1] + runtime.heightMeters,
+      runtime.centerWorld[2] + Math.sin(runtime.angleRad) * runtime.radiusMeters,
+    ];
+    const nextRotationDeg = lookAtRotationDeg(nextPosition, runtime.centerWorld);
+    sendCameraPose(nextPosition, nextRotationDeg);
+
+    const now = Date.now();
+    const lastReceivedAt = state.latestCameraPose?.receivedAt ?? 0;
+    if (now - lastReceivedAt > MAX_OSC_CAMERA_POSE_STALENESS_MS) {
+      const syntheticPose: VrcCameraDebugPose = {
+        position: [...nextPosition],
+        rotationDeg: [...nextRotationDeg],
+        receivedAt: now,
+      };
+      state.latestCameraPose = syntheticPose;
+      state.visualBaselinePosition ??= [...syntheticPose.position];
+      updatePositionEstimate(syntheticPose);
+      postCameraDebugUpdate(state.positionEstimate, syntheticPose);
+    }
+  }, intervalMs);
+
+  state.cameraOrbit = runtime;
+  return runtime;
+}
+
+function stopCameraOrbit(): void {
+  if (!state.cameraOrbit) {
+    return;
+  }
+  clearInterval(state.cameraOrbit.timerId);
+  state.cameraOrbit = null;
+}
+
+function lookAtRotationDeg(from: Vec3Tuple, to: Vec3Tuple): Vec3Tuple {
+  const delta = subtract(to, from);
+  const horizontal = Math.hypot(delta[0], delta[2]);
+  const pitchDeg = degreesFromRadians(Math.atan2(delta[1], Math.max(horizontal, 1e-6)));
+  const yawDeg = degreesFromRadians(Math.atan2(delta[0], delta[2]));
+  return [pitchDeg, yawDeg, 0];
+}
+
+function encodeOscMessage(address: string, args: OscOutboundArg[]): Uint8Array {
+  let typeTag = ",";
+  const dataChunks: Uint8Array[] = [];
+
+  for (const arg of args) {
+    if (typeof arg === "boolean") {
+      typeTag += arg ? "T" : "F";
+      continue;
+    }
+
+    const typed = typeof arg === "number"
+      ? ({ type: Number.isInteger(arg) ? "i" : "f", value: arg } as const)
+      : arg;
+    typeTag += typed.type;
+    const chunk = new Uint8Array(4);
+    const view = new DataView(chunk.buffer);
+    if (typed.type === "i") {
+      view.setInt32(0, Math.trunc(typed.value), false);
+    } else {
+      view.setFloat32(0, typed.value, false);
+    }
+    dataChunks.push(chunk);
+  }
+
+  const addressBytes = encodeOscString(address);
+  const typeTagBytes = encodeOscString(typeTag);
+  const bodyLength = dataChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const packet = new Uint8Array(addressBytes.length + typeTagBytes.length + bodyLength);
+  let offset = 0;
+  packet.set(addressBytes, offset);
+  offset += addressBytes.length;
+  packet.set(typeTagBytes, offset);
+  offset += typeTagBytes.length;
+  for (const chunk of dataChunks) {
+    packet.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return packet;
+}
+
+function encodeOscString(value: string): Uint8Array {
+  const encoded = new TextEncoder().encode(value);
+  const paddedLength = ((encoded.length + 1) + 3) & ~3;
+  const out = new Uint8Array(paddedLength);
+  out.set(encoded, 0);
+  return out;
 }

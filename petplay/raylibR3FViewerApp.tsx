@@ -483,6 +483,8 @@ export type RunRaylibR3FViewerAppOptions = {
   Scene: React.FC<RaylibR3FViewerSceneProps>;
   /** If true, log three.js / @pmndrs/handle versions at startup (ui viewer does). */
   logDependencyVersions?: boolean;
+  /** External close condition for actor-hosted viewers. */
+  shouldClose?: () => boolean;
 };
 
 /**
@@ -578,7 +580,7 @@ export async function runRaylibR3FViewerApp(
       </ViewerAimProvider>,
     );
 
-    while (!raylib.WindowShouldClose()) {
+    while (!raylib.WindowShouldClose() && options.shouldClose?.() !== true) {
       const scene = r3f.getScene();
       const camera = r3f.getCamera();
       if (scene === null || camera === null) {

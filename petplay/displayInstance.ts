@@ -18,13 +18,22 @@ const state = actorState({
   overlayClass: null as OpenVR.IVROverlay | null,
   overlayHandle: 0n,
   isRunning: false,
+  isStarting: false,
+  lastStartError: null as string | null,
   glManager: null as OpenGLManager | null,
   screenCapturer: null as ScreenCapturer | null,
   textureStructPtr: null as Deno.PointerValue<OpenVR.Texture> | null,
   lastWidthMeters: -1,
   lastHmd: null as OpenVR.HmdMatrix34 | null,
   captureFrames: 0,
+  lastStartConfig: null as StartDesktopPayload | null,
+  overlayPointer: null as bigint | null,
+  restartTimerId: null as number | null,
 });
+
+const START_DESKTOP_MAX_ATTEMPTS = 4;
+const START_DESKTOP_RETRY_WAIT_MS = 450;
+const START_DESKTOP_DEFERRED_RETRY_MS = 2_000;
 
 function getWebxrFrameLogsEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-frame-logs"));
@@ -75,7 +84,41 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
     },
+    __SHUTDOWN__: async (_payload: unknown) => {
+      await stopDisplayInstance();
+    },
+    __HEALTH__: (_payload: unknown) => {
+      return getDisplayInstanceStatus();
+    },
+    __SNAPSHOT__: (_payload: unknown) => {
+      return {
+        overlayPointer: state.overlayPointer,
+        startConfig: state.lastStartConfig,
+      };
+    },
+    __RESTORE__: (
+      payload: { overlayPointer?: bigint | null; startConfig?: StartDesktopPayload | null } | null,
+    ) => {
+      if (payload?.overlayPointer != null) {
+        PostMan.PostMessage({
+          target: state.id,
+          type: "INITOVROVERLAY",
+          payload: payload.overlayPointer,
+        });
+      }
+      if (payload?.startConfig) {
+        setTimeout(() => {
+          PostMan.PostMessage({
+            target: state.id,
+            type: "STARTDESKTOP",
+            payload: payload.startConfig,
+          });
+        }, 0);
+      }
+      return true;
+    },
     INITOVROVERLAY: (payload: bigint) => {
+      state.overlayPointer = payload;
       const systemPtr = Deno.UnsafePointer.create(payload);
       state.overlayClass = new OpenVR.IVROverlay(systemPtr);
       LogChannel.log("actor", `[displayInstance] IVROverlay ready (${state.id})`);
@@ -84,7 +127,14 @@ new PostMan(
       if (!state.overlayClass) {
         throw new Error("Call INITOVROVERLAY before STARTDESKTOP");
       }
-      void startDesktopOpenVrOverlay(payload);
+      state.lastStartConfig = payload;
+      void startDesktopWithRetry(payload).catch((error) => {
+        LogChannel.error(
+          "actor",
+          `[displayInstance] STARTDESKTOP unhandled failure: ${error instanceof Error ? error.message : error}`,
+        );
+        scheduleDeferredStartRetry(payload);
+      });
     },
     SYNCDISPLAYPOSE: (sync: SyncDisplayPosePayload) => {
       if (!state.overlayClass || !state.overlayHandle) return;
@@ -146,15 +196,24 @@ new PostMan(
       setTransformSafe(payload);
     },
     STOP: async () => {
-      state.isRunning = false;
-      if (state.screenCapturer) {
-        await state.screenCapturer.dispose();
-        state.screenCapturer = null;
-      }
+      await stopDisplayInstance();
       return true;
     },
   } as const,
 );
+
+function getDisplayInstanceStatus() {
+  return {
+    running: state.isRunning,
+    starting: state.isStarting,
+    overlayReady: state.overlayClass != null,
+    overlayHandleActive: state.overlayHandle !== 0n,
+    glReady: state.glManager != null,
+    screenCaptureActive: state.screenCapturer != null,
+    hasTextureStruct: state.textureStructPtr != null,
+    lastStartError: state.lastStartError,
+  };
+}
 
 let screenStreamerTempPath: string | null = null;
 
@@ -186,6 +245,127 @@ function initGl(overlayName: string) {
   state.glManager = new OpenGLManager();
   state.glManager.initialize2D(overlayName);
   if (!state.glManager) throw new Error("glManager is null");
+}
+
+async function stopDesktopOverlay(): Promise<void> {
+  state.isRunning = false;
+  state.lastStartError = null;
+
+  if (state.screenCapturer) {
+    try {
+      await state.screenCapturer.dispose();
+    } catch (error) {
+      LogChannel.log(
+        "actor",
+        `[displayInstance] screenCapturer dispose failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    state.screenCapturer = null;
+  }
+
+  if (state.glManager) {
+    try {
+      state.glManager.cleanup();
+    } catch (error) {
+      LogChannel.log(
+        "actor",
+        `[displayInstance] gl cleanup failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    state.glManager = null;
+  }
+
+  if (state.overlayClass && state.overlayHandle) {
+    try {
+      state.overlayClass.HideOverlay(state.overlayHandle);
+    } catch {
+      // Ignore shutdown races.
+    }
+    try {
+      state.overlayClass.DestroyOverlay(state.overlayHandle);
+    } catch {
+      // Ignore shutdown races.
+    }
+  }
+
+  state.overlayHandle = 0n;
+  state.textureStructPtr = null;
+  state.lastWidthMeters = -1;
+  state.lastHmd = null;
+}
+
+async function stopDisplayInstance(): Promise<void> {
+  clearDeferredStartRetry();
+  state.lastStartConfig = null;
+  await stopDesktopOverlay();
+}
+
+async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void> {
+  if (state.isStarting) {
+    LogChannel.log("actor", "[displayInstance] STARTDESKTOP ignored (already starting)");
+    return;
+  }
+  state.isStarting = true;
+
+  try {
+    if (state.isRunning || state.glManager || state.overlayHandle) {
+      await stopDesktopOverlay();
+      await wait(120);
+    }
+
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= START_DESKTOP_MAX_ATTEMPTS; attempt++) {
+      try {
+        startDesktopOpenVrOverlay(config);
+        clearDeferredStartRetry();
+        return;
+      } catch (error) {
+        lastError = error;
+        await stopDesktopOverlay();
+        if (attempt < START_DESKTOP_MAX_ATTEMPTS) {
+          LogChannel.log(
+            "actor",
+            `[displayInstance] STARTDESKTOP attempt ${attempt} failed, retrying: ${error instanceof Error ? error.message : error}`,
+          );
+          await wait(START_DESKTOP_RETRY_WAIT_MS * attempt);
+          continue;
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  } catch (error) {
+    state.lastStartError = error instanceof Error ? error.message : String(error);
+    LogChannel.error(
+      "actor",
+      `[displayInstance] STARTDESKTOP failed: ${error instanceof Error ? error.message : error}`,
+    );
+    scheduleDeferredStartRetry(config);
+  } finally {
+    state.isStarting = false;
+  }
+}
+
+function clearDeferredStartRetry(): void {
+  if (state.restartTimerId != null) {
+    clearTimeout(state.restartTimerId);
+    state.restartTimerId = null;
+  }
+}
+
+function scheduleDeferredStartRetry(config: StartDesktopPayload): void {
+  if (state.restartTimerId != null || state.isRunning || state.isStarting) {
+    return;
+  }
+  state.restartTimerId = setTimeout(() => {
+    state.restartTimerId = null;
+    if (!state.overlayClass) {
+      return;
+    }
+    const retryConfig = state.lastStartConfig ?? config;
+    void startDesktopWithRetry(retryConfig);
+  }, START_DESKTOP_DEFERRED_RETRY_MS);
+  LogChannel.log("actor", "[displayInstance] scheduled deferred STARTDESKTOP retry");
 }
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
@@ -298,7 +478,13 @@ function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
 
   if (config.runScreenCapture) {
     state.screenCapturer = initScreenCapturer();
-    void deskCapLoop(overlay, textureStructPtr);
+    void deskCapLoop(overlay, textureStructPtr).catch((error) => {
+      LogChannel.error(
+        "actor",
+        `[displayInstance] screen capture loop failed: ${error instanceof Error ? error.message : error}`,
+      );
+      void stopDesktopOverlay();
+    });
   } else {
     LogChannel.log(
       "actor",

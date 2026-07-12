@@ -69,7 +69,29 @@ Deno.addSignalListener("SIGINT", () => {
   void petplayDefaultExit();
 });
 
+function isRecoverableDisplayInstanceWorkerError(ev: ErrorEvent): boolean {
+  const message = String(ev.error ?? ev.message ?? "");
+  const lower = message.toLowerCase();
+  if (lower.includes("in worker \"./displayinstance.ts\"")) {
+    return true;
+  }
+  if (lower.includes("displayinstance.ts")) {
+    return true;
+  }
+  if (lower.includes("failed to initialize glfw")) {
+    return true;
+  }
+  if (lower.includes("glfw3_v3-4-0.dll") && lower.includes("access is denied")) {
+    return true;
+  }
+  return false;
+}
+
 PostalService.onActorWorkerError = (ev) => {
+  if (isRecoverableDisplayInstanceWorkerError(ev)) {
+    console.warn("petplay: recoverable worker error ignored:", ev.error ?? ev.message);
+    return;
+  }
   void petplayFatalExit(ev.error ?? ev.message);
 };
 

@@ -37,6 +37,31 @@ function readHmdDisplayFrequencyHz(vr: OpenVR.IVRSystem): number | null {
 
 export const api = {
   __INIT__: (_payload: void) => { },
+  __HEALTH__: (_payload: unknown) => {
+    let poseOk = false;
+    let poseConnected: boolean | null = null;
+    let poseValid: boolean | null = null;
+    let error: string | null = null;
+    try {
+      if (state.vrSystem) {
+        const pose = getHMDPose();
+        poseConnected = Boolean(pose.bDeviceIsConnected);
+        poseValid = Boolean(pose.bPoseIsValid);
+        poseOk = poseConnected && poseValid;
+      }
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    return {
+      initialized: state.vrSystem != null,
+      poseOk,
+      poseConnected,
+      poseValid,
+      hmdDisplayFrequencyHz: state.vrSystem ? readHmdDisplayFrequencyHz(state.vrSystem) : null,
+      websocketConnected: state.socket?.readyState === WebSocket.OPEN,
+      error,
+    };
+  },
   GETHMDPOSITION: (_payload: void) => { return getHMDPose(); },
   /**
    * OpenVR `Prop_DisplayFrequency_Float` (Hz) for the HMD, or `null` if unavailable.
@@ -205,5 +230,3 @@ function getHMDPoseX(): OpenVR.TrackedDevicePose {
 
   return hmdPose;
 }
-
-

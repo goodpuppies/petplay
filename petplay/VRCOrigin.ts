@@ -26,6 +26,20 @@ new PostMan(
   state,
   {
     __INIT__: (_payload: void) => {},
+    __SHUTDOWN__: (_payload: unknown) => {
+      return stopOrigin();
+    },
+    __HEALTH__: (_payload: unknown) => {
+      return {
+        overlayReady: state.overlayClass != null,
+        overlayHandleActive: state.overlayHandle !== 0n,
+        assignedVrc: state.vrc !== "",
+        assignedHmd: state.hmd !== "",
+        hasOrigin: state.origin != null,
+        overlayCount: state.overlays.length,
+        originChangeCount: state.originChangeCount,
+      };
+    },
     ASSIGNVRC: (payload: string) => {
       state.vrc = payload;
     },
@@ -42,16 +56,7 @@ new PostMan(
       main(payload.name, payload.texture);
     },
     STOPORIGIN: (_payload: void) => {
-      if (state.overlayClass && state.overlayHandle) {
-        try {
-          state.overlayClass.DestroyOverlay(state.overlayHandle);
-        } catch {
-          // Ignore OpenVR shutdown races.
-        }
-      }
-      state.overlayHandle = 0n as OpenVR.OverlayHandle;
-      state.origin = null;
-      return true;
+      return stopOrigin();
     },
     GETOVERLAYLOCATION: (_payload: void) => {
       if (!state.overlayClass || !state.overlayHandle) {
@@ -68,6 +73,19 @@ new PostMan(
     },
   } as const,
 );
+
+function stopOrigin(): true {
+  if (state.overlayClass && state.overlayHandle) {
+    try {
+      state.overlayClass.DestroyOverlay(state.overlayHandle);
+    } catch {
+      // Ignore OpenVR shutdown races.
+    }
+  }
+  state.overlayHandle = 0n as OpenVR.OverlayHandle;
+  state.origin = null;
+  return true;
+}
 
 const PositionX: string = "/avatar/parameters/CustomObjectSync/PositionX";
 const PositionY: string = "/avatar/parameters/CustomObjectSync/PositionY";
@@ -126,8 +144,20 @@ async function main(overlaymame: string, overlaytexture: string) {
       return false;
     }
     while (true) {
-      if (state.vrc != "") {
-        const [finalMatrix, pureMatrix, hmdTransform] = await extractOrigin();
+      if (state.vrc !== "" && state.hmd !== "") {
+        let finalMatrix: OpenVR.HmdMatrix34;
+        let pureMatrix: OpenVR.HmdMatrix34;
+        let hmdTransform: OpenVR.HmdMatrix34;
+        try {
+          [finalMatrix, pureMatrix, hmdTransform] = await extractOrigin();
+        } catch (error) {
+          LogChannel.error(
+            "vrcorigin",
+            `extractOrigin failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          await wait(33);
+          continue;
+        }
 
         if (state.transformStabilizer) {
           const stabilizedMatrix = state.transformStabilizer.getStabilizedTransform(

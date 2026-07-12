@@ -34,6 +34,10 @@ function getNoOpenVrEnabled(): boolean {
   return isEnabledArg("--novr");
 }
 
+function getDesktopControlEnabled(): boolean {
+  return Deno.args.includes("--desktop");
+}
+
 function getNativeRaylibOpenVrDebugEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
   if (raw == null) {
@@ -134,6 +138,10 @@ async function createOpenVrScene() {
   const displayInstance = await PostMan.create("./displayInstance.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
   const agentRepl = await PostMan.create("./agentRepl.ts", import.meta.url);
+  const desktopControlEnabled = getDesktopControlEnabled();
+  const desktopControl = desktopControlEnabled
+    ? await PostMan.create("./desktopControlSurface.tsx", import.meta.url)
+    : null;
   const actorRegistry = {
     main: state.id,
     openvr: resolveActorId(ivr),
@@ -144,6 +152,7 @@ async function createOpenVrScene() {
     displayInstance: resolveActorId(displayInstance),
     webxr: resolveActorId(webxr),
     agentRepl: resolveActorId(agentRepl),
+    ...(desktopControl ? { desktopControl: resolveActorId(desktopControl) } : {}),
   };
   LogChannel.log("actorroute", {
     event: "main-actor-registry",
@@ -193,6 +202,7 @@ async function createOpenVrScene() {
       disableHostOpenVrInput: getDisableHostOpenVrInputEnabled(),
       raylibBypassRaythree: getRaylibBypassRaythreeEnabled(),
       raylibOpenVrPacedRaythree: getRaylibOpenVrPacedRaythreeEnabled(),
+      desktopViewControlEnabled: desktopControlEnabled,
       hmdDisplayFrequencyHz,
       vrCompositorPointer: compositorPtr,
       /** Sample IVRInput on the webxr XR rAF (after compositor pacing) instead of a ~1kHz SAB writer. */
@@ -242,6 +252,17 @@ async function createOpenVrScene() {
     type: "REGISTER_ACTORS",
     payload: actorRegistry,
   });
+  if (desktopControl && "desktopControl" in actorRegistry) {
+    PostMan.PostMessage({
+      target: resolveActorId(desktopControl),
+      type: "STARTDESKTOPCONTROL",
+      payload: {
+        wristMenuActor: actorRegistry.wristMenu,
+        displayInstanceActor: null,
+        webxrTarget: "webxr",
+      },
+    });
+  }
   /* PostMan.PostMessage({
     target: laser,
     type: "ASSIGNINPUT",

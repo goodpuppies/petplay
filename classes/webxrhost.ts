@@ -146,6 +146,8 @@ type WebXRStatus = {
   xrRafSlowFrameCount: number;
   /** `OpenVrOverlayFramePacer` display index gaps (compositor may have missed vsyncs). */
   vsyncDisplayFramesSkipped: number;
+  desktopViewControlEnabled: boolean;
+  desktopViewOffset: [number, number, number];
 };
 
 export type WebXRShadowFrame = {
@@ -916,6 +918,9 @@ export class WebXRHost {
     halfFovInRadians: number;
     ipdMeters: number;
   } | null = null;
+  private desktopViewControlEnabled = false;
+  private desktopViewOffset: [number, number, number] = [0, 0, 0];
+  private desktopDirectShadowPoseAuthoritative = false;
 
   /** Lerp `α` per XR frame toward raw pose position (`--webxr-controller-pos-lerp`, `0` = raw). */
   private readonly emulatedControllerPosLerp = getWebxrControllerPosLerpFromArgs();
@@ -1273,8 +1278,8 @@ export class WebXRHost {
         LogChannel.log("r3fjob", JSON.stringify(rows));
       }
 
-      const stats = patchR3FSchedulerTiming();
-      setInterval(() => logR3FSchedulerTiming(stats), 1000);
+      const stats = patchR3FSchedulerTiming()
+      //setInterval(() => logR3FSchedulerTiming(stats), 1000)
 
       await this.root.configure({
         renderer: (async (props: Record<string, unknown>) => {
@@ -1440,7 +1445,29 @@ export class WebXRHost {
       xrRafMaxIntervalMs: this.xrRafMaxIntervalMs,
       xrRafSlowFrameCount: this.xrRafSlowFrameCount,
       vsyncDisplayFramesSkipped: this.openVrOverlayPacer?.getFramesSkippedCount() ?? 0,
+      desktopViewControlEnabled: this.desktopViewControlEnabled,
+      desktopViewOffset: [...this.desktopViewOffset],
     };
+  }
+
+  setDesktopViewControlEnabled(enabled: boolean): void {
+    this.desktopViewControlEnabled = enabled;
+    this.desktopDirectShadowPoseAuthoritative = false;
+    if (!enabled) {
+      this.desktopViewOffset = [0, 0, 0];
+    }
+  }
+
+  setDesktopViewOffset(offset: [number, number, number]): void {
+    if (!this.desktopViewControlEnabled) {
+      this.desktopViewOffset = [0, 0, 0];
+      return;
+    }
+    this.desktopViewOffset = [
+      Number.isFinite(offset[0]) ? offset[0] : 0,
+      Number.isFinite(offset[1]) ? offset[1] : 0,
+      Number.isFinite(offset[2]) ? offset[2] : 0,
+    ];
   }
 
   setControllerData(data: ExternalControllerData | null) {
@@ -1627,14 +1654,18 @@ export class WebXRHost {
       return;
     }
     const pose = this.latestShadowPose;
+    const offsetHmd = this.applyDesktopViewOffsetToOpenVrHmdPose(openVrHmd);
     const directViewer = {
-      position: new Float32Array(openVrHmd.position),
-      quaternion: new Float32Array(openVrHmd.quaternion),
+      position: new Float32Array(offsetHmd.position),
+      quaternion: new Float32Array(offsetHmd.quaternion),
     };
-    const directEyes = this.buildOpenVrDirectEyePoses(openVrHmd.matrix, pose.ipdMeters);
+    const directEyes = this.buildOpenVrDirectEyePoses(offsetHmd.matrix, pose.ipdMeters);
+    if (this.desktopViewControlEnabled) {
+      this.desktopDirectShadowPoseAuthoritative = true;
+    }
     this.latestShadowPose = {
       ...pose,
-      lookRotation: this.getOverlayLookRotationMatrixFromWorldHmd(openVrHmd.matrix),
+      lookRotation: this.getOverlayLookRotationMatrixFromWorldHmd(offsetHmd.matrix),
       viewerPosition: directViewer.position,
       viewerQuaternion: directViewer.quaternion,
       leftEyePosition: directEyes.left.position,
@@ -2356,11 +2387,8 @@ export class WebXRHost {
       return;
     }
 
-    this.xrDevice.position?.set?.(
-      hmdPose.position[0],
-      hmdPose.position[1],
-      hmdPose.position[2],
-    );
+    const hmdPosition = this.applyDesktopViewOffsetToPosition(hmdPose.position);
+    this.xrDevice.position?.set?.(hmdPosition[0], hmdPosition[1], hmdPosition[2]);
     this.xrDevice.quaternion?.set?.(
       hmdPose.quaternion[0],
       hmdPose.quaternion[1],
@@ -2443,7 +2471,74 @@ export class WebXRHost {
     };
   }
 
+  private applyDesktopViewOffsetToOpenVrHmdPose(
+    hmdPose: {
+      matrix: Float32Array;
+      position: ArrayLike<number>;
+      quaternion: ArrayLike<number>;
+    },
+  ): {
+    matrix: Float32Array;
+    position: [number, number, number];
+    quaternion: [number, number, number, number];
+  } {
+    if (this.isDesktopViewOffsetZero()) {
+      return {
+        matrix: hmdPose.matrix,
+        position: [
+          Number(hmdPose.position[0] ?? 0),
+          Number(hmdPose.position[1] ?? 0),
+          Number(hmdPose.position[2] ?? 0),
+        ],
+        quaternion: [
+          Number(hmdPose.quaternion[0] ?? 0),
+          Number(hmdPose.quaternion[1] ?? 0),
+          Number(hmdPose.quaternion[2] ?? 0),
+          Number(hmdPose.quaternion[3] ?? 1),
+        ],
+      };
+    }
+    const matrix = new Float32Array(hmdPose.matrix);
+    matrix[12] += this.desktopViewOffset[0];
+    matrix[13] += this.desktopViewOffset[1];
+    matrix[14] += this.desktopViewOffset[2];
+    return {
+      matrix,
+      position: this.applyDesktopViewOffsetToPosition(hmdPose.position),
+      quaternion: [
+        Number(hmdPose.quaternion[0] ?? 0),
+        Number(hmdPose.quaternion[1] ?? 0),
+        Number(hmdPose.quaternion[2] ?? 0),
+        Number(hmdPose.quaternion[3] ?? 1),
+      ],
+    };
+  }
+
+  private applyDesktopViewOffsetToPosition(
+    position: ArrayLike<number>,
+  ): [number, number, number] {
+    return [
+      Number(position[0] ?? 0) + this.desktopViewOffset[0],
+      Number(position[1] ?? 0) + this.desktopViewOffset[1],
+      Number(position[2] ?? 0) + this.desktopViewOffset[2],
+    ];
+  }
+
+  private isDesktopViewOffsetZero(): boolean {
+    return this.desktopViewOffset[0] === 0 &&
+      this.desktopViewOffset[1] === 0 &&
+      this.desktopViewOffset[2] === 0;
+  }
+
   private captureShadowPoseFromRenderer() {
+    if (
+      this.desktopViewControlEnabled &&
+      this.desktopDirectShadowPoseAuthoritative &&
+      this.latestShadowPose != null
+    ) {
+      return;
+    }
+
     const xrCamera = this.renderer?.xr?.getCamera?.() as
       | (THREE.Camera & { cameras?: THREE.PerspectiveCamera[] })
       | null
@@ -2463,7 +2558,10 @@ export class WebXRHost {
       right.position[1] - left.position[1],
       right.position[2] - left.position[2],
     );
-    const openVrHmd = this.openVrOverlayPacer?.getCachedHmdEmulation() ?? null;
+    const openVrHmdRaw = this.openVrOverlayPacer?.getCachedHmdEmulation() ?? null;
+    const openVrHmd = openVrHmdRaw
+      ? this.applyDesktopViewOffsetToOpenVrHmdPose(openVrHmdRaw)
+      : null;
     const directViewer = openVrHmd
       ? {
         position: new Float32Array(openVrHmd.position),

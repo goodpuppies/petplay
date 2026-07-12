@@ -119,6 +119,8 @@ export class OpenVrOverlayFramePacer {
   private paceToDisplayCallCount = 0;
   private lastPredictedSeconds = 0;
   private lastHmd: OpenVrHmdEmulationPose | null = null;
+  private lastFallbackPaceAt = 0;
+  private fallbackVsyncUnavailableLogged = false;
   private readonly poseArrayBuffer: ArrayBuffer;
   private readonly posePtr: Deno.PointerValue<OpenVR.TrackedDevicePose>;
   private displayHzCache: number | null = null;
@@ -183,7 +185,10 @@ export class OpenVrOverlayFramePacer {
       const frameBuf = new BigUint64Array(1);
       const pSec = Deno.UnsafePointer.of(floatBuf) as Deno.PointerValue<number>;
       const pFrame = Deno.UnsafePointer.of(frameBuf) as Deno.PointerValue<bigint>;
-      if (this.vr.GetTimeSinceLastVsync(pSec, pFrame) && frameBuf[0] === this.lastVsyncFrameIndex) {
+      const gotVsync = this.vr.GetTimeSinceLastVsync(pSec, pFrame);
+      if (!gotVsync) {
+        yieldedMs = await this.waitForFallbackDisplayInterval();
+      } else if (frameBuf[0] === this.lastVsyncFrameIndex) {
         this.displayHzCache ??= readHmdFloatProp(
           this.vr,
           OpenVR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
@@ -200,6 +205,25 @@ export class OpenVrOverlayFramePacer {
       }
     }
     return this.paceToDisplayAndRefreshPosesSync(yieldedMs);
+  }
+
+  private async waitForFallbackDisplayInterval(): Promise<number> {
+    this.displayHzCache ??= readHmdFloatProp(
+      this.vr,
+      OpenVR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
+    ) ?? 90;
+    const frameDurationMs = 1000 / this.displayHzCache;
+    const now = performance.now();
+    const elapsedSinceFallback = this.lastFallbackPaceAt > 0
+      ? now - this.lastFallbackPaceAt
+      : frameDurationMs;
+    const waitMs = Math.max(0, frameDurationMs - elapsedSinceFallback);
+    if (waitMs <= 0) {
+      return 0;
+    }
+    const t0 = performance.now();
+    await wait(waitMs);
+    return performance.now() - t0;
   }
 
   private paceToDisplayAndRefreshPosesSync(yieldedMs: number): OpenVrOverlayPaceResult {
@@ -235,16 +259,12 @@ export class OpenVrOverlayFramePacer {
       const spinStart = performance.now();
       while (newIndex === last) {
         if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
-          return this.setLastPaceResult({
-            ok: false,
-            frameIndex: last,
-            previousFrameIndex: last,
+          return this.refreshPosesWithFallbackTiming(
+            last,
             spins,
-            spinTimeMs: performance.now() - spinStart,
+            performance.now() - spinStart,
             yieldedMs,
-            skippedDisplayFrames: 0,
-            waitedForVsync: false,
-          });
+          );
         }
         newIndex = frameBuf[0];
         if (++spins > MAX_VSYNC_POLLS) {
@@ -299,16 +319,12 @@ export class OpenVrOverlayFramePacer {
       this.vr.GetTimeSinceLastVsync(pSec, pFrame);
     } else {
       if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
-        return this.setLastPaceResult({
-          ok: false,
-          frameIndex: this.lastVsyncFrameIndex,
-          previousFrameIndex: this.lastVsyncFrameIndex,
-          spins: 0,
-          spinTimeMs: 0,
+        return this.refreshPosesWithFallbackTiming(
+          this.lastVsyncFrameIndex,
+          0,
+          0,
           yieldedMs,
-          skippedDisplayFrames: 0,
-          waitedForVsync: false,
-        });
+        );
       }
       const newIndex = frameBuf[0];
       if (this.lastVsyncFrameIndex !== 0n && this.lastVsyncFrameIndex + 1n < newIndex) {
@@ -358,6 +374,57 @@ export class OpenVrOverlayFramePacer {
       yieldedMs,
       skippedDisplayFrames,
       waitedForVsync: useVsyncSpin && (spins > 1 || yieldedMs > 0 || advancedOneFrame),
+    });
+  }
+
+  private refreshPosesWithFallbackTiming(
+    previousFrameIndex: bigint,
+    spins: number,
+    spinTimeMs: number,
+    yieldedMs: number,
+  ): OpenVrOverlayPaceResult {
+    this.displayHzCache ??= readHmdFloatProp(
+      this.vr,
+      OpenVR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
+    ) ?? 90;
+    this.secondsVsyncToPhotonsCache ??= readHmdFloatProp(
+      this.vr,
+      OpenVR.TrackedDeviceProperty.Prop_SecondsFromVsyncToPhotons_Float,
+    ) ?? 0;
+
+    if (!this.fallbackVsyncUnavailableLogged) {
+      this.fallbackVsyncUnavailableLogged = true;
+      LogChannel.log(
+        "webxrv2",
+        `[${this.label}] GetTimeSinceLastVsync unavailable; pacing from Prop_DisplayFrequency_Float=${
+          this.displayHzCache.toFixed(2)
+        } Hz`,
+      );
+    }
+
+    const frameDuration = 1.0 / this.displayHzCache;
+    const predictedSecondsFromNow = frameDuration + this.secondsVsyncToPhotonsCache;
+    this.lastPredictedSeconds = predictedSecondsFromNow;
+    this.vr.GetDeviceToAbsoluteTrackingPose(
+      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      predictedSecondsFromNow,
+      this.posePtr,
+      OpenVR.k_unMaxTrackedDeviceCount,
+    );
+    this.lastHmd = this.readHmdPoseAtIndex(OpenVR.k_unTrackedDeviceIndex_Hmd);
+    this.lastFallbackPaceAt = performance.now();
+
+    const frameIndex = previousFrameIndex + 1n;
+    this.lastVsyncFrameIndex = frameIndex;
+    return this.setLastPaceResult({
+      ok: true,
+      frameIndex,
+      previousFrameIndex,
+      spins,
+      spinTimeMs,
+      yieldedMs,
+      skippedDisplayFrames: 0,
+      waitedForVsync: yieldedMs > 0 || previousFrameIndex !== 0n,
     });
   }
 
@@ -468,13 +535,27 @@ export function tryCreateOpenVrOverlayFramePacer(
   }
   const vr = new OpenVR.IVRSystem(sp);
   if (compositorPointer == null) {
-    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label, logVsyncSpin);
+    return new OpenVrOverlayFramePacer(
+      vr,
+      null,
+      crashOnVsyncIndexGap,
+      paceMode,
+      label,
+      logVsyncSpin,
+    );
   }
   const cp = Deno.UnsafePointer.create(
     typeof compositorPointer === "bigint" ? compositorPointer : BigInt(compositorPointer),
   );
   if (cp == null) {
-    return new OpenVrOverlayFramePacer(vr, null, crashOnVsyncIndexGap, paceMode, label, logVsyncSpin);
+    return new OpenVrOverlayFramePacer(
+      vr,
+      null,
+      crashOnVsyncIndexGap,
+      paceMode,
+      label,
+      logVsyncSpin,
+    );
   }
   return new OpenVrOverlayFramePacer(
     vr,
