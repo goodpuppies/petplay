@@ -15,9 +15,29 @@ import { DisplayInstance } from "./displayInstance/logic.tsx";
 import { windowsSystemDisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
 import { SpatialAudioProvider } from "./spatialAudio.tsx";
+import { getPointerById } from "../../submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/pointer.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
+
+// The handle package expects this pointer-events side effect on the *same*
+// Three Object3D constructor used by our scene. Pinning Three to a commit made
+// its implicit load order unreliable, so make the bridge explicit here.
+const object3DPrototype = THREE.Object3D.prototype as THREE.Object3D & {
+  setPointerCapture?: (pointerId: number) => void;
+  releasePointerCapture?: (pointerId: number) => void;
+  hasPointerCapture?: (pointerId: number) => boolean;
+};
+object3DPrototype.setPointerCapture ??= function (this: THREE.Object3D, pointerId: number) {
+  getPointerById(pointerId)?.setCapture(this as never);
+};
+object3DPrototype.releasePointerCapture ??= function (this: THREE.Object3D, pointerId: number) {
+  const pointer = getPointerById(pointerId);
+  if (pointer?.hasCaptured(this as never)) pointer.setCapture(undefined);
+};
+object3DPrototype.hasPointerCapture ??= function (this: THREE.Object3D, pointerId: number) {
+  return getPointerById(pointerId)?.hasCaptured(this as never) ?? false;
+};
 
 declare module "@react-three/fiber/webgpu" {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
