@@ -313,6 +313,20 @@ function getWebxrFrameLogsEnabled(): boolean {
   return !(v === "0" || v === "false" || v === "off" || v === "no");
 }
 
+/**
+ * The scheduler probe wraps every R3F job and is intentionally opt-in: even
+ * with its log timer disabled, collecting timings on every callback is visible
+ * under CPU contention and creates needless Map/object traffic.
+ */
+function getR3fSchedulerTimingEnabled(): boolean {
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-r3f-job-logs"));
+  if (raw == null) {
+    return false;
+  }
+  const v = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
 const DEFAULT_XRAF_STRICT_INTERVAL_MULT = 1.12;
 
 /**
@@ -1278,8 +1292,14 @@ export class WebXRHost {
         LogChannel.log("r3fjob", JSON.stringify(rows));
       }
 
-      const stats = patchR3FSchedulerTiming()
-      //setInterval(() => logR3FSchedulerTiming(stats), 1000)
+      if (getR3fSchedulerTimingEnabled()) {
+        const stats = patchR3FSchedulerTiming();
+        setInterval(() => logR3FSchedulerTiming(stats), 1000);
+        LogChannel.log(
+          "webxrv2",
+          "[webxrhost] R3F scheduler timing enabled (--webxr-r3f-job-logs)",
+        );
+      }
 
       await this.root.configure({
         renderer: (async (props: Record<string, unknown>) => {
@@ -1625,17 +1645,20 @@ export class WebXRHost {
       eyeHeight,
       outputWidth: eyeWidth * 2,
       outputHeight: eyeWidth * 2,
-      lookRotation: new Float32Array(pose.lookRotation),
-      viewerPosition: new Float32Array(pose.viewerPosition),
-      viewerQuaternion: new Float32Array(pose.viewerQuaternion),
-      leftEyePosition: new Float32Array(pose.leftEyePosition),
-      leftEyeQuaternion: new Float32Array(pose.leftEyeQuaternion),
-      leftEyeViewMatrix: new Float32Array(pose.leftEyeViewMatrix),
-      leftEyeProjectionMatrix: new Float32Array(pose.leftEyeProjectionMatrix),
-      rightEyePosition: new Float32Array(pose.rightEyePosition),
-      rightEyeQuaternion: new Float32Array(pose.rightEyeQuaternion),
-      rightEyeViewMatrix: new Float32Array(pose.rightEyeViewMatrix),
-      rightEyeProjectionMatrix: new Float32Array(pose.rightEyeProjectionMatrix),
+      // The overlay consumes this snapshot synchronously in the same worker.
+      // Keep the immutable pose arrays by reference instead of cloning eleven
+      // typed arrays on every display frame.
+      lookRotation: pose.lookRotation,
+      viewerPosition: pose.viewerPosition,
+      viewerQuaternion: pose.viewerQuaternion,
+      leftEyePosition: pose.leftEyePosition,
+      leftEyeQuaternion: pose.leftEyeQuaternion,
+      leftEyeViewMatrix: pose.leftEyeViewMatrix,
+      leftEyeProjectionMatrix: pose.leftEyeProjectionMatrix,
+      rightEyePosition: pose.rightEyePosition,
+      rightEyeQuaternion: pose.rightEyeQuaternion,
+      rightEyeViewMatrix: pose.rightEyeViewMatrix,
+      rightEyeProjectionMatrix: pose.rightEyeProjectionMatrix,
       halfFovInRadians: pose.halfFovInRadians,
       ipdMeters: pose.ipdMeters,
       ...(this.raylibDebugControllerCube &&

@@ -42,6 +42,14 @@ function getDesktopControlEnabled(): boolean {
   return Deno.args.includes("--desktop");
 }
 
+function getScreenCaptureFps(): number {
+  const raw = Deno.args
+    .find((a) => a.startsWith("--screen-capture-fps="))
+    ?.split("=", 2)[1];
+  const value = raw == null ? 10 : Number(raw);
+  return Number.isFinite(value) ? Math.max(1, Math.min(60, value)) : 10;
+}
+
 function getNativeRaylibOpenVrDebugEnabled(): boolean {
   const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
   if (raw == null) {
@@ -274,6 +282,7 @@ async function continueOpenVrScene(
       displayName: "PetPlay display",
       runScreenCapture: true,
       captureFrameLimit: 0,
+      captureFps: getScreenCaptureFps(),
       initialWidthMeters: (16 / 9) * 0.5,
       enableMouseInput: true,
     },

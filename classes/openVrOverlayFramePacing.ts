@@ -25,6 +25,7 @@ function matrix3x4RowsToQuaternion(
     [number, number, number, number],
     [number, number, number, number],
   ],
+  target: [number, number, number, number] = [0, 0, 0, 1],
 ): [number, number, number, number] {
   const m00 = m[0][0], m01 = m[0][1], m02 = m[0][2];
   const m10 = m[1][0], m11 = m[1][1], m12 = m[1][2];
@@ -32,38 +33,34 @@ function matrix3x4RowsToQuaternion(
   const trace = m00 + m11 + m22;
   if (trace > 0) {
     const s = Math.sqrt(trace + 1.0) * 2;
-    return [
-      (m21 - m12) / s,
-      (m02 - m20) / s,
-      (m10 - m01) / s,
-      0.25 * s,
-    ];
+    target[0] = (m21 - m12) / s;
+    target[1] = (m02 - m20) / s;
+    target[2] = (m10 - m01) / s;
+    target[3] = 0.25 * s;
+    return target;
   }
   if (m00 > m11 && m00 > m22) {
     const s = Math.sqrt(1.0 + m00 - m11 - m22) * 2;
-    return [
-      0.25 * s,
-      (m01 + m10) / s,
-      (m02 + m20) / s,
-      (m21 - m12) / s,
-    ];
+    target[0] = 0.25 * s;
+    target[1] = (m01 + m10) / s;
+    target[2] = (m02 + m20) / s;
+    target[3] = (m21 - m12) / s;
+    return target;
   }
   if (m11 > m22) {
     const s = Math.sqrt(1.0 + m11 - m00 - m22) * 2;
-    return [
-      (m01 + m10) / s,
-      0.25 * s,
-      (m12 + m21) / s,
-      (m02 - m20) / s,
-    ];
+    target[0] = (m01 + m10) / s;
+    target[1] = 0.25 * s;
+    target[2] = (m12 + m21) / s;
+    target[3] = (m02 - m20) / s;
+    return target;
   }
   const s = Math.sqrt(1.0 + m22 - m00 - m11) * 2;
-  return [
-    (m02 + m20) / s,
-    (m12 + m21) / s,
-    0.25 * s,
-    (m10 - m01) / s,
-  ];
+  target[0] = (m02 + m20) / s;
+  target[1] = (m12 + m21) / s;
+  target[2] = 0.25 * s;
+  target[3] = (m10 - m01) / s;
+  return target;
 }
 
 function readHmdFloatProp(
@@ -123,6 +120,21 @@ export class OpenVrOverlayFramePacer {
   private fallbackVsyncUnavailableLogged = false;
   private readonly poseArrayBuffer: ArrayBuffer;
   private readonly posePtr: Deno.PointerValue<OpenVR.TrackedDevicePose>;
+  private readonly vsyncSecondsBuffer = new Float32Array(1);
+  private readonly vsyncFrameBuffer = new BigUint64Array(1);
+  private readonly vsyncSecondsPtr = Deno.UnsafePointer.of(
+    this.vsyncSecondsBuffer,
+  ) as Deno.PointerValue<number>;
+  private readonly vsyncFramePtr = Deno.UnsafePointer.of(
+    this.vsyncFrameBuffer,
+  ) as Deno.PointerValue<bigint>;
+  private readonly poseViews: DataView<ArrayBuffer>[];
+  private readonly poseCache: OpenVrHmdEmulationPose[];
+  private readonly poseRowsCache: [
+    [number, number, number, number],
+    [number, number, number, number],
+    [number, number, number, number],
+  ][];
   private displayHzCache: number | null = null;
   private secondsVsyncToPhotonsCache: number | null = null;
   private readonly fpsCounter = new FpsCounter();
@@ -158,6 +170,27 @@ export class OpenVrOverlayFramePacer {
     this.posePtr = Deno.UnsafePointer.of(this.poseArrayBuffer) as Deno.PointerValue<
       OpenVR.TrackedDevicePose
     >;
+    this.poseViews = Array.from(
+      { length: OpenVR.k_unMaxTrackedDeviceCount },
+      (_, index) =>
+        new DataView(
+          this.poseArrayBuffer,
+          index * OpenVR.TrackedDevicePoseStruct.byteSize,
+          OpenVR.TrackedDevicePoseStruct.byteSize,
+        ),
+    );
+    this.poseCache = Array.from(
+      { length: OpenVR.k_unMaxTrackedDeviceCount },
+      () => ({
+        matrix: new Float32Array(16),
+        position: [0, 0, 0],
+        quaternion: [0, 0, 0, 1],
+      }),
+    );
+    this.poseRowsCache = Array.from(
+      { length: OpenVR.k_unMaxTrackedDeviceCount },
+      () => [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+    );
   }
 
   /**
@@ -181,20 +214,19 @@ export class OpenVrOverlayFramePacer {
   ): Promise<OpenVrOverlayPaceResult> {
     let yieldedMs = 0;
     if (this.paceMode === "vsync" && this.lastVsyncFrameIndex !== 0n) {
-      const floatBuf = new Float32Array(1);
-      const frameBuf = new BigUint64Array(1);
-      const pSec = Deno.UnsafePointer.of(floatBuf) as Deno.PointerValue<number>;
-      const pFrame = Deno.UnsafePointer.of(frameBuf) as Deno.PointerValue<bigint>;
-      const gotVsync = this.vr.GetTimeSinceLastVsync(pSec, pFrame);
+      const gotVsync = this.vr.GetTimeSinceLastVsync(
+        this.vsyncSecondsPtr,
+        this.vsyncFramePtr,
+      );
       if (!gotVsync) {
         yieldedMs = await this.waitForFallbackDisplayInterval();
-      } else if (frameBuf[0] === this.lastVsyncFrameIndex) {
+      } else if (this.vsyncFrameBuffer[0] === this.lastVsyncFrameIndex) {
         this.displayHzCache ??= readHmdFloatProp(
           this.vr,
           OpenVR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
         ) ?? 90;
         const frameDurationMs = 1000 / this.displayHzCache;
-        const secondsSinceLastVsync = floatBuf[0];
+        const secondsSinceLastVsync = this.vsyncSecondsBuffer[0];
         const untilNextVsyncMs = frameDurationMs - secondsSinceLastVsync * 1000;
         const coarseWaitMs = Math.max(0, untilNextVsyncMs - spinTailMs);
         if (coarseWaitMs >= 0.5 && coarseWaitMs <= MAX_VSYNC_COARSE_YIELD_MS) {
@@ -242,11 +274,6 @@ export class OpenVrOverlayFramePacer {
       });
     }
 
-    const floatBuf = new Float32Array(1);
-    const frameBuf = new BigUint64Array(1);
-    const pSec = Deno.UnsafePointer.of(floatBuf) as Deno.PointerValue<number>;
-    const pFrame = Deno.UnsafePointer.of(frameBuf) as Deno.PointerValue<bigint>;
-
     const useVsyncSpin = this.paceMode === "vsync";
     let previousFrameIndex = this.lastVsyncFrameIndex;
     let currentFrameIndex = this.lastVsyncFrameIndex;
@@ -258,7 +285,7 @@ export class OpenVrOverlayFramePacer {
       let newIndex = last;
       const spinStart = performance.now();
       while (newIndex === last) {
-        if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
+        if (!this.vr.GetTimeSinceLastVsync(this.vsyncSecondsPtr, this.vsyncFramePtr)) {
           return this.refreshPosesWithFallbackTiming(
             last,
             spins,
@@ -266,7 +293,7 @@ export class OpenVrOverlayFramePacer {
             yieldedMs,
           );
         }
-        newIndex = frameBuf[0];
+        newIndex = this.vsyncFrameBuffer[0];
         if (++spins > MAX_VSYNC_POLLS) {
           const spinTime = performance.now() - spinStart;
           LogChannel.log(
@@ -316,9 +343,9 @@ export class OpenVrOverlayFramePacer {
         );
       }
 
-      this.vr.GetTimeSinceLastVsync(pSec, pFrame);
+      this.vr.GetTimeSinceLastVsync(this.vsyncSecondsPtr, this.vsyncFramePtr);
     } else {
-      if (!this.vr.GetTimeSinceLastVsync(pSec, pFrame)) {
+      if (!this.vr.GetTimeSinceLastVsync(this.vsyncSecondsPtr, this.vsyncFramePtr)) {
         return this.refreshPosesWithFallbackTiming(
           this.lastVsyncFrameIndex,
           0,
@@ -326,7 +353,7 @@ export class OpenVrOverlayFramePacer {
           yieldedMs,
         );
       }
-      const newIndex = frameBuf[0];
+      const newIndex = this.vsyncFrameBuffer[0];
       if (this.lastVsyncFrameIndex !== 0n && this.lastVsyncFrameIndex + 1n < newIndex) {
         skippedDisplayFrames = Number(newIndex - this.lastVsyncFrameIndex - 1n);
         this.framesSkipped += skippedDisplayFrames;
@@ -335,7 +362,7 @@ export class OpenVrOverlayFramePacer {
       this.lastVsyncFrameIndex = newIndex;
       currentFrameIndex = newIndex;
     }
-    const secondsSinceLastVsync = floatBuf[0];
+    const secondsSinceLastVsync = this.vsyncSecondsBuffer[0];
 
     this.displayHzCache ??= readHmdFloatProp(
       this.vr,
@@ -471,46 +498,41 @@ export class OpenVrOverlayFramePacer {
   private readHmdPoseAtIndex(
     index: number,
   ): OpenVrHmdEmulationPose | null {
-    const poseView = new DataView(
-      this.poseArrayBuffer,
-      index * OpenVR.TrackedDevicePoseStruct.byteSize,
-      OpenVR.TrackedDevicePoseStruct.byteSize,
-    );
-    const hmdPose = OpenVR.TrackedDevicePoseStruct.read(
-      poseView,
-    ) as unknown as OpenVR.TrackedDevicePose;
-    if (!hmdPose.bPoseIsValid) {
+    const poseView = this.poseViews[index];
+    const poseValidOffset = OpenVR.HmdMatrix34Struct.byteSize +
+      OpenVR.HmdVector3Struct.byteSize * 2 + 4;
+    if (poseView.getUint8(poseValidOffset) === 0) {
       return null;
     }
-    const m = hmdPose.mDeviceToAbsoluteTracking.m;
-    return {
-      matrix: new Float32Array([
-        m[0][0],
-        m[1][0],
-        m[2][0],
-        0,
-        m[0][1],
-        m[1][1],
-        m[2][1],
-        0,
-        m[0][2],
-        m[1][2],
-        m[2][2],
-        0,
-        m[0][3],
-        m[1][3],
-        m[2][3],
-        1,
-      ]),
-      position: [m[0][3], m[1][3], m[2][3]],
-      quaternion: matrix3x4RowsToQuaternion(
-        m as [
-          [number, number, number, number],
-          [number, number, number, number],
-          [number, number, number, number],
-        ],
-      ),
-    };
+    const m = this.poseRowsCache[index];
+    for (let row = 0; row < 3; row++) {
+      for (let column = 0; column < 4; column++) {
+        m[row][column] = poseView.getFloat32((row * 4 + column) * 4, true);
+      }
+    }
+    const pose = this.poseCache[index];
+    const matrix = pose.matrix;
+    matrix[0] = m[0][0];
+    matrix[1] = m[1][0];
+    matrix[2] = m[2][0];
+    matrix[3] = 0;
+    matrix[4] = m[0][1];
+    matrix[5] = m[1][1];
+    matrix[6] = m[2][1];
+    matrix[7] = 0;
+    matrix[8] = m[0][2];
+    matrix[9] = m[1][2];
+    matrix[10] = m[2][2];
+    matrix[11] = 0;
+    matrix[12] = m[0][3];
+    matrix[13] = m[1][3];
+    matrix[14] = m[2][3];
+    matrix[15] = 1;
+    pose.position[0] = m[0][3];
+    pose.position[1] = m[1][3];
+    pose.position[2] = m[2][3];
+    matrix3x4RowsToQuaternion(m, pose.quaternion);
+    return pose;
   }
 }
 

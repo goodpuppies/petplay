@@ -18,6 +18,7 @@ export class OpenVrOverlayTexture {
   private overlayHandle: OpenVR.OverlayHandle | null = null;
   private textureStructPtr: Deno.PointerValue<OpenVR.Texture> | null = null;
   private textureStructView: DataView<ArrayBuffer> | null = null;
+  private textureHandle: number | null = null;
   private boundsView: DataView<ArrayBuffer> | null = null;
   private transformView: DataView<ArrayBuffer> | null = null;
 
@@ -48,7 +49,10 @@ export class OpenVrOverlayTexture {
     // server-side overlay so the new renderer always owns the presented image.
     if (createError === OpenVR.OverlayError.VROverlayError_KeyInUse) {
       const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-      this.assertOverlayOk(this.overlayClass.FindOverlay(key, staleHandlePtr), "Find stale overlay");
+      this.assertOverlayOk(
+        this.overlayClass.FindOverlay(key, staleHandlePtr),
+        "Find stale overlay",
+      );
       const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
       try {
         this.overlayClass.HideOverlay(staleHandle);
@@ -140,6 +144,9 @@ export class OpenVrOverlayTexture {
   }
 
   setTextureHandle(textureHandle: number) {
+    if (this.textureHandle === textureHandle && this.textureStructPtr) {
+      return;
+    }
     const textureData = {
       handle: BigInt(textureHandle),
       eType: OpenVR.TextureType.TextureType_OpenGL,
@@ -152,6 +159,7 @@ export class OpenVrOverlayTexture {
 
     this.textureStructPtr = textureStructPtr;
     this.textureStructView = textureStructView;
+    this.textureHandle = textureHandle;
   }
 
   present() {
@@ -177,6 +185,7 @@ export class OpenVrOverlayTexture {
 
     this.textureStructPtr = null;
     this.textureStructView = null;
+    this.textureHandle = null;
     this.boundsView = null;
     this.transformView = null;
   }

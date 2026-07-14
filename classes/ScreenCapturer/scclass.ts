@@ -20,6 +20,8 @@ export interface CapturedFrame {
 export interface ScreenCapturerOptions {
   /** TCP port to use for communication with the capture process. Defaults to 12345. */
   port?: number;
+  /** Capture rate requested from Windows.Graphics.Capture. Defaults to 10. */
+  fps?: number;
   /** Path to the screen-streamer executable. Defaults to "./screen-streamer". */
   executablePath?: string;
   /** Whether to log debug information. Defaults to false. */
@@ -35,25 +37,25 @@ export interface ScreenCapturerOptions {
 /**
  * ScreenCapturer provides a high-level interface for capturing screen content.
  * It manages the screen capture process and provides easy access to the latest frame.
- * 
+ *
  * Example usage:
  * ```typescript
  * const capturer = new ScreenCapturer();
- * 
+ *
  * // Get the latest frame
  * const frame = await capturer.getLatestFrame();
  * if (frame) {
  *   console.log(`Got frame: ${frame.width}x${frame.height}`);
  *   // Use frame.data (RGBA pixels)...
  * }
- * 
+ *
  * // Clean up when done
  * await capturer.dispose();
  * ```
  */
 export class ScreenCapturer {
   private static readonly LISTENER_START_TIMEOUT_MS = 5_000;
-//#region privates
+  //#region privates
   private process: Deno.ChildProcess | null = null;
   private worker: Worker | null = null;
   private frameData: CapturedFrame | null = null;
@@ -64,7 +66,9 @@ export class ScreenCapturer {
   private startPromise: Promise<void> | null = null;
   private processExit: Deno.CommandStatus | null = null;
   private stopping = false;
-//#endregion
+  private statsStartedAt = performance.now();
+  private frameWaiters: Array<(frame: CapturedFrame | null) => void> = [];
+  //#endregion
   /**
    * Creates a new ScreenCapturer instance and automatically starts the capture process.
    * @param options Configuration options for the capturer
@@ -72,6 +76,7 @@ export class ScreenCapturer {
   constructor(options: ScreenCapturerOptions = {}) {
     this.options = {
       port: options.port ?? 12345,
+      fps: Math.max(1, Math.min(60, options.fps ?? 10)),
       executablePath: options.executablePath ?? "./screen-streamer",
       debug: options.debug ?? false,
       onStats: options.onStats ?? (() => {}),
@@ -113,54 +118,63 @@ export class ScreenCapturer {
   private async initializeCapture(): Promise<void> {
     this.log("Starting frame receiver worker...");
     this.worker = new Worker(new URL("./frame_receiver_worker.ts", import.meta.url).href, {
-      type: "module"
+      type: "module",
     });
 
     // Wait for worker to be ready
     try {
       await Promise.race([
         new Promise<void>((resolve, reject) => {
-      if (!this.worker) return reject(new Error("Worker not initialized"));
+          if (!this.worker) return reject(new Error("Worker not initialized"));
 
-      this.worker.onerror = (event) => {
-        event.preventDefault();
-        reject(new Error(`Capture receiver worker failed to load: ${event.message}`));
-      };
-      this.worker.onmessageerror = () => {
-        reject(new Error("Capture receiver worker could not deserialize a message"));
-      };
+          this.worker.onerror = (event) => {
+            event.preventDefault();
+            reject(new Error(`Capture receiver worker failed to load: ${event.message}`));
+          };
+          this.worker.onmessageerror = () => {
+            reject(new Error("Capture receiver worker could not deserialize a message"));
+          };
 
-      this.worker.onmessage = (e: MessageEvent) => {
-        const { type, data, width, height, receiveTime, error } = e.data;
-        if (type === 'listening') {
-          this.log("TCP server started on worker");
-          resolve();
-        } else if (type === 'connected') {
-          this.log("Client connected to worker");
-        } else if (type === 'frame') {
-          this.frameData = { data, width, height, receiveTime };
-          this.frameCount++;
-          this.totalReceiveTime += receiveTime;
+          this.worker.onmessage = (e: MessageEvent) => {
+            const { type, data, width, height, receiveTime, error } = e.data;
+            if (type === "listening") {
+              this.log("TCP server started on worker");
+              resolve();
+            } else if (type === "connected") {
+              this.log("Client connected to worker");
+            } else if (type === "frame") {
+              this.frameData = { data, width, height, receiveTime };
+              const waiters = this.frameWaiters.splice(0);
+              for (const finish of waiters) finish(this.frameData);
+              this.frameCount++;
+              this.totalReceiveTime += receiveTime;
 
-          if (this.frameCount % 30 === 0) {
-            const avgLatency = this.totalReceiveTime / this.frameCount;
-            const fps = 1000 / (avgLatency + 16.67); // Approximate FPS including vsync
-            this.options.onStats({ fps, avgLatency });
-            this.totalReceiveTime = 0;
-            this.frameCount = 0;
-          }
-        } else if (type === 'error') {
-          this.log('Worker error:', error);
-          reject(new Error(error));
-        }
-      };
+              if (this.frameCount % 30 === 0) {
+                const avgLatency = this.totalReceiveTime / this.frameCount;
+                const now = performance.now();
+                const fps = (this.frameCount * 1000) / Math.max(1, now - this.statsStartedAt);
+                this.options.onStats({ fps, avgLatency });
+                this.totalReceiveTime = 0;
+                this.frameCount = 0;
+                this.statsStartedAt = now;
+              }
+            } else if (type === "error") {
+              this.log("Worker error:", error);
+              reject(new Error(error));
+            }
+          };
 
-      // Tell worker to start TCP server
-      this.worker.postMessage({ type: 'connect', port: this.options.port });
+          // Tell worker to start TCP server
+          this.worker.postMessage({ type: "connect", port: this.options.port });
         }),
         new Promise<never>((_, reject) => {
           setTimeout(
-            () => reject(new Error(`Capture receiver did not start listening within ${ScreenCapturer.LISTENER_START_TIMEOUT_MS}ms`)),
+            () =>
+              reject(
+                new Error(
+                  `Capture receiver did not start listening within ${ScreenCapturer.LISTENER_START_TIMEOUT_MS}ms`,
+                ),
+              ),
             ScreenCapturer.LISTENER_START_TIMEOUT_MS,
           );
         }),
@@ -173,6 +187,7 @@ export class ScreenCapturer {
 
     // Start the Rust process after worker is ready
     const command = new Deno.Command(this.options.executablePath, {
+      args: [`--fps=${this.options.fps}`, `--port=${this.options.port}`],
       // The helper reads Enter to stop. Keep stdin open for its lifetime rather
       // than giving it Deno.Command's closed default, which makes it exit at
       // once as if the user had pressed Enter.
@@ -191,21 +206,25 @@ export class ScreenCapturer {
         this.options.onExit(status);
       }
     });
-    
-    // Handle process output
-    this.process.stderr.pipeTo(new WritableStream({
-      write: (chunk) => {
-        const text = new TextDecoder().decode(chunk);
-        this.log("Process stderr:", text);
-      }
-    }));
 
-    this.process.stdout.pipeTo(new WritableStream({
-      write: (chunk) => {
-        const text = new TextDecoder().decode(chunk);
-        this.log("Process stdout:", text);
-      }
-    }));
+    // Handle process output
+    this.process.stderr.pipeTo(
+      new WritableStream({
+        write: (chunk) => {
+          const text = new TextDecoder().decode(chunk);
+          this.log("Process stderr:", text);
+        },
+      }),
+    );
+
+    this.process.stdout.pipeTo(
+      new WritableStream({
+        write: (chunk) => {
+          const text = new TextDecoder().decode(chunk);
+          this.log("Process stdout:", text);
+        },
+      }),
+    );
   }
 
   /**
@@ -220,6 +239,30 @@ export class ScreenCapturer {
     return this.frameData;
   }
 
+  /** Wait for a frame object newer than `previous`, avoiding duplicate timer polling. */
+  async getNextFrame(
+    previous: CapturedFrame | null,
+    timeoutMs = 1_000,
+  ): Promise<CapturedFrame | null> {
+    if (!this.isStarted) await this.start();
+    if (this.frameData && this.frameData !== previous) return this.frameData;
+
+    return await new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (frame: CapturedFrame | null) => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        const index = this.frameWaiters.indexOf(finish);
+        if (index >= 0) this.frameWaiters.splice(index, 1);
+        resolve(frame);
+      };
+      timer = setTimeout(() => finish(null), timeoutMs);
+      this.frameWaiters.push(finish);
+    });
+  }
+
   getStatus() {
     return {
       started: this.isStarted,
@@ -229,6 +272,8 @@ export class ScreenCapturer {
       processRunning: this.process !== null && this.processExit === null,
       processExitCode: this.processExit?.code ?? null,
       processSuccess: this.processExit?.success ?? null,
+      latestFrameWidth: this.frameData?.width ?? null,
+      latestFrameHeight: this.frameData?.height ?? null,
     };
   }
 
@@ -239,13 +284,13 @@ export class ScreenCapturer {
   async dispose() {
     this.stopping = true;
     this.isStarted = false;
-    
+
     if (this.worker) {
-      this.worker.postMessage({ type: 'stop' });
+      this.worker.postMessage({ type: "stop" });
       this.worker.terminate();
       this.worker = null;
     }
-    
+
     if (this.process) {
       try {
         this.process.kill();
@@ -258,5 +303,7 @@ export class ScreenCapturer {
     }
 
     this.frameData = null;
+    const waiters = this.frameWaiters.splice(0);
+    for (const finish of waiters) finish(null);
   }
 }

@@ -33,10 +33,9 @@ const DEBUG_LEFT_CONTROLLER_CUBE_WIRE = {
 } as raylib.Color;
 
 /**
- * Per-eye render target (pixels) for 3D + uikit. Default is native 2560/eye. UI cost is dominated by
- * per-panel DrawMesh + uniform updates in the Raylib uikit path, not this resolution alone. Use
- * `--webxr-raylib-eye-size=1280` (or another size) to trade overlay sharpness for fill rate while
- * profiling or on weaker GPUs.
+ * Per-eye render target (pixels) for 3D + uikit. The 3560/eye default preserves the high-resolution
+ * 7120-square stacked stereo panorama. Use `--webxr-raylib-eye-size=2048` (or another smaller value)
+ * to trade sharpness for fill rate and VRAM while profiling or on weaker GPUs.
  */
 function getRaylibNativeEyeSize(): number {
   const arg = Deno.args
@@ -92,26 +91,24 @@ function toRaylibMatrix(values: Float32Array): raylib.Matrix {
 }
 
 function createRaylibLookRotation(values: Float32Array): raylib.Matrix {
-  return toRaylibMatrix(
-    new Float32Array([
-      -(values[0] ?? 1),
-      -(values[1] ?? 0),
-      -(values[2] ?? 0),
-      -(values[3] ?? 0),
-      values[4] ?? 0,
-      values[5] ?? 1,
-      values[6] ?? 0,
-      values[7] ?? 0,
-      -(values[8] ?? 0),
-      -(values[9] ?? 0),
-      -(values[10] ?? 1),
-      -(values[11] ?? 0),
-      values[12] ?? 0,
-      values[13] ?? 0,
-      values[14] ?? 0,
-      values[15] ?? 1,
-    ]),
-  );
+  return {
+    m0: -(values[0] ?? 1),
+    m4: values[4] ?? 0,
+    m8: -(values[8] ?? 0),
+    m12: values[12] ?? 0,
+    m1: -(values[1] ?? 0),
+    m5: values[5] ?? 1,
+    m9: -(values[9] ?? 0),
+    m13: values[13] ?? 0,
+    m2: -(values[2] ?? 0),
+    m6: values[6] ?? 0,
+    m10: -(values[10] ?? 1),
+    m14: values[14] ?? 0,
+    m3: -(values[3] ?? 0),
+    m7: values[7] ?? 0,
+    m11: -(values[11] ?? 0),
+    m15: values[15] ?? 1,
+  };
 }
 
 export class WebXROverlayRaylib {
@@ -131,6 +128,8 @@ export class WebXROverlayRaylib {
   private outputUvOffsetLocation = -1;
   private readonly uniqueId = crypto.randomUUID().slice(0, 8);
   private resolvedEyeSize: number | null = null;
+  private readonly shaderVec2Buffer = new Float32Array(2);
+  private readonly halfFovBuffer = new Float32Array(1);
 
   initialize(name = "WebXR Overlay") {
     if (this.windowInitialized) {
@@ -202,8 +201,9 @@ export class WebXROverlayRaylib {
     if (location < 0) {
       return;
     }
-    const buffer = new Float32Array([x, y]);
-    const pointer = Deno.UnsafePointer.of(buffer);
+    this.shaderVec2Buffer[0] = x;
+    this.shaderVec2Buffer[1] = y;
+    const pointer = Deno.UnsafePointer.of(this.shaderVec2Buffer);
     if (!pointer) {
       throw new Error("Failed to allocate raylib vec2 uniform buffer");
     }
@@ -406,8 +406,8 @@ export class WebXROverlayRaylib {
       this.lookRotationLocation,
       createRaylibLookRotation(payload.frame.lookRotation),
     );
-    const halfFovBuffer = new Float32Array([payload.frame.halfFovInRadians]);
-    const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
+    this.halfFovBuffer[0] = payload.frame.halfFovInRadians;
+    const halfFovPointer = Deno.UnsafePointer.of(this.halfFovBuffer);
     if (!halfFovPointer) {
       throw new Error("Failed to allocate raylib half-FOV uniform buffer");
     }
@@ -542,8 +542,8 @@ export class WebXROverlayRaylib {
       this.lookRotationLocation,
       createRaylibLookRotation(frame.lookRotation),
     );
-    const halfFovBuffer = new Float32Array([frame.halfFovInRadians]);
-    const halfFovPointer = Deno.UnsafePointer.of(halfFovBuffer);
+    this.halfFovBuffer[0] = frame.halfFovInRadians;
+    const halfFovPointer = Deno.UnsafePointer.of(this.halfFovBuffer);
     if (!halfFovPointer) {
       throw new Error("Failed to allocate raylib half-FOV uniform buffer");
     }

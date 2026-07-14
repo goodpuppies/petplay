@@ -27,6 +27,8 @@ const state = actorState({
   lastWidthMeters: -1,
   lastHmd: null as OpenVR.HmdMatrix34 | null,
   captureFrames: 0,
+  captureFps: 10,
+  captureFramesPresented: 0,
   lastStartConfig: null as StartDesktopPayload | null,
   overlayPointer: null as bigint | null,
   restartTimerId: null as number | null,
@@ -56,6 +58,8 @@ type StartDesktopPayload = {
    * When capture is on: 0 = stream until STOP; otherwise N frames then stop capture (overlay stays).
    */
   captureFrameLimit?: number;
+  /** Maximum unique desktop frames uploaded to OpenGL/OpenVR each second. */
+  captureFps?: number;
   /** Meters: physical width of the overlay quad (default matches WebXR 16:9 default height). */
   initialWidthMeters?: number;
   /** `true` to enable OpenVR mouse input on the overlay (desktop / interaction). */
@@ -132,7 +136,9 @@ new PostMan(
       void startDesktopWithRetry(payload).catch((error) => {
         LogChannel.error(
           "actor",
-          `[displayInstance] STARTDESKTOP unhandled failure: ${error instanceof Error ? error.message : error}`,
+          `[displayInstance] STARTDESKTOP unhandled failure: ${
+            error instanceof Error ? error.message : error
+          }`,
         );
         scheduleDeferredStartRetry(payload);
       });
@@ -211,6 +217,8 @@ function getDisplayInstanceStatus() {
     overlayHandleActive: state.overlayHandle !== 0n,
     glReady: state.glManager != null,
     screenCaptureActive: state.screenCapturer != null,
+    captureFps: state.captureFps,
+    captureFramesPresented: state.captureFramesPresented,
     screenCapture: state.screenCapturer?.getStatus() ?? null,
     hasTextureStruct: state.textureStructPtr != null,
     lastStartError: state.lastStartError,
@@ -247,16 +255,19 @@ async function stopStaleScreenStreamer(): Promise<void> {
   } catch (error) {
     LogChannel.log(
       "actor",
-      `[displayInstance] stale capture cleanup skipped: ${error instanceof Error ? error.message : error}`,
+      `[displayInstance] stale capture cleanup skipped: ${
+        error instanceof Error ? error.message : error
+      }`,
     );
   }
 }
 
-async function initScreenCapturer(): Promise<ScreenCapturer> {
+async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
   const { ScreenCapturer } = await import("../classes/ScreenCapturer/scclass.ts");
   const logStats = getWebxrFrameLogsEnabled();
   return new ScreenCapturer({
     debug: false,
+    fps,
     onStats: ({ fps, avgLatency }) => {
       if (!logStats) return;
       LogChannel.log(
@@ -297,7 +308,9 @@ async function stopDesktopOverlay(): Promise<void> {
     } catch (error) {
       LogChannel.log(
         "actor",
-        `[displayInstance] screenCapturer dispose failed: ${error instanceof Error ? error.message : error}`,
+        `[displayInstance] screenCapturer dispose failed: ${
+          error instanceof Error ? error.message : error
+        }`,
       );
     }
     state.screenCapturer = null;
@@ -365,7 +378,9 @@ async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void>
         if (attempt < START_DESKTOP_MAX_ATTEMPTS) {
           LogChannel.log(
             "actor",
-            `[displayInstance] STARTDESKTOP attempt ${attempt} failed, retrying: ${error instanceof Error ? error.message : error}`,
+            `[displayInstance] STARTDESKTOP attempt ${attempt} failed, retrying: ${
+              error instanceof Error ? error.message : error
+            }`,
           );
           await wait(START_DESKTOP_RETRY_WAIT_MS * attempt);
           continue;
@@ -410,7 +425,7 @@ function scheduleDeferredStartRetry(config: StartDesktopPayload): void {
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
   if (!state.glManager) throw new Error("glManager is null");
-  state.glManager.createTextureFromData(pixels, width, height);
+  state.glManager.createTextureFromBgraScreenshot(pixels, width, height);
 }
 
 async function deskCapLoop(
@@ -422,20 +437,27 @@ async function deskCapLoop(
   const continuous = maxFrames === 0;
   let frameCount = 0;
   const capturer = state.screenCapturer;
+  let lastFrame: Awaited<ReturnType<typeof capturer.getLatestFrame>> = null;
+  let nextPresentAt = 0;
   while (state.isRunning && (continuous || frameCount < maxFrames)) {
-    const frame = await capturer.getLatestFrame();
+    const frame = await capturer.getNextFrame(lastFrame, 1_000);
     if (!frame) {
-      await wait(100);
       continue;
     }
+    const now = performance.now();
+    if (now < nextPresentAt) {
+      await wait(Math.max(1, nextPresentAt - now));
+      continue;
+    }
+    lastFrame = frame;
     frameCount++;
     createTextureFromScreenshot(frame.data, frame.width, frame.height);
     const err = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
     if (err !== OpenVR.OverlayError.VROverlayError_None) {
       LogChannel.error("actor", `SetOverlayTexture: ${OpenVR.OverlayError[err]}`);
     }
-    overlay.WaitFrameSync(100);
-    await wait(continuous ? 50 : 100);
+    state.captureFramesPresented++;
+    nextPresentAt = performance.now() + 1000 / state.captureFps;
   }
   if (!continuous) {
     state.isRunning = false;
@@ -455,6 +477,8 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
 
   state.isRunning = true;
   state.captureFrames = config.captureFrameLimit ?? 0;
+  state.captureFps = Math.max(1, Math.min(60, config.captureFps ?? 10));
+  state.captureFramesPresented = 0;
   state.lastWidthMeters = -1;
   state.lastHmd = null;
 
@@ -493,7 +517,11 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   state.overlayHandle = overlayHandle;
 
   overlay.SetOverlayWidthInMeters(overlayHandle, widthM);
-  const bounds = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
+  // Windows.Graphics.Capture is top-down. Flip sampling in OpenVR instead of
+  // copying/flipping the entire desktop frame on the CPU before every upload.
+  const bounds = config.runScreenCapture
+    ? { uMin: 0, uMax: 1, vMin: 1, vMax: 0 }
+    : { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
   const [boundsPtr, _] = createStruct<OpenVR.TextureBounds>(bounds, OpenVR.TextureBoundsStruct);
   overlay.SetOverlayTextureBounds(overlayHandle, boundsPtr);
 
@@ -532,7 +560,7 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   state.textureStructPtr = textureStructPtr;
 
   if (config.runScreenCapture) {
-    state.screenCapturer = await initScreenCapturer();
+    state.screenCapturer = await initScreenCapturer(state.captureFps);
     void deskCapLoop(overlay, textureStructPtr).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       LogChannel.error("actor", `[displayInstance] screen capture loop failed: ${message}`);

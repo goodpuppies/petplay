@@ -30,6 +30,17 @@ function tryBeginExit(): boolean {
  * Used by both clean and fatal exit; does not log or `Deno.exit`.
  */
 async function petplaySharedShutdown(): Promise<void> {
+  // Stop native-owning workers before removing their extracted DLL/executable
+  // files. Reverse creation order keeps OpenVR alive until WebXR and display
+  // actors have released their overlays and capture process.
+  const actorIds = [...PostalService.actors.keys()].reverse();
+  for (const actorId of actorIds) {
+    try {
+      await postalservice.murder(actorId);
+    } catch (error) {
+      console.warn(`petplay: actor shutdown failed (${actorId}):`, error);
+    }
+  }
   if (Deno.build.os === "windows") {
     await releaseWindowsSyntheticDisplayMouseState();
     await releaseWindowsSyntheticKeyboardState();
@@ -74,10 +85,20 @@ Deno.addSignalListener("SIGINT", () => {
   void petplayDefaultExit();
 });
 
+const devExitAfterArg = Deno.args.find((arg) => arg.startsWith("--dev-exit-after-ms="));
+if (devExitAfterArg) {
+  const delayMs = Number(devExitAfterArg.split("=", 2)[1]);
+  if (!Number.isFinite(delayMs) || delayMs < 1_000) {
+    throw new Error(`Invalid ${devExitAfterArg}; expected at least 1000ms`);
+  }
+  console.log(`[petplay profile] clean exit scheduled in ${delayMs}ms`);
+  setTimeout(() => void petplayDefaultExit(), delayMs);
+}
+
 function isRecoverableDisplayInstanceWorkerError(ev: ErrorEvent): boolean {
   const message = String(ev.error ?? ev.message ?? "");
   const lower = message.toLowerCase();
-  if (lower.includes("in worker \"./displayinstance.ts\"")) {
+  if (lower.includes('in worker "./displayinstance.ts"')) {
     return true;
   }
   if (lower.includes("displayinstance.ts")) {

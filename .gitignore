@@ -8,4 +8,9 @@ node_modules/
 research/
 agents.md
 logs/
+profiles/
+tests/openvr_raylib_overlay_probe/native_timing.dll
+tests/openvr_raylib_overlay_probe/native_timing.exp
+tests/openvr_raylib_overlay_probe/native_timing.lib
+tests/openvr_raylib_overlay_probe/native_timing.obj
 .codex-runlogs/
