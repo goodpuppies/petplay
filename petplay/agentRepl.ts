@@ -88,13 +88,16 @@ function resolveActor(value: string): ActorId {
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Response(JSON.stringify({ ok: false, error: `Missing ${name}` }), {
-      status: 400,
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "access-control-allow-origin": "*",
+    throw new Response(
+      JSON.stringify({ ok: false, error: `Missing ${name}` }),
+      {
+        status: 400,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "access-control-allow-origin": "*",
+        },
       },
-    });
+    );
   }
   return value;
 }
@@ -124,10 +127,16 @@ async function readJson<T>(request: Request): Promise<T> {
   return (text.length > 0 ? JSON.parse(text) : {}) as T;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeoutId: number | undefined;
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    timeoutId = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
   });
   try {
     return await Promise.race([promise, timeout]);
@@ -144,8 +153,14 @@ function startServer() {
   }
   state.serverStarted = true;
 
-  server = Deno.serve({ hostname: "127.0.0.1", port: state.port }, handleRequest);
-  LogChannel.log("agentRepl", `agent REPL listening on http://127.0.0.1:${state.port}`);
+  server = Deno.serve(
+    { hostname: "127.0.0.1", port: state.port },
+    handleRequest,
+  );
+  LogChannel.log(
+    "agentRepl",
+    `agent REPL listening on http://127.0.0.1:${state.port}`,
+  );
 }
 
 globalThis.addEventListener("unload", () => {
@@ -236,7 +251,9 @@ async function handleRequest(request: Request): Promise<Response> {
     if (request.method === "GET" && url.pathname === "/health/actor") {
       const actor = url.searchParams.get("actor");
       if (!actor) {
-        return json({ ok: false, error: "Missing actor query parameter" }, { status: 400 });
+        return json({ ok: false, error: "Missing actor query parameter" }, {
+          status: 400,
+        });
       }
       const result = await queryActorHealth(actor);
       return json({ ok: result.health.ok !== false, ...result });

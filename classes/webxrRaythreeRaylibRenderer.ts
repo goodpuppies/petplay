@@ -65,7 +65,8 @@ function isWebXrRaythreeUiPanelForceUnbatchedEnabled(): boolean {
     ?.split("=", 2)[1]
     ?.trim()
     .toLowerCase();
-  return configured === "1" || configured === "true" || configured === "yes" || configured === "on";
+  return configured === "1" || configured === "true" || configured === "yes" ||
+    configured === "on";
 }
 
 function isWebXrRaythreeUiPanelBatchDebugEnabled(): boolean {
@@ -74,7 +75,8 @@ function isWebXrRaythreeUiPanelBatchDebugEnabled(): boolean {
     ?.split("=", 2)[1]
     ?.trim()
     .toLowerCase();
-  return configured === "1" || configured === "true" || configured === "yes" || configured === "on";
+  return configured === "1" || configured === "true" || configured === "yes" ||
+    configured === "on";
 }
 
 const WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED = isWebXrRaythreeUiPanelForceUnbatchedEnabled();
@@ -203,7 +205,9 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly worldMatrix = new THREE.Matrix4();
   private readonly sortMatrix = new THREE.Matrix4();
   private readonly sortVector = new THREE.Vector3();
-  private readonly transparentInstanceScratch: Array<RenderInstance | InstancedRenderInstance> = [];
+  private readonly transparentInstanceScratch: Array<
+    RenderInstance | InstancedRenderInstance
+  > = [];
   /** Filled from the current view matrix per frame; `getWorldMatrixViewDepth` reads it (do not re-enter before a sort has finished). */
   private readonly raylibMatrixScratch: raylibBindings.Matrix = {
     m0: 1,
@@ -341,8 +345,14 @@ export class WebXRRaythreeRaylibRenderer {
       raylib.H.ImageFlipVertical(imageHandle.pointer);
       const flippedImage = imageHandle.read();
       const texture = raylib.H.LoadTextureFromImage(flippedImage);
-      raylib.H.SetTextureFilter(texture, raylibBindings.TextureFilter.TEXTURE_FILTER_BILINEAR);
-      raylib.H.SetTextureWrap(texture, raylibBindings.TextureWrap.TEXTURE_WRAP_CLAMP);
+      raylib.H.SetTextureFilter(
+        texture,
+        raylibBindings.TextureFilter.TEXTURE_FILTER_BILINEAR,
+      );
+      raylib.H.SetTextureWrap(
+        texture,
+        raylibBindings.TextureWrap.TEXTURE_WRAP_CLAMP,
+      );
       this.uiMsdfAtlasSize = [flippedImage.width, flippedImage.height];
       raylib.H.UnloadImage(flippedImage);
       this.uiMsdfAtlas = texture;
@@ -353,7 +363,10 @@ export class WebXRRaythreeRaylibRenderer {
       return this.uiMsdfAtlas;
     } catch (error) {
       this.uiMsdfAtlasLoadFailed = true;
-      LogChannel.log("webxrv2", `[webxr] msdf atlas load failed: ${String(error)}`);
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] msdf atlas load failed: ${String(error)}`,
+      );
       return null;
     }
   }
@@ -418,6 +431,10 @@ export class WebXRRaythreeRaylibRenderer {
   }
 
   dispose(): void {
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] raylib scene dispose: geometries=${this.geometries.size}`,
+    );
     for (const geometry of this.geometries.values()) {
       this.unloadNativeMesh(geometry);
     }
@@ -425,10 +442,18 @@ export class WebXRRaythreeRaylibRenderer {
     this.geometryRevisions.clear();
     this.materials.clear();
     this.materialRevisions.clear();
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] raylib scene dispose: textMeshes=${this.uiTextMeshes.size}`,
+    );
     for (const entry of this.uiTextMeshes.values()) {
       this.unloadNativeMesh(entry.mesh);
     }
     this.uiTextMeshes.clear();
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] raylib scene dispose: UI textures and meshes",
+    );
     if (this.uiMsdfAtlas !== null) {
       raylib.H.UnloadTexture(this.uiMsdfAtlas);
       this.uiMsdfAtlas = null;
@@ -448,14 +473,19 @@ export class WebXRRaythreeRaylibRenderer {
       this.uiPanelDataTexture = null;
     }
     this.uiPanelDataBytes = null;
+    LogChannel.log("webxrv2", "[webxr] raylib scene dispose: shaders");
     raylib.H.UnloadShader(this.uiTextShader.shader);
     raylib.H.UnloadShader(this.uiTextBatchShader.shader);
     raylib.H.UnloadShader(this.uiPanelShader.shader);
     raylib.H.UnloadShader(this.uiPanelBatchShader.shader);
     raylib.H.UnloadShader(this.lightingShader.shader);
+    LogChannel.log("webxrv2", "[webxr] raylib scene dispose: complete");
   }
 
-  private syncAssets(extraction: ExtractionResult, debugContext?: string): void {
+  private syncAssets(
+    extraction: ExtractionResult,
+    debugContext?: string,
+  ): void {
     let changedGeometryCount = 0;
     let changedMaterialCount = 0;
 
@@ -557,8 +587,8 @@ export class WebXRRaythreeRaylibRenderer {
     applyLighting(this.lightingShader, frame);
     this.maybeLogProjectionSummary(frame);
     const viewMatrix = (matrices?.viewMatrix ?? frame.camera.viewMatrix) as Float32Array;
-    const projectionMatrix =
-      (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as Float32Array;
+    const projectionMatrix = (matrices?.projectionMatrix ??
+      frame.camera.projectionMatrix) as Float32Array;
     this.sortMatrix.fromArray(viewMatrix as unknown as number[]);
     const scratch = this.transparentInstanceScratch;
     scratch.length = 0;
@@ -580,7 +610,8 @@ export class WebXRRaythreeRaylibRenderer {
     raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
     raylib.H.rlSetMatrixProjection(
       this.matrixForDraw(
-        (matrices?.projectionMatrix ?? frame.camera.projectionMatrix) as ArrayLike<number>,
+        (matrices?.projectionMatrix ??
+          frame.camera.projectionMatrix) as ArrayLike<number>,
       ),
     );
     raylib.H.rlSetMatrixModelview(
@@ -688,7 +719,10 @@ export class WebXRRaythreeRaylibRenderer {
       if (left.renderOrder !== right.renderOrder) {
         return left.renderOrder - right.renderOrder;
       }
-      const orderDifference = compareUiOrderInfo(left.orderInfo, right.orderInfo);
+      const orderDifference = compareUiOrderInfo(
+        left.orderInfo,
+        right.orderInfo,
+      );
       if (orderDifference !== 0) {
         return orderDifference;
       }
@@ -704,7 +738,10 @@ export class WebXRRaythreeRaylibRenderer {
     );
     const t1 = performance.now();
 
-    if (WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED && !this.loggedUiPanelForceUnbatchedOnce) {
+    if (
+      WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED &&
+      !this.loggedUiPanelForceUnbatchedOnce
+    ) {
       this.loggedUiPanelForceUnbatchedOnce = true;
       LogChannel.log(
         "webxrv2",
@@ -799,7 +836,9 @@ export class WebXRRaythreeRaylibRenderer {
     const brdA = panel.data[12] ?? 0;
     if (
       bgA <= 1e-4 &&
-      (brdA <= 1e-4 || (borderTop <= 0 && borderRight <= 0 && borderBottom <= 0 && borderLeft <= 0))
+      (brdA <= 1e-4 ||
+        (borderTop <= 0 && borderRight <= 0 && borderBottom <= 0 &&
+          borderLeft <= 0))
     ) {
       return true;
     }
@@ -920,7 +959,11 @@ export class WebXRRaythreeRaylibRenderer {
       text.color[2],
       text.color[3],
     ]);
-    setShaderFloat(this.uiTextShader.shader, this.uiTextShader.pxRangeLoc, MSDF_PX_RANGE);
+    setShaderFloat(
+      this.uiTextShader.shader,
+      this.uiTextShader.pxRangeLoc,
+      MSDF_PX_RANGE,
+    );
     setShaderVec2(
       this.uiTextShader.shader,
       this.uiTextShader.atlasSizeLoc,
@@ -934,7 +977,11 @@ export class WebXRRaythreeRaylibRenderer {
       projView,
       text.worldMatrix,
     );
-    raylib.H.DrawMesh(mesh.mesh, this.uiTextMaterial, this.matrixForDraw(text.worldMatrix));
+    raylib.H.DrawMesh(
+      mesh.mesh,
+      this.uiTextMaterial,
+      this.matrixForDraw(text.worldMatrix),
+    );
     return true;
   }
 
@@ -944,7 +991,11 @@ export class WebXRRaythreeRaylibRenderer {
     const geometry = text.geometry;
     if (geometry === undefined) return null;
     const key = createUiTextGeometryKey(text.text, geometry);
-    maybeValidateMsdfGeometry(text.text, geometry, this.loggedTextGeometryValidation);
+    maybeValidateMsdfGeometry(
+      text.text,
+      geometry,
+      this.loggedTextGeometryValidation,
+    );
     const existing = this.uiTextMeshes.get(key);
     if (existing !== undefined && existing.version === geometry.version) {
       return existing.mesh;
@@ -1014,7 +1065,10 @@ export class WebXRRaythreeRaylibRenderer {
             material.baseColor,
           );
         }
-        if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+        if (
+          material.transparent &&
+          material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA
+        ) {
           raylib.H.EndBlendMode();
           raylib.H.BeginBlendMode(material.blendMode);
         }
@@ -1028,7 +1082,10 @@ export class WebXRRaythreeRaylibRenderer {
         } finally {
           setWireModeEnabled(false);
         }
-        if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+        if (
+          material.transparent &&
+          material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA
+        ) {
           raylib.H.EndBlendMode();
           raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
         }
@@ -1043,7 +1100,10 @@ export class WebXRRaythreeRaylibRenderer {
         );
       }
 
-      if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+      if (
+        material.transparent &&
+        material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA
+      ) {
         raylib.H.EndBlendMode();
         raylib.H.BeginBlendMode(material.blendMode);
       }
@@ -1052,7 +1112,10 @@ export class WebXRRaythreeRaylibRenderer {
         material.material,
         this.matrixForDraw(worldMatrix),
       );
-      if (material.transparent && material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA) {
+      if (
+        material.transparent &&
+        material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA
+      ) {
         raylib.H.EndBlendMode();
         raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
       }
@@ -1082,7 +1145,11 @@ export class WebXRRaythreeRaylibRenderer {
           index * 16,
         );
         this.instanceMatrix.premultiply(this.worldMatrix);
-        this.drawNativeMesh(nativeMesh, nativeMaterial, this.instanceMatrix.elements);
+        this.drawNativeMesh(
+          nativeMesh,
+          nativeMaterial,
+          this.instanceMatrix.elements,
+        );
       }
       return;
     }
@@ -1332,7 +1399,9 @@ export class WebXRRaythreeRaylibRenderer {
         color: raylib.WHITE,
       },
     );
-    if (WEBXR_RAYTHREE_UI_PANEL_BATCH_DEBUG && !this.loggedUiPanelBatchDebugOnce) {
+    if (
+      WEBXR_RAYTHREE_UI_PANEL_BATCH_DEBUG && !this.loggedUiPanelBatchDebugOnce
+    ) {
       this.loggedUiPanelBatchDebugOnce = true;
       const fmt = raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
       const row0h = f.subarray(0, 16);
@@ -1719,7 +1788,8 @@ function applyLighting(shader: LightingShader, frame: RenderFrame): void {
       ag += light.color[1] * light.intensity;
       ab += light.color[2] * light.intensity;
     } else if (
-      point === undefined && light.type === "point" && light.position !== undefined
+      point === undefined && light.type === "point" &&
+      light.position !== undefined
     ) {
       point = light;
     }
@@ -1993,7 +2063,9 @@ function setShaderVec2(
 
 function toFloat32ArrayLoose(value: unknown): Float32Array {
   if (value instanceof Float32Array) return value;
-  if (Array.isArray(value)) return Float32Array.from(value as ArrayLike<number>);
+  if (Array.isArray(value)) {
+    return Float32Array.from(value as ArrayLike<number>);
+  }
   if (value != null && typeof value === "object") {
     const maybeLength = (value as { length?: number }).length;
     if (typeof maybeLength === "number") {
@@ -2070,7 +2142,8 @@ function buildMsdfGeometryCpu(
   }
   const indicesAny = toIndexArrayLoose(indicesRaw);
   const topology = analyzeMsdfIndexTopology(indicesAny, vertexCount);
-  const useExpandedTriangles = WEBXR_RAYTHREE_TEXT_FORCE_NON_INDEXED || topology.maxIndex > 65535;
+  const useExpandedTriangles = WEBXR_RAYTHREE_TEXT_FORCE_NON_INDEXED ||
+    topology.maxIndex > 65535;
   if (WEBXR_RAYTHREE_TEXT_ASSERT) {
     assertMsdfTopologyInvariants(topology, label ?? "<text>");
   }
@@ -2100,7 +2173,13 @@ function buildMsdfGeometryCpu(
   const colors = buildOpaqueWhiteColors(vertexCount);
   const indices = toUint16ArrayLoose(indicesAny);
   if (WEBXR_RAYTHREE_TEXT_ASSERT) {
-    assertMsdfConversionInvariants(positions2D, positions3D, uvs, indices, label ?? "<text>");
+    assertMsdfConversionInvariants(
+      positions2D,
+      positions3D,
+      uvs,
+      indices,
+      label ?? "<text>",
+    );
   }
   return {
     positions3D,
@@ -2183,7 +2262,10 @@ function toIndexArrayLoose(value: unknown): Uint16Array | Uint32Array {
   if (value instanceof Uint16Array) return value.slice();
   if (value instanceof Uint32Array) return value.slice();
   if (Array.isArray(value)) {
-    const max = value.reduce((acc, entry) => Math.max(acc, Number(entry) || 0), 0);
+    const max = value.reduce(
+      (acc, entry) => Math.max(acc, Number(entry) || 0),
+      0,
+    );
     return max > 65535
       ? Uint32Array.from(value as ArrayLike<number>)
       : Uint16Array.from(value as ArrayLike<number>);
@@ -2192,7 +2274,10 @@ function toIndexArrayLoose(value: unknown): Uint16Array | Uint32Array {
     const maybeLength = (value as { length?: number }).length;
     if (typeof maybeLength === "number") {
       const materialized = Array.from(value as ArrayLike<number>);
-      const max = materialized.reduce((acc, entry) => Math.max(acc, Number(entry) || 0), 0);
+      const max = materialized.reduce(
+        (acc, entry) => Math.max(acc, Number(entry) || 0),
+        0,
+      );
       return max > 65535 ? Uint32Array.from(materialized) : Uint16Array.from(materialized);
     }
     const keys = Object.keys(value as Record<string, number>)
@@ -2221,7 +2306,12 @@ function toIndexArrayLoose(value: unknown): Uint16Array | Uint32Array {
 function analyzeMsdfIndexTopology(
   indices: Uint16Array | Uint32Array,
   vertexCount: number,
-): { maxIndex: number; minIndex: number; indexCount: number; vertexCount: number } {
+): {
+  maxIndex: number;
+  minIndex: number;
+  indexCount: number;
+  vertexCount: number;
+} {
   let maxIndex = 0;
   let minIndex = Number.POSITIVE_INFINITY;
   for (let i = 0; i < indices.length; i++) {
@@ -2234,7 +2324,12 @@ function analyzeMsdfIndexTopology(
 }
 
 function assertMsdfTopologyInvariants(
-  topology: { maxIndex: number; minIndex: number; indexCount: number; vertexCount: number },
+  topology: {
+    maxIndex: number;
+    minIndex: number;
+    indexCount: number;
+    vertexCount: number;
+  },
   label: string,
 ): void {
   if (topology.indexCount === 0) {
@@ -2352,7 +2447,9 @@ function maybeValidateMsdfGeometry(
     const u = uvs[i] ?? 0;
     const v = uvs[i + 1] ?? 0;
     if (u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001) {
-      throw new Error(`[msdf-assert] ${label}: uv out of range at i=${i / 2} uv=(${u},${v})`);
+      throw new Error(
+        `[msdf-assert] ${label}: uv out of range at i=${i / 2} uv=(${u},${v})`,
+      );
     }
   }
   debugLog(
@@ -2392,7 +2489,10 @@ function assertMsdfConversionInvariants(
     const rx = positions3D[i * 3] ?? 0;
     const ry = positions3D[i * 3 + 1] ?? 0;
     const rz = positions3D[i * 3 + 2] ?? 0;
-    if (Math.abs(px - rx) > 1e-6 || Math.abs(py - ry) > 1e-6 || Math.abs(rz) > 1e-6) {
+    if (
+      Math.abs(px - rx) > 1e-6 || Math.abs(py - ry) > 1e-6 ||
+      Math.abs(rz) > 1e-6
+    ) {
       throw new Error(
         `[msdf-assert] ${label}: position conversion mismatch i=${i} src=(${px},${py}) dst=(${rx},${ry},${rz})`,
       );
@@ -2461,7 +2561,9 @@ function unloadUploadedMeshGpuOnly(mesh: raylibBindings.Mesh): void {
   }
   const vboPointer = pointerFromAddress(mesh.vboId);
   if (vboPointer !== null) {
-    const raw = new Deno.UnsafePointerView(vboPointer).getArrayBuffer(RL_MESH_VBO_COUNT * 4);
+    const raw = new Deno.UnsafePointerView(vboPointer).getArrayBuffer(
+      RL_MESH_VBO_COUNT * 4,
+    );
     const view = new DataView(raw);
     for (let i = 0; i < RL_MESH_VBO_COUNT; i++) {
       const id = view.getUint32(i * 4, true);
@@ -2483,7 +2585,9 @@ type PreparedGeometryBuffers = {
   indices: Uint16Array | null;
 };
 
-function prepareGeometryBuffers(asset: GeometryAsset): PreparedGeometryBuffers | null {
+function prepareGeometryBuffers(
+  asset: GeometryAsset,
+): PreparedGeometryBuffers | null {
   const position = asset.attributes.position;
   if (
     position === undefined ||
@@ -2543,7 +2647,9 @@ function expandIndexedGeometry(
 ): PreparedGeometryBuffers {
   const index = asset.index;
   if (index === undefined) {
-    throw new Error(`Geometry ${asset.id} requested indexed expansion without an index buffer.`);
+    throw new Error(
+      `Geometry ${asset.id} requested indexed expansion without an index buffer.`,
+    );
   }
 
   const expandedVertexCount = index.count;
@@ -2579,9 +2685,16 @@ function expandIndexedGeometry(
   };
 }
 
-function readTuple(array: ArrayLike<number>, index: number, itemSize: number): number[] {
+function readTuple(
+  array: ArrayLike<number>,
+  index: number,
+  itemSize: number,
+): number[] {
   const start = index * itemSize;
-  return Array.from({ length: itemSize }, (_, offset) => Number(array[start + offset] ?? 0));
+  return Array.from(
+    { length: itemSize },
+    (_, offset) => Number(array[start + offset] ?? 0),
+  );
 }
 
 function toFloat32Array(array: ArrayLike<number>): Float32Array {
@@ -2600,9 +2713,17 @@ function toColorBytes(array: ArrayLike<number>): Uint8Array {
   return bytes;
 }
 
-function toColorTuple(array: ArrayLike<number>, index: number): [number, number, number, number] {
+function toColorTuple(
+  array: ArrayLike<number>,
+  index: number,
+): [number, number, number, number] {
   const offset = index * 4;
-  const rgba = [array[offset], array[offset + 1], array[offset + 2], array[offset + 3]];
+  const rgba = [
+    array[offset],
+    array[offset + 1],
+    array[offset + 2],
+    array[offset + 3],
+  ];
   return rgba.map((value, channelIndex) => {
     const fallback = channelIndex === 3 ? 1 : 0;
     const numeric = Number(value ?? fallback);
@@ -2768,63 +2889,10 @@ type UiRlglSymbols = {
   };
 };
 
-let uiRlglLibrary: Deno.DynamicLibrary<UiRlglSymbols> | undefined;
-
 function getUiRlglSymbols(): Deno.DynamicLibrary<UiRlglSymbols>["symbols"] {
-  const raylibDllUrl = new URL("../resources/raylib.dll", import.meta.url);
-  const raylibDllPath = Deno.build.os === "windows"
-    ? decodeURIComponent(raylibDllUrl.pathname.replace(/^\/+/, ""))
-    : decodeURIComponent(raylibDllUrl.pathname);
-  uiRlglLibrary ??= Deno.dlopen(
-    raylibDllPath,
-    {
-      rlUnloadVertexArray: {
-        parameters: ["u32"],
-        result: "void",
-      },
-      rlUnloadVertexBuffer: {
-        parameters: ["u32"],
-        result: "void",
-      },
-      rlDisableDepthTest: {
-        parameters: [],
-        result: "void",
-      },
-      rlEnableDepthTest: {
-        parameters: [],
-        result: "void",
-      },
-      rlDisableDepthMask: {
-        parameters: [],
-        result: "void",
-      },
-      rlEnableDepthMask: {
-        parameters: [],
-        result: "void",
-      },
-      rlDisableBackfaceCulling: {
-        parameters: [],
-        result: "void",
-      },
-      rlEnableBackfaceCulling: {
-        parameters: [],
-        result: "void",
-      },
-      rlEnableWireMode: {
-        parameters: [],
-        result: "void",
-      },
-      rlDisableWireMode: {
-        parameters: [],
-        result: "void",
-      },
-      rlColorMask: {
-        parameters: ["bool", "bool", "bool", "bool"],
-        result: "void",
-      },
-    } satisfies UiRlglSymbols,
-  );
-  return uiRlglLibrary.symbols;
+  return raylibBindings.getRaylibSymbols() as unknown as Deno.DynamicLibrary<
+    UiRlglSymbols
+  >["symbols"];
 }
 
 function setUiDepthMaskEnabled(enabled: boolean): void {

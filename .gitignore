@@ -7,3 +7,5 @@ node_modules/
 .cursor/
 research/
 agents.md
+logs/
+.codex-runlogs/

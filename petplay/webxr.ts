@@ -18,7 +18,10 @@ import {
   WebXROverlayRaylib,
 } from "../classes/webxrOverlayRaylib.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
-import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
+import {
+  IntervalMetric,
+  type IntervalMetricSample,
+} from "../classes/intervalMetric.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
 import { WebXRRaythreeSceneBridge } from "../classes/webxrRaythreeScene.ts";
 import {
@@ -45,7 +48,10 @@ import {
 
 const WEBXR_SHUTDOWN_TIMEOUT_MS = 2_000;
 
-async function waitForWebXrShutdown(label: string, promise: Promise<unknown>): Promise<boolean> {
+async function waitForWebXrShutdown(
+  label: string,
+  promise: Promise<unknown>,
+): Promise<boolean> {
   try {
     return await Promise.race([
       promise.then(() => true),
@@ -67,7 +73,9 @@ function getWebxrFrameLogsEnabled(): boolean {
 }
 
 function getNativeRaylibOpenVrDebugEnabled(): boolean {
-  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
+  const raw = Deno.args.find((a) =>
+    a.startsWith("--webxr-native-raylib-debug")
+  );
   if (raw == null) {
     return false;
   }
@@ -76,7 +84,9 @@ function getNativeRaylibOpenVrDebugEnabled(): boolean {
 }
 
 function getNativeRaylibOpenVrDebugWithHostEnabled(): boolean {
-  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug-with-host"));
+  const raw = Deno.args.find((a) =>
+    a.startsWith("--webxr-native-raylib-debug-with-host")
+  );
   if (raw == null) {
     return false;
   }
@@ -85,7 +95,9 @@ function getNativeRaylibOpenVrDebugWithHostEnabled(): boolean {
 }
 
 function getDisableHostOpenVrInputEnabled(): boolean {
-  const raw = Deno.args.find((a) => a.startsWith("--webxr-disable-host-openvr-input"));
+  const raw = Deno.args.find((a) =>
+    a.startsWith("--webxr-disable-host-openvr-input")
+  );
   if (raw == null) {
     return false;
   }
@@ -94,7 +106,9 @@ function getDisableHostOpenVrInputEnabled(): boolean {
 }
 
 function getRaylibBypassRaythreeEnabled(): boolean {
-  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-bypass-raythree"));
+  const raw = Deno.args.find((a) =>
+    a.startsWith("--webxr-raylib-bypass-raythree")
+  );
   if (raw == null) {
     return false;
   }
@@ -103,7 +117,9 @@ function getRaylibBypassRaythreeEnabled(): boolean {
 }
 
 function getRaylibOpenVrPacedRaythreeEnabled(defaultValue = false): boolean {
-  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-openvr-paced-raythree"));
+  const raw = Deno.args.find((a) =>
+    a.startsWith("--webxr-raylib-openvr-paced-raythree")
+  );
   if (raw == null) {
     return defaultValue;
   }
@@ -300,7 +316,8 @@ new PostMan(
         desktopViewOffset?: Vec3Tuple;
       } | null,
     ) => {
-      state.desktopViewControlAllowed = payload?.desktopViewControlAllowed ?? false;
+      state.desktopViewControlAllowed = payload?.desktopViewControlAllowed ??
+        false;
       state.desktopViewControlEnabled = state.desktopViewControlAllowed &&
         (payload?.desktopViewControlEnabled ?? false);
       state.desktopViewOffset = payload?.desktopViewOffset ?? [0, 0, 0];
@@ -318,7 +335,8 @@ new PostMan(
     },
     STARTWEBXR: (payload: StartWebXRPayload | null) => {
       state.lastStartPayload = payload ?? null;
-      state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ?? false;
+      state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ??
+        false;
       state.desktopViewControlEnabled = state.desktopViewControlAllowed;
       if (!state.desktopViewControlEnabled) {
         state.desktopViewOffset = [0, 0, 0];
@@ -332,7 +350,8 @@ new PostMan(
       state.overlayRenderMode = payload?.overlayRenderMode ?? "raylib";
       state.nominalHmdDisplayHz = payload?.hmdDisplayFrequencyHz ?? null;
       state.frameLogsEnabled = getWebxrFrameLogsEnabled();
-      state.nativeRaylibDebug = payload?.nativeRaylibDebug ?? getNativeRaylibOpenVrDebugEnabled();
+      state.nativeRaylibDebug = payload?.nativeRaylibDebug ??
+        getNativeRaylibOpenVrDebugEnabled();
       state.nativeRaylibDebugWithHost = payload?.nativeRaylibDebugWithHost ??
         getNativeRaylibOpenVrDebugWithHostEnabled();
       state.disableHostOpenVrInput = payload?.disableHostOpenVrInput ??
@@ -340,7 +359,9 @@ new PostMan(
       state.raylibBypassRaythree = payload?.raylibBypassRaythree ??
         getRaylibBypassRaythreeEnabled();
       state.raylibOpenVrPacedRaythree = payload?.raylibOpenVrPacedRaythree ??
-        getRaylibOpenVrPacedRaythreeEnabled(state.overlayRenderMode === "raylib");
+        getRaylibOpenVrPacedRaythreeEnabled(
+          state.overlayRenderMode === "raylib",
+        );
       if (!state.startup) {
         state.startup = (async () => {
           await initializeOverlay(payload ?? null);
@@ -392,7 +413,10 @@ new PostMan(
           let onBeforeExternalControllerApply: (() => void) | undefined;
           state.controllerSharedStateSab = null;
 
-          const runControllerStaleChecks = (data: ControllerDataPayload, writeSeq: number) => {
+          const runControllerStaleChecks = (
+            data: ControllerDataPayload,
+            writeSeq: number,
+          ) => {
             const host = state.host;
             if (!host) return;
             const fc = host.getStatus().frameCount;
@@ -409,7 +433,10 @@ new PostMan(
               return Math.max(v(data[0]!), v(data[1]!));
             })();
             const STALE_MOTION_FLOOR = 0.02;
-            if (crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES) {
+            if (
+              crashOnDropMode.controllerSabStale &&
+              fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
+            ) {
               const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
                 h === state.lastRafControllerPoseHash;
               const writerStarved = writeSeq > 0 &&
@@ -423,7 +450,9 @@ new PostMan(
               if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
                 throw new Error(
                   `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
-                    `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
+                    `OpenVR |v|/|ω| max=${
+                      maxMotion.toFixed(4)
+                    } (>${STALE_MOTION_FLOOR}): ` +
                     `tracking did not advance the 3×4 between display frames`,
                 );
               }
@@ -448,49 +477,54 @@ new PostMan(
                * OpenVR samples run in the `controllers` actor (see `scheduleControllerSabFrame`),
                * then webxr *reads* the SAB in this callback (legacy path).
                */
-              onBeforeExternalControllerApply = function webxrIngestControllerSabAndCheckStale() {
-                const buf = state.controllerSharedStateSab;
-                const host = state.host;
-                if (!buf || !host) return;
-                const read = readControllerStateSab(buf);
-                if (!read) return;
-                const { data, writeSeq, motion } = read;
-                const fc = host.getStatus().frameCount;
-                const h = hashControllerPoseMatrices(data);
-                const maxMotion = Math.max(
-                  motion.leftLin,
-                  motion.leftAng,
-                  motion.rightLin,
-                  motion.rightAng,
-                );
-                const STALE_MOTION_FLOOR = 0.02;
-                if (
-                  crashOnDropMode.controllerSabStale && fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
-                ) {
-                  const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
-                    h === state.lastRafControllerPoseHash;
-                  const writerStarved = writeSeq > 0 &&
-                    state.lastControllerSabWriteSeq >= 0 &&
-                    writeSeq === state.lastControllerSabWriteSeq;
-                  if (writerStarved) {
-                    throw new Error(
-                      `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
-                        `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
-                    );
+              onBeforeExternalControllerApply =
+                function webxrIngestControllerSabAndCheckStale() {
+                  const buf = state.controllerSharedStateSab;
+                  const host = state.host;
+                  if (!buf || !host) return;
+                  const read = readControllerStateSab(buf);
+                  if (!read) return;
+                  const { data, writeSeq, motion } = read;
+                  const fc = host.getStatus().frameCount;
+                  const h = hashControllerPoseMatrices(data);
+                  const maxMotion = Math.max(
+                    motion.leftLin,
+                    motion.leftAng,
+                    motion.rightLin,
+                    motion.rightAng,
+                  );
+                  const STALE_MOTION_FLOOR = 0.02;
+                  if (
+                    crashOnDropMode.controllerSabStale &&
+                    fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
+                  ) {
+                    const samePoseTwoRafs =
+                      state.lastRafControllerPoseHash != null &&
+                      h === state.lastRafControllerPoseHash;
+                    const writerStarved = writeSeq > 0 &&
+                      state.lastControllerSabWriteSeq >= 0 &&
+                      writeSeq === state.lastControllerSabWriteSeq;
+                    if (writerStarved) {
+                      throw new Error(
+                        `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
+                          `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
+                      );
+                    }
+                    if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
+                      throw new Error(
+                        `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
+                          `OpenVR |v|/|ω| max=${
+                            maxMotion.toFixed(4)
+                          } (>${STALE_MOTION_FLOOR}): ` +
+                          `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
+                      );
+                    }
                   }
-                  if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
-                    throw new Error(
-                      `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
-                        `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
-                        `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
-                    );
-                  }
-                }
-                state.lastRafControllerPoseHash = h;
-                state.lastControllerSabWriteSeq = writeSeq;
-                host.setControllerData(data);
-                publishControllerSnapshot(data);
-              };
+                  state.lastRafControllerPoseHash = h;
+                  state.lastControllerSabWriteSeq = writeSeq;
+                  host.setControllerData(data);
+                  publishControllerSnapshot(data);
+                };
             } catch (error) {
               LogChannel.log(
                 "webxrv2",
@@ -515,9 +549,10 @@ new PostMan(
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
             nominalHmdDisplayHz: payload?.hmdDisplayFrequencyHz ?? null,
-            useOpenVrOverlayFramePacing: includesRaylibOverlay(overlayMode) && !payload?.debugWindow
-              ? false
-              : undefined,
+            useOpenVrOverlayFramePacing:
+              includesRaylibOverlay(overlayMode) && !payload?.debugWindow
+                ? false
+                : undefined,
             disableOpenVrHmdPose: state.raylibOpenVrPacedRaythree,
             onBeforeExternalControllerApply: onBeforeExternalControllerApply,
             onInProcessControllerFrame: onInProcessControllerFrame,
@@ -560,10 +595,15 @@ new PostMan(
         setVrcCameraLookAtTargetEstimate(payload.lookAtTargetEstimate ?? null);
       }
     },
-    SETDESKTOPVIEWOFFSET: (payload: DesktopViewOffsetPayload | Vec3Tuple | null) => {
+    SETDESKTOPVIEWOFFSET: (
+      payload: DesktopViewOffsetPayload | Vec3Tuple | null,
+    ) => {
       if (!Array.isArray(payload) && typeof payload?.enabled === "boolean") {
-        state.desktopViewControlEnabled = state.desktopViewControlAllowed && payload.enabled;
-        state.host?.setDesktopViewControlEnabled(state.desktopViewControlEnabled);
+        state.desktopViewControlEnabled = state.desktopViewControlAllowed &&
+          payload.enabled;
+        state.host?.setDesktopViewControlEnabled(
+          state.desktopViewControlEnabled,
+        );
         if (!state.desktopViewControlEnabled) {
           state.desktopViewOffset = [0, 0, 0];
           state.host?.setDesktopViewOffset(state.desktopViewOffset);
@@ -579,7 +619,9 @@ new PostMan(
       if (
         !offset ||
         offset.length !== 3 ||
-        !offset.every((value) => typeof value === "number" && Number.isFinite(value))
+        !offset.every((value) =>
+          typeof value === "number" && Number.isFinite(value)
+        )
       ) {
         return state.desktopViewOffset;
       }
@@ -634,7 +676,8 @@ function getWebXRStatus() {
     uploadedFrames: state.uploadedFrames,
     nominalHmdDisplayHz: state.nominalHmdDisplayHz,
     raylib: {
-      expected: state.overlayRenderMode === "raylib" || state.overlayRenderMode === "both",
+      expected: state.overlayRenderMode === "raylib" ||
+        state.overlayRenderMode === "both",
       configured: state.raylibOverlayConfig != null,
       overlayReady: state.raylibOverlay != null,
       rendererReady: state.raylibOverlayRaylib != null,
@@ -643,7 +686,8 @@ function getWebXRStatus() {
       lastStatusLogAt: state.raylibOpenVrPacedLastStatusLogAt,
     },
     webgpu: {
-      expected: state.overlayRenderMode === "webgpu" || state.overlayRenderMode === "both",
+      expected: state.overlayRenderMode === "webgpu" ||
+        state.overlayRenderMode === "both",
       configured: state.webGpuOverlayConfig != null,
       overlayReady: state.webGpuOverlay != null,
       rendererReady: state.webGpuOverlayGl != null,
@@ -652,38 +696,54 @@ function getWebXRStatus() {
 }
 
 async function stopWebXR(): Promise<true> {
+  LogChannel.log("webxrv2", "[webxr] shutdown: stopping controller loop");
   state.controllerRunning = false;
   if (state.controllerLoop) {
     if (!await waitForWebXrShutdown("controller loop", state.controllerLoop)) {
-      LogChannel.log("webxrv2", "[webxr] controller loop did not stop; allowing worker termination");
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] controller loop did not stop; allowing worker termination",
+      );
       return true;
     }
   }
+  LogChannel.log("webxrv2", "[webxr] shutdown: stopping overlay loop");
   state.overlayRunning = false;
   if (state.overlayLoop) {
     if (!await waitForWebXrShutdown("overlay loop", state.overlayLoop)) {
-      LogChannel.log("webxrv2", "[webxr] overlay loop did not stop; allowing worker termination");
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] overlay loop did not stop; allowing worker termination",
+      );
       return true;
     }
   }
+  LogChannel.log("webxrv2", "[webxr] shutdown: stopping WebXR host");
   if (state.host) {
     state.host.setControllerData(null);
     if (!await waitForWebXrShutdown("WebXR host", state.host.stop())) {
-      LogChannel.log("webxrv2", "[webxr] host did not stop; allowing worker termination");
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] host did not stop; allowing worker termination",
+      );
       return true;
     }
     state.startup = null;
   }
   state.lastControllerSabWriteSeq = -1;
   state.lastRafControllerPoseHash = null;
+  LogChannel.log("webxrv2", "[webxr] shutdown: cleaning WebGPU overlay");
   state.webGpuOverlay?.cleanup();
   state.webGpuOverlay = null;
   state.webGpuOverlayGl?.cleanup();
   state.webGpuOverlayGl = null;
+  LogChannel.log("webxrv2", "[webxr] shutdown: cleaning OpenVR overlay");
   state.raylibOverlay?.cleanup();
   state.raylibOverlay = null;
+  LogChannel.log("webxrv2", "[webxr] shutdown: cleaning Raylib renderer");
   state.raylibOverlayRaylib?.cleanup();
   state.raylibOverlayRaylib = null;
+  LogChannel.log("webxrv2", "[webxr] shutdown: native cleanup complete");
   state.nativeRaylibPacer = null;
   state.nativeRaylibVrSystem = null;
   state.nativeRaylibLeftControllerIndex = null;
@@ -852,11 +912,17 @@ function includesWebGpuOverlay(mode: OverlayRenderMode): boolean {
   return mode === "webgpu" || mode === "both";
 }
 
-function buildOverlayKey(baseKey: string | undefined, suffix: string): string | undefined {
+function buildOverlayKey(
+  baseKey: string | undefined,
+  suffix: string,
+): string | undefined {
   return baseKey ? `${baseKey}.${suffix}` : undefined;
 }
 
-function buildOverlayName(baseName: string | undefined, suffix: string): string | undefined {
+function buildOverlayName(
+  baseName: string | undefined,
+  suffix: string,
+): string | undefined {
   return baseName ? `${baseName} ${suffix}` : undefined;
 }
 
@@ -870,7 +936,8 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
   if (includesWebGpuOverlay(overlayMode) && !state.webGpuOverlayGl) {
     const overlayGl = new WebXROverlayGl();
     overlayGl.initialize(
-      buildOverlayName(payload.overlayName, "WebGPU") ?? "PetPlay WebXR Overlay WebGPU",
+      buildOverlayName(payload.overlayName, "WebGPU") ??
+        "PetPlay WebXR Overlay WebGPU",
     );
     state.webGpuOverlayGl = overlayGl;
     state.webGpuOverlayConfig = {
@@ -901,7 +968,10 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       sortOrder: 20,
       attachToHmd: true,
     };
-    LogChannel.log("webxrv2", "[webxr] raylib overlay running in webxr worker hot loop");
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] raylib overlay running in webxr worker hot loop",
+    );
   }
 }
 
@@ -909,14 +979,20 @@ function initializeNativeRaylibDebug(payload: StartWebXRPayload | null) {
   initializeRaylibOpenVrPacer(payload, "native Raylib debug");
 }
 
-function initializeRaylibOpenVrPacer(payload: StartWebXRPayload | null, label: string) {
+function initializeRaylibOpenVrPacer(
+  payload: StartWebXRPayload | null,
+  label: string,
+) {
   if (!payload?.vrSystemPointer) {
     throw new Error(`${label} requires vrSystemPointer`);
   }
   if (state.nativeRaylibPacer && state.nativeRaylibVrSystem) {
     return;
   }
-  LogChannel.log("webxrv2", `[webxr] ${label} init: creating IVRSystem wrapper`);
+  LogChannel.log(
+    "webxrv2",
+    `[webxr] ${label} init: creating IVRSystem wrapper`,
+  );
   const systemPointer = Deno.UnsafePointer.create(
     typeof payload.vrSystemPointer === "bigint"
       ? payload.vrSystemPointer
@@ -942,12 +1018,16 @@ function initializeRaylibOpenVrPacer(payload: StartWebXRPayload | null, label: s
 }
 
 function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
-  if (state.webGpuOverlay || !state.webGpuOverlayGl || !state.webGpuOverlayConfig) {
+  if (
+    state.webGpuOverlay || !state.webGpuOverlayGl || !state.webGpuOverlayConfig
+  ) {
     return;
   }
 
   state.webGpuOverlayGl.ensureTexture(eyeWidth, eyeHeight);
-  const nextOverlay = new OpenVrOverlayTexture(state.webGpuOverlayConfig.overlayPointer);
+  const nextOverlay = new OpenVrOverlayTexture(
+    state.webGpuOverlayConfig.overlayPointer,
+  );
   nextOverlay.initialize(state.webGpuOverlayGl.getTextureHandle(), {
     key: state.webGpuOverlayConfig.overlayKey,
     name: state.webGpuOverlayConfig.overlayName,
@@ -961,11 +1041,16 @@ function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
 }
 
 function ensureRaylibOverlayForFrame() {
-  if (state.raylibOverlay || !state.raylibOverlayRaylib || !state.raylibOverlayConfig) {
+  if (
+    state.raylibOverlay || !state.raylibOverlayRaylib ||
+    !state.raylibOverlayConfig
+  ) {
     return;
   }
 
-  const nextOverlay = new OpenVrOverlayTexture(state.raylibOverlayConfig.overlayPointer);
+  const nextOverlay = new OpenVrOverlayTexture(
+    state.raylibOverlayConfig.overlayPointer,
+  );
   nextOverlay.initialize(state.raylibOverlayRaylib.getTextureHandle(), {
     key: state.raylibOverlayConfig.overlayKey,
     name: state.raylibOverlayConfig.overlayName,
@@ -1052,7 +1137,10 @@ async function uploadWebGpuSceneFrame() {
   }
 
   try {
-    ensureWebGpuOverlayForFrame(overlayFrame.left.width, overlayFrame.left.height);
+    ensureWebGpuOverlayForFrame(
+      overlayFrame.left.width,
+      overlayFrame.left.height,
+    );
     if (!state.webGpuOverlay) {
       throw new Error("OpenVR WebGPU overlay not initialized");
     }
@@ -1110,16 +1198,23 @@ async function uploadRaylibShadowFrame() {
   const prepStartedAt = performance.now();
   let signalHostAfterPresent = false;
   if (state.nativeRaylibPacer) {
-    const pace = await state.nativeRaylibPacer.paceToDisplayAndRefreshPosesYielding();
+    const pace = await state.nativeRaylibPacer
+      .paceToDisplayAndRefreshPosesYielding();
     state.nativeRaylibPacer.maybeLogFps();
-    state.host.applyDirectOpenVrShadowPose(state.nativeRaylibPacer.getCachedHmdEmulation());
+    state.host.applyDirectOpenVrShadowPose(
+      state.nativeRaylibPacer.getCachedHmdEmulation(),
+    );
     // Single source of OpenVR HMD + controller pose for the entire app. The Raylib
     // debug cube reads from this via `captureShadowPose`; future consumers (r3f /
     // iwer bridge) will read from `host.getDirectOpenVrInputSource()`.
     state.host.updateDirectOpenVrInputs(
       state.nativeRaylibPacer.getCachedHmdEmulation(),
-      getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand),
-      getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand),
+      getNativeRaylibControllerPose(
+        OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+      ),
+      getNativeRaylibControllerPose(
+        OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand,
+      ),
     );
     signalHostAfterPresent = shouldSignalHostFromRaylibPace(pace);
     if (signalHostAfterPresent && state.host.getStatus().frameCount === 0) {
@@ -1191,7 +1286,9 @@ async function uploadRaylibShadowFrame() {
   if (!state.raylibOverlay) {
     throw new Error("OpenVR Raylib overlay not initialized");
   }
-  state.raylibOverlay.setTextureHandle(state.raylibOverlayRaylib.getTextureHandle());
+  state.raylibOverlay.setTextureHandle(
+    state.raylibOverlayRaylib.getTextureHandle(),
+  );
   state.raylibOverlay.present();
   if (signalHostAfterPresent) {
     state.host.signalExternalPacerAdvanced();
@@ -1236,7 +1333,9 @@ async function uploadRaylibShadowFrame() {
   return true;
 }
 
-function openVrLookRotationFromWorldHmd(worldFromHmd: Float32Array): Float32Array {
+function openVrLookRotationFromWorldHmd(
+  worldFromHmd: Float32Array,
+): Float32Array {
   const hmdFromWorld = new THREE.Matrix4()
     .fromArray(worldFromHmd as unknown as number[])
     .invert();
@@ -1247,7 +1346,9 @@ function openVrLookRotationFromWorldHmd(worldFromHmd: Float32Array): Float32Arra
 
 function projectionHalfFov(matrix: Float32Array): number {
   const m5 = Number(matrix[5] ?? 0);
-  return Number.isFinite(m5) && m5 !== 0 ? Math.atan(1 / m5) : ((112 / 2) * (Math.PI / 180));
+  return Number.isFinite(m5) && m5 !== 0
+    ? Math.atan(1 / m5)
+    : ((112 / 2) * (Math.PI / 180));
 }
 
 function nativeDebugProjectionMatrix(): Float32Array {
@@ -1273,7 +1374,9 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
     return null;
   }
 
-  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: controller index");
+  if (trace) {
+    LogChannel.log("webxrv2", "[webxr] native debug frame: controller index");
+  }
   const leftControllerIndex = vr.GetTrackedDeviceIndexForControllerRole(
     OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
   );
@@ -1285,8 +1388,12 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
     );
   }
   const leftController = pacer.getCachedTrackedDevicePose(leftControllerIndex);
-  const worldFromHmd = new THREE.Matrix4().fromArray(hmd.matrix as unknown as number[]);
-  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: eye matrices");
+  const worldFromHmd = new THREE.Matrix4().fromArray(
+    hmd.matrix as unknown as number[],
+  );
+  if (trace) {
+    LogChannel.log("webxrv2", "[webxr] native debug frame: eye matrices");
+  }
   const ipdMeters = 0.064;
   const leftWorld = new THREE.Matrix4()
     .copy(worldFromHmd)
@@ -1294,7 +1401,12 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
   const rightWorld = new THREE.Matrix4()
     .copy(worldFromHmd)
     .multiply(new THREE.Matrix4().makeTranslation(ipdMeters * 0.5, 0, 0));
-  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: synthetic projection");
+  if (trace) {
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] native debug frame: synthetic projection",
+    );
+  }
   const leftProjection = nativeDebugProjectionMatrix();
   const rightProjection = nativeDebugProjectionMatrix();
 
@@ -1306,7 +1418,9 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
     lookRotation: openVrLookRotationFromWorldHmd(hmd.matrix),
     halfFovInRadians: projectionHalfFov(leftProjection),
     hmdPosition: new Float32Array(hmd.position),
-    leftControllerPosition: leftController ? new Float32Array(leftController.position) : null,
+    leftControllerPosition: leftController
+      ? new Float32Array(leftController.position)
+      : null,
   };
 }
 
@@ -1326,7 +1440,8 @@ function getNativeRaylibControllerPose(
     return null;
   }
 
-  const isLeft = role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
+  const isLeft =
+    role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
   let index = isLeft
     ? state.nativeRaylibLeftControllerIndex
     : state.nativeRaylibRightControllerIndex;
@@ -1354,7 +1469,9 @@ async function uploadNativeRaylibDebugFrame() {
   if (!frame) {
     return false;
   }
-  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: raylib render");
+  if (trace) {
+    LogChannel.log("webxrv2", "[webxr] native debug frame: raylib render");
+  }
   const t0 = performance.now();
   const rt = state.raylibOverlayRaylib.renderNativeOpenVrDebugFrame(frame);
   state.raylibOvrRenderMetric.record(rt.totalMs);
@@ -1362,19 +1479,34 @@ async function uploadNativeRaylibDebugFrame() {
   state.raylibOvrEyeRightMetric.record(rt.rightMs);
   state.raylibOvrCombineMetric.record(rt.combineMs);
   const openvrT0 = performance.now();
-  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: openvr overlay ensure");
+  if (trace) {
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] native debug frame: openvr overlay ensure",
+    );
+  }
   ensureRaylibOverlayForFrame();
   if (!state.raylibOverlay) {
     throw new Error("OpenVR Raylib overlay not initialized");
   }
-  if (trace) LogChannel.log("webxrv2", "[webxr] native debug frame: openvr overlay present");
-  state.raylibOverlay.setTextureHandle(state.raylibOverlayRaylib.getTextureHandle());
+  if (trace) {
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] native debug frame: openvr overlay present",
+    );
+  }
+  state.raylibOverlay.setTextureHandle(
+    state.raylibOverlayRaylib.getTextureHandle(),
+  );
   state.raylibOverlay.present();
   state.raylibOvrOpenvrMetric.record(performance.now() - openvrT0);
   state.raylibOvrHandlerMetric.record(performance.now() - t0);
   if (trace) {
     state.nativeRaylibDebugTraceFirstFrame = false;
-    LogChannel.log("webxrv2", "[webxr] native debug frame: first frame complete");
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] native debug frame: first frame complete",
+    );
   }
   return true;
 }
@@ -1394,7 +1526,10 @@ async function pumpOverlayFrames() {
           await wait(1);
         }
       } catch (error) {
-        LogChannel.log("webxrv2", `[webxr] native Raylib debug frame failed: ${error}`);
+        LogChannel.log(
+          "webxrv2",
+          `[webxr] native Raylib debug frame failed: ${error}`,
+        );
         state.overlayRunning = false;
         throw error;
       }
@@ -1419,7 +1554,10 @@ async function pumpOverlayFrames() {
           await wait(1);
         }
       } catch (error) {
-        LogChannel.log("webxrv2", `[webxr] raylib bypass frame failed: ${error}`);
+        LogChannel.log(
+          "webxrv2",
+          `[webxr] raylib bypass frame failed: ${error}`,
+        );
         state.overlayRunning = false;
         throw error;
       }
@@ -1449,7 +1587,10 @@ async function pumpOverlayFrames() {
           await wait(1);
         }
       } catch (error) {
-        LogChannel.log("webxrv2", `[webxr] OpenVR-paced Raythree frame failed: ${error}`);
+        LogChannel.log(
+          "webxrv2",
+          `[webxr] OpenVR-paced Raythree frame failed: ${error}`,
+        );
         state.overlayRunning = false;
         throw error;
       }
@@ -1516,7 +1657,9 @@ async function pumpOverlayFrames() {
           : "";
         LogChannel.log(
           "fps",
-          `[webxr] overlay=${state.overlayFpsCounter.getFps().toFixed(1)}${tail}`,
+          `[webxr] overlay=${
+            state.overlayFpsCounter.getFps().toFixed(1)
+          }${tail}`,
         );
       }
       let renderedAny = false;
@@ -1535,7 +1678,10 @@ async function pumpOverlayFrames() {
 
       maybeLogOverlayPerf();
     } catch (error) {
-      LogChannel.log("webxrv2", `[webxr] overlay frame upload failed: ${error}`);
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] overlay frame upload failed: ${error}`,
+      );
       state.overlayRunning = false;
       throw error;
     }
@@ -1549,7 +1695,9 @@ function fmtPerfInterval(
   if (!sample) {
     return null;
   }
-  return `${label}=${sample.avgMs.toFixed(2)}ms avg ${sample.maxMs.toFixed(2)}ms max`;
+  return `${label}=${sample.avgMs.toFixed(2)}ms avg ${
+    sample.maxMs.toFixed(2)
+  }ms max`;
 }
 
 /** Same as {@link fmtPerfInterval} but for non-ms counters recorded via `IntervalMetric`. */
@@ -1560,7 +1708,9 @@ function fmtPerfCount(
   if (!sample) {
     return null;
   }
-  return `${label}=${sample.avgMs.toFixed(1)} avg ${sample.maxMs.toFixed(0)} max`;
+  return `${label}=${sample.avgMs.toFixed(1)} avg ${
+    sample.maxMs.toFixed(0)
+  } max`;
 }
 
 function maybeLogOverlayPerf() {
@@ -1643,9 +1793,11 @@ function maybeLogOverlayPerf() {
   if (
     !uploadSample && !presentSample && !frameSample && !raythreeSample &&
     !sceneMx && !rayL && !rayR && !rayUi && !hostPrep &&
-    !ovrH && !ovrR && !ovrO && !ovrEye && !ovrEyeSy && !ovrPr && !ovrOp && !ovrXp &&
+    !ovrH && !ovrR && !ovrO && !ovrEye && !ovrEyeSy && !ovrPr && !ovrOp &&
+    !ovrXp &&
     !ovrUi && !ovrUiS && !ovrUiP && !ovrUiT && !ovrEd &&
-    !ovrCb && !ovrSync && !ovrDr && !ovrBG && !ovrBM && !ovrUIPC && !ovrUITC && !ovrUIPD && !ovrUITD
+    !ovrCb && !ovrSync && !ovrDr && !ovrBG && !ovrBM && !ovrUIPC && !ovrUITC &&
+    !ovrUIPD && !ovrUITD
   ) {
     return;
   }

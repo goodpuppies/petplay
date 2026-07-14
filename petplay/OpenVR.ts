@@ -18,9 +18,13 @@ export const api = {
   __INIT__: (_payload: null) => {
     initializeOpenVR();
   },
+  __SHUTDOWN__: (_payload: unknown) => {
+    shutdownOpenVR();
+  },
   __HEALTH__: (_payload: unknown) => {
     return {
-      initialized: state.vrSystemPTR != null && state.overlayPTR != null && state.inputPTR != null,
+      initialized: state.vrSystemPTR != null && state.overlayPTR != null &&
+        state.inputPTR != null,
       vrSystemReady: state.vrSystemPTR != null,
       compositorReady: state.compositorPTR != null,
       overlayReady: state.overlayPTR != null,
@@ -57,18 +61,30 @@ new PostMan(state, api);
 
 function initializeOpenVR() {
   console.log("[petplay boot] OpenVR: loading bindings");
-  const success = OpenVR.initializeOpenVR("../resources/openvr_api.dll", import.meta.url);
+  const success = OpenVR.initializeOpenVR(
+    "../resources/openvr_api.dll",
+    import.meta.url,
+  );
   if (!success) throw new Error("failed to initialize openvr");
   console.log("[petplay boot] OpenVR: calling VR_InitInternal");
 
   const initErrorPtr = P.Int32P<OpenVR.InitError>();
 
-  OpenVR.VR_InitInternal(initErrorPtr, OpenVR.ApplicationType.VRApplication_Overlay);
+  OpenVR.VR_InitInternal(
+    initErrorPtr,
+    OpenVR.ApplicationType.VRApplication_Overlay,
+  );
   const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
-  console.log(`[petplay boot] OpenVR: VR_InitInternal returned ${OpenVR.InitError[initError]}`);
+  console.log(
+    `[petplay boot] OpenVR: VR_InitInternal returned ${
+      OpenVR.InitError[initError]
+    }`,
+  );
 
   if (initError !== OpenVR.InitError.VRInitError_None) {
-    throw new Error(`Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`);
+    throw new Error(
+      `Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`,
+    );
   }
 
   const systemPtr = OpenVR.VR_GetGenericInterface(
@@ -77,7 +93,9 @@ function initializeOpenVR() {
   );
   const interfaceError1 = new Deno.UnsafePointerView(initErrorPtr).getInt32();
   if (interfaceError1 !== OpenVR.InitError.VRInitError_None) {
-    throw new Error(`Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError1]}`);
+    throw new Error(
+      `Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError1]}`,
+    );
   }
   console.log("[petplay boot] OpenVR: IVRSystem interface acquired");
 
@@ -85,7 +103,8 @@ function initializeOpenVR() {
     stringToPointer(OpenVR.IVRCompositor_Version),
     initErrorPtr,
   );
-  const interfaceErrorComp = new Deno.UnsafePointerView(initErrorPtr).getInt32();
+  const interfaceErrorComp = new Deno.UnsafePointerView(initErrorPtr)
+    .getInt32();
   if (interfaceErrorComp !== OpenVR.InitError.VRInitError_None) {
     LogChannel.log(
       "actor",
@@ -123,5 +142,20 @@ function initializeOpenVR() {
   state.overlayPTR = overlayPtr;
   state.inputPTR = inputPtr;
 
-  LogChannel.log("actor", "OpenVR initialized and IVRSystem interface acquired.");
+  LogChannel.log(
+    "actor",
+    "OpenVR initialized and IVRSystem interface acquired.",
+  );
+}
+
+function shutdownOpenVR() {
+  if (OpenVR.isInitialized()) {
+    OpenVR.VR_ShutdownInternal();
+  }
+  state.vrSystemPTR = null;
+  state.compositorPTR = null;
+  state.overlayPTR = null;
+  state.inputPTR = null;
+  OpenVR.closeOpenVR();
+  LogChannel.log("actor", "OpenVR shutdown complete and library closed.");
 }

@@ -40,6 +40,7 @@
     "nulldriver:false": "deno run -A utils/null-driver-toggle.ts false",
     "openvr:probe": "deno run -A utils/openvr-timing-probe.ts",
     "audio:probe": "deno run -A utils/raylib-audio-context-probe.ts",
+    "repro:raylib-reload": "deno run -A --no-check tests/raylib_worker_reload_repro/main.ts",
     "vitebuild": "cd submodules/frontend && deno task build",
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
@@ -59,7 +60,7 @@
       ]
     },
     "dev": {
-      "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev",
+      "command": "deno run -A utils/dev-runner.ts",
       "dependencies": [
         //"iwerbuild"
       ]

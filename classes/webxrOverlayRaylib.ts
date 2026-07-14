@@ -19,8 +19,18 @@ export type NativeOpenVrRaylibDebugFrame = {
 const VARGGLES_FRAGMENT_SHADER = WEBXR_VARGGLES_GLSL330_FRAGMENT;
 const TRANSPARENT_BLACK = { r: 0, g: 0, b: 0, a: 0 } as raylib.Color;
 const DEBUG_LEFT_CONTROLLER_CUBE_SIZE = 0.075;
-const DEBUG_LEFT_CONTROLLER_CUBE_FILL = { r: 255, g: 48, b: 64, a: 220 } as raylib.Color;
-const DEBUG_LEFT_CONTROLLER_CUBE_WIRE = { r: 255, g: 255, b: 255, a: 255 } as raylib.Color;
+const DEBUG_LEFT_CONTROLLER_CUBE_FILL = {
+  r: 255,
+  g: 48,
+  b: 64,
+  a: 220,
+} as raylib.Color;
+const DEBUG_LEFT_CONTROLLER_CUBE_WIRE = {
+  r: 255,
+  g: 255,
+  b: 255,
+  a: 255,
+} as raylib.Color;
 
 /**
  * Per-eye render target (pixels) for 3D + uikit. Default is native 2560/eye. UI cost is dominated by
@@ -43,7 +53,9 @@ function getRaylibNativeEyeSize(): number {
 function getRaylibNativeEyeSizeCandidates(): number[] {
   const preferred = getRaylibNativeEyeSize();
   const candidates = [preferred, 2048, 1536, 1280, 1024, 768, 512];
-  return [...new Set(candidates.filter((v) => v <= preferred || v === preferred))];
+  return [
+    ...new Set(candidates.filter((v) => v <= preferred || v === preferred)),
+  ];
 }
 
 /** No MSAA: offscreen compositor + hidden 1×1 context; `RenderTexture2D` paths don't use the window sample buffer anyway. */
@@ -128,7 +140,11 @@ export class WebXROverlayRaylib {
     raylib.loadRaylib(getDefaultRaylibPath());
     raylib.SetTraceLogLevel(raylib.TraceLogLevel.LOG_WARNING);
     raylib.SetConfigFlags(DEFAULT_WINDOW_FLAGS);
-    raylib.H.InitWindow(CONTEXT_WINDOW_WIDTH, CONTEXT_WINDOW_HEIGHT, `${name}_${this.uniqueId}`);
+    raylib.H.InitWindow(
+      CONTEXT_WINDOW_WIDTH,
+      CONTEXT_WINDOW_HEIGHT,
+      `${name}_${this.uniqueId}`,
+    );
     this.windowInitialized = true;
 
     this.combineShader = raylib.H.LoadShaderFromMemory(
@@ -140,10 +156,22 @@ export class WebXROverlayRaylib {
     }
 
     this.sceneRenderer = new WebXRRaythreeRaylibRenderer();
-    this.lookRotationLocation = raylib.H.GetShaderLocation(this.combineShader, "lookRotation");
-    this.halfFovLocation = raylib.H.GetShaderLocation(this.combineShader, "halfFOVInRadians");
-    this.outputUvScaleLocation = raylib.H.GetShaderLocation(this.combineShader, "outputUvScale");
-    this.outputUvOffsetLocation = raylib.H.GetShaderLocation(this.combineShader, "outputUvOffset");
+    this.lookRotationLocation = raylib.H.GetShaderLocation(
+      this.combineShader,
+      "lookRotation",
+    );
+    this.halfFovLocation = raylib.H.GetShaderLocation(
+      this.combineShader,
+      "halfFOVInRadians",
+    );
+    this.outputUvScaleLocation = raylib.H.GetShaderLocation(
+      this.combineShader,
+      "outputUvScale",
+    );
+    this.outputUvOffsetLocation = raylib.H.GetShaderLocation(
+      this.combineShader,
+      "outputUvOffset",
+    );
 
     LogChannel.log(
       "webxrv2",
@@ -165,7 +193,12 @@ export class WebXROverlayRaylib {
     return this.outputTarget.texture.id;
   }
 
-  private setShaderVec2(shader: raylib.Shader, location: number, x: number, y: number) {
+  private setShaderVec2(
+    shader: raylib.Shader,
+    location: number,
+    x: number,
+    y: number,
+  ) {
     if (location < 0) {
       return;
     }
@@ -192,16 +225,34 @@ export class WebXROverlayRaylib {
     this.renderHeight = renderEyeHeight;
     this.outputEyeWidth = outputEyeWidth;
     this.outputEyeHeight = outputEyeHeight;
-    this.leftEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
-    this.rightEyeTarget = raylib.H.LoadRenderTexture(renderEyeWidth, renderEyeHeight);
-    this.outputTarget = raylib.H.LoadRenderTexture(outputEyeWidth * 2, outputEyeHeight * 2);
+    this.leftEyeTarget = raylib.H.LoadRenderTexture(
+      renderEyeWidth,
+      renderEyeHeight,
+    );
+    this.rightEyeTarget = raylib.H.LoadRenderTexture(
+      renderEyeWidth,
+      renderEyeHeight,
+    );
+    this.outputTarget = raylib.H.LoadRenderTexture(
+      outputEyeWidth * 2,
+      outputEyeHeight * 2,
+    );
 
-    for (const target of [this.leftEyeTarget, this.rightEyeTarget, this.outputTarget]) {
+    for (
+      const target of [
+        this.leftEyeTarget,
+        this.rightEyeTarget,
+        this.outputTarget,
+      ]
+    ) {
       if (!target || !raylib.H.IsRenderTextureValid(target)) {
         this.unloadTargets();
         return false;
       }
-      raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_BILINEAR);
+      raylib.H.SetTextureFilter(
+        target.texture,
+        raylib.TextureFilter.TEXTURE_FILTER_BILINEAR,
+      );
     }
     return true;
   }
@@ -290,7 +341,9 @@ export class WebXROverlayRaylib {
     const outputTarget = this.outputTarget;
     const shader = this.combineShader;
     const sceneRenderer = this.sceneRenderer;
-    if (!leftTarget || !rightTarget || !outputTarget || !shader || !sceneRenderer) {
+    if (
+      !leftTarget || !rightTarget || !outputTarget || !shader || !sceneRenderer
+    ) {
       throw new Error("raylib compositor not initialized");
     }
 
@@ -471,8 +524,7 @@ export class WebXROverlayRaylib {
         frame.leftProjectionMatrix,
         frame.leftViewMatrix,
         frame,
-      )
-    );
+      ));
     const leftMs = performance.now() - tLeft0;
 
     const tRight0 = performance.now();
@@ -481,8 +533,7 @@ export class WebXROverlayRaylib {
         frame.rightProjectionMatrix,
         frame.rightViewMatrix,
         frame,
-      )
-    );
+      ));
     const rightMs = performance.now() - tRight0;
 
     const tCombine0 = performance.now();
@@ -510,8 +561,18 @@ export class WebXROverlayRaylib {
     this.setShaderVec2(shader, this.outputUvOffsetLocation, 0, 0);
     raylib.H.DrawTexturePro(
       leftTarget.texture,
-      { x: 0, y: 0, width: leftTarget.texture.width, height: -leftTarget.texture.height },
-      { x: 0, y: 0, width: outputTarget.texture.width, height: outputTarget.texture.height * 0.5 },
+      {
+        x: 0,
+        y: 0,
+        width: leftTarget.texture.width,
+        height: -leftTarget.texture.height,
+      },
+      {
+        x: 0,
+        y: 0,
+        width: outputTarget.texture.width,
+        height: outputTarget.texture.height * 0.5,
+      },
       { x: 0, y: 0 },
       0,
       raylib.WHITE,
@@ -520,7 +581,12 @@ export class WebXROverlayRaylib {
     this.setShaderVec2(shader, this.outputUvOffsetLocation, 0, 0.5);
     raylib.H.DrawTexturePro(
       rightTarget.texture,
-      { x: 0, y: 0, width: rightTarget.texture.width, height: -rightTarget.texture.height },
+      {
+        x: 0,
+        y: 0,
+        width: rightTarget.texture.width,
+        height: -rightTarget.texture.height,
+      },
       {
         x: 0,
         y: outputTarget.texture.height * 0.5,
@@ -545,18 +611,41 @@ export class WebXROverlayRaylib {
   }
 
   cleanup() {
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] raylib cleanup: unloading render targets",
+    );
     this.unloadTargets();
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] raylib cleanup: disposing scene renderer",
+    );
     this.sceneRenderer?.dispose();
     this.sceneRenderer = null;
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] raylib cleanup: unloading combine shader",
+    );
     if (this.combineShader) {
       raylib.H.UnloadShader(this.combineShader);
       this.combineShader = null;
     }
     if (this.windowInitialized) {
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] raylib cleanup: closing window/context",
+      );
       raylib.CloseWindow();
       this.windowInitialized = false;
     }
-    raylib.unloadRaylib();
+    // Keep the DynamicLibrary resource alive until the actor cooperatively
+    // closes. Deno then releases it after the worker's JS/module graph is gone;
+    // closing it here leaves generated foreign-function wrappers live and can
+    // access-violate on the next event-loop turn after a complex render graph.
+    LogChannel.log(
+      "webxrv2",
+      "[webxr] raylib cleanup: native resources complete",
+    );
     this.renderWidth = 0;
     this.renderHeight = 0;
     this.outputEyeWidth = 0;
