@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { useThree } from "@react-three/fiber/webgpu";
 import { OrbitHandles } from "@react-three/handle";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
+import { getRaylibLibraryPath } from "../classes/nativeLibraryPaths.ts";
 import { forwardHtmlEvents } from "@pmndrs/pointer-events";
 import {
   createScreenCameraStore,
@@ -64,10 +65,7 @@ export function logRaylibR3FViewerDependencies(logPrefix: string) {
 }
 
 function getDefaultRaylibPath(): string {
-  const url = new URL("../resources/raylib.dll", import.meta.url);
-  return Deno.build.os === "windows"
-    ? decodeURIComponent(url.pathname.replace(/^\/+/, ""))
-    : decodeURIComponent(url.pathname);
+  return getRaylibLibraryPath();
 }
 
 function getNumberArg(name: string, fallback: number): number {
@@ -458,14 +456,35 @@ export function OrbitHandlesView(
       <OrbitHandles
         store={controlsStore}
         damping={false}
-        rotate={{ filter: filterForOnePointerRightClickOrTwoPointer }}
-        pan={{ filter: filterForOnePointerLeftClick }}
+        rotate={{ filter: filterOrbitOutsideGrabBox }}
+        pan={{ filter: filterPanOutsideGrabBox }}
       />
     );
   } catch (e) {
     console.error(`${logPrefix} Error rendering OrbitHandles:`, e);
     return null;
   }
+}
+
+type ScreenHandleMap = Parameters<typeof filterForOnePointerLeftClick>[0];
+
+function startsInsideGrabBox(map: ScreenHandleMap): boolean {
+  for (const entry of map.values()) {
+    let object: THREE.Object3D | null = entry.initialEvent.intersection.object;
+    while (object != null) {
+      if (object.userData?.grabbox === true) return true;
+      object = object.parent;
+    }
+  }
+  return false;
+}
+
+function filterPanOutsideGrabBox(map: ScreenHandleMap): boolean {
+  return !startsInsideGrabBox(map) && filterForOnePointerLeftClick(map);
+}
+
+function filterOrbitOutsideGrabBox(map: ScreenHandleMap): boolean {
+  return !startsInsideGrabBox(map) && filterForOnePointerRightClickOrTwoPointer(map);
 }
 
 export type RunRaylibR3FViewerAppOptions = {

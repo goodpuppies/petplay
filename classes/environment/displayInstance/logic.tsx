@@ -9,6 +9,7 @@ import {
   type UseFrameNextOptions,
 } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
+import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { hmd34FromColumnMajor4x4 } from "../../openvrTransform.ts";
 import {
@@ -22,7 +23,6 @@ import {
 extend(THREE as any);
 
 declare module "@react-three/fiber/webgpu" {
-  // deno-lint-ignore no-empty-interface
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
 
@@ -31,6 +31,11 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   rotation?: [number, number, number];
   /** Optional actor id for future overlay / bridge correlation. */
   displayInstanceActor?: string | null;
+  /** Transform target for this display's GrabBox; defaults to the display itself. */
+  manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
+  /** Optional constraint/apply policy for the Handle targeting this display. */
+  manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
+  manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
 };
 
 export {
@@ -62,7 +67,15 @@ function hmd34ApproxEqual(
  * this transform and world width (meters) each frame.
  */
 export function DisplayInstance(
-  { position, rotation, displayInstanceActor, ...frameProps }: DisplayInstanceProps,
+  {
+    position,
+    rotation,
+    displayInstanceActor,
+    manipulationTargetRef,
+    manipulationOptions,
+    manipulationStoreRef,
+    ...frameProps
+  }: DisplayInstanceProps,
 ) {
   const handleRef = useRef<THREE.Group | null>(null);
   const p0 = useRef(new THREE.Vector3());
@@ -163,9 +176,12 @@ export function DisplayInstance(
       }}
     >
       <Handle
+        ref={manipulationStoreRef}
         handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
-        multitouch
-        scale={{ uniform: true }}
+        targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
+        {...manipulationOptions}
+        multitouch={manipulationOptions?.multitouch ?? true}
+        scale={manipulationOptions?.scale ?? { uniform: true }}
         // Same as KeyboardPanel: no translate from trigger; squeeze grab-ray only.
         filter={(e: PenPointerEvent) => e.pointerType !== "ray" && e.pointerType !== "poker"}
       >

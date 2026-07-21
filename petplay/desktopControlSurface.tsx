@@ -1,8 +1,11 @@
 import "./denoBrowserPolyfills.ts";
 import React from "react";
+import { useFrame, useThree } from "@react-three/fiber/webgpu";
+import * as THREE from "three/webgpu";
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
 import { WebXRScene } from "../classes/environment/scene.tsx";
+import { VREnvironmentPlaceholder } from "../classes/environment/vrEnvironmentPlaceholder.tsx";
 import {
   OrbitHandlesView,
   type RaylibR3FViewerSceneProps,
@@ -24,6 +27,7 @@ const AIM_ORIGIN: [number, number, number] = [0, 1.2, -1.45];
 const CAMERA_POSITION: [number, number, number] = [0, 1.45, 1.15];
 const CHILD_ARG = "--desktop-control-child";
 const IS_CHILD = Deno.args.includes(CHILD_ARG);
+let childShutdownSignalReceived = false;
 
 const state = actorState({
   name: "desktop_control",
@@ -69,16 +73,37 @@ function DesktopControlScene(
         <OrbitHandlesView controlsStore={controlsStore} logPrefix={logPrefix} />
       </React.Suspense>
       <DesktopViewOffsetBridge controlsStore={controlsStore} logPrefix={logPrefix} />
+      <VREnvironmentPlaceholder />
       <WebXRScene XROrigin={() => null} displayInstanceActor={state.displayInstanceActor} />
+      <DesktopWristMenuHud actorId={state.wristMenuActor} />
+    </>
+  );
+}
+
+function DesktopWristMenuHud({ actorId }: { actorId: string | null }) {
+  const groupRef = React.useRef<THREE.Group>(null);
+  const camera = useThree((r3fState) => r3fState.camera);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    camera.updateWorldMatrix(true, false);
+    camera.getWorldPosition(group.position);
+    camera.getWorldQuaternion(group.quaternion);
+    group.updateMatrixWorld(true);
+  });
+
+  return (
+    <group ref={groupRef}>
       <NativeHudPanel
-        actorId={state.wristMenuActor}
+        actorId={actorId}
         transform={{
-          position: [0.82, 1.34, -1.35],
-          rotation: [0, -0.35, 0],
-          scale: [0.72, 0.72, 0.72],
+          position: [0.58, -0.3, -1.1],
+          rotation: [0, -0.12, 0],
+          scale: [0.5, 0.5, 0.5],
         }}
       />
-    </>
+    </group>
   );
 }
 
@@ -137,6 +162,8 @@ function startDesktopControlChild(): void {
       CHILD_ARG,
       `--title=${DEFAULT_TITLE}`,
       `--webxr-target=${state.webxrTarget ?? "webxr"}`,
+      `--wrist-menu-actor=${state.wristMenuActor ?? ""}`,
+      `--display-instance-actor=${state.displayInstanceActor ?? ""}`,
     ],
     cwd: Deno.cwd(),
     stdin: "null",
@@ -196,10 +223,15 @@ function getDesktopControlStatus() {
 }
 
 if (import.meta.main && IS_CHILD) {
-  startDesktopControl({ webxrTarget: getStringArg("webxr-target", "webxr") });
+  startDesktopControl({
+    webxrTarget: getStringArg("webxr-target", "webxr"),
+    wristMenuActor: getStringArg("wrist-menu-actor", "") || null,
+    displayInstanceActor: getStringArg("display-instance-actor", "") || null,
+  });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     try {
       Deno.addSignalListener(signal, () => {
+        childShutdownSignalReceived = true;
         state.stopRequested = true;
       });
     } catch {
@@ -211,6 +243,19 @@ if (import.meta.main && IS_CHILD) {
   }
   if (state.lastError) {
     Deno.exit(1);
+  }
+  if (!childShutdownSignalReceived) {
+    // The user closed the Raylib window. Ask the root PetPlay process to run
+    // its normal cooperative actor teardown instead of leaving it headless.
+    const parentPid = Deno.ppid;
+    if (parentPid > 1) {
+      try {
+        console.log(`${LOG} window closed; requesting PetPlay shutdown`);
+        Deno.kill(parentPid, "SIGINT");
+      } catch (error) {
+        console.warn(`${LOG} could not request parent shutdown`, error);
+      }
+    }
   }
 }
 

@@ -57,6 +57,7 @@ export class ScreenCapturer {
   private static readonly LISTENER_START_TIMEOUT_MS = 5_000;
   //#region privates
   private process: Deno.ChildProcess | null = null;
+  private controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
   private worker: Worker | null = null;
   private frameData: CapturedFrame | null = null;
   private frameCount = 0;
@@ -197,6 +198,7 @@ export class ScreenCapturer {
     });
 
     this.process = command.spawn();
+    this.controlWriter = this.process.stdin.getWriter();
     this.processExit = null;
     const process = this.process;
     void process.status.then((status) => {
@@ -227,6 +229,15 @@ export class ScreenCapturer {
     );
   }
 
+  async sendControl(command: string): Promise<void> {
+    if (!this.controlWriter) return;
+    try {
+      await this.controlWriter.write(new TextEncoder().encode(`${command}\n`));
+    } catch (error) {
+      this.log("Control write failed:", error);
+    }
+  }
+
   /**
    * Gets the latest captured frame. Automatically starts the capture process if needed.
    * @returns Promise that resolves to the latest frame, or null if no frame is available
@@ -249,16 +260,15 @@ export class ScreenCapturer {
 
     return await new Promise((resolve) => {
       let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (frame: CapturedFrame | null) => {
         if (settled) return;
         settled = true;
-        if (timer !== undefined) clearTimeout(timer);
+        clearTimeout(timer);
         const index = this.frameWaiters.indexOf(finish);
         if (index >= 0) this.frameWaiters.splice(index, 1);
         resolve(frame);
       };
-      timer = setTimeout(() => finish(null), timeoutMs);
+      const timer = setTimeout(() => finish(null), timeoutMs);
       this.frameWaiters.push(finish);
     });
   }
@@ -301,6 +311,12 @@ export class ScreenCapturer {
       }
       this.process = null;
     }
+    try {
+      await this.controlWriter?.close();
+    } catch {
+      // Process teardown can close stdin first.
+    }
+    this.controlWriter = null;
 
     this.frameData = null;
     const waiters = this.frameWaiters.splice(0);

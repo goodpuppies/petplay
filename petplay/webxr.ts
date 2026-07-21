@@ -18,10 +18,7 @@ import {
   WebXROverlayRaylib,
 } from "../classes/webxrOverlayRaylib.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
-import {
-  IntervalMetric,
-  type IntervalMetricSample,
-} from "../classes/intervalMetric.ts";
+import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
 import { WebXRRaythreeSceneBridge } from "../classes/webxrRaythreeScene.ts";
 import {
@@ -73,9 +70,7 @@ function getWebxrFrameLogsEnabled(): boolean {
 }
 
 function getNativeRaylibOpenVrDebugEnabled(): boolean {
-  const raw = Deno.args.find((a) =>
-    a.startsWith("--webxr-native-raylib-debug")
-  );
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug"));
   if (raw == null) {
     return false;
   }
@@ -84,9 +79,7 @@ function getNativeRaylibOpenVrDebugEnabled(): boolean {
 }
 
 function getNativeRaylibOpenVrDebugWithHostEnabled(): boolean {
-  const raw = Deno.args.find((a) =>
-    a.startsWith("--webxr-native-raylib-debug-with-host")
-  );
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-native-raylib-debug-with-host"));
   if (raw == null) {
     return false;
   }
@@ -95,9 +88,7 @@ function getNativeRaylibOpenVrDebugWithHostEnabled(): boolean {
 }
 
 function getDisableHostOpenVrInputEnabled(): boolean {
-  const raw = Deno.args.find((a) =>
-    a.startsWith("--webxr-disable-host-openvr-input")
-  );
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-disable-host-openvr-input"));
   if (raw == null) {
     return false;
   }
@@ -106,9 +97,7 @@ function getDisableHostOpenVrInputEnabled(): boolean {
 }
 
 function getRaylibBypassRaythreeEnabled(): boolean {
-  const raw = Deno.args.find((a) =>
-    a.startsWith("--webxr-raylib-bypass-raythree")
-  );
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-bypass-raythree"));
   if (raw == null) {
     return false;
   }
@@ -117,9 +106,7 @@ function getRaylibBypassRaythreeEnabled(): boolean {
 }
 
 function getRaylibOpenVrPacedRaythreeEnabled(defaultValue = false): boolean {
-  const raw = Deno.args.find((a) =>
-    a.startsWith("--webxr-raylib-openvr-paced-raythree")
-  );
+  const raw = Deno.args.find((a) => a.startsWith("--webxr-raylib-openvr-paced-raythree"));
   if (raw == null) {
     return defaultValue;
   }
@@ -298,6 +285,7 @@ new PostMan(
     __HEALTH__: (_payload: unknown) => {
       return getWebXRStatus();
     },
+    EVALJS: (payload: { code: string }) => evaluateWebXrJs(payload.code),
     __SNAPSHOT__: (_payload: unknown) => {
       return {
         started: state.startup != null || state.host != null,
@@ -450,9 +438,7 @@ new PostMan(
               if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
                 throw new Error(
                   `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
-                    `OpenVR |v|/|ω| max=${
-                      maxMotion.toFixed(4)
-                    } (>${STALE_MOTION_FLOOR}): ` +
+                    `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
                     `tracking did not advance the 3×4 between display frames`,
                 );
               }
@@ -477,54 +463,50 @@ new PostMan(
                * OpenVR samples run in the `controllers` actor (see `scheduleControllerSabFrame`),
                * then webxr *reads* the SAB in this callback (legacy path).
                */
-              onBeforeExternalControllerApply =
-                function webxrIngestControllerSabAndCheckStale() {
-                  const buf = state.controllerSharedStateSab;
-                  const host = state.host;
-                  if (!buf || !host) return;
-                  const read = readControllerStateSab(buf);
-                  if (!read) return;
-                  const { data, writeSeq, motion } = read;
-                  const fc = host.getStatus().frameCount;
-                  const h = hashControllerPoseMatrices(data);
-                  const maxMotion = Math.max(
-                    motion.leftLin,
-                    motion.leftAng,
-                    motion.rightLin,
-                    motion.rightAng,
-                  );
-                  const STALE_MOTION_FLOOR = 0.02;
-                  if (
-                    crashOnDropMode.controllerSabStale &&
-                    fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
-                  ) {
-                    const samePoseTwoRafs =
-                      state.lastRafControllerPoseHash != null &&
-                      h === state.lastRafControllerPoseHash;
-                    const writerStarved = writeSeq > 0 &&
-                      state.lastControllerSabWriteSeq >= 0 &&
-                      writeSeq === state.lastControllerSabWriteSeq;
-                    if (writerStarved) {
-                      throw new Error(
-                        `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
-                          `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
-                      );
-                    }
-                    if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
-                      throw new Error(
-                        `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
-                          `OpenVR |v|/|ω| max=${
-                            maxMotion.toFixed(4)
-                          } (>${STALE_MOTION_FLOOR}): ` +
-                          `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
-                      );
-                    }
+              onBeforeExternalControllerApply = function webxrIngestControllerSabAndCheckStale() {
+                const buf = state.controllerSharedStateSab;
+                const host = state.host;
+                if (!buf || !host) return;
+                const read = readControllerStateSab(buf);
+                if (!read) return;
+                const { data, writeSeq, motion } = read;
+                const fc = host.getStatus().frameCount;
+                const h = hashControllerPoseMatrices(data);
+                const maxMotion = Math.max(
+                  motion.leftLin,
+                  motion.leftAng,
+                  motion.rightLin,
+                  motion.rightAng,
+                );
+                const STALE_MOTION_FLOOR = 0.02;
+                if (
+                  crashOnDropMode.controllerSabStale &&
+                  fc >= WEBXR_CRASH_ON_DROP_WARMUP_FRAMES
+                ) {
+                  const samePoseTwoRafs = state.lastRafControllerPoseHash != null &&
+                    h === state.lastRafControllerPoseHash;
+                  const writerStarved = writeSeq > 0 &&
+                    state.lastControllerSabWriteSeq >= 0 &&
+                    writeSeq === state.lastControllerSabWriteSeq;
+                  if (writerStarved) {
+                    throw new Error(
+                      `[webxr] controller-stale: SAB writeSeq stuck at ${writeSeq} (writer did not ` +
+                        `run between XR rAF ticks; unlikely at ~1kHz unless actor blocked)`,
+                    );
                   }
-                  state.lastRafControllerPoseHash = h;
-                  state.lastControllerSabWriteSeq = writeSeq;
-                  host.setControllerData(data);
-                  publishControllerSnapshot(data);
-                };
+                  if (samePoseTwoRafs && maxMotion > STALE_MOTION_FLOOR) {
+                    throw new Error(
+                      `[webxr] controller-stale: same pose hash on two consecutive XR rAFs while ` +
+                        `OpenVR |v|/|ω| max=${maxMotion.toFixed(4)} (>${STALE_MOTION_FLOOR}): ` +
+                        `tracking did not advance the 3×4 between display frames; SAB still saw ~1kHz writes.`,
+                    );
+                  }
+                }
+                state.lastRafControllerPoseHash = h;
+                state.lastControllerSabWriteSeq = writeSeq;
+                host.setControllerData(data);
+                publishControllerSnapshot(data);
+              };
             } catch (error) {
               LogChannel.log(
                 "webxrv2",
@@ -549,10 +531,9 @@ new PostMan(
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
             nominalHmdDisplayHz: payload?.hmdDisplayFrequencyHz ?? null,
-            useOpenVrOverlayFramePacing:
-              includesRaylibOverlay(overlayMode) && !payload?.debugWindow
-                ? false
-                : undefined,
+            useOpenVrOverlayFramePacing: includesRaylibOverlay(overlayMode) && !payload?.debugWindow
+              ? false
+              : undefined,
             disableOpenVrHmdPose: state.raylibOpenVrPacedRaythree,
             onBeforeExternalControllerApply: onBeforeExternalControllerApply,
             onInProcessControllerFrame: onInProcessControllerFrame,
@@ -619,9 +600,7 @@ new PostMan(
       if (
         !offset ||
         offset.length !== 3 ||
-        !offset.every((value) =>
-          typeof value === "number" && Number.isFinite(value)
-        )
+        !offset.every((value) => typeof value === "number" && Number.isFinite(value))
       ) {
         return state.desktopViewOffset;
       }
@@ -635,6 +614,32 @@ new PostMan(
     },
   } as const,
 );
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
+  ...args: string[]
+) => (...values: unknown[]) => Promise<unknown>;
+
+async function evaluateWebXrJs(code: string) {
+  const names = ["state", "host", "THREE", "PostMan", "globalThis"];
+  const values = [state, state.host, THREE, PostMan, globalThis];
+  let evaluator: (...values: unknown[]) => Promise<unknown>;
+  try {
+    evaluator = new AsyncFunction(...names, `"use strict"; return (${code}\n);`);
+  } catch {
+    evaluator = new AsyncFunction(...names, `"use strict"; ${code}`);
+  }
+  const result = await evaluator(...values);
+  return {
+    type: result === null ? "null" : typeof result,
+    inspected: Deno.inspect(result, {
+      depth: 8,
+      iterableLimit: 200,
+      strAbbreviateSize: 20_000,
+      getters: false,
+      colors: false,
+    }),
+  };
+}
 
 globalThis.addEventListener("unload", () => {
   state.controllerRunning = false;
@@ -1346,9 +1351,7 @@ function openVrLookRotationFromWorldHmd(
 
 function projectionHalfFov(matrix: Float32Array): number {
   const m5 = Number(matrix[5] ?? 0);
-  return Number.isFinite(m5) && m5 !== 0
-    ? Math.atan(1 / m5)
-    : ((112 / 2) * (Math.PI / 180));
+  return Number.isFinite(m5) && m5 !== 0 ? Math.atan(1 / m5) : ((112 / 2) * (Math.PI / 180));
 }
 
 function nativeDebugProjectionMatrix(): Float32Array {
@@ -1418,9 +1421,7 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
     lookRotation: openVrLookRotationFromWorldHmd(hmd.matrix),
     halfFovInRadians: projectionHalfFov(leftProjection),
     hmdPosition: new Float32Array(hmd.position),
-    leftControllerPosition: leftController
-      ? new Float32Array(leftController.position)
-      : null,
+    leftControllerPosition: leftController ? new Float32Array(leftController.position) : null,
   };
 }
 
@@ -1440,8 +1441,7 @@ function getNativeRaylibControllerPose(
     return null;
   }
 
-  const isLeft =
-    role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
+  const isLeft = role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
   let index = isLeft
     ? state.nativeRaylibLeftControllerIndex
     : state.nativeRaylibRightControllerIndex;
@@ -1657,9 +1657,7 @@ async function pumpOverlayFrames() {
           : "";
         LogChannel.log(
           "fps",
-          `[webxr] overlay=${
-            state.overlayFpsCounter.getFps().toFixed(1)
-          }${tail}`,
+          `[webxr] overlay=${state.overlayFpsCounter.getFps().toFixed(1)}${tail}`,
         );
       }
       let renderedAny = false;
@@ -1695,9 +1693,7 @@ function fmtPerfInterval(
   if (!sample) {
     return null;
   }
-  return `${label}=${sample.avgMs.toFixed(2)}ms avg ${
-    sample.maxMs.toFixed(2)
-  }ms max`;
+  return `${label}=${sample.avgMs.toFixed(2)}ms avg ${sample.maxMs.toFixed(2)}ms max`;
 }
 
 /** Same as {@link fmtPerfInterval} but for non-ms counters recorded via `IntervalMetric`. */
@@ -1708,9 +1704,7 @@ function fmtPerfCount(
   if (!sample) {
     return null;
   }
-  return `${label}=${sample.avgMs.toFixed(1)} avg ${
-    sample.maxMs.toFixed(0)
-  } max`;
+  return `${label}=${sample.avgMs.toFixed(1)} avg ${sample.maxMs.toFixed(0)} max`;
 }
 
 function maybeLogOverlayPerf() {

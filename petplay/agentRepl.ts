@@ -28,6 +28,12 @@ type CreateRequest = {
   base?: string | URL;
 };
 
+type EvalRequest = {
+  target: string;
+  code: string;
+  timeoutMs?: number;
+};
+
 type ActorHealth = {
   ok?: boolean;
   actorId?: string;
@@ -51,11 +57,16 @@ new PostMan(
     __INIT__: (_payload: void) => {
       startServer();
     },
-    __SHUTDOWN__: async (_payload: unknown) => {
-      await stopServer();
+    __SHUTDOWN__: (_payload: unknown) => {
+      requestStopServer();
     },
     __HEALTH__: (_payload: unknown) => {
       return getAgentReplHealth();
+    },
+    __SNAPSHOT__: (_payload: unknown) => ({ registry: state.registry }),
+    __RESTORE__: (payload: { registry?: ActorRegistry } | null) => {
+      state.registry = { ...(payload?.registry ?? {}) };
+      return getRegistrySnapshot();
     },
     REGISTER_ACTORS: (payload: ActorRegistry) => {
       state.registry = { ...state.registry, ...payload };
@@ -164,17 +175,18 @@ function startServer() {
 }
 
 globalThis.addEventListener("unload", () => {
-  void stopServer();
+  requestStopServer();
 });
 
-async function stopServer(): Promise<void> {
-  try {
-    await server?.shutdown();
-  } catch {
-    // Worker teardown can close the listener first.
-  }
+function requestStopServer(): void {
+  const activeServer = server;
   server = null;
   state.serverStarted = false;
+  // Do not await this promise. `/reload` is itself served by this server, so
+  // awaiting shutdown from the actor hook deadlocks on the active request.
+  void activeServer?.shutdown().catch(() => {
+    // Worker teardown can close the listener first.
+  });
 }
 
 function postReboot(body: RebootRequest): void {
@@ -298,10 +310,31 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ ok: true, target, type, sent: true });
     }
 
+    if (request.method === "POST" && url.pathname === "/eval") {
+      const body = await readJson<EvalRequest>(request);
+      const target = resolveActor(requiredString(body.target, "target"));
+      const code = requiredString(body.code, "code");
+      const result = await withTimeout(
+        PostMan.PostMessage({ target, type: "EVALJS", payload: { code } }, true),
+        body.timeoutMs ?? 5000,
+      );
+      return json({ ok: true, target, result });
+    }
+
     if (request.method === "POST" && url.pathname === "/reload") {
       const body = await readJson<ReloadRequest>(request);
       const actor = requiredString(body.actor ?? body.target, "actor");
       const actorId = resolveActor(actor);
+      if (actorId === state.id) {
+        setTimeout(() => {
+          PostMan.PostMessage({
+            target: System,
+            type: "RELOAD",
+            payload: { actorId },
+          });
+        }, 100);
+        return json({ ok: true, actorId, scheduled: true });
+      }
       const result = await PostMan.PostMessage({
         target: System,
         type: "RELOAD",

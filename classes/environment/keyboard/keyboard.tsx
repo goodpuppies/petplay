@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
+import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
 import {
   getDefaultKeyboardLayoutSync,
@@ -22,7 +23,6 @@ import type { KeyboardLayoutJson, WorldKeyboardPanelProps } from "./types.ts";
 extend(THREE as any);
 
 declare module "@react-three/fiber/webgpu" {
-  // deno-lint-ignore no-empty-interface
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
 
@@ -39,6 +39,13 @@ export {
 
 const FALLBACK_GRAB: readonly [number, number, number] = [0.5, 0.2, 0.04];
 
+export type KeyboardPanelProps = WorldKeyboardPanelProps & {
+  manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
+  manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
+  manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
+  onGrabBoxSize?: (size: [number, number, number]) => void;
+};
+
 /**
  * World-space shell: R3F `group` + `Handle` + [GrabBox](grabbox.tsx) + [KeyboardFromJson](keyboardUi.tsx).
  */
@@ -53,7 +60,11 @@ export function KeyboardPanel(
     contentOffset = [0, 0, 0],
     grabLineColor = DEFAULT_GRABBOX_LINE_COLOR,
     layoutMode = DEFAULT_KEYBOARD_LAYOUT_MODE,
-  }: WorldKeyboardPanelProps = {},
+    manipulationTargetRef,
+    manipulationOptions,
+    manipulationStoreRef,
+    onGrabBoxSize,
+  }: KeyboardPanelProps = {},
 ) {
   const handleRef = useRef<THREE.Group | null>(null);
   const [layoutReady, setLayoutReady] = useState<KeyboardLayoutJson | null>(() => {
@@ -98,6 +109,10 @@ export function KeyboardPanel(
     ];
   }, [boundsUnits, pixel]);
 
+  useEffect(() => {
+    onGrabBoxSize?.(grabSize);
+  }, [grabSize, onGrabBoxSize]);
+
   return (
     <group
       position={position}
@@ -108,9 +123,12 @@ export function KeyboardPanel(
       {layoutReady != null
         ? (
           <Handle
+            ref={manipulationStoreRef}
             handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
-            multitouch
-            scale={{ uniform: true }}
+            targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
+            {...manipulationOptions}
+            multitouch={manipulationOptions?.multitouch ?? true}
+            scale={manipulationOptions?.scale ?? { uniform: true }}
             filter={(e) => e.pointerType !== "ray" && e.pointerType !== "poker"}
           >
             <GrabBox

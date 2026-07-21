@@ -52,7 +52,7 @@ async function petplaySharedShutdown(): Promise<void> {
 /** Normal shutdown (e.g. Ctrl+C): shared teardown, WOOF, `Deno.exit(0)`. */
 async function petplayDefaultExit(): Promise<void> {
   if (!tryBeginExit()) {
-    Deno.exit(0);
+    return;
   }
   try {
     await petplaySharedShutdown();
@@ -69,7 +69,7 @@ async function petplayDefaultExit(): Promise<void> {
  */
 async function petplayFatalExit(reason: unknown): Promise<void> {
   if (!tryBeginExit()) {
-    Deno.exit(1);
+    return;
   }
   try {
     console.error("petplay: fatal exit:", reason);
@@ -81,9 +81,16 @@ async function petplayFatalExit(reason: unknown): Promise<void> {
   Deno.exit(1);
 }
 
-Deno.addSignalListener("SIGINT", () => {
-  void petplayDefaultExit();
-});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  try {
+    Deno.addSignalListener(signal, () => {
+      console.log(`[petplay] received ${signal}; shutting down`);
+      void petplayDefaultExit();
+    });
+  } catch {
+    // SIGTERM is not available on every supported platform.
+  }
+}
 
 const devExitAfterArg = Deno.args.find((arg) => arg.startsWith("--dev-exit-after-ms="));
 if (devExitAfterArg) {

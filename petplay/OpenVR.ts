@@ -3,6 +3,7 @@ import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.t
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
+import { getOpenVrLibraryPath } from "../classes/nativeLibraryPaths.ts";
 
 const state = actorState({
   name: "openvr",
@@ -62,8 +63,7 @@ new PostMan(state, api);
 function initializeOpenVR() {
   console.log("[petplay boot] OpenVR: loading bindings");
   const success = OpenVR.initializeOpenVR(
-    "../resources/openvr_api.dll",
-    import.meta.url,
+    getOpenVrLibraryPath(),
   );
   if (!success) throw new Error("failed to initialize openvr");
   console.log("[petplay boot] OpenVR: calling VR_InitInternal");
@@ -76,9 +76,7 @@ function initializeOpenVR() {
   );
   const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
   console.log(
-    `[petplay boot] OpenVR: VR_InitInternal returned ${
-      OpenVR.InitError[initError]
-    }`,
+    `[petplay boot] OpenVR: VR_InitInternal returned ${OpenVR.InitError[initError]}`,
   );
 
   if (initError !== OpenVR.InitError.VRInitError_None) {

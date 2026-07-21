@@ -1,5 +1,6 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
+import { getRaylibLibraryPath } from "./nativeLibraryPaths.ts";
 import { areNativeAssetBatchesIdenticalForSync } from "./raythreeAssetBatchesForSync.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import { WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
@@ -63,10 +64,7 @@ const CONTEXT_WINDOW_WIDTH = 1;
 const CONTEXT_WINDOW_HEIGHT = 1;
 
 function getDefaultRaylibPath(): string {
-  const url = new URL("../resources/raylib.dll", import.meta.url);
-  return Deno.build.os === "windows"
-    ? decodeURIComponent(url.pathname.replace(/^\/+/, ""))
-    : decodeURIComponent(url.pathname);
+  return getRaylibLibraryPath();
 }
 
 function toRaylibMatrix(values: Float32Array): raylib.Matrix {

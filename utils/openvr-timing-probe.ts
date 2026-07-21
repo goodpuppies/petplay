@@ -1,13 +1,14 @@
 #!/usr/bin/env -S deno run -A
 
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
+import { getOpenVrLibraryPath } from "../classes/nativeLibraryPaths.ts";
 import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 
 const durationMs = getNumberArg("--duration-ms", 2_000);
 
-const ok = OpenVR.initializeOpenVR("../resources/openvr_api.dll", import.meta.url);
+const ok = OpenVR.initializeOpenVR(getOpenVrLibraryPath());
 if (!ok) {
-  throw new Error("failed to load openvr_api.dll");
+  throw new Error("failed to load the OpenVR library");
 }
 
 const initErrorBuf = new Int32Array(1);

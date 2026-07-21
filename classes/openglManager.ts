@@ -1074,17 +1074,12 @@ export class OpenGLManager {
       this.outputTexture = null;
     }
     if (this.window) {
-      if (Deno.build.os === "windows") {
-        console.log("Skipping explicit window.close() on Windows to avoid GLFW DLL unload race.");
-      } else {
-        console.log("Closing window...");
-        try {
-          this.window.close();
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(`Window close failed during cleanup: ${message}`);
-        }
-      }
+      // Both Windows DLL extraction and Linux's shared cached GLFW .so can race
+      // another DWM instance during its exit handler. Worker/process teardown
+      // releases the native window without running that racy cache deletion.
+      console.log(
+        `Skipping explicit window.close() on ${Deno.build.os} to avoid GLFW unload race.`,
+      );
       this.window = null;
       console.log("Window closed.");
     }

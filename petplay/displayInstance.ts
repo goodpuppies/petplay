@@ -32,6 +32,7 @@ const state = actorState({
   lastStartConfig: null as StartDesktopPayload | null,
   overlayPointer: null as bigint | null,
   restartTimerId: null as number | null,
+  visible: false,
 });
 
 const START_DESKTOP_MAX_ATTEMPTS = 4;
@@ -99,10 +100,18 @@ new PostMan(
       return {
         overlayPointer: state.overlayPointer,
         startConfig: state.lastStartConfig,
+        visible: state.visible,
       };
     },
+    INPUTCONTROL: (payload: string) => {
+      void state.screenCapturer?.sendControl(payload);
+    },
     __RESTORE__: (
-      payload: { overlayPointer?: bigint | null; startConfig?: StartDesktopPayload | null } | null,
+      payload: {
+        overlayPointer?: bigint | null;
+        startConfig?: StartDesktopPayload | null;
+        visible?: boolean;
+      } | null,
     ) => {
       if (payload?.overlayPointer != null) {
         PostMan.PostMessage({
@@ -112,13 +121,17 @@ new PostMan(
         });
       }
       if (payload?.startConfig) {
-        setTimeout(() => {
-          PostMan.PostMessage({
-            target: state.id,
-            type: "STARTDESKTOP",
-            payload: payload.startConfig,
-          });
-        }, 0);
+        state.lastStartConfig = payload.startConfig;
+        state.visible = payload.visible ?? false;
+        if (state.visible) {
+          setTimeout(() => {
+            PostMan.PostMessage({
+              target: state.id,
+              type: "STARTDESKTOP",
+              payload: payload.startConfig,
+            });
+          }, 0);
+        }
       }
       return true;
     },
@@ -142,6 +155,28 @@ new PostMan(
         );
         scheduleDeferredStartRetry(payload);
       });
+    },
+    CONFIGUREDESKTOP: (payload: StartDesktopPayload) => {
+      state.lastStartConfig = payload;
+      return getDisplayInstanceStatus();
+    },
+    WRIST_MENU_ACTION: (
+      payload: { id: string; active: boolean },
+    ) => {
+      if (payload.id !== "layers") return getDisplayInstanceStatus();
+      state.visible = payload.active;
+      if (!payload.active) {
+        if (state.overlayClass && state.overlayHandle) {
+          state.overlayClass.HideOverlay(state.overlayHandle);
+        }
+        return getDisplayInstanceStatus();
+      }
+      if (state.overlayClass && state.overlayHandle) {
+        state.overlayClass.ShowOverlay(state.overlayHandle);
+      } else if (state.lastStartConfig) {
+        void startDesktopWithRetry(state.lastStartConfig);
+      }
+      return getDisplayInstanceStatus();
     },
     SYNCDISPLAYPOSE: (sync: SyncDisplayPosePayload) => {
       if (!state.overlayClass || !state.overlayHandle) return;
@@ -219,23 +254,28 @@ function getDisplayInstanceStatus() {
     screenCaptureActive: state.screenCapturer != null,
     captureFps: state.captureFps,
     captureFramesPresented: state.captureFramesPresented,
+    visible: state.visible,
     screenCapture: state.screenCapturer?.getStatus() ?? null,
     hasTextureStruct: state.textureStructPtr != null,
     lastStartError: state.lastStartError,
   };
 }
 
-const SCREEN_STREAMER_PROCESS_NAME = "petplay-screen-streamer.exe";
+const SCREEN_STREAMER_PROCESS_NAME = Deno.build.os === "windows"
+  ? "petplay-screen-streamer.exe"
+  : "petplay-screen-streamer";
 let screenStreamerPath: string | null = null;
 
 function getScreenStreamerPath(): string {
   if (screenStreamerPath) return screenStreamerPath;
-  const url = new URL("../resources/screen-streamer.exe", import.meta.url);
+  const resourceName = Deno.build.os === "windows" ? "screen-streamer.exe" : "screen-streamer";
+  const url = new URL(`../resources/${resourceName}`, import.meta.url);
   const bytes = Deno.readFileSync(url);
   const runtimeDir = join(Deno.cwd(), "tmp");
   Deno.mkdirSync(runtimeDir, { recursive: true });
   screenStreamerPath = join(runtimeDir, SCREEN_STREAMER_PROCESS_NAME);
   Deno.writeFileSync(screenStreamerPath, bytes);
+  if (Deno.build.os !== "windows") Deno.chmodSync(screenStreamerPath, 0o755);
   return screenStreamerPath;
 }
 
@@ -266,7 +306,7 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
   const { ScreenCapturer } = await import("../classes/ScreenCapturer/scclass.ts");
   const logStats = getWebxrFrameLogsEnabled();
   return new ScreenCapturer({
-    debug: false,
+    debug: Deno.build.os !== "windows",
     fps,
     onStats: ({ fps, avgLatency }) => {
       if (!logStats) return;
@@ -345,6 +385,7 @@ async function stopDesktopOverlay(): Promise<void> {
   state.textureStructPtr = null;
   state.lastWidthMeters = -1;
   state.lastHmd = null;
+  state.visible = false;
 }
 
 async function stopDisplayInstance(): Promise<void> {
@@ -547,6 +588,7 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
     }
   }
 
+  state.visible = true;
   overlay.ShowOverlay(overlayHandle);
 
   const texture = state.glManager!.getTexture();

@@ -276,7 +276,7 @@ async function continueOpenVrScene(
   });
   PostMan.PostMessage({
     target: displayInstance,
-    type: "STARTDESKTOP",
+    type: "CONFIGUREDESKTOP",
     payload: {
       overlayKey: "petplay.displayInstance.desktop",
       displayName: "PetPlay display",
@@ -286,6 +286,11 @@ async function continueOpenVrScene(
       initialWidthMeters: (16 / 9) * 0.5,
       enableMouseInput: true,
     },
+  });
+  PostMan.PostMessage({
+    target: wristMenu,
+    type: "SETDESKTOPOVERLAYACTOR",
+    payload: resolveActorId(displayInstance),
   });
 
   /* PostMan.PostMessage({
@@ -364,6 +369,29 @@ async function createNoOpenVrScene() {
 
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
+  const desktopControlEnabled = getDesktopControlEnabled();
+  const cameraOrigin = desktopControlEnabled
+    ? await PostMan.create("./VRCOriginCamera.ts", import.meta.url)
+    : null;
+  const agentRepl = desktopControlEnabled
+    ? await PostMan.create("./agentRepl.ts", import.meta.url)
+    : null;
+  const desktopControl = desktopControlEnabled
+    ? await PostMan.create("./desktopControlSurface.tsx", import.meta.url)
+    : null;
+
+  const actorRegistry = {
+    main: state.id,
+    wristMenu: resolveActorId(wristMenu),
+    webxr: resolveActorId(webxr),
+    ...(cameraOrigin ? { cameraOrigin: resolveActorId(cameraOrigin) } : {}),
+    ...(agentRepl ? { agentRepl: resolveActorId(agentRepl) } : {}),
+    ...(desktopControl ? { desktopControl: resolveActorId(desktopControl) } : {}),
+  };
+  LogChannel.log("actorroute", {
+    event: "main-actor-registry",
+    actorRegistry,
+  });
 
   PostMan.PostMessage({
     target: webxr,
@@ -386,11 +414,49 @@ async function createNoOpenVrScene() {
       disableHostOpenVrInput: true,
       raylibBypassRaythree: false,
       raylibOpenVrPacedRaythree: false,
+      desktopViewControlEnabled: desktopControlEnabled,
       hmdDisplayFrequencyHz: null,
       vrCompositorPointer: null,
       vrInputPointer: null,
     },
   });
+
+  if (cameraOrigin) {
+    PostMan.PostMessage({
+      target: cameraOrigin,
+      type: "ASSIGNWEBXR",
+      payload: webxr,
+    });
+    PostMan.PostMessage({
+      target: cameraOrigin,
+      type: "STARTCAMERAORIGIN",
+      payload: null,
+    });
+  }
+
+  if (agentRepl) {
+    PostMan.PostMessage({
+      target: agentRepl,
+      type: "REGISTER_ACTORS",
+      payload: actorRegistry,
+    });
+  }
+
+  if (desktopControl) {
+    PostMan.PostMessage({
+      target: desktopControl,
+      type: "STARTDESKTOPCONTROL",
+      payload: {
+        wristMenuActor: actorRegistry.wristMenu,
+        displayInstanceActor: null,
+        webxrTarget: "webxr",
+      },
+    });
+    LogChannel.log(
+      "default",
+      "Desktop mode active; screen capture/display overlay is disabled until a non-OpenVR presentation backend is available",
+    );
+  }
 }
 
 async function spawnOverlay(name: string): Promise<ActorId> {

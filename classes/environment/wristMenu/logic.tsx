@@ -13,7 +13,7 @@ import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { WristMenuUi } from "./ui.tsx";
 import type { WristMenuButtonId, WristMenuStateSnapshot } from "./types.ts";
 import { setToolEditMode } from "../toolEditMode.ts";
-import { setControllerLaserEnabled } from "../controllerLaserMode.ts";
+import { setWindowLayerVisible } from "../windowLayerMode.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -121,6 +121,13 @@ function applyToggle(state: WristMenuStateSnapshot, id: WristMenuButtonId): Wris
 
 async function fetchActorState(actorId: string): Promise<WristMenuStateSnapshot | null> {
   try {
+    if (Deno.args.includes("--desktop-control-child")) {
+      return await requestDesktopActor<WristMenuStateSnapshot>(
+        actorId,
+        "GETWRISTMENUSTATE",
+        null,
+      );
+    }
     return await PostMan.PostMessage({
       target: actorId,
       type: "GETWRISTMENUSTATE",
@@ -137,6 +144,13 @@ async function toggleActorState(
   id: WristMenuButtonId,
 ): Promise<WristMenuStateSnapshot | null> {
   try {
+    if (Deno.args.includes("--desktop-control-child")) {
+      return await requestDesktopActor<WristMenuStateSnapshot>(
+        actorId,
+        "TOGGLEWRISTMENUACTION",
+        id,
+      );
+    }
     return await PostMan.PostMessage({
       target: actorId,
       type: "TOGGLEWRISTMENUACTION",
@@ -146,6 +160,23 @@ async function toggleActorState(
     console.warn("[wristMenu] failed to toggle actor state", error);
     return null;
   }
+}
+
+async function requestDesktopActor<T>(
+  target: string,
+  type: string,
+  payload: unknown,
+): Promise<T> {
+  const response = await fetch("http://127.0.0.1:3987/message", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target, type, payload, reply: true }),
+  });
+  const body = await response.json() as { ok?: boolean; error?: string; result?: T };
+  if (!response.ok || body.ok !== true) {
+    throw new Error(body.error ?? `Actor request failed (${response.status})`);
+  }
+  return body.result as T;
 }
 
 export function WristMenuPanel(
@@ -187,9 +218,9 @@ export function WristMenuPanel(
   }, [buttonState.musicActive]);
 
   useEffect(() => {
-    setControllerLaserEnabled(!buttonState.layersActive);
+    setWindowLayerVisible(buttonState.layersActive);
     return () => {
-      setControllerLaserEnabled(true);
+      setWindowLayerVisible(false);
     };
   }, [buttonState.layersActive]);
 

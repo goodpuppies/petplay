@@ -10,7 +10,6 @@ import type { DisplayMouseButton, DisplayMouseSink } from "./mouse.ts";
 extend(THREE as any);
 
 declare module "@react-three/fiber/webgpu" {
-  // deno-lint-ignore no-empty-interface
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
 
@@ -46,6 +45,8 @@ export type DisplayInstanceFrameProps = {
   rayHitSurface?: boolean;
   /** Optional display-space mouse sink; receives normalized 0..1 coordinates on the screen plane. */
   onMouse?: DisplayMouseSink;
+  /** Controls and other spatial content structurally owned by this display. */
+  children?: React.ReactNode;
 };
 
 function pointerButton(button: number | undefined): DisplayMouseButton {
@@ -92,6 +93,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       shellRayPickable = false,
       rayHitSurface = true,
       onMouse,
+      children,
     },
     ref,
   ) {
@@ -129,7 +131,6 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       if (onMouse == null) return;
       const coords = displayCoordsFromPointerEvent(e);
       if (coords == null) return;
-      e.stopPropagation();
       const pending = pendingClickRef.current;
       if (pending != null && pending.pointerId === e.pointerId) {
         pending.latest = coords;
@@ -235,6 +236,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
             </mesh>
           )
           : null}
+        {children}
       </GrabBox>
     );
   },
