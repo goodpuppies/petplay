@@ -1,6 +1,7 @@
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { OBB } from "three/addons/math/OBB.js";
+import type { WorkspaceOutput, WorkspaceRect } from "./workspaceDisplays.ts";
 
 export type SpatialNodeId = string;
 
@@ -42,6 +43,10 @@ export type BoxSnapSource = {
 export type DisplaySpatialNode = SpatialNodeBase & {
   kind: "display";
   ordinal: number;
+  /** Crop of the shared Full Workspace capture presented by this display. */
+  workspaceCrop?: WorkspaceRect;
+  workspaceOutputId?: string;
+  workspaceOutputName?: string;
 };
 
 export type KeyboardSpatialNode = SpatialNodeBase & {
@@ -205,6 +210,35 @@ export function ensureDefaultSpatialContent(current: SpatialGraph): SpatialGraph
     if (primaryDisplay != null) addDefaultKeyboard(graph, primaryDisplay.id);
   }
   return reconcileDisplayControls(graph);
+}
+
+/** Assign physical KDE outputs to spatial displays without creating captures. */
+export function assignWorkspaceOutputs(
+  current: SpatialGraph,
+  outputs: WorkspaceOutput[],
+): SpatialGraph {
+  if (outputs.length === 0) return current;
+  const graph = cloneGraph(current);
+  const displays = Object.values(graph.nodes)
+    .filter((node): node is DisplaySpatialNode => node.kind === "display")
+    .sort((a, b) => a.ordinal - b.ordinal);
+  for (const [index, display] of displays.entries()) {
+    const output = outputs[index];
+    graph.nodes[display.id] = output == null
+      ? {
+        ...display,
+        workspaceCrop: undefined,
+        workspaceOutputId: undefined,
+        workspaceOutputName: undefined,
+      }
+      : {
+        ...display,
+        workspaceCrop: output.crop,
+        workspaceOutputId: output.id,
+        workspaceOutputName: output.name,
+      };
+  }
+  return graph;
 }
 
 function addDisplayBottomHitbox(graph: SpatialGraph, displayId: SpatialNodeId): void {

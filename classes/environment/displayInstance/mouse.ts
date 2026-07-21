@@ -18,6 +18,72 @@ export type DisplayMouseLogicEvent = {
 
 export type DisplayMouseSink = (event: DisplayMouseLogicEvent) => void;
 
+export type DisplayMouseSmoothingOptions = {
+  /** Raw distance that is treated as controller/ray jitter. */
+  deadZone?: number;
+  /** EMA weight for ordinary motion. Lower values are smoother. */
+  baseAlpha?: number;
+  /** Motion distance at which filtering is bypassed. */
+  snapDistance?: number;
+  /** Avoid emitting sub-pixel-scale changes after filtering. */
+  minimumOutputDistance?: number;
+};
+
+/**
+ * Smooth normalized display motion without delaying button transitions. Button
+ * events snap the pointer to their raw coordinates so click targets stay exact.
+ */
+export function createSmoothedDisplayMouseSink(
+  sink: DisplayMouseSink,
+  options: DisplayMouseSmoothingOptions = {},
+): DisplayMouseSink {
+  const deadZone = options.deadZone ?? 0.001;
+  const baseAlpha = options.baseAlpha ?? 0.2;
+  const snapDistance = options.snapDistance ?? 0.08;
+  const minimumOutputDistance = options.minimumOutputDistance ?? 0.00025;
+  let filtered: { x: number; y: number } | null = null;
+  let emitted: { x: number; y: number } | null = null;
+
+  return (event) => {
+    if (event.kind === "button") {
+      filtered = { x: event.x, y: event.y };
+      emitted = { ...filtered };
+      sink(event);
+      return;
+    }
+
+    if (filtered == null) {
+      filtered = { x: event.x, y: event.y };
+      emitted = { ...filtered };
+      sink(event);
+      return;
+    }
+
+    const dx = event.x - filtered.x;
+    const dy = event.y - filtered.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance <= deadZone) return;
+
+    if (distance >= snapDistance) {
+      filtered = { x: event.x, y: event.y };
+    } else {
+      // Become progressively more responsive as intentional movement gets larger.
+      const alpha = Math.min(0.75, baseAlpha + (distance / snapDistance) * 0.55);
+      filtered = {
+        x: filtered.x + dx * alpha,
+        y: filtered.y + dy * alpha,
+      };
+    }
+
+    if (
+      emitted != null &&
+      Math.hypot(filtered.x - emitted.x, filtered.y - emitted.y) < minimumOutputDistance
+    ) return;
+    emitted = { ...filtered };
+    sink({ kind: "move", ...filtered });
+  };
+}
+
 const diagnostics = {
   events: 0,
   moves: 0,

@@ -24,6 +24,8 @@ export interface ScreenCapturerOptions {
   fps?: number;
   /** Path to the screen-streamer executable. Defaults to "./screen-streamer". */
   executablePath?: string;
+  /** Persistent Linux ScreenCast portal restore-token file. */
+  captureTokenPath?: string;
   /** Whether to log debug information. Defaults to false. */
   debug?: boolean;
   /** Callback for frame statistics (FPS, latency). Called every 30 frames if provided. */
@@ -79,6 +81,7 @@ export class ScreenCapturer {
       port: options.port ?? 12345,
       fps: Math.max(1, Math.min(60, options.fps ?? 10)),
       executablePath: options.executablePath ?? "./screen-streamer",
+      captureTokenPath: options.captureTokenPath ?? "screen-streamer-capture.token",
       debug: options.debug ?? false,
       onStats: options.onStats ?? (() => {}),
       onExit: options.onExit ?? (() => {}),
@@ -188,7 +191,11 @@ export class ScreenCapturer {
 
     // Start the Rust process after worker is ready
     const command = new Deno.Command(this.options.executablePath, {
-      args: [`--fps=${this.options.fps}`, `--port=${this.options.port}`],
+      args: [
+        `--fps=${this.options.fps}`,
+        `--port=${this.options.port}`,
+        `--capture-token-path=${this.options.captureTokenPath}`,
+      ],
       // The helper reads Enter to stop. Keep stdin open for its lifetime rather
       // than giving it Deno.Command's closed default, which makes it exit at
       // once as if the user had pressed Enter.

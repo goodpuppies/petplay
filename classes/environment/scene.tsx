@@ -18,7 +18,10 @@ import {
   DEFAULT_DISPLAY_HEIGHT,
   DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
 } from "./displayInstance/ui.tsx";
-import { windowsSystemDisplayMouseSink } from "./displayInstance/mouse.ts";
+import {
+  createSmoothedDisplayMouseSink,
+  windowsSystemDisplayMouseSink,
+} from "./displayInstance/mouse.ts";
 import type { DisplayMouseLogicEvent, DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
 import type { KeyboardLogicEvent, KeyboardSink } from "./keyboard/types.ts";
@@ -35,6 +38,7 @@ import {
 import { useWindowLayerVisible } from "./windowLayerMode.ts";
 import { GrabBox } from "./grabbox.tsx";
 import {
+  assignWorkspaceOutputs,
   commitNodeTransform,
   type ControlSpatialNode,
   createInitialSpatialGraph,
@@ -56,7 +60,7 @@ import {
   spawnHingedDisplay,
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
-import { SpatialBoxHitbox } from "./spatialHitbox.tsx";
+import { loadKdeWorkspaceOutputs } from "./workspaceDisplays.ts";
 import { isDesktopMousePointerType } from "./spatialPointer.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -129,11 +133,19 @@ const VIRTUAL_KEY_SCANS: Record<string, string> = {
 };
 
 function createLinuxMouseSink(actor: string): DisplayMouseSink {
-  return (event: DisplayMouseLogicEvent) => {
+  const rawSink: DisplayMouseSink = (event: DisplayMouseLogicEvent) => {
     postInputControl(actor, `M,${event.x},${event.y}`);
     if (event.kind === "button") {
       postInputControl(actor, `B,${event.button},${event.pressed ? 1 : 0}`);
     }
+  };
+  const smoothedUinputSink = createSmoothedDisplayMouseSink(rawSink);
+  return (event) => {
+    // Keep the compositor cursor pixel-exact with the VR ray. KDE uinput still
+    // receives the smoothed path below; button events snap it to this same raw
+    // coordinate before the click transition.
+    postInputControl(actor, `C,${event.x},${event.y}`);
+    smoothedUinputSink(event);
   };
 }
 
@@ -309,6 +321,38 @@ function WindowLayer({
   const rotation = React.useMemo(() => new THREE.Euler(), []);
   const forwardOffset = React.useMemo(() => new THREE.Vector3(0, -0.08, -1.35), []);
   const [graph, setGraph] = React.useState(createInitialSpatialGraph);
+  const [workspaceOutputs, setWorkspaceOutputs] = React.useState<
+    Awaited<ReturnType<typeof loadKdeWorkspaceOutputs>>
+  >([]);
+  const displayCount = Object.values(graph.nodes).filter((node) => node.kind === "display").length;
+
+  React.useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    void loadKdeWorkspaceOutputs().then((outputs) => {
+      if (!cancelled) setWorkspaceOutputs(outputs);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
+  React.useEffect(() => {
+    if (workspaceOutputs.length === 0) return;
+    setGraph((current) => {
+      let next = current;
+      let displays = Object.values(next.nodes)
+        .filter((node): node is DisplaySpatialNode => node.kind === "display")
+        .sort((a, b) => a.ordinal - b.ordinal);
+      while (displays.length < workspaceOutputs.length) {
+        next = spawnHingedDisplay(next, displays.at(-1)!.id);
+        displays = Object.values(next.nodes)
+          .filter((node): node is DisplaySpatialNode => node.kind === "display")
+          .sort((a, b) => a.ordinal - b.ordinal);
+      }
+      return assignWorkspaceOutputs(next, workspaceOutputs);
+    });
+  }, [displayCount, workspaceOutputs]);
 
   React.useLayoutEffect(() => {
     if (!visible) return;
@@ -521,10 +565,15 @@ function DisplaySpatialNodeView({
   );
   const deletion = useScaleToDelete(node.id, DISPLAY_GRAB_SIZE, baseOptions, setGraph);
   const children = getSpatialChildren(graph, node.id);
-  const isPrimaryCapture = Object.values(graph.nodes)
-    .filter((candidate): candidate is DisplaySpatialNode => candidate.kind === "display")
-    .every((candidate) => candidate.ordinal >= node.ordinal);
   const attachmentRole = getDisplayAttachmentRole(graph, node.id);
+  const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
+  const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
+    onMouse({
+      ...event,
+      x: workspaceCrop.x + event.x * workspaceCrop.width,
+      y: workspaceCrop.y + event.y * workspaceCrop.height,
+    });
+  }, [onMouse, workspaceCrop.x, workspaceCrop.y, workspaceCrop.width, workspaceCrop.height]);
 
   return (
     <group
@@ -539,19 +588,24 @@ function DisplaySpatialNodeView({
         parentId: node.parentId,
         originId: node.originId,
         attachmentRole,
+        workspaceCrop: node.workspaceCrop ?? null,
+        workspaceOutputId: node.workspaceOutputId ?? null,
+        workspaceOutputName: node.workspaceOutputName ?? null,
       }}
     >
       {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
       <DisplayInstance
-        displayInstanceActor={isPrimaryCapture ? displayInstanceActor : null}
-        onMouse={isPrimaryCapture && displayInstanceActor != null ? onMouse : undefined}
-        rayHitSurface={isPrimaryCapture && displayInstanceActor != null}
-        shellRayPickable={!isPrimaryCapture || displayInstanceActor == null}
+        displayInstanceActor={displayInstanceActor}
+        virtualDisplayId={node.id}
+        virtualDisplayName={node.workspaceOutputName ?? `PetPlay ${node.id}`}
+        workspaceCrop={workspaceCrop}
+        onMouse={displayInstanceActor != null ? croppedMouseSink : undefined}
+        rayHitSurface={displayInstanceActor != null}
+        shellRayPickable={displayInstanceActor == null}
         manipulationTargetRef={targetRef}
         manipulationOptions={deletion.options}
         manipulationStoreRef={manipulationStoreRef}
       />
-      <SpatialHitboxesView nodeId={node.id} graph={graph} />
       {children.map((child) => (
         <SpatialAttachmentView
           key={child.id}
@@ -646,21 +700,6 @@ function KeyboardSpatialNodeView({
       ))}
     </group>
   );
-}
-
-function SpatialHitboxesView({ nodeId, graph }: { nodeId: string; graph: SpatialGraph }) {
-  return Object.values(graph.hitboxes)
-    .filter((hitbox) => hitbox.ownerId === nodeId)
-    .map((hitbox) => (
-      <group
-        key={hitbox.id}
-        position={hitbox.localTransform.position}
-        rotation={hitbox.localTransform.rotation}
-        scale={hitbox.localTransform.scale}
-      >
-        <SpatialBoxHitbox id={hitbox.id} size={hitbox.size} />
-      </group>
-    ));
 }
 
 function SpatialAttachmentView(props: SpatialNodeViewProps) {

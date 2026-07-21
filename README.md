@@ -45,10 +45,14 @@ desktop-control window, WebXR scene, wrist menu, VRC camera OSC receiver, and ag
 capture/display presentation is currently disabled in this mode because it is still backed by an
 OpenVR overlay.
 
-On Wayland, desktop capture and keyboard/pointer injection use the desktop portal. KDE currently
-shows separate consent dialogs for screen capture and remote control because the capture and input
-sessions are independent; select the same monitor in both. PetPlay forwards its normalized display
-pointer and virtual keyboard events to the bundled Linux `screen-streamer` helper.
+On KDE Wayland, select **Full Workspace** in the initial ScreenCast portal dialog. PetPlay requests
+persistent capture access and stores the rotating, single-use restore token under
+`$XDG_CONFIG_HOME/petplay` (normally `~/.config/petplay`), so later launches restore the workspace
+without prompting unless access was revoked or the workspace configuration is no longer valid.
+Keyboard and pointer injection use `/dev/uinput` and therefore do not require a remote-control
+portal dialog. The capture helper starts with the display actor and remains alive independently of
+virtual display creation or visibility. Future virtual display units are crop views into this one
+workspace stream rather than separate portal captures.
 
 Stageforge networking and its Iroh worker wrapper are disabled by default, so local actors use
 native Deno workers. To connect to the Stageforge signaling server, use `deno task dev:network`,

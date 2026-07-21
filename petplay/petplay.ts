@@ -30,13 +30,20 @@ function tryBeginExit(): boolean {
  * Used by both clean and fatal exit; does not log or `Deno.exit`.
  */
 async function petplaySharedShutdown(): Promise<void> {
-  // Stop native-owning workers before removing their extracted DLL/executable
-  // files. Reverse creation order keeps OpenVR alive until WebXR and display
-  // actors have released their overlays and capture process.
+  // Run native teardown sequentially, but keep each worker alive after its hook.
+  // SHUTDOWN_AND_CLOSE acknowledges before its scheduled globalThis.close(),
+  // allowing the worker's native destructors to race the next actor's cleanup.
+  // The final Deno.exit terminates these already-cleaned, idle workers together.
   const actorIds = [...PostalService.actors.keys()].reverse();
   for (const actorId of actorIds) {
     try {
-      await postalservice.murder(actorId);
+      console.log(`[petplay] shutting down actor ${actorId}`);
+      await postalservice.PostMessage({
+        target: actorId,
+        type: "SHUTDOWN",
+        payload: { reason: "process-exit" },
+      }, true);
+      console.log(`[petplay] actor shutdown complete ${actorId}`);
     } catch (error) {
       console.warn(`petplay: actor shutdown failed (${actorId}):`, error);
     }

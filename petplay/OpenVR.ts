@@ -19,7 +19,22 @@ export const api = {
   __INIT__: (_payload: null) => {
     initializeOpenVR();
   },
-  __SHUTDOWN__: (_payload: unknown) => {
+  __SHUTDOWN__: (payload: { reason?: string } | null) => {
+    if (Deno.build.os === "linux" && payload?.reason === "process-exit") {
+      // Keep both the runtime and DynamicLibrary alive while other workers'
+      // generated OpenVR-facing wrappers remain reachable. Stress testing
+      // shows VR_ShutdownInternal itself can race that retained native state;
+      // Deno/OS process teardown safely releases both after module graphs die.
+      state.vrSystemPTR = null;
+      state.compositorPTR = null;
+      state.overlayPTR = null;
+      state.inputPTR = null;
+      LogChannel.log(
+        "actor",
+        "OpenVR runtime/library release deferred to OS process teardown on Linux.",
+      );
+      return;
+    }
     shutdownOpenVR();
   },
   __HEALTH__: (_payload: unknown) => {

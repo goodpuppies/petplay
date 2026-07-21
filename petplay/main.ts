@@ -274,19 +274,27 @@ async function continueOpenVrScene(
       vrInputPointer: ivrinput as number | bigint,
     },
   });
+  const desktopOverlayConfig = {
+    overlayKey: "petplay.displayInstance.desktop",
+    displayName: "PetPlay display",
+    runScreenCapture: true,
+    captureFrameLimit: 0,
+    captureFps: getScreenCaptureFps(),
+    initialWidthMeters: (16 / 9) * 0.5,
+    enableMouseInput: true,
+  };
   PostMan.PostMessage({
     target: displayInstance,
     type: "CONFIGUREDESKTOP",
-    payload: {
-      overlayKey: "petplay.displayInstance.desktop",
-      displayName: "PetPlay display",
-      runScreenCapture: true,
-      captureFrameLimit: 0,
-      captureFps: getScreenCaptureFps(),
-      initialWidthMeters: (16 / 9) * 0.5,
-      enableMouseInput: true,
-    },
+    payload: desktopOverlayConfig,
   });
+  if (Deno.args.includes("--dev-start-desktop-overlay")) {
+    PostMan.PostMessage({
+      target: displayInstance,
+      type: "STARTDESKTOP",
+      payload: desktopOverlayConfig,
+    });
+  }
   PostMan.PostMessage({
     target: wristMenu,
     type: "SETDESKTOPOVERLAYACTOR",

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-let visible = false;
+let visible = Deno.args.includes("--dev-start-desktop-overlay");
 const listeners = new Set<() => void>();
 
 export function setWindowLayerVisible(nextVisible: boolean): void {

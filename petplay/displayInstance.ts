@@ -18,6 +18,17 @@ const state = actorState({
   name: "display_instance",
   overlayClass: null as OpenVR.IVROverlay | null,
   overlayHandle: 0n,
+  cursorTargetDisplayId: null as string | null,
+  cursorTargetHandle: 0n,
+  cursorWorkspacePosition: null as { x: number; y: number } | null,
+  cursorInputSequence: 0,
+  cursorDiagnostics: null as {
+    targetId: string;
+    workspace: [number, number];
+    localUv: [number, number];
+    submittedMouse: [number, number];
+    configuredMouseScale: [number, number];
+  } | null,
   isRunning: false,
   isStarting: false,
   lastStartError: null as string | null,
@@ -29,11 +40,16 @@ const state = actorState({
   captureFrames: 0,
   captureFps: 10,
   captureFramesPresented: 0,
+  captureFrameWidth: 1,
+  captureFrameHeight: 1,
   lastStartConfig: null as StartDesktopPayload | null,
   overlayPointer: null as bigint | null,
-  restartTimerId: null as number | null,
+  restartTimerId: null as ReturnType<typeof setTimeout> | null,
   visible: false,
+  shuttingDown: false,
 });
+
+let warmCapturePromise: Promise<ScreenCapturer> | null = null;
 
 const START_DESKTOP_MAX_ATTEMPTS = 4;
 const START_DESKTOP_RETRY_WAIT_MS = 450;
@@ -72,6 +88,19 @@ type SyncDisplayPosePayload = {
   widthMeters: number;
 };
 
+type WorkspaceCrop = { x: number; y: number; width: number; height: number };
+type SyncVirtualDisplayPayload = SyncDisplayPosePayload & {
+  id: string;
+  crop: WorkspaceCrop;
+  name?: string;
+};
+type VirtualOverlay = SyncVirtualDisplayPayload & { handle: bigint };
+const virtualOverlays = new Map<string, VirtualOverlay>();
+const pendingVirtualDisplays = new Map<string, SyncVirtualDisplayPayload>();
+const cursorOverlays = new Map<string, { handle: bigint; targetHandle: bigint }>();
+const virtualOverlayRemovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const VIRTUAL_OVERLAY_REMOVAL_GRACE_MS = 250;
+
 type SetFrameDataPayload = {
   pixels: string | number[];
   encoding?: string;
@@ -89,8 +118,17 @@ new PostMan(
   {
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
+      void ensureWarmScreenCapturer().catch((error) => {
+        LogChannel.error(
+          "actor",
+          `[displayInstance] startup screen capture failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        );
+      });
     },
     __SHUTDOWN__: async (_payload: unknown) => {
+      state.shuttingDown = true;
       await stopDisplayInstance();
     },
     __HEALTH__: (_payload: unknown) => {
@@ -104,6 +142,10 @@ new PostMan(
       };
     },
     INPUTCONTROL: (payload: string) => {
+      if (payload.startsWith("C,")) {
+        updateCursorFromPointerControl(payload);
+        return;
+      }
       void state.screenCapturer?.sendControl(payload);
     },
     __RESTORE__: (
@@ -166,13 +208,17 @@ new PostMan(
       if (payload.id !== "layers") return getDisplayInstanceStatus();
       state.visible = payload.active;
       if (!payload.active) {
-        if (state.overlayClass && state.overlayHandle) {
-          state.overlayClass.HideOverlay(state.overlayHandle);
+        if (state.overlayClass) {
+          for (const entry of virtualOverlays.values()) {
+            state.overlayClass.HideOverlay(entry.handle);
+          }
         }
         return getDisplayInstanceStatus();
       }
-      if (state.overlayClass && state.overlayHandle) {
-        state.overlayClass.ShowOverlay(state.overlayHandle);
+      if (state.overlayClass && virtualOverlays.size > 0) {
+        for (const entry of virtualOverlays.values()) {
+          state.overlayClass.ShowOverlay(entry.handle);
+        }
       } else if (state.lastStartConfig) {
         void startDesktopWithRetry(state.lastStartConfig);
       }
@@ -202,6 +248,40 @@ new PostMan(
       setTransformSafe(sync.hmd);
       state.lastHmd = sync.hmd;
     },
+    SYNCVIRTUALDISPLAY: (sync: SyncVirtualDisplayPayload) => {
+      const removalTimer = virtualOverlayRemovalTimers.get(sync.id);
+      if (removalTimer != null) {
+        clearTimeout(removalTimer);
+        virtualOverlayRemovalTimers.delete(sync.id);
+      }
+      pendingVirtualDisplays.set(sync.id, sync);
+      if (!state.isRunning || !state.overlayClass || !state.textureStructPtr) return;
+      syncVirtualDisplay(sync);
+    },
+    REMOVEVIRTUALDISPLAY: (payload: { id: string }) => {
+      pendingVirtualDisplays.delete(payload.id);
+      const previousTimer = virtualOverlayRemovalTimers.get(payload.id);
+      if (previousTimer != null) clearTimeout(previousTimer);
+      // React development/StrictMode can replay an effect cleanup immediately before
+      // mounting the same display again. Give the replacement SYNC a chance to cancel
+      // removal so that transient UI reconciliation cannot destroy a live OpenVR handle.
+      const timer = setTimeout(() => {
+        virtualOverlayRemovalTimers.delete(payload.id);
+        if (pendingVirtualDisplays.has(payload.id)) return;
+        const entry = virtualOverlays.get(payload.id);
+        if (!entry || !state.overlayClass) return;
+        state.overlayClass.HideOverlay(entry.handle);
+        state.overlayClass.DestroyOverlay(entry.handle);
+        virtualOverlays.delete(payload.id);
+        if (entry.handle === state.overlayHandle) state.overlayHandle = 0n;
+        destroyCursorOverlay(payload.id);
+        if (entry.handle === state.cursorTargetHandle) {
+          state.cursorTargetDisplayId = null;
+          state.cursorTargetHandle = 0n;
+        }
+      }, VIRTUAL_OVERLAY_REMOVAL_GRACE_MS);
+      virtualOverlayRemovalTimers.set(payload.id, timer);
+    },
     SETFRAMEDATA: (framePayload: SetFrameDataPayload) => {
       if (!state.isRunning) return;
       if (!state.textureStructPtr) throw new Error("no texture struct");
@@ -218,16 +298,16 @@ new PostMan(
         pixelsArray = new Uint8Array(framePayload.pixels as number[]);
       }
       if (!state.glManager) throw new Error("glManager is null");
+      updateCaptureDimensions(framePayload.width, framePayload.height);
       state.glManager.createTextureFromData(pixelsArray, framePayload.width, framePayload.height);
-      const error = state.overlayClass.SetOverlayTexture(
-        state.overlayHandle,
-        state.textureStructPtr,
-      );
-      if (error !== OpenVR.OverlayError.VROverlayError_None) {
-        LogChannel.log(
-          "actor",
-          `[displayInstance] SetOverlayTexture: ${OpenVR.OverlayError[error]}`,
-        );
+      for (const entry of virtualOverlays.values()) {
+        const error = state.overlayClass.SetOverlayTexture(entry.handle, state.textureStructPtr);
+        if (error !== OpenVR.OverlayError.VROverlayError_None) {
+          LogChannel.log(
+            "actor",
+            `[displayInstance] SetOverlayTexture(${entry.id}): ${OpenVR.OverlayError[error]}`,
+          );
+        }
       }
     },
     GETOVERLAYLOCATION: () => {
@@ -250,6 +330,25 @@ function getDisplayInstanceStatus() {
     starting: state.isStarting,
     overlayReady: state.overlayClass != null,
     overlayHandleActive: state.overlayHandle !== 0n,
+    cursorOverlayHandle: state.cursorTargetDisplayId
+      ? cursorOverlays.get(state.cursorTargetDisplayId)?.handle ?? 0n
+      : 0n,
+    cursorOverlays: [...cursorOverlays.entries()].map(([id, cursor]) => ({
+      id,
+      handle: cursor.handle,
+      targetHandle: cursor.targetHandle,
+    })),
+    cursorInputSequence: state.cursorInputSequence,
+    cursor: state.cursorDiagnostics == null ? null : {
+      ...state.cursorDiagnostics,
+      targetHandle: state.cursorTargetHandle,
+    },
+    virtualOverlays: [...virtualOverlays.values()].map((entry) => ({
+      id: entry.id,
+      handle: entry.handle,
+      crop: entry.crop,
+      name: entry.name ?? null,
+    })),
     glReady: state.glManager != null,
     screenCaptureActive: state.screenCapturer != null,
     captureFps: state.captureFps,
@@ -305,7 +404,10 @@ async function stopStaleScreenStreamer(): Promise<void> {
 async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
   const { ScreenCapturer } = await import("../classes/ScreenCapturer/scclass.ts");
   const logStats = getWebxrFrameLogsEnabled();
-  return new ScreenCapturer({
+  const configHome = Deno.env.get("XDG_CONFIG_HOME") ??
+    join(Deno.env.get("HOME") ?? Deno.cwd(), ".config");
+  const portalStateDir = join(configHome, "petplay");
+  const capturer = new ScreenCapturer({
     debug: Deno.build.os !== "windows",
     fps,
     onStats: ({ fps, avgLatency }) => {
@@ -316,19 +418,36 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
       );
     },
     executablePath: getScreenStreamerPath(),
+    captureTokenPath: join(portalStateDir, "screencast-restore-token"),
     onExit: (status) => {
-      if (!state.isRunning) return;
+      state.screenCapturer = null;
+      warmCapturePromise = null;
+      if (state.shuttingDown) return;
       const message = `screen-streamer exited (code=${status.code}, success=${status.success})`;
-      LogChannel.error("actor", `[displayInstance] ${message}; restarting capture`);
-      void stopDesktopOverlay().then(() => {
-        state.lastStartError = message;
-        const config = state.lastStartConfig;
-        if (config) {
-          scheduleDeferredStartRetry(config);
-        }
-      });
+      LogChannel.error("actor", `[displayInstance] ${message}; restarting warm capture`);
+      state.lastStartError = message;
+      void capturer.dispose().finally(() => ensureWarmScreenCapturer());
     },
   });
+  await capturer.start();
+  return capturer;
+}
+
+async function ensureWarmScreenCapturer(): Promise<ScreenCapturer> {
+  if (state.screenCapturer) return state.screenCapturer;
+  if (warmCapturePromise) return await warmCapturePromise;
+  warmCapturePromise = (async () => {
+    await stopStaleScreenStreamer();
+    const capturer = await initScreenCapturer(state.captureFps);
+    state.screenCapturer = capturer;
+    LogChannel.log("actor", "[displayInstance] screen capture warmed at actor startup");
+    return capturer;
+  })();
+  try {
+    return await warmCapturePromise;
+  } finally {
+    warmCapturePromise = null;
+  }
 }
 
 async function initGl(overlayName: string) {
@@ -338,23 +457,307 @@ async function initGl(overlayName: string) {
   if (!state.glManager) throw new Error("glManager is null");
 }
 
+function textureBoundsForCrop(crop: WorkspaceCrop): OpenVR.TextureBounds {
+  const x = Math.max(0, Math.min(1, crop.x));
+  const y = Math.max(0, Math.min(1, crop.y));
+  const width = Math.max(0, Math.min(1 - x, crop.width));
+  const height = Math.max(0, Math.min(1 - y, crop.height));
+  return { uMin: x, uMax: x + width, vMin: y + height, vMax: y };
+}
+
+function createVirtualOverlayHandle(sync: SyncVirtualDisplayPayload): bigint {
+  const overlay = state.overlayClass!;
+  const baseKey = state.lastStartConfig?.overlayKey ?? "petplay.displayInstance.desktop";
+  const key = `${baseKey}.${sync.id}`;
+  const createHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+  let err = overlay.CreateOverlay(key, sync.name ?? sync.id, createHandlePtr);
+  if (err === OpenVR.OverlayError.VROverlayError_KeyInUse) {
+    const findPtr = P.BigUint64P<OpenVR.OverlayHandle>();
+    const findError = overlay.FindOverlay(key, findPtr);
+    if (findError !== OpenVR.OverlayError.VROverlayError_None) {
+      throw new Error(`FindOverlay(${key}): ${OpenVR.OverlayError[findError]}`);
+    }
+    const stale = new Deno.UnsafePointerView(findPtr).getBigUint64();
+    overlay.HideOverlay(stale);
+    overlay.DestroyOverlay(stale);
+    err = overlay.CreateOverlay(key, sync.name ?? sync.id, createHandlePtr);
+  }
+  if (err !== OpenVR.OverlayError.VROverlayError_None) {
+    throw new Error(`CreateOverlay(${key}): ${OpenVR.OverlayError[err]}`);
+  }
+  return new Deno.UnsafePointerView(createHandlePtr).getBigUint64();
+}
+
+const CURSOR_TEXTURE_WIDTH = 32;
+const CURSOR_TEXTURE_HEIGHT = 32;
+
+function createCursorPixels(): Uint8Array {
+  const pixels = new Uint8Array(CURSOR_TEXTURE_WIDTH * CURSOR_TEXTURE_HEIGHT * 4);
+  for (let y = 0; y < CURSOR_TEXTURE_HEIGHT; y++) {
+    for (let x = 0; x < CURSOR_TEXTURE_WIDTH; x++) {
+      const distance = Math.hypot(x + 0.5 - 16, y + 0.5 - 16);
+      if (distance > 10) continue;
+      const offset = (y * CURSOR_TEXTURE_WIDTH + x) * 4;
+      const channel = distance >= 7.5 ? 12 : 245;
+      pixels[offset] = channel;
+      pixels[offset + 1] = channel;
+      pixels[offset + 2] = channel;
+      pixels[offset + 3] = 255;
+    }
+  }
+  return pixels;
+}
+
+function ensureCursorOverlay(target: VirtualOverlay): bigint {
+  if (!state.overlayClass) return 0n;
+  const overlay = state.overlayClass;
+  const existing = cursorOverlays.get(target.id);
+  if (existing) {
+    if (existing.targetHandle !== target.handle) {
+      attachCursorToOverlay(target.handle, existing.handle);
+      existing.targetHandle = target.handle;
+    }
+    return existing.handle;
+  }
+  const baseKey = state.lastStartConfig?.overlayKey ?? "petplay.displayInstance.desktop";
+  const key = `${baseKey}.cursor.${target.id}`;
+  const handlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+  let error = overlay.CreateOverlay(key, "PetPlay Cursor", handlePtr);
+  if (error === OpenVR.OverlayError.VROverlayError_KeyInUse) {
+    const stalePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+    const findError = overlay.FindOverlay(key, stalePtr);
+    if (findError === OpenVR.OverlayError.VROverlayError_None) {
+      const stale = new Deno.UnsafePointerView(stalePtr).getBigUint64();
+      overlay.HideOverlay(stale);
+      overlay.DestroyOverlay(stale);
+      error = overlay.CreateOverlay(key, "PetPlay Cursor", handlePtr);
+    }
+  }
+  if (error !== OpenVR.OverlayError.VROverlayError_None) {
+    throw new Error(`Create cursor overlay: ${OpenVR.OverlayError[error]}`);
+  }
+
+  const handle = new Deno.UnsafePointerView(handlePtr).getBigUint64();
+  const pixels = createCursorPixels();
+  const rawError = overlay.SetOverlayRaw(
+    handle,
+    Deno.UnsafePointer.of(pixels),
+    CURSOR_TEXTURE_WIDTH,
+    CURSOR_TEXTURE_HEIGHT,
+    4,
+  );
+  if (rawError !== OpenVR.OverlayError.VROverlayError_None) {
+    overlay.DestroyOverlay(handle);
+    throw new Error(`SetOverlayRaw(cursor): ${OpenVR.OverlayError[rawError]}`);
+  }
+  overlay.SetOverlayWidthInMeters(handle, 0.018);
+  overlay.SetOverlayTexelAspect(handle, 1);
+  const [hotspotPtr] = createStruct<OpenVR.HmdVector2>(
+    { v: [0.5, 0.5] },
+    OpenVR.HmdVector2Struct,
+  );
+  const transformError = overlay.SetOverlayTransformCursor(handle, hotspotPtr);
+  if (transformError !== OpenVR.OverlayError.VROverlayError_None) {
+    overlay.DestroyOverlay(handle);
+    throw new Error(`SetOverlayTransformCursor: ${OpenVR.OverlayError[transformError]}`);
+  }
+  attachCursorToOverlay(target.handle, handle);
+  cursorOverlays.set(target.id, { handle, targetHandle: target.handle });
+  LogChannel.log(
+    "actor",
+    `[displayInstance] cursor overlay ${target.id} ready handle=${handle}`,
+  );
+  return handle;
+}
+
+function attachCursorToOverlay(targetHandle: bigint, cursorHandle: bigint): void {
+  if (!state.overlayClass || !cursorHandle) return;
+  const error = state.overlayClass.SetOverlayCursor(targetHandle, cursorHandle);
+  if (error !== OpenVR.OverlayError.VROverlayError_None) {
+    LogChannel.log(
+      "actor",
+      `[displayInstance] SetOverlayCursor: ${OpenVR.OverlayError[error]}`,
+    );
+  }
+}
+
+function destroyCursorOverlay(id: string): void {
+  const cursor = cursorOverlays.get(id);
+  if (!cursor) return;
+  if (state.overlayClass) {
+    state.overlayClass.SetOverlayCursor(cursor.targetHandle, 0n);
+    state.overlayClass.HideOverlay(cursor.handle);
+    state.overlayClass.DestroyOverlay(cursor.handle);
+  }
+  cursorOverlays.delete(id);
+}
+
+const cursorPosition = new Float32Array(2);
+
+function updateCursorFromPointerControl(command: string): void {
+  if (!command.startsWith("C,") || !state.overlayClass) return;
+  state.cursorInputSequence++;
+  const [, xText, yText] = command.split(",", 3);
+  const workspaceX = Number(xText);
+  const workspaceY = Number(yText);
+  if (!Number.isFinite(workspaceX) || !Number.isFinite(workspaceY)) return;
+  state.cursorWorkspacePosition = { x: workspaceX, y: workspaceY };
+  updateCursorOverlayPose(workspaceX, workspaceY);
+}
+
+function updateCursorOverlayPose(workspaceX: number, workspaceY: number): void {
+  if (!state.overlayClass) return;
+  const target = [...virtualOverlays.values()].find(({ crop }) =>
+    workspaceX >= crop.x && workspaceX <= crop.x + crop.width &&
+    workspaceY >= crop.y && workspaceY <= crop.y + crop.height
+  );
+  if (!target || target.crop.width <= 0 || target.crop.height <= 0) return;
+
+  const cursorHandle = ensureCursorOverlay(target);
+  if (!cursorHandle) return;
+  if (state.cursorTargetDisplayId && state.cursorTargetDisplayId !== target.id) {
+    const previous = cursorOverlays.get(state.cursorTargetDisplayId);
+    if (previous) {
+      cursorPosition[0] = -100_000;
+      cursorPosition[1] = -100_000;
+      state.overlayClass.SetOverlayCursorPositionOverride(
+        previous.targetHandle,
+        Deno.UnsafePointer.of(cursorPosition) as Deno.PointerValue<OpenVR.HmdVector2>,
+      );
+    }
+  }
+  state.cursorTargetDisplayId = target.id;
+  state.cursorTargetHandle = target.handle;
+  // Reassert the per-display association in case SteamVR rebuilt the target.
+  attachCursorToOverlay(target.handle, cursorHandle);
+
+  const localX = Math.min(
+    1,
+    Math.max(0, (workspaceX - target.crop.x) / target.crop.width),
+  );
+  const localY = Math.min(
+    1,
+    Math.max(0, (workspaceY - target.crop.y) / target.crop.height),
+  );
+
+  const mouseWidth = Math.max(1, state.captureFrameWidth * target.crop.width);
+  const mouseHeight = Math.max(1, state.captureFrameHeight * target.crop.height);
+  cursorPosition[0] = localX * mouseWidth;
+  // SteamVR's cursor transform spans a square whose physical side is the
+  // overlay width, irrespective of the target texture aspect. Fit the cursor's
+  // vertical range into the centered visible monitor height. For 1920x1080
+  // this is a 9/16 multiplier around the midpoint.
+  const heightOverWidth = mouseHeight / mouseWidth;
+  const cursorY = 0.5 + (0.5 - localY) * heightOverWidth;
+  cursorPosition[1] = cursorY * mouseHeight;
+  const pointer = Deno.UnsafePointer.of(cursorPosition) as Deno.PointerValue<OpenVR.HmdVector2>;
+  const error = state.overlayClass.SetOverlayCursorPositionOverride(
+    target.handle,
+    pointer,
+  );
+  if (error !== OpenVR.OverlayError.VROverlayError_None) {
+    LogChannel.log(
+      "actor",
+      `[displayInstance] SetOverlayCursorPositionOverride: ${OpenVR.OverlayError[error]}`,
+    );
+    return;
+  }
+  state.cursorDiagnostics = {
+    targetId: target.id,
+    workspace: [workspaceX, workspaceY],
+    localUv: [localX, localY],
+    submittedMouse: [cursorPosition[0], cursorPosition[1]],
+    configuredMouseScale: [mouseWidth, mouseHeight],
+  };
+}
+
+function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
+  const overlay = state.overlayClass!;
+  let entry = virtualOverlays.get(sync.id);
+  if (!entry) {
+    const handle = sync.id === "display-1" && state.overlayHandle !== 0n
+      ? state.overlayHandle
+      : createVirtualOverlayHandle(sync);
+    entry = { ...sync, handle };
+    virtualOverlays.set(sync.id, entry);
+    console.log(
+      `[displayInstance] virtual overlay ${sync.id} handle=${handle} crop=${
+        JSON.stringify(sync.crop)
+      }`,
+    );
+    overlay.SetOverlayInputMethod(
+      handle,
+      OpenVR.OverlayInputMethod.VROverlayInputMethod_Mouse,
+    );
+  } else {
+    const cropChanged = JSON.stringify(entry.crop) !== JSON.stringify(sync.crop);
+    Object.assign(entry, sync);
+    if (cropChanged) {
+      console.log(
+        `[displayInstance] virtual overlay ${sync.id} crop updated=${JSON.stringify(sync.crop)}`,
+      );
+    }
+  }
+  overlay.SetOverlayWidthInMeters(entry.handle, sync.widthMeters);
+  // TextureBounds already establishes the visible crop geometry in SteamVR.
+  // Keep square texels; changing this stretches the monitor vertically.
+  const aspectError = overlay.SetOverlayTexelAspect(entry.handle, 1);
+  if (aspectError !== OpenVR.OverlayError.VROverlayError_None) {
+    LogChannel.log(
+      "actor",
+      `[displayInstance] SetOverlayTexelAspect(${entry.id}): ${OpenVR.OverlayError[aspectError]}`,
+    );
+  }
+  setVirtualOverlayMouseScale(entry);
+  setOverlayTransformAbsolute(overlay, entry.handle, sync.hmd);
+  const [boundsPtr] = createStruct<OpenVR.TextureBounds>(
+    textureBoundsForCrop(sync.crop),
+    OpenVR.TextureBoundsStruct,
+  );
+  overlay.SetOverlayTextureBounds(entry.handle, boundsPtr);
+  if (state.textureStructPtr) overlay.SetOverlayTexture(entry.handle, state.textureStructPtr);
+  if (state.visible) overlay.ShowOverlay(entry.handle);
+  if (state.cursorTargetDisplayId === entry.id && state.cursorWorkspacePosition) {
+    updateCursorOverlayPose(
+      state.cursorWorkspacePosition.x,
+      state.cursorWorkspacePosition.y,
+    );
+  }
+}
+
+function setVirtualOverlayMouseScale(entry: VirtualOverlay): void {
+  if (!state.overlayClass) return;
+  const [mouseScalePtr] = createStruct<OpenVR.HmdVector2>(
+    {
+      v: [
+        Math.max(1, state.captureFrameWidth * entry.crop.width),
+        Math.max(1, state.captureFrameHeight * entry.crop.height),
+      ],
+    },
+    OpenVR.HmdVector2Struct,
+  );
+  const error = state.overlayClass.SetOverlayMouseScale(entry.handle, mouseScalePtr);
+  if (error !== OpenVR.OverlayError.VROverlayError_None) {
+    LogChannel.log(
+      "actor",
+      `[displayInstance] SetOverlayMouseScale(${entry.id}): ${OpenVR.OverlayError[error]}`,
+    );
+  }
+}
+
+function updateCaptureDimensions(width: number, height: number): void {
+  if (width === state.captureFrameWidth && height === state.captureFrameHeight) return;
+  state.captureFrameWidth = width;
+  state.captureFrameHeight = height;
+  for (const entry of virtualOverlays.values()) setVirtualOverlayMouseScale(entry);
+}
+
 async function stopDesktopOverlay(): Promise<void> {
   state.isRunning = false;
   state.lastStartError = null;
 
-  if (state.screenCapturer) {
-    try {
-      await state.screenCapturer.dispose();
-    } catch (error) {
-      LogChannel.log(
-        "actor",
-        `[displayInstance] screenCapturer dispose failed: ${
-          error instanceof Error ? error.message : error
-        }`,
-      );
-    }
-    state.screenCapturer = null;
-  }
+  for (const timer of virtualOverlayRemovalTimers.values()) clearTimeout(timer);
+  virtualOverlayRemovalTimers.clear();
 
   if (state.glManager) {
     try {
@@ -368,20 +771,33 @@ async function stopDesktopOverlay(): Promise<void> {
     state.glManager = null;
   }
 
-  if (state.overlayClass && state.overlayHandle) {
-    try {
-      state.overlayClass.HideOverlay(state.overlayHandle);
-    } catch {
-      // Ignore shutdown races.
-    }
-    try {
-      state.overlayClass.DestroyOverlay(state.overlayHandle);
-    } catch {
-      // Ignore shutdown races.
+  if (state.overlayClass) {
+    const handles = new Set([...virtualOverlays.values()].map((entry) => entry.handle));
+    if (state.overlayHandle) handles.add(state.overlayHandle);
+    for (const cursor of cursorOverlays.values()) handles.add(cursor.handle);
+    for (const handle of handles) {
+      try {
+        state.overlayClass.HideOverlay(handle);
+      } catch {
+        // Ignore shutdown races.
+      }
+      try {
+        state.overlayClass.DestroyOverlay(handle);
+      } catch {
+        // Ignore shutdown races.
+      }
     }
   }
 
+  virtualOverlays.clear();
+  cursorOverlays.clear();
+
   state.overlayHandle = 0n;
+  state.cursorTargetDisplayId = null;
+  state.cursorTargetHandle = 0n;
+  state.cursorWorkspacePosition = null;
+  state.cursorDiagnostics = null;
+  state.cursorInputSequence = 0;
   state.textureStructPtr = null;
   state.lastWidthMeters = -1;
   state.lastHmd = null;
@@ -392,6 +808,10 @@ async function stopDisplayInstance(): Promise<void> {
   clearDeferredStartRetry();
   state.lastStartConfig = null;
   await stopDesktopOverlay();
+  if (state.screenCapturer) {
+    await state.screenCapturer.dispose();
+    state.screenCapturer = null;
+  }
 }
 
 async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void> {
@@ -492,20 +912,22 @@ async function deskCapLoop(
     }
     lastFrame = frame;
     frameCount++;
+    updateCaptureDimensions(frame.width, frame.height);
     createTextureFromScreenshot(frame.data, frame.width, frame.height);
-    const err = overlay.SetOverlayTexture(state.overlayHandle, textureStructPtr);
-    if (err !== OpenVR.OverlayError.VROverlayError_None) {
-      LogChannel.error("actor", `SetOverlayTexture: ${OpenVR.OverlayError[err]}`);
+    for (const entry of virtualOverlays.values()) {
+      const err = overlay.SetOverlayTexture(entry.handle, textureStructPtr);
+      if (err !== OpenVR.OverlayError.VROverlayError_None) {
+        LogChannel.error(
+          "actor",
+          `SetOverlayTexture(${entry.id}): ${OpenVR.OverlayError[err]}`,
+        );
+      }
     }
     state.captureFramesPresented++;
     nextPresentAt = performance.now() + 1000 / state.captureFps;
   }
   if (!continuous) {
     state.isRunning = false;
-    if (state.screenCapturer) {
-      await state.screenCapturer.dispose();
-      state.screenCapturer = null;
-    }
   }
   LogChannel.log("actor", `[displayInstance] screen capture loop ended (frames: ${frameCount})`);
 }
@@ -523,7 +945,6 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   state.lastWidthMeters = -1;
   state.lastHmd = null;
 
-  await stopStaleScreenStreamer();
   await initGl(overlayKey);
   const createHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
   let err = overlay.CreateOverlay(overlayKey, name, createHandlePtr);
@@ -601,8 +1022,18 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   const [textureStructPtr] = createStruct<OpenVR.Texture>(textureData, OpenVR.TextureStruct);
   state.textureStructPtr = textureStructPtr;
 
+  const primarySync = pendingVirtualDisplays.get("display-1") ?? {
+    id: "display-1",
+    name,
+    hmd: idTransform,
+    widthMeters: widthM,
+    crop: { x: 0, y: 0, width: 1, height: 1 },
+  };
+  syncVirtualDisplay(primarySync);
+  for (const sync of pendingVirtualDisplays.values()) syncVirtualDisplay(sync);
+
   if (config.runScreenCapture) {
-    state.screenCapturer = await initScreenCapturer(state.captureFps);
+    await ensureWarmScreenCapturer();
     void deskCapLoop(overlay, textureStructPtr).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       LogChannel.error("actor", `[displayInstance] screen capture loop failed: ${message}`);

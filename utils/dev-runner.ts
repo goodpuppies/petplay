@@ -51,32 +51,61 @@ const header = encoder.encode(
 );
 await Promise.all([Deno.stdout.write(header), appendToLog(header)]);
 
-const child = new Deno.Command(Deno.execPath(), {
-  args: [
-    "run",
-    "-A",
-    "--unstable-webgpu",
-    "--env-file",
-    "--no-check",
-    "petplay/petplay.ts",
-    "dev",
-    ...Deno.args,
-  ],
+const petplayArgs = [
+  "run",
+  "-A",
+  "--unstable-webgpu",
+  "--env-file",
+  "--no-check",
+  "petplay/petplay.ts",
+  "dev",
+  ...Deno.args,
+];
+// Put PetPlay in a separate Linux process group. The terminal can then signal
+// this launcher alone; we forward one signal to PetPlay and wait for its
+// cooperative actor teardown instead of both processes receiving Ctrl-C.
+const child = new Deno.Command(Deno.build.os === "linux" ? "setsid" : Deno.execPath(), {
+  args: Deno.build.os === "linux" ? [Deno.execPath(), ...petplayArgs] : petplayArgs,
   cwd: Deno.cwd(),
   stdin: "inherit",
   stdout: "piped",
   stderr: "piped",
 }).spawn();
 
+let forwardedSignal = false;
+const installedSignals: Array<[Deno.Signal, () => void]> = [];
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  try {
+    const handler = () => {
+      if (forwardedSignal) return;
+      forwardedSignal = true;
+      const message = encoder.encode(
+        `[petplay launcher] forwarding ${signal} for clean shutdown\n`,
+      );
+      void Promise.all([Deno.stdout.write(message), appendToLog(message)]);
+      try {
+        child.kill(signal);
+      } catch {
+        // The child may have completed between signal delivery and forwarding.
+      }
+    };
+    Deno.addSignalListener(signal, handler);
+    installedSignals.push([signal, handler]);
+  } catch {
+    // Some signals are unavailable on Windows.
+  }
+}
+
 const stdoutMirror = mirror(child.stdout, Deno.stdout.writable);
 const stderrMirror = mirror(child.stderr, Deno.stderr.writable);
 const status = await child.status;
+for (const [signal, handler] of installedSignals) Deno.removeSignalListener(signal, handler);
 await Promise.all([stdoutMirror, stderrMirror]);
 
 const footer = encoder.encode(
-  `[petplay launcher] exited=${
-    new Date().toISOString()
-  } code=${status.code} signal=${status.signal ?? "none"}\n`,
+  `[petplay launcher] exited=${new Date().toISOString()} code=${status.code} signal=${
+    status.signal ?? "none"
+  }\n`,
 );
 await Promise.all([Deno.stdout.write(footer), appendToLog(footer)]);
 await pendingLogWrite;

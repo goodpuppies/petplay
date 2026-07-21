@@ -18,6 +18,7 @@ import {
   DisplayInstanceFrame,
   type DisplayInstanceFrameProps,
 } from "./ui.tsx";
+import type { WorkspaceRect } from "../workspaceDisplays.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -31,6 +32,9 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   rotation?: [number, number, number];
   /** Optional actor id for future overlay / bridge correlation. */
   displayInstanceActor?: string | null;
+  virtualDisplayId?: string;
+  workspaceCrop?: WorkspaceRect;
+  virtualDisplayName?: string;
   /** Transform target for this display's GrabBox; defaults to the display itself. */
   manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
   /** Optional constraint/apply policy for the Handle targeting this display. */
@@ -71,6 +75,9 @@ export function DisplayInstance(
     position,
     rotation,
     displayInstanceActor,
+    virtualDisplayId,
+    workspaceCrop,
+    virtualDisplayName,
     manipulationTargetRef,
     manipulationOptions,
     manipulationStoreRef,
@@ -87,21 +94,37 @@ export function DisplayInstance(
   const rigidWorld = useRef(new THREE.Matrix4());
   const lastSentHmd = useRef<ReturnType<typeof hmd34FromColumnMajor4x4> | null>(null);
   const lastSentWidth = useRef<number | null>(null);
+  const lastSentCrop = useRef<string | null>(null);
 
   const height = frameProps.height ?? DEFAULT_DISPLAY_HEIGHT;
   const localHalfW = 0.5 * height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT;
 
   const displaySyncFrameOpts = React.useMemo<UseFrameNextOptions>(
     () => ({
-      id: "petplay-display-openvr",
+      id: `petplay-display-openvr-${virtualDisplayId ?? "legacy"}`,
       enabled: displayInstanceActor != null,
       phase: "finish",
       // No `fps` / `drop`: a 60Hz cap (and `drop: true` under load) only re-evaluated this pose
       // 60×/s while XR sim can run 75–200+ Hz, which beats with the HMD/overlay and looks like
       // micro judder. Matrix equality below still limits cross-actor traffic when the pose is flat.
     }),
-    [displayInstanceActor],
+    [displayInstanceActor, virtualDisplayId],
   );
+
+  React.useEffect(() => {
+    if (!displayInstanceActor || !virtualDisplayId) return;
+    return () => {
+      try {
+        PostMan.PostMessage({
+          target: displayInstanceActor,
+          type: "REMOVEVIRTUALDISPLAY",
+          payload: { id: virtualDisplayId },
+        });
+      } catch {
+        // Actor may already be shutting down.
+      }
+    };
+  }, [displayInstanceActor, virtualDisplayId]);
 
   useFrame(() => {
     if (displayInstanceActor == null) {
@@ -144,22 +167,39 @@ export function DisplayInstance(
     p1.current.applyMatrix4(obj.matrixWorld);
     const widthMeters = p0.current.distanceTo(p1.current);
 
+    const cropKey = workspaceCrop ? JSON.stringify(workspaceCrop) : null;
     if (lastSentHmd.current && lastSentWidth.current !== null) {
       if (
         hmd34ApproxEqual(hmd, lastSentHmd.current) &&
-        Math.abs(lastSentWidth.current - widthMeters) < 0.0001
+        Math.abs(lastSentWidth.current - widthMeters) < 0.0001 &&
+        lastSentCrop.current === cropKey
       ) {
         return;
       }
     }
     lastSentHmd.current = hmd;
     lastSentWidth.current = widthMeters;
+    lastSentCrop.current = cropKey;
     try {
-      PostMan.PostMessage({
-        target: targetActor,
-        type: "SYNCDISPLAYPOSE",
-        payload: { hmd, widthMeters },
-      });
+      PostMan.PostMessage(
+        virtualDisplayId && workspaceCrop
+          ? {
+            target: targetActor,
+            type: "SYNCVIRTUALDISPLAY",
+            payload: {
+              id: virtualDisplayId,
+              name: virtualDisplayName,
+              crop: workspaceCrop,
+              hmd,
+              widthMeters,
+            },
+          }
+          : {
+            target: targetActor,
+            type: "SYNCDISPLAYPOSE",
+            payload: { hmd, widthMeters },
+          },
+      );
     } catch {
       // actor may be torn down
     }
