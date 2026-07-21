@@ -21,12 +21,16 @@ export type HingeConstraint = {
 
 export type SpatialConstraint = HingeConstraint;
 
+export type ParentDeleteBehavior = "preserve" | "cascade";
+export type DisplayAttachmentRole = "solo" | "parent" | "child";
+
 type SpatialNodeBase = {
   id: SpatialNodeId;
   parentId: SpatialNodeId | null;
   originId: string;
   localTransform: SpatialTransform;
   constraint?: SpatialConstraint;
+  onParentDelete: ParentDeleteBehavior;
 };
 
 export type BoxSnapSource = {
@@ -111,10 +115,43 @@ function addControl(
     parentId,
     originId: graph.nodes[parentId].originId,
     localTransform: transform(position),
+    onParentDelete: "cascade",
     action,
     targetId,
   };
   return id;
+}
+
+function addDefaultKeyboard(graph: SpatialGraph, displayId: SpatialNodeId): void {
+  const display = graph.nodes[displayId];
+  if (display?.kind !== "display") return;
+  const keyboardScale = 0.38;
+  const keyboardHeight = 0.2;
+  graph.nodes.keyboard = {
+    id: "keyboard",
+    kind: "keyboard",
+    parentId: displayId,
+    originId: display.originId,
+    localTransform: transform([0, 0, 0], [0, 0, 0], [
+      keyboardScale,
+      keyboardScale,
+      keyboardScale,
+    ]),
+    onParentDelete: "preserve",
+    constraint: {
+      kind: "hinge",
+      axis: "x",
+      angle: THREE.MathUtils.degToRad(-55),
+      limits: [THREE.MathUtils.degToRad(-100), THREE.MathUtils.degToRad(15)],
+      parentPivot: [0, -0.285, 0.025],
+      childPivot: [0, 0.5 * keyboardHeight * keyboardScale, 0],
+    },
+    snapSource: {
+      shape: "box",
+      size: [0.5, keyboardHeight, 0.04],
+      localTransform: { ...IDENTITY_SPATIAL_TRANSFORM },
+    },
+  };
 }
 
 export function createInitialSpatialGraph(): SpatialGraph {
@@ -132,26 +169,42 @@ export function createInitialSpatialGraph(): SpatialGraph {
     parentId: null,
     originId: "scene-origin",
     localTransform: transform([0, 0, 0]),
+    onParentDelete: "preserve",
   };
   addDisplayBottomHitbox(graph, rootId);
-  addControl(graph, rootId, "spawn-display", rootId, [0.53, 0, 0.025]);
-  graph.nodes.keyboard = {
-    id: "keyboard",
-    kind: "keyboard",
-    parentId: null,
-    originId: "scene-origin",
-    localTransform: transform(
-      [0.45, -0.8, 0.03],
-      [0, -0.38, 0],
-      [0.38, 0.38, 0.38],
-    ),
-    snapSource: {
-      shape: "box",
-      size: [0.5, 0.2, 0.04],
-      localTransform: { ...IDENTITY_SPATIAL_TRANSFORM },
-    },
-  };
-  return graph;
+  addDefaultKeyboard(graph, rootId);
+  return reconcileDisplayControls(graph);
+}
+
+export function ensureDefaultSpatialContent(current: SpatialGraph): SpatialGraph {
+  const hasDisplay = Object.values(current.nodes).some((node) => node.kind === "display");
+  const hasKeyboard = Object.values(current.nodes).some((node) => node.kind === "keyboard");
+  if (hasDisplay && hasKeyboard) return current;
+
+  const graph = cloneGraph(current);
+  if (!hasDisplay) {
+    const ordinal = graph.nextDisplayOrdinal++;
+    const id = `display-${ordinal}`;
+    graph.nodes[id] = {
+      id,
+      kind: "display",
+      ordinal,
+      parentId: null,
+      originId: "scene-origin",
+      localTransform: transform([0, 0, 0]),
+      onParentDelete: "preserve",
+    };
+    addDisplayBottomHitbox(graph, id);
+  }
+  if (!hasKeyboard) {
+    const primaryDisplay = Object.values(graph.nodes)
+      .filter((node): node is DisplaySpatialNode =>
+        node.kind === "display" && node.parentId == null
+      )
+      .sort((a, b) => a.ordinal - b.ordinal)[0];
+    if (primaryDisplay != null) addDefaultKeyboard(graph, primaryDisplay.id);
+  }
+  return reconcileDisplayControls(graph);
 }
 
 function addDisplayBottomHitbox(graph: SpatialGraph, displayId: SpatialNodeId): void {
@@ -193,6 +246,29 @@ function removeControls(
   }
 }
 
+function reconcileDisplayControls(current: SpatialGraph): SpatialGraph {
+  const graph = cloneGraph(current);
+  removeControls(graph, () => true);
+  const displays = Object.values(graph.nodes)
+    .filter((node): node is DisplaySpatialNode => node.kind === "display")
+    .sort((a, b) => a.ordinal - b.ordinal);
+  for (const display of displays) {
+    const hasDisplayChild = displays.some((candidate) => candidate.parentId === display.id);
+    if (!hasDisplayChild) {
+      addControl(graph, display.id, "spawn-display", display.id, [0.53, 0, 0.025]);
+    }
+    if (display.parentId == null) continue;
+    addControl(
+      graph,
+      display.id,
+      display.constraint?.kind === "hinge" ? "release-hinge" : "detach",
+      display.id,
+      [-0.4, -0.34, 0.025],
+    );
+  }
+  return graph;
+}
+
 export function spawnHingedDisplay(
   current: SpatialGraph,
   parentId: SpatialNodeId,
@@ -201,10 +277,6 @@ export function spawnHingedDisplay(
   if (parent?.kind !== "display") return current;
 
   const graph = cloneGraph(current);
-  removeControls(
-    graph,
-    (node) => node.action === "spawn-display" && node.parentId === parentId,
-  );
 
   const ordinal = graph.nextDisplayOrdinal++;
   const id = `display-${ordinal}`;
@@ -215,6 +287,7 @@ export function spawnHingedDisplay(
     parentId,
     originId: parent.originId,
     localTransform: { ...IDENTITY_SPATIAL_TRANSFORM },
+    onParentDelete: "preserve",
     constraint: {
       kind: "hinge",
       axis: "y",
@@ -227,9 +300,7 @@ export function spawnHingedDisplay(
 
   addDisplayBottomHitbox(graph, id);
 
-  addControl(graph, id, "spawn-display", id, [0.53, 0, 0.025]);
-  addControl(graph, id, "release-hinge", id, [-0.4, -0.34, 0.025]);
-  return graph;
+  return reconcileDisplayControls(graph);
 }
 
 export function setHingeAngle(
@@ -418,15 +489,7 @@ export function releaseHinge(current: SpatialGraph, nodeId: SpatialNodeId): Spat
     localTransform: decomposeTransform(getEffectiveLocalMatrix(node)),
     constraint: undefined,
   };
-  for (const control of Object.values(graph.nodes)) {
-    if (
-      control.kind === "control" && control.action === "release-hinge" &&
-      control.targetId === nodeId
-    ) {
-      graph.nodes[control.id] = { ...control, action: "detach" };
-    }
-  }
-  return graph;
+  return reconcileDisplayControls(graph);
 }
 
 export function detachFromParent(current: SpatialGraph, nodeId: SpatialNodeId): SpatialGraph {
@@ -440,11 +503,76 @@ export function detachFromParent(current: SpatialGraph, nodeId: SpatialNodeId): 
     localTransform: decomposeTransform(world),
     constraint: undefined,
   };
-  removeControls(
-    graph,
-    (control) => control.action === "detach" && control.targetId === nodeId,
-  );
-  return graph;
+  return reconcileDisplayControls(graph);
+}
+
+function hasPreservedDescendant(graph: SpatialGraph, nodeId: SpatialNodeId): boolean {
+  for (const child of getSpatialChildren(graph, nodeId)) {
+    if (child.onParentDelete === "preserve" || hasPreservedDescendant(graph, child.id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function getDisplayAttachmentRole(
+  graph: SpatialGraph,
+  nodeId: SpatialNodeId,
+): DisplayAttachmentRole | null {
+  const node = graph.nodes[nodeId];
+  if (node?.kind !== "display") return null;
+  if (hasPreservedDescendant(graph, nodeId)) return "parent";
+  return node.parentId == null ? "solo" : "child";
+}
+
+export function deleteSpatialNode(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  if (!node || node.kind === "control") return current;
+
+  const graph = cloneGraph(current);
+  const deletedIds = new Set<SpatialNodeId>([nodeId]);
+  const collectCascadeChildren = (parentId: SpatialNodeId) => {
+    for (const child of getSpatialChildren(current, parentId)) {
+      if (child.onParentDelete !== "cascade") continue;
+      deletedIds.add(child.id);
+      collectCascadeChildren(child.id);
+    }
+  };
+  collectCascadeChildren(nodeId);
+
+  const survivingChildren = getSpatialChildren(current, nodeId)
+    .filter((child) => child.onParentDelete === "preserve");
+  const nextParentId = node.parentId;
+  const nextParentWorldInverse = nextParentId == null
+    ? null
+    : getSpatialNodeWorldMatrix(current, nextParentId).invert();
+  for (const child of survivingChildren) {
+    const world = getSpatialNodeWorldMatrix(current, child.id);
+    const local = nextParentWorldInverse == null
+      ? world
+      : nextParentWorldInverse.clone().multiply(world);
+    graph.nodes[child.id] = {
+      ...child,
+      parentId: nextParentId,
+      originId: node.originId,
+      localTransform: decomposeTransform(local),
+      constraint: undefined,
+    };
+  }
+
+  for (const id of deletedIds) delete graph.nodes[id];
+  for (const candidate of Object.values(graph.nodes)) {
+    if (candidate.kind === "control" && deletedIds.has(candidate.targetId)) {
+      delete graph.nodes[candidate.id];
+    }
+  }
+  for (const hitbox of Object.values(graph.hitboxes)) {
+    if (deletedIds.has(hitbox.ownerId)) delete graph.hitboxes[hitbox.id];
+  }
+  return reconcileDisplayControls(graph);
 }
 
 export function getSpatialChildren(

@@ -63,10 +63,41 @@ GrabBox into it reparents the keyboard beneath that display and adds an x-axis h
 measured GrabBox size updates its snap-source box, so collision follows the actual loaded layout
 rather than a permanently hardcoded proxy.
 
+The default keyboard is created already attached to the primary display through this same bottom
+hinge recipe. Recenter therefore moves the display workspace and keyboard as one assembly. If the
+keyboard is deleted, reopening Layers recreates it on the current primary root display.
+
 Future low-level edit mode should expose normally locked attachment transforms using the same
 GrabBox/Handle contract. Origins are also transform nodes: multiple origin branches may coexist, but
 a rendered Object3D has one structural parent. Showing the same logical item under two origins
 requires two view instances backed by the same application model.
+
+## Scale-to-delete
+
+Deletable GrabBoxes compose a generic two-pointer scale policy with their ordinary Handle policy.
+The gesture arms when the longest world-space GrabBox dimension drops below `0.10m` and disarms
+above `0.13m`. The hysteresis prevents flicker around the boundary. While armed, a translucent red
+sphere surrounds the element; releasing the final pointer deletes it. One-pointer manipulation and
+cancelled pointer interactions cannot delete an element.
+
+Parent deletion distinguishes spatial attachments from structurally owned implementation details.
+Displays and keyboards use `onParentDelete: "preserve"`; buttons and other controls use
+`onParentDelete: "cascade"`. A delete transaction does not commit the tiny final Handle transform.
+Instead, cascade children are removed and the nearest preserved children are promoted to the deleted
+node's parent while retaining their pre-gesture world transforms. Restoring a preserved child root
+also cancels inherited scale for its complete subtree.
+
+Display attachment roles are derived from the graph rather than stored. A display is `parent` when
+it has a preserved attachment descendant, even when it is itself attached; otherwise an origin
+display is `solo` and an attached display is `child`. Cascade-owned controls do not affect this
+role. Topology controls are reconciled after structural operations, so deleting the last child
+restores its former parent's spawn control. Reopening the Layers mode recreates a default display or
+keyboard when that kind has been completely deleted.
+
+Showing the window layer performs a one-shot recenter. The scene origin remains a static identity
+reference frame; recenter writes a headset-relative pose to the primary root display, and its
+attached subtree follows through normal hierarchy transforms. Desktop mode samples the R3F camera;
+immersive mode samples the renderer's active XR camera rather than the fixed fallback camera.
 
 ## Prototype
 

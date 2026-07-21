@@ -13,6 +13,11 @@ import { updateShadowSceneMesh } from "../webxrShadowScene.ts";
 import { getVrcCameraDebugSnapshot } from "../vrcCameraDebugState.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
+import {
+  DEFAULT_DISPLAY_DEPTH,
+  DEFAULT_DISPLAY_HEIGHT,
+  DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+} from "./displayInstance/ui.tsx";
 import { windowsSystemDisplayMouseSink } from "./displayInstance/mouse.ts";
 import type { DisplayMouseLogicEvent, DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
@@ -33,8 +38,11 @@ import {
   commitNodeTransform,
   type ControlSpatialNode,
   createInitialSpatialGraph,
+  deleteSpatialNode,
   detachFromParent,
   type DisplaySpatialNode,
+  ensureDefaultSpatialContent,
+  getDisplayAttachmentRole,
   getSpatialChildren,
   type HingeConstraint,
   IDENTITY_SPATIAL_TRANSFORM,
@@ -295,23 +303,46 @@ function WindowLayer({
 }) {
   const visible = useWindowLayerVisible();
   const camera = useThree((r3fState) => r3fState.camera);
+  const renderer = useThree((r3fState) => r3fState.gl);
   const position = React.useMemo(() => new THREE.Vector3(), []);
   const quaternion = React.useMemo(() => new THREE.Quaternion(), []);
+  const rotation = React.useMemo(() => new THREE.Euler(), []);
+  const forwardOffset = React.useMemo(() => new THREE.Vector3(0, -0.08, -1.35), []);
   const [graph, setGraph] = React.useState(createInitialSpatialGraph);
+
+  React.useLayoutEffect(() => {
+    if (!visible) return;
+    const xr = (renderer as unknown as {
+      xr?: { getCamera?: (camera: THREE.Camera) => THREE.Camera };
+    }).xr;
+    const poseCamera = Deno.args.includes("--desktop")
+      ? camera
+      : xr?.getCamera?.(camera as unknown as THREE.Camera) ?? camera;
+    poseCamera.updateWorldMatrix(true, false);
+    poseCamera.getWorldPosition(position);
+    poseCamera.getWorldQuaternion(quaternion);
+    position.add(forwardOffset.clone().applyQuaternion(quaternion));
+    rotation.setFromQuaternion(quaternion, "XYZ");
+    setGraph((current) => {
+      const ensured = ensureDefaultSpatialContent(current);
+      const primaryDisplay = Object.values(ensured.nodes)
+        .filter((node): node is DisplaySpatialNode =>
+          node.kind === "display" && node.parentId == null
+        )
+        .sort((a, b) => a.ordinal - b.ordinal)[0];
+      if (primaryDisplay == null) return ensured;
+      return commitNodeTransform(ensured, primaryDisplay.id, {
+        position: position.toArray() as [number, number, number],
+        rotation: [rotation.x, rotation.y, rotation.z],
+        scale: primaryDisplay.localTransform.scale,
+      });
+    });
+  }, [camera, forwardOffset, position, quaternion, renderer, rotation, visible]);
 
   if (!visible) return null;
 
-  camera.updateWorldMatrix(true, false);
-  camera.getWorldPosition(position);
-  camera.getWorldQuaternion(quaternion);
-  position.add(new THREE.Vector3(0, -0.08, -1.35).applyQuaternion(quaternion));
-
   return (
-    <group
-      position={position}
-      quaternion={quaternion}
-      userData={{ spatialGraphRoot: true, originId: "scene-origin" }}
-    >
+    <group userData={{ spatialGraphRoot: true, originId: "scene-origin", static: true }}>
       <SpatialAudioProvider>
         {getSpatialChildren(graph, null).map((node) => (
           <SpatialNodeView
@@ -347,6 +378,13 @@ type SpatialNodeViewProps = SpatialGraphViewProps & {
 
 const VR_HINGE_BREAKAWAY_SLACK_METERS = 0.22;
 const DESKTOP_HINGE_BREAKAWAY_SLACK_PIXELS = 180;
+const DELETE_ARM_SIZE_METERS = 0.1;
+const DELETE_DISARM_SIZE_METERS = 0.13;
+const DISPLAY_GRAB_SIZE: [number, number, number] = [
+  DEFAULT_DISPLAY_HEIGHT * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+  DEFAULT_DISPLAY_HEIGHT,
+  DEFAULT_DISPLAY_DEPTH,
+];
 
 function objectTransform(target: import("three").Object3D): SpatialTransform {
   const object = target as unknown as THREE.Object3D;
@@ -355,6 +393,86 @@ function objectTransform(target: import("three").Object3D): SpatialTransform {
     rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
     scale: object.scale.toArray() as [number, number, number],
   };
+}
+
+function useScaleToDelete(
+  nodeId: string,
+  grabSize: [number, number, number],
+  baseOptions: Omit<HandleOptions<unknown>, "filter">,
+  setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>,
+) {
+  const [armed, setArmed] = React.useState(false);
+  const armedRef = React.useRef(false);
+  const sawTwoPointerScaleRef = React.useRef(false);
+  const worldScale = React.useMemo(() => new THREE.Vector3(), []);
+  const setDeleteArmed = React.useCallback((next: boolean) => {
+    if (armedRef.current === next) return;
+    armedRef.current = next;
+    setArmed(next);
+  }, []);
+  const apply = React.useCallback(
+    (state: HandleState<unknown>, target: import("three").Object3D) => {
+      if (state.first) {
+        sawTwoPointerScaleRef.current = false;
+        setDeleteArmed(false);
+      }
+      if (state.last && armedRef.current && state.event != null) {
+        setDeleteArmed(false);
+        sawTwoPointerScaleRef.current = false;
+        setGraph((current) => deleteSpatialNode(current, nodeId));
+        return;
+      }
+
+      (baseOptions.apply ?? defaultApply)(state, target);
+      if (!state.last && state.current.pointerAmount >= 2) {
+        sawTwoPointerScaleRef.current = true;
+      }
+      if (!state.last && sawTwoPointerScaleRef.current) {
+        const targetObject = target as unknown as THREE.Object3D;
+        targetObject.updateWorldMatrix(true, false);
+        targetObject.getWorldScale(worldScale);
+        const worldSize = Math.max(
+          Math.abs(worldScale.x) * grabSize[0],
+          Math.abs(worldScale.y) * grabSize[1],
+          Math.abs(worldScale.z) * grabSize[2],
+        );
+        setDeleteArmed(
+          armedRef.current
+            ? worldSize < DELETE_DISARM_SIZE_METERS
+            : worldSize < DELETE_ARM_SIZE_METERS,
+        );
+      }
+      if (state.last) {
+        setDeleteArmed(false);
+        sawTwoPointerScaleRef.current = false;
+      }
+    },
+    [baseOptions, grabSize, nodeId, setDeleteArmed, setGraph, worldScale],
+  );
+  const options = React.useMemo(
+    () => ({ ...baseOptions, apply }),
+    [apply, baseOptions],
+  );
+  return { armed, options };
+}
+
+function ScaleDeleteIndicator({ grabSize }: { grabSize: [number, number, number] }) {
+  const radius = 0.6 * Math.hypot(...grabSize);
+  return (
+    <mesh
+      scale={[radius, radius, radius]}
+      renderOrder={1000}
+      {...({ pointerEvents: "none" } as Record<string, unknown>)}
+    >
+      <sphereGeometry args={[1, 24, 16]} />
+      <meshBasicNodeMaterial
+        colorNode={TSL.color(0xff1838)}
+        transparent
+        opacity={0.28}
+        depthWrite={false}
+      />
+    </mesh>
+  );
 }
 
 function SpatialNodeView({
@@ -397,9 +515,16 @@ function DisplaySpatialNodeView({
     [node.id, setGraph],
   );
   const targetRef = manipulationTargetRef ?? nodeRef;
-  const options = manipulationOptions ?? { apply: commitFreeTransform };
+  const baseOptions = React.useMemo(
+    () => manipulationOptions ?? { apply: commitFreeTransform },
+    [commitFreeTransform, manipulationOptions],
+  );
+  const deletion = useScaleToDelete(node.id, DISPLAY_GRAB_SIZE, baseOptions, setGraph);
   const children = getSpatialChildren(graph, node.id);
-  const isPrimaryCapture = node.ordinal === 1;
+  const isPrimaryCapture = Object.values(graph.nodes)
+    .filter((candidate): candidate is DisplaySpatialNode => candidate.kind === "display")
+    .every((candidate) => candidate.ordinal >= node.ordinal);
+  const attachmentRole = getDisplayAttachmentRole(graph, node.id);
 
   return (
     <group
@@ -413,15 +538,17 @@ function DisplaySpatialNodeView({
         spatialKind: node.kind,
         parentId: node.parentId,
         originId: node.originId,
+        attachmentRole,
       }}
     >
+      {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
       <DisplayInstance
         displayInstanceActor={isPrimaryCapture ? displayInstanceActor : null}
         onMouse={isPrimaryCapture && displayInstanceActor != null ? onMouse : undefined}
         rayHitSurface={isPrimaryCapture && displayInstanceActor != null}
         shellRayPickable={!isPrimaryCapture || displayInstanceActor == null}
         manipulationTargetRef={targetRef}
-        manipulationOptions={options}
+        manipulationOptions={deletion.options}
         manipulationStoreRef={manipulationStoreRef}
       />
       <SpatialHitboxesView nodeId={node.id} graph={graph} />
@@ -474,7 +601,11 @@ function KeyboardSpatialNodeView({
     [node.id, setGraph],
   );
   const targetRef = manipulationTargetRef ?? nodeRef;
-  const options = manipulationOptions ?? { apply: commitFreeTransform };
+  const baseOptions = React.useMemo(
+    () => manipulationOptions ?? { apply: commitFreeTransform },
+    [commitFreeTransform, manipulationOptions],
+  );
+  const deletion = useScaleToDelete(node.id, node.snapSource.size, baseOptions, setGraph);
   const children = getSpatialChildren(graph, node.id);
 
   return (
@@ -491,13 +622,14 @@ function KeyboardSpatialNodeView({
         originId: node.originId,
       }}
     >
+      {deletion.armed ? <ScaleDeleteIndicator grabSize={node.snapSource.size} /> : null}
       <KeyboardPanel
         position={[0, 0, 0]}
         rotation={[0, 0, 0]}
         scale={[1, 1, 1]}
         onKey={onKey}
         manipulationTargetRef={targetRef}
-        manipulationOptions={options}
+        manipulationOptions={deletion.options}
         manipulationStoreRef={manipulationStoreRef}
         onGrabBoxSize={updateBounds}
       />

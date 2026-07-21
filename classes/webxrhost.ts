@@ -109,7 +109,10 @@ type StartOptions = {
    * the old synthetic rAF only.
    */
   useOpenVrOverlayFramePacing?: boolean;
-  /** When true, WebXRHost does not read OpenVR HMD poses; an external overlay loop may own them. */
+  /**
+   * When true, WebXRHost does not independently sample OpenVR HMD poses. The external overlay loop
+   * owns sampling and its shared DirectOpenVrInputSource snapshot still drives IWER/R3F tracking.
+   */
   disableOpenVrHmdPose?: boolean;
   /**
    * OpenVR `paceToDisplay` mode. `vsync` (default) waits for a new display index per tick (~HMD Hz).
@@ -2422,11 +2425,11 @@ export class WebXRHost {
 
   private getCurrentOpenVrHmdPose(): {
     matrix: Float32Array;
-    position: [number, number, number];
-    quaternion: [number, number, number, number];
+    position: ArrayLike<number>;
+    quaternion: ArrayLike<number>;
   } | null {
     if (this.disableOpenVrHmdPose) {
-      return null;
+      return this.directOpenVrInputSource.getSnapshot().hmd;
     }
     if (this.openVrOverlayPacer) {
       return this.openVrOverlayPacer.getCachedHmdEmulation();
