@@ -52,6 +52,42 @@
         },
         {
           "inputs": {
+            "touch": {
+              "output": "/actions/main/in/RightClickModifier"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/x"
+        },
+        {
+          "inputs": {
+            "touch": {
+              "output": "/actions/main/in/RightClickModifier"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/a"
+        },
+        {
+          "inputs": {
+            "touch": {
+              "output": "/actions/main/in/MiddleClickModifier"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/y"
+        },
+        {
+          "inputs": {
+            "touch": {
+              "output": "/actions/main/in/MiddleClickModifier"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/b"
+        },
+        {
+          "inputs": {
             "position": {
               "output": "/actions/main/in/JoystickLeft"
             }

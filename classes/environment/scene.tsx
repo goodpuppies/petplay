@@ -61,6 +61,7 @@ import {
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
 import { loadKdeWorkspaceOutputs } from "./workspaceDisplays.ts";
+import { useWorkspaceOutputOrder } from "./workspaceOutputOrder.ts";
 import { isDesktopMousePointerType } from "./spatialPointer.ts";
 import type { DirectOpenVrInputSource } from "../directOpenVrInputSource.ts";
 
@@ -438,6 +439,7 @@ function WindowLayer({
   directOpenVrInputSource?: DirectOpenVrInputSource;
 }) {
   const visible = useWindowLayerVisible();
+  const workspaceOutputOrder = useWorkspaceOutputOrder();
   const camera = useThree((r3fState) => r3fState.camera);
   const renderer = useThree((r3fState) => r3fState.gl);
   const position = React.useMemo(() => new THREE.Vector3(), []);
@@ -449,7 +451,7 @@ function WindowLayer({
   const [workspaceOutputs, setWorkspaceOutputs] = React.useState<
     Awaited<ReturnType<typeof loadKdeWorkspaceOutputs>>
   >([]);
-  const displayCount = Object.values(graph.nodes).filter((node) => node.kind === "display").length;
+  const workspaceOutputsInitialized = React.useRef(false);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -464,20 +466,26 @@ function WindowLayer({
 
   React.useEffect(() => {
     if (workspaceOutputs.length === 0) return;
+    const orderedOutputs = workspaceOutputs.map((_, index) =>
+      workspaceOutputs[(index + workspaceOutputOrder) % workspaceOutputs.length]
+    );
     setGraph((current) => {
       let next = current;
       let displays = Object.values(next.nodes)
         .filter((node): node is DisplaySpatialNode => node.kind === "display")
         .sort((a, b) => a.ordinal - b.ordinal);
-      while (displays.length < workspaceOutputs.length) {
-        next = spawnHingedDisplay(next, displays.at(-1)!.id);
-        displays = Object.values(next.nodes)
-          .filter((node): node is DisplaySpatialNode => node.kind === "display")
-          .sort((a, b) => a.ordinal - b.ordinal);
+      if (!workspaceOutputsInitialized.current) {
+        workspaceOutputsInitialized.current = true;
+        while (displays.length < orderedOutputs.length) {
+          next = spawnHingedDisplay(next, displays.at(-1)!.id);
+          displays = Object.values(next.nodes)
+            .filter((node): node is DisplaySpatialNode => node.kind === "display")
+            .sort((a, b) => a.ordinal - b.ordinal);
+        }
       }
-      return assignWorkspaceOutputs(next, workspaceOutputs);
+      return assignWorkspaceOutputs(next, orderedOutputs);
     });
-  }, [displayCount, workspaceOutputs]);
+  }, [workspaceOutputOrder, workspaceOutputs]);
 
   React.useLayoutEffect(() => {
     if (!visible) return;
@@ -526,6 +534,7 @@ function WindowLayer({
             graph={graph}
             setGraph={setGraph}
             handleStores={handleStores}
+            directOpenVrInputSource={directOpenVrInputSource}
             displayInstanceActor={displayInstanceActor}
             onMouse={onMouse}
             onKey={onKey}
@@ -540,6 +549,7 @@ type SpatialGraphViewProps = {
   graph: SpatialGraph;
   setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>;
   handleStores: Map<string, HandleStore<unknown>>;
+  directOpenVrInputSource?: DirectOpenVrInputSource;
   displayInstanceActor: string | null;
   onMouse: DisplayMouseSink;
   onKey: KeyboardSink;
@@ -671,6 +681,7 @@ function DisplaySpatialNodeView({
   graph,
   setGraph,
   handleStores,
+  directOpenVrInputSource,
   displayInstanceActor,
   onMouse,
   onKey,
@@ -709,6 +720,13 @@ function DisplaySpatialNodeView({
   const children = getSpatialChildren(graph, node.id);
   const attachmentRole = getDisplayAttachmentRole(graph, node.id);
   const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
+  const mouseButtonForPointer = React.useCallback((event: PenPointerEvent) => {
+    const handedness = (event.pointerState as { inputSource?: { handedness?: XRHandedness } })
+      .inputSource?.handedness;
+    return handedness === "left" || handedness === "right"
+      ? directOpenVrInputSource?.getDesktopMouseButton(handedness)
+      : undefined;
+  }, [directOpenVrInputSource]);
   const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
     onMouse({
       ...event,
@@ -742,6 +760,7 @@ function DisplaySpatialNodeView({
         virtualDisplayName={node.workspaceOutputName ?? `PetPlay ${node.id}`}
         workspaceCrop={workspaceCrop}
         onMouse={displayInstanceActor != null ? croppedMouseSink : undefined}
+        mouseButtonForPointer={mouseButtonForPointer}
         rayHitSurface={displayInstanceActor != null}
         shellRayPickable={displayInstanceActor == null}
         manipulationTargetRef={targetRef}
@@ -755,6 +774,7 @@ function DisplaySpatialNodeView({
           graph={graph}
           setGraph={setGraph}
           handleStores={handleStores}
+          directOpenVrInputSource={directOpenVrInputSource}
           displayInstanceActor={displayInstanceActor}
           onMouse={onMouse}
           onKey={onKey}
@@ -769,6 +789,7 @@ function KeyboardSpatialNodeView({
   graph,
   setGraph,
   handleStores,
+  directOpenVrInputSource,
   displayInstanceActor,
   onMouse,
   onKey,
@@ -846,6 +867,7 @@ function KeyboardSpatialNodeView({
           graph={graph}
           setGraph={setGraph}
           handleStores={handleStores}
+          directOpenVrInputSource={directOpenVrInputSource}
           displayInstanceActor={displayInstanceActor}
           onMouse={onMouse}
           onKey={onKey}

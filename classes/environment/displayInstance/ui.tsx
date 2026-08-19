@@ -46,6 +46,7 @@ export type DisplayInstanceFrameProps = {
   rayHitSurface?: boolean;
   /** Optional display-space mouse sink; receives normalized 0..1 coordinates on the screen plane. */
   onMouse?: DisplayMouseSink;
+  mouseButtonForPointer?: (event: PenPointerEvent) => DisplayMouseButton | undefined;
   /** Controls and other spatial content structurally owned by this display. */
   children?: React.ReactNode;
 };
@@ -77,7 +78,7 @@ type PendingDisplayClick = {
   button: DisplayMouseButton;
   start: DisplayMousePoint;
   latest: DisplayMousePoint;
-  timer: number;
+  timer: ReturnType<typeof setTimeout> | null;
   dragStarted: boolean;
 };
 
@@ -94,6 +95,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       shellRayPickable = false,
       rayHitSurface = true,
       onMouse,
+      mouseButtonForPointer,
       children,
     },
     ref,
@@ -106,7 +108,8 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     const mainControllerGate = useMemo(() => createMainControllerGate(), []);
 
     const clearPendingTimer = useCallback((pending: PendingDisplayClick) => {
-      clearTimeout(pending.timer);
+      if (pending.timer != null) clearTimeout(pending.timer);
+      pending.timer = null;
     }, []);
 
     const beginDrag = useCallback((pending: PendingDisplayClick) => {
@@ -189,10 +192,10 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         }
         const pending: PendingDisplayClick = {
           pointerId: e.pointerId,
-          button: pointerButton(e.nativeEvent.button),
+          button: mouseButtonForPointer?.(e) ?? pointerButton(e.nativeEvent.button),
           start: coords,
           latest: coords,
-          timer: 0,
+          timer: null,
           dragStarted: false,
         };
         pending.timer = setTimeout(() => beginDrag(pending), STABLE_CLICK_HOLD_MS);
@@ -215,12 +218,19 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         }
         onMouse({
           kind: "button",
-          button: pointerButton(e.nativeEvent.button),
+          button: mouseButtonForPointer?.(e) ?? pointerButton(e.nativeEvent.button),
           pressed: false,
           ...coords,
         });
       }
-    }, [beginDrag, clearPendingTimer, mainControllerGate, onMouse, releasePendingClick]);
+    }, [
+      beginDrag,
+      clearPendingTimer,
+      mainControllerGate,
+      mouseButtonForPointer,
+      onMouse,
+      releasePendingClick,
+    ]);
 
     return (
       <GrabBox

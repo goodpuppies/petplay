@@ -100,6 +100,8 @@ export class DirectOpenVrInputSource {
 
   private vrInput: OpenVR.IVRInput | null = null;
   private inputReady = false;
+  private readonly rightClickModifier = { left: false, right: false };
+  private readonly middleClickModifier = { left: false, right: false };
 
   private grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private grabRightHandle = OpenVR.k_ulInvalidActionHandle;
@@ -107,6 +109,8 @@ export class DirectOpenVrInputSource {
   private triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
   private joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
+  private rightClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+  private middleClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
   private actionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
   private leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
   private rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
@@ -124,6 +128,22 @@ export class DirectOpenVrInputSource {
     OpenVR.InputDigitalActionDataStruct,
   );
   private readonly triggerRight = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly rightClickModifierLeft = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly rightClickModifierRight = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly middleClickModifierLeft = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly middleClickModifierRight = createStruct<OpenVR.InputDigitalActionData>(
     null,
     OpenVR.InputDigitalActionDataStruct,
   );
@@ -231,6 +251,8 @@ export class DirectOpenVrInputSource {
     this.triggerRightHandle = getActionHandle("/actions/main/in/TriggerRight");
     this.joystickLeftHandle = getActionHandle("/actions/main/in/JoystickLeft");
     this.joystickRightHandle = getActionHandle("/actions/main/in/JoystickRight");
+    this.rightClickModifierHandle = getActionHandle("/actions/main/in/RightClickModifier");
+    this.middleClickModifierHandle = getActionHandle("/actions/main/in/MiddleClickModifier");
 
     const actionSetPtr = P.BigUint64P<OpenVR.ActionSetHandle>();
     error = this.vrInput.GetActionSetHandle("/actions/main", actionSetPtr);
@@ -309,6 +331,30 @@ export class DirectOpenVrInputSource {
       OpenVR.InputDigitalActionDataStruct.byteSize,
       this.rightHandPathHandle,
     );
+    this.vrInput.GetDigitalActionData(
+      this.rightClickModifierHandle,
+      this.rightClickModifierLeft[0],
+      OpenVR.InputDigitalActionDataStruct.byteSize,
+      this.leftHandPathHandle,
+    );
+    this.vrInput.GetDigitalActionData(
+      this.rightClickModifierHandle,
+      this.rightClickModifierRight[0],
+      OpenVR.InputDigitalActionDataStruct.byteSize,
+      this.rightHandPathHandle,
+    );
+    this.vrInput.GetDigitalActionData(
+      this.middleClickModifierHandle,
+      this.middleClickModifierLeft[0],
+      OpenVR.InputDigitalActionDataStruct.byteSize,
+      this.leftHandPathHandle,
+    );
+    this.vrInput.GetDigitalActionData(
+      this.middleClickModifierHandle,
+      this.middleClickModifierRight[0],
+      OpenVR.InputDigitalActionDataStruct.byteSize,
+      this.rightHandPathHandle,
+    );
     this.vrInput.GetAnalogActionData(
       this.joystickLeftHandle,
       this.joystickLeft[0],
@@ -328,6 +374,10 @@ export class DirectOpenVrInputSource {
     const trigR = OpenVR.InputDigitalActionDataStruct.read(this.triggerRight[1]);
     const joystickL = OpenVR.InputAnalogActionDataStruct.read(this.joystickLeft[1]);
     const joystickR = OpenVR.InputAnalogActionDataStruct.read(this.joystickRight[1]);
+    const rightModL = OpenVR.InputDigitalActionDataStruct.read(this.rightClickModifierLeft[1]);
+    const rightModR = OpenVR.InputDigitalActionDataStruct.read(this.rightClickModifierRight[1]);
+    const middleModL = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierLeft[1]);
+    const middleModR = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierRight[1]);
 
     this.leftBuffers.grab[0] = grabL.bState ? 1 : 0;
     this.rightBuffers.grab[0] = grabR.bState ? 1 : 0;
@@ -341,12 +391,22 @@ export class DirectOpenVrInputSource {
       this.rightBuffers.joystick[0] = joystickR.x;
       this.rightBuffers.joystick[1] = joystickR.y;
     }
+    this.rightClickModifier.left = Boolean(rightModL.bActive && rightModL.bState);
+    this.rightClickModifier.right = Boolean(rightModR.bActive && rightModR.bState);
+    this.middleClickModifier.left = Boolean(middleModL.bActive && middleModL.bState);
+    this.middleClickModifier.right = Boolean(middleModR.bActive && middleModR.bState);
 
     // Sync scalar snapshot properties (they are not live references like Float32Arrays)
     this.leftView.grab = this.leftBuffers.grab[0];
     this.leftView.trigger = this.leftBuffers.trigger[0];
     this.rightView.grab = this.rightBuffers.grab[0];
     this.rightView.trigger = this.rightBuffers.trigger[0];
+  }
+
+  getDesktopMouseButton(hand: "left" | "right"): "left" | "middle" | "right" {
+    if (this.rightClickModifier[hand]) return "right";
+    if (this.middleClickModifier[hand]) return "middle";
+    return "left";
   }
 
   /** Reset IVRInput state so the source stops reading actions. */
@@ -359,6 +419,12 @@ export class DirectOpenVrInputSource {
     this.triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.rightClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+    this.middleClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+    this.rightClickModifier.left = false;
+    this.rightClickModifier.right = false;
+    this.middleClickModifier.left = false;
+    this.middleClickModifier.right = false;
     this.actionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
     this.leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
     this.rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;

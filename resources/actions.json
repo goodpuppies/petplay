@@ -31,6 +31,14 @@
     {
       "name": "/actions/main/in/JoystickRight",
       "type": "vector2"
+    },
+    {
+      "name": "/actions/main/in/RightClickModifier",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/MiddleClickModifier",
+      "type": "boolean"
     }
   ],
   "action_sets": [
