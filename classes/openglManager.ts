@@ -5,6 +5,19 @@ import { flipVertical } from "./screenutils.ts";
 import { cstr } from "https://deno.land/x/dwm@0.3.4/src/platform/glfw/ffi.ts";
 import { join } from "@std/path";
 
+/**
+ * Trace GL texture lifetime in this context.
+ *
+ * PetPlay runs a second GL context (raylib, in the webxr worker) in the same
+ * process. Its render-target textures have been observed disappearing while
+ * their framebuffers stayed alive, which silently discards every draw. Logging
+ * every id this context creates and destroys shows whether the two contexts
+ * share a name namespace and are deleting each other's objects.
+ */
+function traceTexture(action: "gen" | "delete", id: number, label: string): void {
+  console.log(`[gltrace] ${action} texture id=${id} (${label}) pid=${Deno.pid}`);
+}
+
 export class OpenGLManager {
   private outputTexture: Uint32Array | null = null; // Renamed for clarity
   private texture: Uint32Array | null = null;
@@ -488,6 +501,7 @@ export class OpenGLManager {
       // Output Texture (this.outputTexture)
       this.outputTexture = new Uint32Array(1);
       gl.GenTextures(1, this.outputTexture);
+      traceTexture("gen", this.outputTexture[0], "outputTexture");
       //console.log(`Generated output texture ID: ${this.outputTexture[0]}`);
       gl.BindTexture(gl.TEXTURE_2D, this.outputTexture[0]);
       this.checkGLError("GenTextures/BindTexture output");
@@ -512,6 +526,7 @@ export class OpenGLManager {
       // Input Texture (Left Eye)
       this.leftEyeTexture = new Uint32Array(1);
       gl.GenTextures(1, this.leftEyeTexture);
+      traceTexture("gen", this.leftEyeTexture[0], "leftEyeTexture");
       // console.log(`Generated left eye texture ID: ${this.leftEyeTexture[0]}`);
       gl.BindTexture(gl.TEXTURE_2D, this.leftEyeTexture[0]);
       this.checkGLError("GenTextures/BindTexture left eye");
@@ -525,6 +540,7 @@ export class OpenGLManager {
       // Input Texture (Right Eye)
       this.rightEyeTexture = new Uint32Array(1);
       gl.GenTextures(1, this.rightEyeTexture);
+      traceTexture("gen", this.rightEyeTexture[0], "rightEyeTexture");
       //console.log(`Generated right eye texture ID: ${this.rightEyeTexture[0]}`);
       gl.BindTexture(gl.TEXTURE_2D, this.rightEyeTexture[0]);
       this.checkGLError("GenTextures/BindTexture right eye");
@@ -648,6 +664,7 @@ export class OpenGLManager {
 
       this.texture = new Uint32Array(1);
       gl.GenTextures(1, this.texture);
+      traceTexture("gen", this.texture[0], "texture");
       gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
       gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -1050,17 +1067,17 @@ export class OpenGLManager {
     this.pboEyeBufferSize = 0;
 
     if (this.leftEyeTexture) {
-      console.log(`Deleting Left Eye Texture ID: ${this.leftEyeTexture[0]}`);
+      traceTexture("delete", this.leftEyeTexture[0], "leftEyeTexture");
       gl.DeleteTextures(1, this.leftEyeTexture);
       this.leftEyeTexture = null;
     }
     if (this.rightEyeTexture) {
-      console.log(`Deleting Right Eye Texture ID: ${this.rightEyeTexture[0]}`);
+      traceTexture("delete", this.rightEyeTexture[0], "rightEyeTexture");
       gl.DeleteTextures(1, this.rightEyeTexture);
       this.rightEyeTexture = null;
     }
     if (this.texture) {
-      console.log(`Deleting Output Texture ID: ${this.texture[0]}`);
+      traceTexture("delete", this.texture[0], "texture");
       gl.DeleteTextures(1, this.texture);
       this.texture = null;
     }
@@ -1069,7 +1086,7 @@ export class OpenGLManager {
     this.textureUploadHeight = 0;
     // Delete the output texture
     if (this.outputTexture) {
-      console.log(`Deleting Output Texture ID: ${this.outputTexture[0]}`);
+      traceTexture("delete", this.outputTexture[0], "outputTexture");
       gl.DeleteTextures(1, this.outputTexture);
       this.outputTexture = null;
     }

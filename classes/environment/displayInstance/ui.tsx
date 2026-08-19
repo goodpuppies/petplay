@@ -4,6 +4,7 @@ import React, { forwardRef, useCallback, useEffect, useMemo, useRef } from "reac
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
+import { createMainControllerGate } from "../mainController.ts";
 import type { DisplayMouseButton, DisplayMouseSink } from "./mouse.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -102,6 +103,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       [height],
     );
     const pendingClickRef = useRef<PendingDisplayClick | null>(null);
+    const mainControllerGate = useMemo(() => createMainControllerGate(), []);
 
     const clearPendingTimer = useCallback((pending: PendingDisplayClick) => {
       clearTimeout(pending.timer);
@@ -115,20 +117,26 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       onMouse({ kind: "move", ...pending.latest });
     }, [onMouse]);
 
+    const releasePendingClick = useCallback(() => {
+      const pending = pendingClickRef.current;
+      if (pending == null) return;
+      pendingClickRef.current = null;
+      clearPendingTimer(pending);
+      if (pending.dragStarted) {
+        onMouse?.({ kind: "button", button: pending.button, pressed: false, ...pending.latest });
+      }
+    }, [clearPendingTimer, onMouse]);
+
     useEffect(() => {
       return () => {
-        const pending = pendingClickRef.current;
-        if (pending == null) return;
-        clearPendingTimer(pending);
-        if (pending.dragStarted) {
-          onMouse?.({ kind: "button", button: pending.button, pressed: false, ...pending.latest });
-        }
-        pendingClickRef.current = null;
+        mainControllerGate.reset();
+        releasePendingClick();
       };
-    }, [clearPendingTimer, onMouse]);
+    }, [mainControllerGate, releasePendingClick]);
 
     const emitMove = useCallback((e: PenPointerEvent) => {
       if (onMouse == null) return;
+      if (mainControllerGate.move(e.pointerState) !== "emit") return;
       const coords = displayCoordsFromPointerEvent(e);
       if (coords == null) return;
       const pending = pendingClickRef.current;
@@ -140,13 +148,27 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         return;
       }
       onMouse({ kind: "move", ...coords });
-    }, [onMouse]);
+    }, [mainControllerGate, onMouse]);
 
     const emitButton = useCallback((e: PenPointerEvent, pressed: boolean, cancelled = false) => {
       if (onMouse == null) return;
       const coords = displayCoordsFromPointerEvent(e);
       if (coords == null) return;
       e.stopPropagation();
+      const gated = pressed
+        ? mainControllerGate.down(e.pointerState, e.pointerId)
+        : mainControllerGate.up(e.pointerState, e.pointerId);
+      if (gated !== "emit") {
+        // A trigger press that promotes the other controller to main hand must not
+        // also click, and its release must not reach the desktop either.
+        if (gated === "switch" && pressed) {
+          // The outgoing hand can still be holding its trigger; close that
+          // interaction now, or its own release gets ignored and the button
+          // stays stuck down on the desktop.
+          releasePendingClick();
+        }
+        return;
+      }
       const object = e.currentTarget as unknown as THREE.Object3D & {
         setPointerCapture?: (pointerId: number) => void;
         releasePointerCapture?: (pointerId: number) => void;
@@ -198,7 +220,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
           ...coords,
         });
       }
-    }, [beginDrag, clearPendingTimer, onMouse]);
+    }, [beginDrag, clearPendingTimer, mainControllerGate, onMouse, releasePendingClick]);
 
     return (
       <GrabBox

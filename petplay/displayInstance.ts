@@ -6,7 +6,11 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { Buffer } from "node:buffer";
 import { join } from "@std/path";
 import { wait } from "../classes/utils.ts";
-import type { ScreenCapturer } from "../classes/ScreenCapturer/scclass.ts";
+import {
+  clampCaptureFps,
+  DEFAULT_CAPTURE_FPS,
+  type ScreenCapturer,
+} from "../classes/ScreenCapturer/scclass.ts";
 import type { OpenGLManager } from "../classes/openglManager.ts";
 import {
   getOverlayTransformAbsolute,
@@ -35,10 +39,11 @@ const state = actorState({
   glManager: null as OpenGLManager | null,
   screenCapturer: null as ScreenCapturer | null,
   textureStructPtr: null as Deno.PointerValue<OpenVR.Texture> | null,
+  textureReady: false,
   lastWidthMeters: -1,
   lastHmd: null as OpenVR.HmdMatrix34 | null,
   captureFrames: 0,
-  captureFps: 10,
+  captureFps: DEFAULT_CAPTURE_FPS,
   captureFramesPresented: 0,
   captureFrameWidth: 1,
   captureFrameHeight: 1,
@@ -200,6 +205,10 @@ new PostMan(
     },
     CONFIGUREDESKTOP: (payload: StartDesktopPayload) => {
       state.lastStartConfig = payload;
+      // The capturer is warmed at actor startup, before this config arrives, so
+      // the helper is running at the default rate. Without this the configured
+      // fps only moved the present-side gate and could never exceed it.
+      void applyCaptureFps(clampCaptureFps(payload.captureFps));
       return getDisplayInstanceStatus();
     },
     WRIST_MENU_ACTION: (
@@ -297,9 +306,15 @@ new PostMan(
       } else {
         pixelsArray = new Uint8Array(framePayload.pixels as number[]);
       }
+      if (!isUploadableBgraFrame(pixelsArray, framePayload.width, framePayload.height)) {
+        throw new Error(
+          `invalid frame ${framePayload.width}x${framePayload.height} (${pixelsArray.byteLength} bytes)`,
+        );
+      }
       if (!state.glManager) throw new Error("glManager is null");
       updateCaptureDimensions(framePayload.width, framePayload.height);
       state.glManager.createTextureFromData(pixelsArray, framePayload.width, framePayload.height);
+      state.textureReady = true;
       for (const entry of virtualOverlays.values()) {
         const error = state.overlayClass.SetOverlayTexture(entry.handle, state.textureStructPtr);
         if (error !== OpenVR.OverlayError.VROverlayError_None) {
@@ -356,6 +371,7 @@ function getDisplayInstanceStatus() {
     visible: state.visible,
     screenCapture: state.screenCapturer?.getStatus() ?? null,
     hasTextureStruct: state.textureStructPtr != null,
+    textureReady: state.textureReady,
     lastStartError: state.lastStartError,
   };
 }
@@ -431,6 +447,34 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
   });
   await capturer.start();
   return capturer;
+}
+
+/**
+ * Re-launch the capture helper when the requested rate changes. `--fps` is a
+ * process argument, so an already-running helper cannot be re-rated in place.
+ */
+async function applyCaptureFps(fps: number): Promise<void> {
+  if (state.captureFps === fps && state.screenCapturer?.getFps() === fps) return;
+  state.captureFps = fps;
+  const capturer = state.screenCapturer;
+  if (capturer == null || capturer.getFps() === fps) return;
+  LogChannel.log(
+    "actor",
+    `[displayInstance] restarting screen capture at ${fps} fps (was ${capturer.getFps()})`,
+  );
+  state.screenCapturer = null;
+  warmCapturePromise = null;
+  try {
+    await capturer.dispose();
+  } catch (error) {
+    LogChannel.error(
+      "actor",
+      `[displayInstance] capture restart dispose failed: ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
+  }
+  await ensureWarmScreenCapturer();
 }
 
 async function ensureWarmScreenCapturer(): Promise<ScreenCapturer> {
@@ -715,7 +759,9 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
     OpenVR.TextureBoundsStruct,
   );
   overlay.SetOverlayTextureBounds(entry.handle, boundsPtr);
-  if (state.textureStructPtr) overlay.SetOverlayTexture(entry.handle, state.textureStructPtr);
+  if (state.textureReady && state.textureStructPtr) {
+    overlay.SetOverlayTexture(entry.handle, state.textureStructPtr);
+  }
   if (state.visible) overlay.ShowOverlay(entry.handle);
   if (state.cursorTargetDisplayId === entry.id && state.cursorWorkspacePosition) {
     updateCursorOverlayPose(
@@ -755,22 +801,14 @@ function updateCaptureDimensions(width: number, height: number): void {
 async function stopDesktopOverlay(): Promise<void> {
   state.isRunning = false;
   state.lastStartError = null;
+  state.textureReady = false;
 
   for (const timer of virtualOverlayRemovalTimers.values()) clearTimeout(timer);
   virtualOverlayRemovalTimers.clear();
 
-  if (state.glManager) {
-    try {
-      state.glManager.cleanup();
-    } catch (error) {
-      LogChannel.log(
-        "actor",
-        `[displayInstance] gl cleanup failed: ${error instanceof Error ? error.message : error}`,
-      );
-    }
-    state.glManager = null;
-  }
-
+  // SteamVR imports the submitted OpenGL texture asynchronously. Detach and
+  // destroy every overlay before deleting the GL texture; deleting it first
+  // can leave vrcompositor importing a stale RADV image.
   if (state.overlayClass) {
     const handles = new Set([...virtualOverlays.values()].map((entry) => entry.handle));
     if (state.overlayHandle) handles.add(state.overlayHandle);
@@ -782,11 +820,37 @@ async function stopDesktopOverlay(): Promise<void> {
         // Ignore shutdown races.
       }
       try {
+        state.overlayClass.ClearOverlayTexture(handle);
+      } catch {
+        // Ignore shutdown races.
+      }
+    }
+    // Give the compositor a frame boundary to release imported GL images
+    // before their owning context and texture names disappear.
+    try {
+      state.overlayClass.WaitFrameSync(100);
+    } catch {
+      // SteamVR may already be stopping.
+    }
+    for (const handle of handles) {
+      try {
         state.overlayClass.DestroyOverlay(handle);
       } catch {
         // Ignore shutdown races.
       }
     }
+  }
+
+  if (state.glManager) {
+    try {
+      state.glManager.cleanup();
+    } catch (error) {
+      LogChannel.log(
+        "actor",
+        `[displayInstance] gl cleanup failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    state.glManager = null;
   }
 
   virtualOverlays.clear();
@@ -889,6 +953,11 @@ function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: 
   state.glManager.createTextureFromBgraScreenshot(pixels, width, height);
 }
 
+function isUploadableBgraFrame(pixels: Uint8Array, width: number, height: number): boolean {
+  return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 &&
+    pixels.byteLength >= width * height * 4;
+}
+
 async function deskCapLoop(
   overlay: OpenVR.IVROverlay,
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
@@ -911,9 +980,17 @@ async function deskCapLoop(
       continue;
     }
     lastFrame = frame;
+    if (!isUploadableBgraFrame(frame.data, frame.width, frame.height)) {
+      LogChannel.error(
+        "actor",
+        `[displayInstance] skipped invalid capture frame ${frame.width}x${frame.height} (${frame.data.byteLength} bytes)`,
+      );
+      continue;
+    }
     frameCount++;
     updateCaptureDimensions(frame.width, frame.height);
     createTextureFromScreenshot(frame.data, frame.width, frame.height);
+    state.textureReady = true;
     for (const entry of virtualOverlays.values()) {
       const err = overlay.SetOverlayTexture(entry.handle, textureStructPtr);
       if (err !== OpenVR.OverlayError.VROverlayError_None) {
@@ -940,8 +1017,9 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
 
   state.isRunning = true;
   state.captureFrames = config.captureFrameLimit ?? 0;
-  state.captureFps = Math.max(1, Math.min(60, config.captureFps ?? 10));
+  state.captureFps = clampCaptureFps(config.captureFps);
   state.captureFramesPresented = 0;
+  state.textureReady = false;
   state.lastWidthMeters = -1;
   state.lastHmd = null;
 

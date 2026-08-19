@@ -27,6 +27,10 @@ export type DisplayMouseSmoothingOptions = {
   snapDistance?: number;
   /** Avoid emitting sub-pixel-scale changes after filtering. */
   minimumOutputDistance?: number;
+  /** Minimum time between synthetic move events. */
+  minimumMoveIntervalMs?: number;
+  /** Injectable monotonic clock for deterministic tests. */
+  now?: () => number;
 };
 
 /**
@@ -38,11 +42,15 @@ export function createSmoothedDisplayMouseSink(
   options: DisplayMouseSmoothingOptions = {},
 ): DisplayMouseSink {
   const deadZone = options.deadZone ?? 0.001;
-  const baseAlpha = options.baseAlpha ?? 0.2;
+  // Match WayVR's pointer smoothing and 100 Hz mouse-output cadence.
+  const baseAlpha = options.baseAlpha ?? 0.3;
   const snapDistance = options.snapDistance ?? 0.08;
   const minimumOutputDistance = options.minimumOutputDistance ?? 0.00025;
+  const minimumMoveIntervalMs = options.minimumMoveIntervalMs ?? 10;
+  const now = options.now ?? performance.now.bind(performance);
   let filtered: { x: number; y: number } | null = null;
   let emitted: { x: number; y: number } | null = null;
+  let lastMoveEmittedAt = Number.NEGATIVE_INFINITY;
 
   return (event) => {
     if (event.kind === "button") {
@@ -55,6 +63,7 @@ export function createSmoothedDisplayMouseSink(
     if (filtered == null) {
       filtered = { x: event.x, y: event.y };
       emitted = { ...filtered };
+      lastMoveEmittedAt = now();
       sink(event);
       return;
     }
@@ -67,11 +76,9 @@ export function createSmoothedDisplayMouseSink(
     if (distance >= snapDistance) {
       filtered = { x: event.x, y: event.y };
     } else {
-      // Become progressively more responsive as intentional movement gets larger.
-      const alpha = Math.min(0.75, baseAlpha + (distance / snapDistance) * 0.55);
       filtered = {
-        x: filtered.x + dx * alpha,
-        y: filtered.y + dy * alpha,
+        x: filtered.x + dx * baseAlpha,
+        y: filtered.y + dy * baseAlpha,
       };
     }
 
@@ -79,7 +86,10 @@ export function createSmoothedDisplayMouseSink(
       emitted != null &&
       Math.hypot(filtered.x - emitted.x, filtered.y - emitted.y) < minimumOutputDistance
     ) return;
+    const moveAt = now();
+    if (moveAt - lastMoveEmittedAt < minimumMoveIntervalMs) return;
     emitted = { ...filtered };
+    lastMoveEmittedAt = moveAt;
     sink({ kind: "move", ...filtered });
   };
 }

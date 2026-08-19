@@ -13,6 +13,41 @@ type OverlayOptions = {
   flipVertical?: boolean;
 };
 
+type OverlayTextureReleaseApi = Pick<
+  OpenVR.IVROverlay,
+  "HideOverlay" | "ClearOverlayTexture" | "WaitFrameSync" | "DestroyOverlay"
+>;
+
+/**
+ * Stop compositor use of an imported GL texture before its owning context is
+ * destroyed. In particular, actor reloads otherwise race RADV's async import.
+ */
+export function releaseAndDestroyOpenVrOverlay(
+  overlay: OverlayTextureReleaseApi,
+  handle: OpenVR.OverlayHandle,
+): void {
+  try {
+    overlay.HideOverlay(handle);
+  } catch {
+    // SteamVR may already be stopping.
+  }
+  try {
+    overlay.ClearOverlayTexture(handle);
+  } catch {
+    // The overlay may never have received a texture.
+  }
+  try {
+    overlay.WaitFrameSync(100);
+  } catch {
+    // SteamVR may already be stopping.
+  }
+  try {
+    overlay.DestroyOverlay(handle);
+  } catch {
+    // Ignore shutdown races.
+  }
+}
+
 export class OpenVrOverlayTexture {
   private readonly overlayClass: OpenVR.IVROverlay;
   private overlayHandle: OpenVR.OverlayHandle | null = null;
@@ -54,12 +89,7 @@ export class OpenVrOverlayTexture {
         "Find stale overlay",
       );
       const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
-      try {
-        this.overlayClass.HideOverlay(staleHandle);
-      } catch {
-        // The stale overlay may already be hidden while its old worker exits.
-      }
-      this.assertOverlayOk(this.overlayClass.DestroyOverlay(staleHandle), "Destroy stale overlay");
+      releaseAndDestroyOpenVrOverlay(this.overlayClass, staleHandle);
       createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
     }
 
@@ -144,6 +174,9 @@ export class OpenVrOverlayTexture {
   }
 
   setTextureHandle(textureHandle: number) {
+    if (!Number.isInteger(textureHandle) || textureHandle <= 0) {
+      throw new Error(`Invalid OpenGL texture handle: ${textureHandle}`);
+    }
     if (this.textureHandle === textureHandle && this.textureStructPtr) {
       return;
     }
@@ -162,24 +195,24 @@ export class OpenVrOverlayTexture {
     this.textureHandle = textureHandle;
   }
 
-  present() {
+  present(): boolean {
     if (!this.overlayHandle || !this.textureStructPtr) {
       throw new Error("OpenVR overlay not initialized");
     }
 
     const error = this.overlayClass.SetOverlayTexture(this.overlayHandle, this.textureStructPtr);
+    if (error === OpenVR.OverlayError.VROverlayError_InvalidTexture) {
+      return false;
+    }
     if (error !== OpenVR.OverlayError.VROverlayError_None) {
       throw new Error(`SetOverlayTexture failed: ${OpenVR.OverlayError[error]}`);
     }
+    return true;
   }
 
   cleanup() {
     if (this.overlayHandle) {
-      try {
-        this.overlayClass.DestroyOverlay(this.overlayHandle);
-      } catch {
-        // Ignore OpenVR shutdown races.
-      }
+      releaseAndDestroyOpenVrOverlay(this.overlayClass, this.overlayHandle);
       this.overlayHandle = null;
     }
 

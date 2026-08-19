@@ -126,6 +126,15 @@ function json(data: unknown, init?: ResponseInit): Response {
   });
 }
 
+/** Dispatch failures come back as `{ __actorError }` rather than a rejection. */
+function actorErrorOf(result: unknown): { message: string; stack?: string } | null {
+  if (result == null || typeof result !== "object") return null;
+  const error = (result as { __actorError?: { message?: string; stack?: string } })
+    .__actorError;
+  if (error == null) return null;
+  return { message: error.message ?? "Actor dispatch failed", stack: error.stack };
+}
+
 function jsonReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "bigint") {
     return value.toString();
@@ -304,6 +313,12 @@ async function handleRequest(request: Request): Promise<Response> {
           PostMan.PostMessage({ target, type, payload }, true),
           body.timeoutMs ?? 3000,
         );
+        const dispatchError = actorErrorOf(result);
+        if (dispatchError) {
+          return json({ ok: false, target, type, error: dispatchError }, {
+            status: 500,
+          });
+        }
         return json({ ok: true, target, type, result });
       }
       PostMan.PostMessage({ target, type, payload });
@@ -318,6 +333,10 @@ async function handleRequest(request: Request): Promise<Response> {
         PostMan.PostMessage({ target, type: "EVALJS", payload: { code } }, true),
         body.timeoutMs ?? 5000,
       );
+      const dispatchError = actorErrorOf(result);
+      if (dispatchError) {
+        return json({ ok: false, target, error: dispatchError }, { status: 500 });
+      }
       return json({ ok: true, target, result });
     }
 

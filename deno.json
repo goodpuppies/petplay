@@ -12,7 +12,7 @@
     "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
     "@milly/namedpipe": "jsr:@milly/namedpipe@^1.1.0",
     "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
-    "@denosaurs/byte-type": "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/56cdc7b28a064c85ee3f9a681d48149776f7a02d/mod.ts",
+    "@denosaurs/byte-type": "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/mod.ts",
     "@std/path": "jsr:@std/path@^1.1.4",
     //pmdrs
     "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",

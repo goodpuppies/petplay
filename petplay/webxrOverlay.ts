@@ -8,6 +8,7 @@ import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { WebXROverlayRaylib } from "../classes/webxrOverlayRaylib.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
 import type { WebXRRaythreeRenderPayload } from "../classes/webxrRaythreeScene.ts";
+import { LogChannel } from "@mommysgoodpuppy/logchannel";
 
 type StartWebXROverlayPayload = {
   overlayPointer: number | bigint;
@@ -32,6 +33,7 @@ const state = actorState({
   sortOrder: null as number | null,
   uploadedFrames: 0,
   webxrActor: null as string | null,
+  acceptingFrames: true,
 });
 
 new PostMan(
@@ -41,6 +43,7 @@ new PostMan(
       PostMan.setTopic("muffin");
     },
     STARTWEBXROVERLAY: (payload: StartWebXROverlayPayload) => {
+      state.acceptingFrames = true;
       state.webxrActor = payload.webxrActor ?? null;
       state.overlayPointer = payload.overlayPointer;
       state.overlayKey = payload.overlayKey ?? null;
@@ -54,7 +57,7 @@ new PostMan(
       }
     },
     RENDERWEBXRRAYTHREEFRAME: (payload: WebXRRaythreeRenderPayload) => {
-      if (!state.overlayRaylib || !state.overlayPointer) {
+      if (!state.acceptingFrames || !state.overlayRaylib || !state.overlayPointer) {
         return;
       }
 
@@ -63,6 +66,14 @@ new PostMan(
       const renderMs = rt.totalMs;
 
       const openvrT0 = performance.now();
+      if (!state.overlayRaylib.isOutputTextureValid()) {
+        state.acceptingFrames = false;
+        LogChannel.log(
+          "webxrv2",
+          "[webxr-overlay] refusing to submit an invalid Raylib output texture",
+        );
+        return;
+      }
       if (!state.overlay) {
         const overlay = new OpenVrOverlayTexture(state.overlayPointer);
         overlay.initialize(state.overlayRaylib.getTextureHandle(), {
@@ -80,7 +91,14 @@ new PostMan(
         state.overlay.setTextureHandle(state.overlayRaylib.getTextureHandle());
       }
 
-      state.overlay.present();
+      if (!state.overlay.present()) {
+        LogChannel.log(
+          "webxrv2",
+          "[webxr-overlay] stopping after OpenVR rejected the texture as invalid",
+        );
+        state.acceptingFrames = false;
+        return;
+      }
       const openvrMs = performance.now() - openvrT0;
       const handlerMs = performance.now() - handlerT0;
       const ack: RaylibOverlayFrameAckPayload = {
@@ -149,4 +167,5 @@ function cleanupOverlay() {
   state.sortOrder = null;
   state.uploadedFrames = 0;
   state.webxrActor = null;
+  state.acceptingFrames = false;
 }

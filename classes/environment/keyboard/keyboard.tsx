@@ -119,6 +119,11 @@ export function KeyboardPanel(
       rotation={new THREE.Euler(...rotation, "XYZ")}
       scale={scale}
       userData={{ keyboard: true, worldKeyboard: true }}
+      {...({
+        // Display ray-hit proxies use order 1. Keep the entire keyboard ahead
+        // of them for interaction even when its surface is physically farther away.
+        pointerEventsOrder: 2,
+      } as Record<string, unknown>)}
     >
       {layoutReady != null
         ? (

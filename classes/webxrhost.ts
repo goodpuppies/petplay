@@ -618,6 +618,8 @@ class XrPoseOnlyManager extends EventTarget {
   private referenceSpaceType: XRReferenceSpaceType = "local-floor";
   private session: XRSession | null = null;
   private referenceSpace: XRReferenceSpace | null = null;
+  private hasCompleteStereoPoseValue = false;
+  private incompleteStereoPoseLogged = false;
   private readonly camera = new THREE.ArrayCamera([
     new THREE.PerspectiveCamera(),
     new THREE.PerspectiveCamera(),
@@ -634,12 +636,16 @@ class XrPoseOnlyManager extends EventTarget {
     if (!session) {
       this.session = null;
       this.referenceSpace = null;
+      this.hasCompleteStereoPoseValue = false;
+      this.incompleteStereoPoseLogged = false;
       this.isPresenting = false;
       this.dispatchEvent(new Event("sessionend"));
       return;
     }
 
     this.session = session;
+    this.hasCompleteStereoPoseValue = false;
+    this.incompleteStereoPoseLogged = false;
     this.referenceSpace = await session.requestReferenceSpace(this.referenceSpaceType);
     const bindingCtor = (globalThis as unknown as {
       XRGPUBinding?: new (session: XRSession, device: unknown) => {
@@ -696,12 +702,32 @@ class XrPoseOnlyManager extends EventTarget {
     }
 
     const cameras = this.camera.cameras as THREE.PerspectiveCamera[];
-    for (let i = 0; i < 2; i++) {
-      const view = pose.views[i];
-      const camera = cameras[i];
-      if (!view || !camera) {
-        continue;
+    // View order is not guaranteed by WebXR, and the Quest can re-report views
+    // after a sleep/resume. Select by eye label and only fall back to array
+    // order for runtimes that leave `eye` as "none".
+    const leftView = pose.views.find((view) => view.eye === "left") ??
+      (pose.views[0]?.eye === "none" ? pose.views[0] : undefined);
+    const rightView = pose.views.find((view) => view.eye === "right") ??
+      (pose.views[1]?.eye === "none" ? pose.views[1] : undefined);
+    if (!leftView || !rightView || !cameras[0] || !cameras[1]) {
+      // Headset sleep/resume can transiently expose only one eye. Updating one
+      // camera would publish a mismatched stereo pair and can leave that eye black.
+      if (!this.incompleteStereoPoseLogged) {
+        this.incompleteStereoPoseLogged = true;
+        LogChannel.log(
+          "webxrv2",
+          `[webxrhost] incomplete stereo pose views=${pose.views.length}; holding last complete pair`,
+        );
       }
+      return;
+    }
+    if (this.incompleteStereoPoseLogged) {
+      this.incompleteStereoPoseLogged = false;
+      LogChannel.log("webxrv2", "[webxrhost] complete stereo pose restored");
+    }
+    for (let i = 0; i < 2; i++) {
+      const view = i === 0 ? leftView : rightView;
+      const camera = cameras[i]!;
       camera.matrix.fromArray(view.transform.matrix);
       camera.matrix.decompose(camera.position, camera.quaternion, camera.scale);
       camera.matrixWorld.copy(camera.matrix);
@@ -716,6 +742,11 @@ class XrPoseOnlyManager extends EventTarget {
     this.camera.matrixWorld.copy(this.camera.matrix);
     this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
     this.camera.updateMatrixWorld(true);
+    this.hasCompleteStereoPoseValue = true;
+  }
+
+  hasCompleteStereoPose(): boolean {
+    return this.hasCompleteStereoPoseValue;
   }
 
   getCamera(): THREE.ArrayCamera {
@@ -1205,6 +1236,8 @@ export class WebXRHost {
             : {}),
         },
       });
+      // If the eye transforms arrived before the device existed, apply them now.
+      this.applyEmulatedIpdFromHeadset();
       this.xrDevice.installRuntime({
         globalObject: globalThis,
         polyfillLayers: false,
@@ -1734,6 +1767,12 @@ export class WebXRHost {
     leftCamera: THREE.Camera;
     rightCamera: THREE.Camera;
   } | null {
+    if (
+      this.renderer?.xr instanceof XrPoseOnlyManager &&
+      !this.renderer.xr.hasCompleteStereoPose()
+    ) {
+      return null;
+    }
     const state = this.rootStore?.getState() as { scene?: THREE.Scene } | undefined;
     const scene = state?.scene ?? null;
     const xrCamera = this.renderer?.xr?.getCamera?.() as
@@ -2565,6 +2604,13 @@ export class WebXRHost {
       return;
     }
 
+    if (
+      this.renderer?.xr instanceof XrPoseOnlyManager &&
+      !this.renderer.xr.hasCompleteStereoPose()
+    ) {
+      return;
+    }
+
     const xrCamera = this.renderer?.xr?.getCamera?.() as
       | (THREE.Camera & { cameras?: THREE.PerspectiveCamera[] })
       | null
@@ -2584,6 +2630,7 @@ export class WebXRHost {
       right.position[1] - left.position[1],
       right.position[2] - left.position[2],
     );
+    let effectiveIpdMeters = ipdMeters;
     const openVrHmdRaw = this.openVrOverlayPacer?.getCachedHmdEmulation() ?? null;
     const openVrHmd = openVrHmdRaw
       ? this.applyDesktopViewOffsetToOpenVrHmdPose(openVrHmdRaw)
@@ -2599,6 +2646,7 @@ export class WebXRHost {
         openVrHmd.matrix,
         ipdMeters,
       );
+      effectiveIpdMeters = this.getEffectiveIpdMeters(ipdMeters);
       left = directEyes.left;
       right = directEyes.right;
       if (!this.directRaylibOpenVrHmdPoseLogged) {
@@ -2629,21 +2677,94 @@ export class WebXRHost {
       halfFovInRadians: this.projectionMatrixToHalfFovInRadians(
         leftCamera.projectionMatrix.elements,
       ),
-      ipdMeters,
+      ipdMeters: effectiveIpdMeters,
     };
+  }
+
+  /**
+   * Real head-to-eye transforms reported by OpenVR, when available.
+   *
+   * The emulated device only supplies a nominal IPD (IWER defaults to 63mm),
+   * which is not the headset's actual eye separation. Rendering with the wrong
+   * separation bakes the wrong stereo disparity into the panorama, so the WebXR
+   * content reads at a different depth than the flat OpenVR overlays it is
+   * supposed to line up with — and the discrepancy grows with distance.
+   */
+  private openVrHeadFromEye: { left: THREE.Matrix4; right: THREE.Matrix4 } | null = null;
+
+  /** @param eye row-major 3x4 head-to-eye transforms straight from `GetEyeToHeadTransform`. */
+  setOpenVrEyeToHeadTransforms(
+    left: { m: number[][] } | null,
+    right: { m: number[][] } | null,
+  ): boolean {
+    const toMatrix = (t: { m: number[][] } | null) => {
+      if (t?.m == null) return null;
+      const m = t.m;
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 4; c++) {
+          if (!Number.isFinite(m[r]?.[c])) return null;
+        }
+      }
+      return new THREE.Matrix4().set(
+        m[0][0], m[0][1], m[0][2], m[0][3],
+        m[1][0], m[1][1], m[1][2], m[1][3],
+        m[2][0], m[2][1], m[2][2], m[2][3],
+        0, 0, 0, 1,
+      );
+    };
+    const l = toMatrix(left);
+    const r = toMatrix(right);
+    if (l == null || r == null) return false;
+    this.openVrHeadFromEye = { left: l, right: r };
+    this.applyEmulatedIpdFromHeadset();
+    return true;
+  }
+
+  /**
+   * Keep the emulated device's IPD in step with the real headset.
+   *
+   * The direct OpenVR eye poses above already drive the native render, but the
+   * emulated device still feeds anything reading WebXR views directly, and its
+   * nominal IPD is what `ipdMeters` is derived from. Any headset is supported:
+   * the value always comes from the runtime, never a hardcoded default.
+   */
+  private applyEmulatedIpdFromHeadset(): void {
+    const device = this.xrDevice as { ipd?: number } | null | undefined;
+    if (device == null || this.openVrHeadFromEye == null) return;
+    const ipd = this.getEffectiveIpdMeters(Number.NaN);
+    if (!Number.isFinite(ipd) || ipd <= 0) return;
+    if (typeof device.ipd === "number" && Math.abs(device.ipd - ipd) < 1e-6) return;
+    device.ipd = ipd;
+    LogChannel.log(
+      "webxrv2",
+      `[webxrhost] emulated device IPD set from headset: ${(ipd * 1000).toFixed(1)}mm`,
+    );
+  }
+
+  /** Eye separation actually being rendered with, in metres. */
+  getEffectiveIpdMeters(fallbackIpdMeters: number): number {
+    const eyes = this.openVrHeadFromEye;
+    if (eyes == null) return fallbackIpdMeters;
+    const l = new THREE.Vector3().setFromMatrixPosition(eyes.left);
+    const r = new THREE.Vector3().setFromMatrixPosition(eyes.right);
+    return l.distanceTo(r);
   }
 
   private buildOpenVrDirectEyePoses(worldFromHmdValues: Float32Array, ipdMeters: number) {
     const worldFromHmd = new THREE.Matrix4().fromArray(worldFromHmdValues as unknown as number[]);
+    const eyes = this.openVrHeadFromEye;
+    // Prefer the headset's own eye transforms: they carry the true separation
+    // and any vertical/depth offset or display cant, which a symmetric
+    // ±ipd/2 translation cannot represent.
+    const headFromLeft = eyes?.left ??
+      new THREE.Matrix4().makeTranslation(-ipdMeters * 0.5, 0, 0);
+    const headFromRight = eyes?.right ??
+      new THREE.Matrix4().makeTranslation(ipdMeters * 0.5, 0, 0);
     const left = this.matrixWorldToPose(
-      new THREE.Matrix4().copy(worldFromHmd).multiply(
-        new THREE.Matrix4().makeTranslation(-ipdMeters * 0.5, 0, 0),
-      ),
+      new THREE.Matrix4().copy(worldFromHmd).multiply(headFromLeft),
     );
     const right = this.matrixWorldToPose(
-      new THREE.Matrix4().copy(worldFromHmd).multiply(
-        new THREE.Matrix4().makeTranslation(ipdMeters * 0.5, 0, 0),
-      ),
+      new THREE.Matrix4().copy(worldFromHmd).multiply(headFromRight),
     );
     return { left, right };
   }

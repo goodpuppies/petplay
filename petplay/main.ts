@@ -1,5 +1,6 @@
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
+import { clampCaptureFps } from "../classes/ScreenCapturer/scclass.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { type ActorId, resolveActorId } from "../submodules/stageforge/src/lib/types.ts";
@@ -46,8 +47,7 @@ function getScreenCaptureFps(): number {
   const raw = Deno.args
     .find((a) => a.startsWith("--screen-capture-fps="))
     ?.split("=", 2)[1];
-  const value = raw == null ? 10 : Number(raw);
-  return Number.isFinite(value) ? Math.max(1, Math.min(60, value)) : 10;
+  return clampCaptureFps(raw == null ? undefined : Number(raw));
 }
 
 function getNativeRaylibOpenVrDebugEnabled(): boolean {

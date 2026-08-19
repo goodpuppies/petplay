@@ -20,7 +20,7 @@ export interface CapturedFrame {
 export interface ScreenCapturerOptions {
   /** TCP port to use for communication with the capture process. Defaults to 12345. */
   port?: number;
-  /** Capture rate requested from Windows.Graphics.Capture. Defaults to 10. */
+  /** Capture rate requested from the platform capture backend. Defaults to {@link DEFAULT_CAPTURE_FPS}. */
   fps?: number;
   /** Path to the screen-streamer executable. Defaults to "./screen-streamer". */
   executablePath?: string;
@@ -35,6 +35,19 @@ export interface ScreenCapturerOptions {
 }
 
 //#endregion
+
+/** Default desktop capture rate. The helper is frame-rate driven, not damage driven. */
+export const DEFAULT_CAPTURE_FPS = 60;
+
+/**
+ * The helper clamps `--fps` to 1..240 itself; mirror that here so a configured
+ * rate is never silently lowered on the way in.
+ */
+export function clampCaptureFps(fps: number | undefined): number {
+  const value = Number(fps);
+  if (!Number.isFinite(value)) return DEFAULT_CAPTURE_FPS;
+  return Math.max(1, Math.min(240, Math.round(value)));
+}
 
 /**
  * ScreenCapturer provides a high-level interface for capturing screen content.
@@ -79,7 +92,7 @@ export class ScreenCapturer {
   constructor(options: ScreenCapturerOptions = {}) {
     this.options = {
       port: options.port ?? 12345,
-      fps: Math.max(1, Math.min(60, options.fps ?? 10)),
+      fps: clampCaptureFps(options.fps),
       executablePath: options.executablePath ?? "./screen-streamer",
       captureTokenPath: options.captureTokenPath ?? "screen-streamer-capture.token",
       debug: options.debug ?? false,
@@ -236,6 +249,11 @@ export class ScreenCapturer {
     );
   }
 
+  /** Capture rate the helper process was launched with. */
+  getFps(): number {
+    return this.options.fps;
+  }
+
   async sendControl(command: string): Promise<void> {
     if (!this.controlWriter) return;
     try {
@@ -310,11 +328,22 @@ export class ScreenCapturer {
 
     if (this.process) {
       try {
-        this.process.kill();
+        // Deno throws when kill() races the process status callback. A helper
+        // that has already exited only needs to have its status collected.
+        if (this.processExit === null) {
+          this.process.kill();
+        }
         const status = await this.process.status;
         this.log("Process exited with status:", status.code);
       } catch (err) {
-        this.log("Error killing process:", err);
+        // The process can terminate between the status check and kill().
+        // Awaiting status confirms that this is normal teardown.
+        try {
+          const status = await this.process.status;
+          this.log("Process exited with status:", status.code);
+        } catch {
+          this.log("Error killing process:", err);
+        }
       }
       this.process = null;
     }

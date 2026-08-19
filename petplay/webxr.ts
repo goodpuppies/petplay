@@ -2,6 +2,7 @@ import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import * as THREE from "three";
+import { selectActiveControllerIndex } from "../classes/openVrControllerSelection.ts";
 import { wait } from "../classes/utils.ts";
 import { getDisplayMouseDiagnostics } from "../classes/environment/displayInstance/mouse.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
@@ -331,6 +332,8 @@ new PostMan(
       }
       if (!state.host) {
         state.host = new WebXRHost();
+        // The IVRSystem may already exist (pacer init runs first on some paths).
+        applyOpenVrEyeGeometry();
       }
       state.host.setDesktopViewControlEnabled(state.desktopViewControlEnabled);
       state.host.setDesktopViewOffset(state.desktopViewOffset);
@@ -615,6 +618,81 @@ new PostMan(
   } as const,
 );
 
+/** Consecutive rebuild attempts, reset by the first frame that submits cleanly. */
+let raylibOverlayRecoveryAttempts = 0;
+const MAX_RAYLIB_OVERLAY_RECOVERY_ATTEMPTS = 10;
+
+/**
+ * Rebuild the raylib render targets after a rejected submission.
+ *
+ * Returns false to skip this frame. Only after repeated failures does the
+ * overlay stop for good, so a one-off invalidation no longer leaves the session
+ * showing nothing but the WebXR shell until restart.
+ */
+function recoverRaylibOverlayTargets(reason: string): boolean {
+  raylibOverlayRecoveryAttempts++;
+  if (raylibOverlayRecoveryAttempts > MAX_RAYLIB_OVERLAY_RECOVERY_ATTEMPTS) {
+    state.overlayRunning = false;
+    LogChannel.error(
+      "webxrv2",
+      `[webxr] ${reason}; giving up after ${MAX_RAYLIB_OVERLAY_RECOVERY_ATTEMPTS} rebuild attempts`,
+    );
+    return false;
+  }
+  LogChannel.log(
+    "webxrv2",
+    `[webxr] ${reason}; rebuilding raylib render targets (attempt ${raylibOverlayRecoveryAttempts})`,
+  );
+  try {
+    state.raylibOverlayRaylib?.invalidateRenderTargets();
+  } catch (error) {
+    LogChannel.error(
+      "webxrv2",
+      `[webxr] raylib render target rebuild failed: ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
+  }
+  return false;
+}
+
+/**
+ * Feed the headset's real eye transforms to the WebXR host.
+ *
+ * Without this the emulated device's nominal IPD is used, so the rendered
+ * stereo disparity does not match the eyes actually viewing it and WebXR
+ * content sits at a different depth than the OpenVR overlays beside it.
+ * Safe to call repeatedly; it no-ops until both the system and host exist.
+ */
+function applyOpenVrEyeGeometry(): boolean {
+  const sys = state.nativeRaylibVrSystem;
+  const host = state.host;
+  if (!sys || !host?.setOpenVrEyeToHeadTransforms) return false;
+  try {
+    const left = sys.GetEyeToHeadTransform(OpenVR.Eye.Eye_Left);
+    const right = sys.GetEyeToHeadTransform(OpenVR.Eye.Eye_Right);
+    const applied = host.setOpenVrEyeToHeadTransforms(left, right);
+    if (applied) {
+      const ipd = host.getEffectiveIpdMeters(0);
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] using headset eye transforms (ipd=${(ipd * 1000).toFixed(1)}mm)`,
+      );
+    } else {
+      LogChannel.log("webxrv2", "[webxr] headset eye transforms unusable; keeping emulated IPD");
+    }
+    return applied;
+  } catch (error) {
+    LogChannel.error(
+      "webxrv2",
+      `[webxr] could not read eye transforms: ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
+    return false;
+  }
+}
+
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
   ...args: string[]
 ) => (...values: unknown[]) => Promise<unknown>;
@@ -622,23 +700,35 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as
 async function evaluateWebXrJs(code: string) {
   const names = ["state", "host", "THREE", "PostMan", "globalThis"];
   const values = [state, state.host, THREE, PostMan, globalThis];
-  let evaluator: (...values: unknown[]) => Promise<unknown>;
+  // A throwing expression must come back as data. This runs inside the actor's
+  // worker, so an escaping rejection is an unhandled error that kills PetPlay.
   try {
-    evaluator = new AsyncFunction(...names, `"use strict"; return (${code}\n);`);
-  } catch {
-    evaluator = new AsyncFunction(...names, `"use strict"; ${code}`);
+    let evaluator: (...values: unknown[]) => Promise<unknown>;
+    try {
+      // Prefer expression form so `state.foo` returns a value without `return`.
+      evaluator = new AsyncFunction(...names, `"use strict"; return (${code}\n);`);
+    } catch {
+      // A statement body can still be a syntax error; that must be reported too.
+      evaluator = new AsyncFunction(...names, `"use strict"; ${code}`);
+    }
+    const result = await evaluator(...values);
+    return {
+      ok: true,
+      type: result === null ? "null" : typeof result,
+      inspected: Deno.inspect(result, {
+        depth: 8,
+        iterableLimit: 200,
+        strAbbreviateSize: 20_000,
+        getters: false,
+        colors: false,
+      }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+    };
   }
-  const result = await evaluator(...values);
-  return {
-    type: result === null ? "null" : typeof result,
-    inspected: Deno.inspect(result, {
-      depth: 8,
-      iterableLimit: 200,
-      strAbbreviateSize: 20_000,
-      getters: false,
-      colors: false,
-    }),
-  };
 }
 
 globalThis.addEventListener("unload", () => {
@@ -1007,6 +1097,7 @@ function initializeRaylibOpenVrPacer(
     throw new Error(`invalid vrSystemPointer for ${label}`);
   }
   state.nativeRaylibVrSystem = new OpenVR.IVRSystem(systemPointer);
+  applyOpenVrEyeGeometry();
   LogChannel.log("webxrv2", `[webxr] ${label} init: creating OpenVR pacer`);
   state.nativeRaylibPacer = tryCreateOpenVrOverlayFramePacer(
     payload.vrSystemPointer,
@@ -1165,7 +1256,14 @@ async function uploadWebGpuSceneFrame() {
     state.uploadMetric.record(performance.now() - uploadStartedAt);
 
     const presentStartedAt = performance.now();
-    state.webGpuOverlay.present();
+    if (!state.webGpuOverlay.present()) {
+      state.overlayRunning = false;
+      LogChannel.log(
+        "webxrv2",
+        "[webxr] refusing further WebGPU overlay submissions after InvalidTexture",
+      );
+      return false;
+    }
     state.presentMetric.record(performance.now() - presentStartedAt);
     return true;
   } finally {
@@ -1287,6 +1385,11 @@ async function uploadRaylibShadowFrame() {
   const renderMs = rt.totalMs;
 
   const openvrT0 = performance.now();
+  if (!state.raylibOverlayRaylib.isOutputTextureValid()) {
+    // Rebuild rather than latch the overlay off for the rest of the session; a
+    // toggle around the OpenVR texture import can invalidate the FBO transiently.
+    return recoverRaylibOverlayTargets("invalid Raylib output texture");
+  }
   ensureRaylibOverlayForFrame();
   if (!state.raylibOverlay) {
     throw new Error("OpenVR Raylib overlay not initialized");
@@ -1294,7 +1397,10 @@ async function uploadRaylibShadowFrame() {
   state.raylibOverlay.setTextureHandle(
     state.raylibOverlayRaylib.getTextureHandle(),
   );
-  state.raylibOverlay.present();
+  if (!state.raylibOverlay.present()) {
+    return recoverRaylibOverlayTargets("Raylib overlay present rejected the texture");
+  }
+  raylibOverlayRecoveryAttempts = 0;
   if (signalHostAfterPresent) {
     state.host.signalExternalPacerAdvanced();
   }
@@ -1380,17 +1486,17 @@ function buildNativeOpenVrDebugFrame(): NativeOpenVrRaylibDebugFrame | null {
   if (trace) {
     LogChannel.log("webxrv2", "[webxr] native debug frame: controller index");
   }
-  const leftControllerIndex = vr.GetTrackedDeviceIndexForControllerRole(
+  const leftControllerSelection = getNativeRaylibControllerSelection(
     OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
   );
-  state.nativeRaylibLeftControllerIndex = leftControllerIndex;
+  const leftControllerIndex = leftControllerSelection.index;
   if (trace) {
     LogChannel.log(
       "webxrv2",
       `[webxr] native debug frame: controller index=${leftControllerIndex}`,
     );
   }
-  const leftController = pacer.getCachedTrackedDevicePose(leftControllerIndex);
+  const leftController = leftControllerSelection.pose;
   const worldFromHmd = new THREE.Matrix4().fromArray(
     hmd.matrix as unknown as number[],
   );
@@ -1435,28 +1541,55 @@ function getNativeRaylibLeftControllerPosition(): Float32Array | null {
 function getNativeRaylibControllerPose(
   role: OpenVR.TrackedControllerRole,
 ): OpenVrHmdEmulationPose | null {
+  return getNativeRaylibControllerSelection(role).pose;
+}
+
+function getNativeRaylibControllerSelection(
+  role: OpenVR.TrackedControllerRole,
+): { index: number; pose: OpenVrHmdEmulationPose | null } {
   const pacer = state.nativeRaylibPacer;
   const vr = state.nativeRaylibVrSystem;
   if (!pacer || !vr) {
-    return null;
+    return { index: OpenVR.k_unTrackedDeviceIndexInvalid, pose: null };
   }
 
   const isLeft = role === OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand;
-  let index = isLeft
+  const cachedIndex = isLeft
     ? state.nativeRaylibLeftControllerIndex
     : state.nativeRaylibRightControllerIndex;
-  if (index == null || index === OpenVR.k_unTrackedDeviceIndexInvalid) {
-    index = vr.GetTrackedDeviceIndexForControllerRole(role);
-    if (isLeft) {
-      state.nativeRaylibLeftControllerIndex = index;
-    } else {
-      state.nativeRaylibRightControllerIndex = index;
-    }
+  const roleIndex = vr.GetTrackedDeviceIndexForControllerRole(role);
+  const index = selectActiveControllerIndex({
+    cachedIndex,
+    roleIndex,
+    invalidIndex: OpenVR.k_unTrackedDeviceIndexInvalid,
+    maxDeviceCount: OpenVR.k_unMaxTrackedDeviceCount,
+    isActiveControllerForRole: (candidate) =>
+      pacer.getCachedTrackedDevicePose(candidate) != null &&
+      vr.IsTrackedDeviceConnected(candidate) &&
+      vr.GetTrackedDeviceClass(candidate) ===
+        OpenVR.TrackedDeviceClass.TrackedDeviceClass_Controller &&
+      vr.GetControllerRoleForTrackedDeviceIndex(candidate) === role,
+  });
+  if (isLeft) {
+    state.nativeRaylibLeftControllerIndex = index;
+  } else {
+    state.nativeRaylibRightControllerIndex = index;
   }
-  if (index === OpenVR.k_unTrackedDeviceIndexInvalid) {
-    return null;
+  if (index !== cachedIndex && index !== OpenVR.k_unTrackedDeviceIndexInvalid) {
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] selected active ${isLeft ? "left" : "right"} controller index=${index}` +
+        (cachedIndex == null || cachedIndex === OpenVR.k_unTrackedDeviceIndexInvalid
+          ? ""
+          : ` (replacing inactive index=${cachedIndex})`),
+    );
   }
-  return pacer.getCachedTrackedDevicePose(index);
+  return {
+    index,
+    pose: index === OpenVR.k_unTrackedDeviceIndexInvalid
+      ? null
+      : pacer.getCachedTrackedDevicePose(index),
+  };
 }
 
 async function uploadNativeRaylibDebugFrame() {
@@ -1495,10 +1628,17 @@ async function uploadNativeRaylibDebugFrame() {
       "[webxr] native debug frame: openvr overlay present",
     );
   }
+  if (!state.raylibOverlayRaylib.isOutputTextureValid()) {
+    state.overlayRunning = false;
+    LogChannel.log("webxrv2", "[webxr] refusing to submit an invalid Raylib output texture");
+    return false;
+  }
   state.raylibOverlay.setTextureHandle(
     state.raylibOverlayRaylib.getTextureHandle(),
   );
-  state.raylibOverlay.present();
+  if (!state.raylibOverlay.present()) {
+    return recoverRaylibOverlayTargets("Raylib overlay present rejected the texture");
+  }
   state.raylibOvrOpenvrMetric.record(performance.now() - openvrT0);
   state.raylibOvrHandlerMetric.record(performance.now() - t0);
   if (trace) {
@@ -1574,7 +1714,7 @@ async function pumpOverlayFrames() {
         }
         const frameStartedAt = performance.now();
         let rendered = await uploadRaylibShadowFrame();
-        if (!rendered) {
+        if (!rendered && state.overlayRunning) {
           rendered = await uploadNativeRaylibDebugFrame();
         }
         if (rendered) {

@@ -21,12 +21,34 @@ Deno.test("display mouse smoothing suppresses small alternating jitter", () => {
 
 Deno.test("display mouse smoothing damps motion and snaps large jumps", () => {
   const events: DisplayMouseLogicEvent[] = [];
-  const sink = createSmoothedDisplayMouseSink((event) => events.push(event));
+  let now = 0;
+  const sink = createSmoothedDisplayMouseSink((event) => events.push(event), {
+    now: () => now,
+  });
   sink({ kind: "move", x: 0.1, y: 0.1 });
+  now = 10;
   sink({ kind: "move", x: 0.12, y: 0.1 });
   assertLess((events.at(-1) as { x: number }).x, 0.12);
+  now = 20;
   sink({ kind: "move", x: 0.8, y: 0.7 });
   assertEquals(events.at(-1), { kind: "move", x: 0.8, y: 0.7 });
+});
+
+Deno.test("display mouse smoothing limits move output to WayVR's 100 Hz cadence", () => {
+  const events: DisplayMouseLogicEvent[] = [];
+  let now = 0;
+  const sink = createSmoothedDisplayMouseSink((event) => events.push(event), {
+    deadZone: 0,
+    minimumOutputDistance: 0,
+    now: () => now,
+  });
+  sink({ kind: "move", x: 0.1, y: 0.1 });
+  now = 5;
+  sink({ kind: "move", x: 0.2, y: 0.1 });
+  assertEquals(events.length, 1);
+  now = 10;
+  sink({ kind: "move", x: 0.3, y: 0.1 });
+  assertEquals(events.length, 2);
 });
 
 Deno.test("display mouse buttons retain exact raw coordinates", () => {
