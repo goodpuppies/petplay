@@ -22,16 +22,11 @@ const state = actorState({
   name: "display_instance",
   overlayClass: null as OpenVR.IVROverlay | null,
   overlayHandle: 0n,
-  cursorTargetDisplayId: null as string | null,
-  cursorTargetHandle: 0n,
   cursorWorkspacePosition: null as { x: number; y: number } | null,
   cursorInputSequence: 0,
   cursorDiagnostics: null as {
-    targetId: string;
     workspace: [number, number];
-    localUv: [number, number];
-    submittedMouse: [number, number];
-    configuredMouseScale: [number, number];
+    framePixels: [number, number];
   } | null,
   isRunning: false,
   isStarting: false,
@@ -102,7 +97,6 @@ type SyncVirtualDisplayPayload = SyncDisplayPosePayload & {
 type VirtualOverlay = SyncVirtualDisplayPayload & { handle: bigint };
 const virtualOverlays = new Map<string, VirtualOverlay>();
 const pendingVirtualDisplays = new Map<string, SyncVirtualDisplayPayload>();
-const cursorOverlays = new Map<string, { handle: bigint; targetHandle: bigint }>();
 const virtualOverlayRemovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const VIRTUAL_OVERLAY_REMOVAL_GRACE_MS = 250;
 
@@ -283,11 +277,6 @@ new PostMan(
         state.overlayClass.DestroyOverlay(entry.handle);
         virtualOverlays.delete(payload.id);
         if (entry.handle === state.overlayHandle) state.overlayHandle = 0n;
-        destroyCursorOverlay(payload.id);
-        if (entry.handle === state.cursorTargetHandle) {
-          state.cursorTargetDisplayId = null;
-          state.cursorTargetHandle = 0n;
-        }
       }, VIRTUAL_OVERLAY_REMOVAL_GRACE_MS);
       virtualOverlayRemovalTimers.set(payload.id, timer);
     },
@@ -314,6 +303,7 @@ new PostMan(
       if (!state.glManager) throw new Error("glManager is null");
       updateCaptureDimensions(framePayload.width, framePayload.height);
       state.glManager.createTextureFromData(pixelsArray, framePayload.width, framePayload.height);
+      drawCursorIntoFrame();
       state.textureReady = true;
       for (const entry of virtualOverlays.values()) {
         const error = state.overlayClass.SetOverlayTexture(entry.handle, state.textureStructPtr);
@@ -345,19 +335,8 @@ function getDisplayInstanceStatus() {
     starting: state.isStarting,
     overlayReady: state.overlayClass != null,
     overlayHandleActive: state.overlayHandle !== 0n,
-    cursorOverlayHandle: state.cursorTargetDisplayId
-      ? cursorOverlays.get(state.cursorTargetDisplayId)?.handle ?? 0n
-      : 0n,
-    cursorOverlays: [...cursorOverlays.entries()].map(([id, cursor]) => ({
-      id,
-      handle: cursor.handle,
-      targetHandle: cursor.targetHandle,
-    })),
     cursorInputSequence: state.cursorInputSequence,
-    cursor: state.cursorDiagnostics == null ? null : {
-      ...state.cursorDiagnostics,
-      targetHandle: state.cursorTargetHandle,
-    },
+    cursor: state.cursorDiagnostics,
     virtualOverlays: [...virtualOverlays.values()].map((entry) => ({
       id: entry.id,
       handle: entry.handle,
@@ -499,6 +478,11 @@ async function initGl(overlayName: string) {
   state.glManager = new OpenGLManager();
   state.glManager.initialize2D(overlayName);
   if (!state.glManager) throw new Error("glManager is null");
+  state.glManager.setCursorSprite(
+    createCursorPixels(),
+    CURSOR_TEXTURE_WIDTH,
+    CURSOR_TEXTURE_HEIGHT,
+  );
 }
 
 function textureBoundsForCrop(crop: WorkspaceCrop): OpenVR.TextureBounds {
@@ -534,6 +518,8 @@ function createVirtualOverlayHandle(sync: SyncVirtualDisplayPayload): bigint {
 
 const CURSOR_TEXTURE_WIDTH = 32;
 const CURSOR_TEXTURE_HEIGHT = 32;
+/** Half-extent of the composited cursor, in capture-frame pixels. */
+const CURSOR_DRAW_SIZE_PX = 12;
 
 function createCursorPixels(): Uint8Array {
   const pixels = new Uint8Array(CURSOR_TEXTURE_WIDTH * CURSOR_TEXTURE_HEIGHT * 4);
@@ -552,166 +538,51 @@ function createCursorPixels(): Uint8Array {
   return pixels;
 }
 
-function ensureCursorOverlay(target: VirtualOverlay): bigint {
-  if (!state.overlayClass) return 0n;
-  const overlay = state.overlayClass;
-  const existing = cursorOverlays.get(target.id);
-  if (existing) {
-    if (existing.targetHandle !== target.handle) {
-      attachCursorToOverlay(target.handle, existing.handle);
-      existing.targetHandle = target.handle;
-    }
-    return existing.handle;
-  }
-  const baseKey = state.lastStartConfig?.overlayKey ?? "petplay.displayInstance.desktop";
-  const key = `${baseKey}.cursor.${target.id}`;
-  const handlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-  let error = overlay.CreateOverlay(key, "PetPlay Cursor", handlePtr);
-  if (error === OpenVR.OverlayError.VROverlayError_KeyInUse) {
-    const stalePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-    const findError = overlay.FindOverlay(key, stalePtr);
-    if (findError === OpenVR.OverlayError.VROverlayError_None) {
-      const stale = new Deno.UnsafePointerView(stalePtr).getBigUint64();
-      overlay.HideOverlay(stale);
-      overlay.DestroyOverlay(stale);
-      error = overlay.CreateOverlay(key, "PetPlay Cursor", handlePtr);
-    }
-  }
-  if (error !== OpenVR.OverlayError.VROverlayError_None) {
-    throw new Error(`Create cursor overlay: ${OpenVR.OverlayError[error]}`);
-  }
-
-  const handle = new Deno.UnsafePointerView(handlePtr).getBigUint64();
-  const pixels = createCursorPixels();
-  const rawError = overlay.SetOverlayRaw(
-    handle,
-    Deno.UnsafePointer.of(pixels),
-    CURSOR_TEXTURE_WIDTH,
-    CURSOR_TEXTURE_HEIGHT,
-    4,
-  );
-  if (rawError !== OpenVR.OverlayError.VROverlayError_None) {
-    overlay.DestroyOverlay(handle);
-    throw new Error(`SetOverlayRaw(cursor): ${OpenVR.OverlayError[rawError]}`);
-  }
-  overlay.SetOverlayWidthInMeters(handle, 0.018);
-  overlay.SetOverlayTexelAspect(handle, 1);
-  const [hotspotPtr] = createStruct<OpenVR.HmdVector2>(
-    { v: [0.5, 0.5] },
-    OpenVR.HmdVector2Struct,
-  );
-  const transformError = overlay.SetOverlayTransformCursor(handle, hotspotPtr);
-  if (transformError !== OpenVR.OverlayError.VROverlayError_None) {
-    overlay.DestroyOverlay(handle);
-    throw new Error(`SetOverlayTransformCursor: ${OpenVR.OverlayError[transformError]}`);
-  }
-  attachCursorToOverlay(target.handle, handle);
-  cursorOverlays.set(target.id, { handle, targetHandle: target.handle });
-  LogChannel.log(
-    "actor",
-    `[displayInstance] cursor overlay ${target.id} ready handle=${handle}`,
-  );
-  return handle;
-}
-
-function attachCursorToOverlay(targetHandle: bigint, cursorHandle: bigint): void {
-  if (!state.overlayClass || !cursorHandle) return;
-  const error = state.overlayClass.SetOverlayCursor(targetHandle, cursorHandle);
-  if (error !== OpenVR.OverlayError.VROverlayError_None) {
-    LogChannel.log(
-      "actor",
-      `[displayInstance] SetOverlayCursor: ${OpenVR.OverlayError[error]}`,
-    );
-  }
-}
-
-function destroyCursorOverlay(id: string): void {
-  const cursor = cursorOverlays.get(id);
-  if (!cursor) return;
-  if (state.overlayClass) {
-    state.overlayClass.SetOverlayCursor(cursor.targetHandle, 0n);
-    state.overlayClass.HideOverlay(cursor.handle);
-    state.overlayClass.DestroyOverlay(cursor.handle);
-  }
-  cursorOverlays.delete(id);
-}
-
-const cursorPosition = new Float32Array(2);
-
+/**
+ * Position comes from PetPlay's own desktop input path (the `C,x,y` control
+ * emitted alongside the uinput stream), not from the system cursor, so it
+ * tracks the VR ray exactly rather than the smoothed compositor cursor.
+ */
 function updateCursorFromPointerControl(command: string): void {
-  if (!command.startsWith("C,") || !state.overlayClass) return;
+  if (!command.startsWith("C,")) return;
   state.cursorInputSequence++;
   const [, xText, yText] = command.split(",", 3);
   const workspaceX = Number(xText);
   const workspaceY = Number(yText);
   if (!Number.isFinite(workspaceX) || !Number.isFinite(workspaceY)) return;
   state.cursorWorkspacePosition = { x: workspaceX, y: workspaceY };
-  updateCursorOverlayPose(workspaceX, workspaceY);
+  // Repaint immediately rather than waiting for the next desktop frame, so the
+  // cursor stays responsive even when the capture stream is slow or stalled.
+  if (state.textureReady) {
+    drawCursorIntoFrame();
+    submitTextureToOverlays();
+  }
 }
 
-function updateCursorOverlayPose(workspaceX: number, workspaceY: number): void {
-  if (!state.overlayClass) return;
-  const target = [...virtualOverlays.values()].find(({ crop }) =>
-    workspaceX >= crop.x && workspaceX <= crop.x + crop.width &&
-    workspaceY >= crop.y && workspaceY <= crop.y + crop.height
-  );
-  if (!target || target.crop.width <= 0 || target.crop.height <= 0) return;
-
-  const cursorHandle = ensureCursorOverlay(target);
-  if (!cursorHandle) return;
-  if (state.cursorTargetDisplayId && state.cursorTargetDisplayId !== target.id) {
-    const previous = cursorOverlays.get(state.cursorTargetDisplayId);
-    if (previous) {
-      cursorPosition[0] = -100_000;
-      cursorPosition[1] = -100_000;
-      state.overlayClass.SetOverlayCursorPositionOverride(
-        previous.targetHandle,
-        Deno.UnsafePointer.of(cursorPosition) as Deno.PointerValue<OpenVR.HmdVector2>,
-      );
-    }
+/** Re-hand the (now updated) texture to every virtual display overlay. */
+function submitTextureToOverlays(): void {
+  if (!state.overlayClass || !state.textureStructPtr) return;
+  for (const entry of virtualOverlays.values()) {
+    state.overlayClass.SetOverlayTexture(entry.handle, state.textureStructPtr);
   }
-  state.cursorTargetDisplayId = target.id;
-  state.cursorTargetHandle = target.handle;
-  // Reassert the per-display association in case SteamVR rebuilt the target.
-  attachCursorToOverlay(target.handle, cursorHandle);
+}
 
-  const localX = Math.min(
-    1,
-    Math.max(0, (workspaceX - target.crop.x) / target.crop.width),
-  );
-  const localY = Math.min(
-    1,
-    Math.max(0, (workspaceY - target.crop.y) / target.crop.height),
-  );
-
-  const mouseWidth = Math.max(1, state.captureFrameWidth * target.crop.width);
-  const mouseHeight = Math.max(1, state.captureFrameHeight * target.crop.height);
-  cursorPosition[0] = localX * mouseWidth;
-  // SteamVR's cursor transform spans a square whose physical side is the
-  // overlay width, irrespective of the target texture aspect. Fit the cursor's
-  // vertical range into the centered visible monitor height. For 1920x1080
-  // this is a 9/16 multiplier around the midpoint.
-  const heightOverWidth = mouseHeight / mouseWidth;
-  const cursorY = 0.5 + (0.5 - localY) * heightOverWidth;
-  cursorPosition[1] = cursorY * mouseHeight;
-  const pointer = Deno.UnsafePointer.of(cursorPosition) as Deno.PointerValue<OpenVR.HmdVector2>;
-  const error = state.overlayClass.SetOverlayCursorPositionOverride(
-    target.handle,
-    pointer,
-  );
-  if (error !== OpenVR.OverlayError.VROverlayError_None) {
-    LogChannel.log(
-      "actor",
-      `[displayInstance] SetOverlayCursorPositionOverride: ${OpenVR.OverlayError[error]}`,
-    );
-    return;
-  }
+/**
+ * Blend our cursor into the shared desktop texture, the way Desktop+ does it
+ * (DrawMouseToOverlayTex). Because every virtual display samples this one
+ * texture through its own crop, the cursor automatically shows up on whichever
+ * display contains it, with no per-overlay bookkeeping.
+ */
+function drawCursorIntoFrame(): void {
+  const position = state.cursorWorkspacePosition;
+  if (!position || !state.glManager) return;
+  if (state.captureFrameWidth <= 0 || state.captureFrameHeight <= 0) return;
+  const framePixelX = position.x * state.captureFrameWidth;
+  const framePixelY = position.y * state.captureFrameHeight;
+  state.glManager.compositeCursor(framePixelX, framePixelY, CURSOR_DRAW_SIZE_PX);
   state.cursorDiagnostics = {
-    targetId: target.id,
-    workspace: [workspaceX, workspaceY],
-    localUv: [localX, localY],
-    submittedMouse: [cursorPosition[0], cursorPosition[1]],
-    configuredMouseScale: [mouseWidth, mouseHeight],
+    workspace: [position.x, position.y],
+    framePixels: [framePixelX, framePixelY],
   };
 }
 
@@ -763,12 +634,6 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
     overlay.SetOverlayTexture(entry.handle, state.textureStructPtr);
   }
   if (state.visible) overlay.ShowOverlay(entry.handle);
-  if (state.cursorTargetDisplayId === entry.id && state.cursorWorkspacePosition) {
-    updateCursorOverlayPose(
-      state.cursorWorkspacePosition.x,
-      state.cursorWorkspacePosition.y,
-    );
-  }
 }
 
 function setVirtualOverlayMouseScale(entry: VirtualOverlay): void {
@@ -812,7 +677,6 @@ async function stopDesktopOverlay(): Promise<void> {
   if (state.overlayClass) {
     const handles = new Set([...virtualOverlays.values()].map((entry) => entry.handle));
     if (state.overlayHandle) handles.add(state.overlayHandle);
-    for (const cursor of cursorOverlays.values()) handles.add(cursor.handle);
     for (const handle of handles) {
       try {
         state.overlayClass.HideOverlay(handle);
@@ -854,11 +718,8 @@ async function stopDesktopOverlay(): Promise<void> {
   }
 
   virtualOverlays.clear();
-  cursorOverlays.clear();
 
   state.overlayHandle = 0n;
-  state.cursorTargetDisplayId = null;
-  state.cursorTargetHandle = 0n;
   state.cursorWorkspacePosition = null;
   state.cursorDiagnostics = null;
   state.cursorInputSequence = 0;
@@ -990,6 +851,7 @@ async function deskCapLoop(
     frameCount++;
     updateCaptureDimensions(frame.width, frame.height);
     createTextureFromScreenshot(frame.data, frame.width, frame.height);
+    drawCursorIntoFrame();
     state.textureReady = true;
     for (const entry of virtualOverlays.values()) {
       const err = overlay.SetOverlayTexture(entry.handle, textureStructPtr);

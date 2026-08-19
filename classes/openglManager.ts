@@ -1,6 +1,7 @@
 import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
 import { createWindow, DwmWindow, getProcAddress } from "@gfx/dwm";
 import { flipVertical } from "./screenutils.ts";
+import { computeCursorQuad } from "./cursorComposite.ts";
 
 import { cstr } from "https://deno.land/x/dwm@0.3.4/src/platform/glfw/ffi.ts";
 import { join } from "@std/path";
@@ -17,6 +18,7 @@ import { join } from "@std/path";
 function traceTexture(action: "gen" | "delete", id: number, label: string): void {
   console.log(`[gltrace] ${action} texture id=${id} (${label}) pid=${Deno.pid}`);
 }
+
 
 export class OpenGLManager {
   private outputTexture: Uint32Array | null = null; // Renamed for clarity
@@ -53,6 +55,27 @@ export class OpenGLManager {
   private textureUploadBuffer: Uint8Array<ArrayBuffer> | null = null;
   private textureUploadWidth = 0;
   private textureUploadHeight = 0;
+  // --- Cursor compositing (2D desktop path) ---
+  // Desktop+ draws its cursor as an alpha-blended quad straight into the
+  // overlay texture rather than using a SteamVR cursor overlay. We do the same
+  // so the cursor survives a slow/streamed desktop overlay, and so it lands in
+  // whichever virtual display's crop happens to contain it.
+  private cursorShaderProgram: gl.GLuint | null = null;
+  private cursorVao: gl.GLuint | null = null;
+  private cursorFbo: gl.GLuint | null = null;
+  private cursorTexture: Uint32Array | null = null;
+  private cursorRectUniform: number = -1;
+  private cursorFlipUniform: number = -1;
+  /** True when this.texture holds a vertically flipped (bottom-up) frame. */
+  private textureIsBottomUp = false;
+  private cursorSpriteWidth = 0;
+  private cursorSpriteHeight = 0;
+  private cursorReady = false;
+  /** Pixels backing the current texture, used to repaint over the old cursor. */
+  private lastUploadPixels: Uint8Array | null = null;
+  private lastUploadFormat: gl.GLenum = gl.RGBA;
+  /** Where the cursor was last drawn, in uploaded-row space. */
+  private cursorLastRect: { x: number; y: number; width: number; height: number } | null = null;
 
   constructor() {
     // Generate a crypto UUID for unique window identification
@@ -671,10 +694,186 @@ export class OpenGLManager {
       gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this.checkGLError("texture creation");
+
+      this.setupCursorResources();
     } catch (error) {
       console.error(`Failed to create window: ${(error as Error).message}`);
       throw error;
     }
+  }
+
+  /**
+   * Build the shader/VAO/FBO used to composite a cursor into the desktop
+   * texture. Failure is non-fatal: the desktop overlay still works, it just
+   * won't carry our own cursor.
+   */
+  private setupCursorResources(): void {
+    try {
+      const vertSource = this.loadShaderSourceSync("cursor.vert");
+      const fragSource = this.loadShaderSourceSync("cursor.frag");
+      const vertexShader = this.compileShader(vertSource, gl.VERTEX_SHADER);
+      const fragmentShader = this.compileShader(fragSource, gl.FRAGMENT_SHADER);
+      if (!vertexShader || !fragmentShader) throw new Error("cursor shader compilation failed");
+
+      const program = gl.CreateProgram();
+      if (!program) throw new Error("cursor CreateProgram failed");
+      gl.AttachShader(program, vertexShader);
+      gl.AttachShader(program, fragmentShader);
+      gl.LinkProgram(program);
+      const linkStatus = new Int32Array(1);
+      gl.GetProgramiv(program, gl.LINK_STATUS, linkStatus);
+      gl.DeleteShader(vertexShader);
+      gl.DeleteShader(fragmentShader);
+      if (linkStatus[0] === gl.FALSE) {
+        gl.DeleteProgram(program);
+        throw new Error("cursor shader link failed");
+      }
+      this.cursorShaderProgram = program;
+
+      this.cursorRectUniform = gl.GetUniformLocation(program, cstr("rect"));
+      if (this.cursorRectUniform === -1) throw new Error("cursor 'rect' uniform missing");
+      this.cursorFlipUniform = gl.GetUniformLocation(program, cstr("flipV"));
+      if (this.cursorFlipUniform === -1) throw new Error("cursor 'flipV' uniform missing");
+
+      const vaoId = new Uint32Array(1);
+      gl.GenVertexArrays(1, vaoId);
+      this.cursorVao = vaoId[0];
+
+      const fboId = new Uint32Array(1);
+      gl.GenFramebuffers(1, fboId);
+      this.cursorFbo = fboId[0];
+
+      this.cursorTexture = new Uint32Array(1);
+      gl.GenTextures(1, this.cursorTexture);
+      traceTexture("gen", this.cursorTexture[0], "cursorTexture");
+      gl.BindTexture(gl.TEXTURE_2D, this.cursorTexture[0]);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.BindTexture(gl.TEXTURE_2D, 0);
+      this.checkGLError("cursor resource setup");
+    } catch (error) {
+      console.warn(
+        `Cursor compositing unavailable: ${(error as Error).message}`,
+      );
+      this.cursorShaderProgram = null;
+    }
+  }
+
+  /** Upload the RGBA cursor sprite. Call once; the sprite is static. */
+  setCursorSprite(pixels: Uint8Array, width: number, height: number): void {
+    if (!this.cursorTexture || !this.cursorShaderProgram) return;
+    gl.BindTexture(gl.TEXTURE_2D, this.cursorTexture[0]);
+    gl.TexImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      width,
+      height,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      pixels,
+    );
+    gl.BindTexture(gl.TEXTURE_2D, 0);
+    this.cursorSpriteWidth = width;
+    this.cursorSpriteHeight = height;
+    this.cursorReady = this.checkGLError("upload cursor sprite");
+  }
+
+  /**
+   * Blend the cursor sprite into the desktop texture at a pixel position in
+   * capture-frame space (top-down, origin top-left). Must be called after the
+   * frame upload and before the texture is handed to OpenVR.
+   */
+  compositeCursor(centerX: number, centerY: number, sizePx: number): void {
+    if (!this.cursorReady || !this.cursorShaderProgram || !this.cursorFbo) return;
+    // Repaint the desktop over wherever the cursor was last drawn, so moving it
+    // between frames doesn't smear a trail across a stale texture.
+    this.restoreCursorRect();
+    if (!this.texture || !this.cursorTexture || !this.cursorVao) return;
+    const frameWidth = this.textureUploadWidth;
+    const frameHeight = this.textureUploadHeight;
+    if (frameWidth <= 0 || frameHeight <= 0) return;
+
+    gl.BindFramebuffer(gl.FRAMEBUFFER, this.cursorFbo);
+    gl.FramebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      this.texture[0],
+      0,
+    );
+    if (gl.CheckFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
+      return;
+    }
+    gl.Viewport(0, 0, frameWidth, frameHeight);
+
+    gl.UseProgram(this.cursorShaderProgram);
+    const quad = computeCursorQuad(
+      centerX,
+      centerY,
+      sizePx,
+      frameWidth,
+      frameHeight,
+      this.cursorSpriteHeight / Math.max(1, this.cursorSpriteWidth),
+      this.textureIsBottomUp,
+    );
+    gl.Uniform4f(this.cursorRectUniform, quad.ndcX, quad.ndcY, quad.halfW, quad.halfH);
+    gl.Uniform1f(this.cursorFlipUniform, quad.flipV);
+
+    gl.ActiveTexture(gl.TEXTURE0);
+    gl.BindTexture(gl.TEXTURE_2D, this.cursorTexture[0]);
+
+    gl.Enable(gl.BLEND);
+    gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.BindVertexArray(this.cursorVao);
+    gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.BindVertexArray(0);
+    gl.Disable(gl.BLEND);
+    gl.BindTexture(gl.TEXTURE_2D, 0);
+    gl.UseProgram(0);
+    gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
+    this.checkGLError("draw cursor");
+
+    // Remember the touched region (in uploaded-row space) as the dirty rect.
+    this.cursorLastRect = quad.rect;
+  }
+
+  /** Re-upload just the last cursor rect from the cached frame pixels. */
+  private restoreCursorRect(): void {
+    const rect = this.cursorLastRect;
+    this.cursorLastRect = null;
+    if (!rect || !this.texture || !this.lastUploadPixels) return;
+    if (this.lastUploadPixels.length < this.textureUploadWidth * this.textureUploadHeight * 4) {
+      return;
+    }
+
+    gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
+    // Upload a sub-rect straight out of the full-frame buffer.
+    gl.PixelStorei(gl.UNPACK_ROW_LENGTH, this.textureUploadWidth);
+    gl.PixelStorei(gl.UNPACK_SKIP_PIXELS, rect.x);
+    gl.PixelStorei(gl.UNPACK_SKIP_ROWS, rect.y);
+    gl.TexSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      this.lastUploadFormat,
+      gl.UNSIGNED_BYTE,
+      this.lastUploadPixels,
+    );
+    gl.PixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    gl.PixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    gl.PixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    gl.BindTexture(gl.TEXTURE_2D, 0);
+    this.checkGLError("restore cursor rect");
   }
 
   renderPanoramaFromData(
@@ -949,6 +1148,11 @@ export class OpenGLManager {
 
     if (this.texture === null) throw new Error("texture is null");
 
+    this.textureIsBottomUp = !noFlip;
+    // A full-frame upload overwrites any previously drawn cursor.
+    this.lastUploadPixels = pixelsX;
+    this.lastUploadFormat = gl.RGBA;
+    this.cursorLastRect = null;
     gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
     if (width !== this.textureUploadWidth || height !== this.textureUploadHeight) {
       gl.TexImage2D(
@@ -984,6 +1188,12 @@ export class OpenGLManager {
   /** Upload a top-down Windows.Graphics.Capture BGRA frame without a CPU flip/channel copy. */
   createTextureFromBgraScreenshot(pixels: Uint8Array, width: number, height: number): void {
     if (this.texture === null) throw new Error("texture is null");
+
+    // This path uploads the capture rows as-is (top-down).
+    this.textureIsBottomUp = false;
+    this.lastUploadPixels = pixels;
+    this.lastUploadFormat = gl.BGRA;
+    this.cursorLastRect = null;
 
     gl.BindTexture(gl.TEXTURE_2D, this.texture[0]);
     if (width !== this.textureUploadWidth || height !== this.textureUploadHeight) {
@@ -1041,6 +1251,26 @@ export class OpenGLManager {
       gl.DeleteVertexArrays(1, idArray);
       this.vao = null;
     }
+    if (this.cursorFbo) {
+      idArray[0] = this.cursorFbo;
+      gl.DeleteFramebuffers(1, idArray);
+      this.cursorFbo = null;
+    }
+    if (this.cursorVao) {
+      idArray[0] = this.cursorVao;
+      gl.DeleteVertexArrays(1, idArray);
+      this.cursorVao = null;
+    }
+    if (this.cursorShaderProgram) {
+      gl.DeleteProgram(this.cursorShaderProgram);
+      this.cursorShaderProgram = null;
+    }
+    if (this.cursorTexture) {
+      traceTexture("delete", this.cursorTexture[0], "cursorTexture");
+      gl.DeleteTextures(1, this.cursorTexture);
+      this.cursorTexture = null;
+    }
+    this.cursorReady = false;
     if (this.shaderProgram) {
       console.log(`Deleting Shader Program ID: ${this.shaderProgram}`);
       // No need for array for DeleteProgram
