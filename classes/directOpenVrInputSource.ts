@@ -42,6 +42,7 @@ export type DirectOpenVrControllerPose = {
   trigger: number;
   /** Grab/squeeze button state (0-1). */
   grab: number;
+  joystick: Float32Array;
 };
 
 export type DirectOpenVrInputSnapshot = {
@@ -63,12 +64,14 @@ export class DirectOpenVrInputSource {
     quaternion: new Float32Array(4),
     trigger: new Float32Array(1),
     grab: new Float32Array(1),
+    joystick: new Float32Array(2),
   };
   private readonly rightBuffers = {
     position: new Float32Array(3),
     quaternion: new Float32Array(4),
     trigger: new Float32Array(1),
     grab: new Float32Array(1),
+    joystick: new Float32Array(2),
   };
 
   private readonly hmdView: DirectOpenVrHmdPose = {
@@ -81,12 +84,14 @@ export class DirectOpenVrInputSource {
     quaternion: this.leftBuffers.quaternion,
     trigger: this.leftBuffers.trigger[0],
     grab: this.leftBuffers.grab[0],
+    joystick: this.leftBuffers.joystick,
   };
   private readonly rightView: DirectOpenVrControllerPose = {
     position: this.rightBuffers.position,
     quaternion: this.rightBuffers.quaternion,
     trigger: this.rightBuffers.trigger[0],
     grab: this.rightBuffers.grab[0],
+    joystick: this.rightBuffers.joystick,
   };
 
   private hmdValid = false;
@@ -100,14 +105,36 @@ export class DirectOpenVrInputSource {
   private grabRightHandle = OpenVR.k_ulInvalidActionHandle;
   private triggerLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
+  private joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
+  private joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
   private actionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
   private leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
   private rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
 
-  private readonly grabLeft = createStruct<OpenVR.InputDigitalActionData>(null, OpenVR.InputDigitalActionDataStruct);
-  private readonly grabRight = createStruct<OpenVR.InputDigitalActionData>(null, OpenVR.InputDigitalActionDataStruct);
-  private readonly triggerLeft = createStruct<OpenVR.InputDigitalActionData>(null, OpenVR.InputDigitalActionDataStruct);
-  private readonly triggerRight = createStruct<OpenVR.InputDigitalActionData>(null, OpenVR.InputDigitalActionDataStruct);
+  private readonly grabLeft = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly grabRight = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly triggerLeft = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly triggerRight = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly joystickLeft = createStruct<OpenVR.InputAnalogActionData>(
+    null,
+    OpenVR.InputAnalogActionDataStruct,
+  );
+  private readonly joystickRight = createStruct<OpenVR.InputAnalogActionData>(
+    null,
+    OpenVR.InputAnalogActionDataStruct,
+  );
 
   private dualActiveActionSetBuffer: ArrayBuffer | null = null;
 
@@ -202,6 +229,8 @@ export class DirectOpenVrInputSource {
     this.grabRightHandle = getActionHandle("/actions/main/in/GrabRight");
     this.triggerLeftHandle = getActionHandle("/actions/main/in/TriggerLeft");
     this.triggerRightHandle = getActionHandle("/actions/main/in/TriggerRight");
+    this.joystickLeftHandle = getActionHandle("/actions/main/in/JoystickLeft");
+    this.joystickRightHandle = getActionHandle("/actions/main/in/JoystickRight");
 
     const actionSetPtr = P.BigUint64P<OpenVR.ActionSetHandle>();
     error = this.vrInput.GetActionSetHandle("/actions/main", actionSetPtr);
@@ -280,16 +309,38 @@ export class DirectOpenVrInputSource {
       OpenVR.InputDigitalActionDataStruct.byteSize,
       this.rightHandPathHandle,
     );
+    this.vrInput.GetAnalogActionData(
+      this.joystickLeftHandle,
+      this.joystickLeft[0],
+      OpenVR.InputAnalogActionDataStruct.byteSize,
+      this.leftHandPathHandle,
+    );
+    this.vrInput.GetAnalogActionData(
+      this.joystickRightHandle,
+      this.joystickRight[0],
+      OpenVR.InputAnalogActionDataStruct.byteSize,
+      this.rightHandPathHandle,
+    );
 
     const grabL = OpenVR.InputDigitalActionDataStruct.read(this.grabLeft[1]);
     const grabR = OpenVR.InputDigitalActionDataStruct.read(this.grabRight[1]);
     const trigL = OpenVR.InputDigitalActionDataStruct.read(this.triggerLeft[1]);
     const trigR = OpenVR.InputDigitalActionDataStruct.read(this.triggerRight[1]);
+    const joystickL = OpenVR.InputAnalogActionDataStruct.read(this.joystickLeft[1]);
+    const joystickR = OpenVR.InputAnalogActionDataStruct.read(this.joystickRight[1]);
 
     this.leftBuffers.grab[0] = grabL.bState ? 1 : 0;
     this.rightBuffers.grab[0] = grabR.bState ? 1 : 0;
     this.leftBuffers.trigger[0] = trigL.bState ? 1 : 0;
     this.rightBuffers.trigger[0] = trigR.bState ? 1 : 0;
+    if (joystickL.bActive) {
+      this.leftBuffers.joystick[0] = joystickL.x;
+      this.leftBuffers.joystick[1] = joystickL.y;
+    }
+    if (joystickR.bActive) {
+      this.rightBuffers.joystick[0] = joystickR.x;
+      this.rightBuffers.joystick[1] = joystickR.y;
+    }
 
     // Sync scalar snapshot properties (they are not live references like Float32Arrays)
     this.leftView.grab = this.leftBuffers.grab[0];
@@ -306,6 +357,8 @@ export class DirectOpenVrInputSource {
     this.grabRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.triggerLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
+    this.joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.actionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
     this.leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
     this.rightHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;

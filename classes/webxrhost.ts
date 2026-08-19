@@ -186,11 +186,6 @@ const POLL_INTERVAL_MS = 16;
 const XR_CONNECT_RETRY_MS = 16;
 const XR_CONNECT_TIMEOUT_MS = 1000;
 const XR_CONNECT_ERROR_FRAGMENT = "not connected to three.js";
-const CONTROLLER_ROTATION_OFFSET = new THREE.Quaternion().setFromEuler(
-  new THREE.Euler(-0.7, 0, 0, "XYZ"),
-);
-const CONTROLLER_BACK_OFFSET_METERS = 0.055;
-
 type SupportedSessionMode = "immersive-vr" | "immersive-ar";
 
 function getReferenceSpaceType(sessionMode: SupportedSessionMode): XRReferenceSpaceType {
@@ -1409,6 +1404,7 @@ export class WebXRHost {
           React.createElement(WebXRScene, {
             XROrigin,
             displayInstanceActor: options.displayInstanceActor ?? null,
+            directOpenVrInputSource: this.directOpenVrInputSource,
           }),
         ),
       );
@@ -2706,10 +2702,22 @@ export class WebXRHost {
         }
       }
       return new THREE.Matrix4().set(
-        m[0][0], m[0][1], m[0][2], m[0][3],
-        m[1][0], m[1][1], m[1][2], m[1][3],
-        m[2][0], m[2][1], m[2][2], m[2][3],
-        0, 0, 0, 1,
+        m[0][0],
+        m[0][1],
+        m[0][2],
+        m[0][3],
+        m[1][0],
+        m[1][1],
+        m[1][2],
+        m[1][3],
+        m[2][0],
+        m[2][1],
+        m[2][2],
+        m[2][3],
+        0,
+        0,
+        0,
+        1,
       );
     };
     const l = toMatrix(left);
@@ -2998,7 +3006,6 @@ export class WebXRHost {
       baseQuaternion[2],
       baseQuaternion[3],
     );
-    correctedQuaternion.multiply(CONTROLLER_ROTATION_OFFSET);
     const rawX = m[0][3];
     const rawY = m[1][3];
     const rawZ = m[2][3];
@@ -3032,20 +3039,15 @@ export class WebXRHost {
       }
     }
     lastRaw.set(rawX, rawY, rawZ);
-    this.tempEmulatedControllerPosTarget.set(0, 0, CONTROLLER_BACK_OFFSET_METERS)
-      .applyQuaternion(correctedQuaternion);
-    const ox = this.tempEmulatedControllerPosTarget.x;
-    const oy = this.tempEmulatedControllerPosTarget.y;
-    const oz = this.tempEmulatedControllerPosTarget.z;
     if (lerpA <= 0) {
-      controller.position?.set?.(tx + ox, ty + oy, tz + oz);
+      controller.position?.set?.(tx, ty, tz);
     } else if (!inited) {
       smooth.set(tx, ty, tz);
-      controller.position?.set?.(smooth.x + ox, smooth.y + oy, smooth.z + oz);
+      controller.position?.set?.(smooth.x, smooth.y, smooth.z);
     } else {
       this.tempEmulatedControllerPosTarget.set(tx, ty, tz);
       smooth.lerp(this.tempEmulatedControllerPosTarget, lerpA);
-      controller.position?.set?.(smooth.x + ox, smooth.y + oy, smooth.z + oz);
+      controller.position?.set?.(smooth.x, smooth.y, smooth.z);
     }
     if (handedness === "left") {
       this.emulatedControllerPosInited.left = true;

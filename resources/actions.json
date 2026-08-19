@@ -1,40 +1,48 @@
 {
-    "actions": [
-      {
-        "name": "/actions/main/in/HandPoseLeft",
-        "type": "pose"
-      },
-      {
-        "name": "/actions/main/in/HandPoseRight",
-        "type": "pose"
-      },
-      {
-        "name": "/actions/main/in/TriggerLeft",
-        "type": "boolean"
-      },
-      {
-        "name": "/actions/main/in/TriggerRight",
-        "type": "boolean"
-      },
-      {
-        "name": "/actions/main/in/GrabLeft",
-        "type": "boolean"
-      },
-      {
-        "name": "/actions/main/in/GrabRight",
-        "type": "boolean"
-      }
-    ],
-    "action_sets": [
-      {
-        "name": "/actions/main",
-        "usage": "leftright"
-      }
-    ],
-    "default_bindings": [
-      {
-        "controller_type": "oculus_touch",
-        "binding_url": "bindings_oculus_touch.json"
-      }
-    ]
+  "actions": [
+    {
+      "name": "/actions/main/in/HandPoseLeft",
+      "type": "pose"
+    },
+    {
+      "name": "/actions/main/in/HandPoseRight",
+      "type": "pose"
+    },
+    {
+      "name": "/actions/main/in/TriggerLeft",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/TriggerRight",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/GrabLeft",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/GrabRight",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/JoystickLeft",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/main/in/JoystickRight",
+      "type": "vector2"
+    }
+  ],
+  "action_sets": [
+    {
+      "name": "/actions/main",
+      "usage": "leftright"
+    }
+  ],
+  "default_bindings": [
+    {
+      "controller_type": "oculus_touch",
+      "binding_url": "bindings_oculus_touch.json"
+    }
+  ]
 }

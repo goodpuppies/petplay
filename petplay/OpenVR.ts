@@ -13,6 +13,7 @@ const state = actorState({
   compositorPTR: null as Deno.PointerValue | null,
   overlayPTR: null as Deno.PointerValue | null,
   inputPTR: null as Deno.PointerValue | null,
+  renderModelsPTR: null as Deno.PointerValue | null,
 });
 
 export const api = {
@@ -29,6 +30,7 @@ export const api = {
       state.compositorPTR = null;
       state.overlayPTR = null;
       state.inputPTR = null;
+      state.renderModelsPTR = null;
       LogChannel.log(
         "actor",
         "OpenVR runtime/library release deferred to OS process teardown on Linux.",
@@ -45,6 +47,7 @@ export const api = {
       compositorReady: state.compositorPTR != null,
       overlayReady: state.overlayPTR != null,
       inputReady: state.inputPTR != null,
+      renderModelsReady: state.renderModelsPTR != null,
     };
   },
   GETOPENVRPTR: (_payload: null) => {
@@ -70,6 +73,10 @@ export const api = {
       return null;
     }
     return Deno.UnsafePointer.value(state.compositorPTR);
+  },
+  GETRENDERMODELSPTR: (_payload: null) => {
+    if (!state.renderModelsPTR) throw new Error("render models system not initialized");
+    return Deno.UnsafePointer.value(state.renderModelsPTR);
   },
 } as const;
 
@@ -147,6 +154,16 @@ function initializeOpenVR() {
       throw new Error(`Failed to get IVRInput: ${OpenVR.InitError[err]}`);
     }
   }
+  const renderModelsPtr = OpenVR.VR_GetGenericInterface(
+    stringToPointer(OpenVR.IVRRenderModels_Version),
+    initErrorPtr,
+  );
+  {
+    const err = new Deno.UnsafePointerView(initErrorPtr).getInt32();
+    if (err !== OpenVR.InitError.VRInitError_None) {
+      throw new Error(`Failed to get IVRRenderModels: ${OpenVR.InitError[err]}`);
+    }
+  }
 
   state.vrSystemPTR = systemPtr;
   state.compositorPTR = interfaceErrorComp === OpenVR.InitError.VRInitError_None
@@ -154,6 +171,7 @@ function initializeOpenVR() {
     : null;
   state.overlayPTR = overlayPtr;
   state.inputPTR = inputPtr;
+  state.renderModelsPTR = renderModelsPtr;
 
   LogChannel.log(
     "actor",
@@ -169,6 +187,7 @@ function shutdownOpenVR() {
   state.compositorPTR = null;
   state.overlayPTR = null;
   state.inputPTR = null;
+  state.renderModelsPTR = null;
   OpenVR.closeOpenVR();
   LogChannel.log("actor", "OpenVR shutdown complete and library closed.");
 }

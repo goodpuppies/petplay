@@ -168,7 +168,11 @@ async function createOpenVrScene() {
     const ivroverlay = await withStartupTimeout("Waiting for IVROverlay", ivr.GETOVERLAYPTR());
     console.log("[petplay boot] IVROverlay ready; requesting IVRInput");
     const ivrinput = await withStartupTimeout("Waiting for IVRInput", ivr.GETINPUTPTR());
-    await continueOpenVrScene(ivr, ivrsystem, ivroverlay, ivrinput);
+    const ivrrendermodels = await withStartupTimeout(
+      "Waiting for IVRRenderModels",
+      ivr.GETRENDERMODELSPTR(),
+    );
+    await continueOpenVrScene(ivr, ivrsystem, ivroverlay, ivrinput, ivrrendermodels);
   } catch (error) {
     console.error(`[petplay boot] OpenVR startup failed; terminating ${ivrActorId}.`, error);
     PostMan.PostMessage({ target: System, type: "MURDER", payload: ivrActorId });
@@ -181,6 +185,7 @@ async function continueOpenVrScene(
   ivrsystem: bigint,
   ivroverlay: bigint,
   ivrinput: bigint,
+  ivrrendermodels: bigint,
 ) {
   console.log("[petplay boot] IVRInput ready; creating dependent actors");
   state.ivroverlay = ivroverlay;
@@ -272,6 +277,7 @@ async function continueOpenVrScene(
       vrCompositorPointer: compositorPtr,
       /** Sample IVRInput on the webxr XR rAF (after compositor pacing) instead of a ~1kHz SAB writer. */
       vrInputPointer: ivrinput as number | bigint,
+      vrRenderModelsPointer: ivrrendermodels,
     },
   });
   const desktopOverlayConfig = {
@@ -426,6 +432,7 @@ async function createNoOpenVrScene() {
       hmdDisplayFrequencyHz: null,
       vrCompositorPointer: null,
       vrInputPointer: null,
+      vrRenderModelsPointer: null,
     },
   });
 

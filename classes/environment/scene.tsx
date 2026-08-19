@@ -62,6 +62,7 @@ import {
 } from "./spatialGraph.ts";
 import { loadKdeWorkspaceOutputs } from "./workspaceDisplays.ts";
 import { isDesktopMousePointerType } from "./spatialPointer.ts";
+import type { DirectOpenVrInputSource } from "../directOpenVrInputSource.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -92,6 +93,7 @@ declare module "@react-three/fiber/webgpu" {
 type WebXRSceneProps = {
   XROrigin: React.ComponentType;
   displayInstanceActor?: string | null;
+  directOpenVrInputSource?: DirectOpenVrInputSource;
 };
 
 function postInputControl(actor: string, command: string): void {
@@ -137,6 +139,8 @@ function createLinuxMouseSink(actor: string): DisplayMouseSink {
     postInputControl(actor, `M,${event.x},${event.y}`);
     if (event.kind === "button") {
       postInputControl(actor, `B,${event.button},${event.pressed ? 1 : 0}`);
+    } else if (event.kind === "wheel") {
+      postInputControl(actor, `W,${event.deltaY}`);
     }
   };
   const smoothedUinputSink = createSmoothedDisplayMouseSink(rawSink);
@@ -304,14 +308,134 @@ function VrcCameraDebugVisuals() {
   );
 }
 
+const JOYSTICK_SCROLL_CLICKS_PER_SECOND = 60;
+const JOYSTICK_PUSH_PULL_METERS_PER_SECOND = 2;
+const HANDLE_POSITION_DAMPENING = 41;
+const HANDLE_ROTATION_DAMPENING = 61;
+
+function applyDampedHandleState(
+  state: HandleState<unknown>,
+  target: import("three").Object3D,
+): void {
+  const dt = Math.max(0, Math.min(0.1, state.delta?.time ?? 1 / 72));
+  const positionAlpha = Math.min(1, dt * HANDLE_POSITION_DAMPENING);
+  const rotationAlpha = Math.min(1, dt * HANDLE_ROTATION_DAMPENING);
+  const object = target as unknown as THREE.Object3D;
+  const position = state.current.position;
+  object.position.set(
+    object.position.x + (position.x - object.position.x) * positionAlpha,
+    object.position.y + (position.y - object.position.y) * positionAlpha,
+    object.position.z + (position.z - object.position.z) * positionAlpha,
+  );
+  object.quaternion.slerp(state.current.quaternion as unknown as THREE.Quaternion, rotationAlpha);
+  object.scale.set(state.current.scale.x, state.current.scale.y, state.current.scale.z);
+}
+
+function CommonOverlayChords({
+  inputSource,
+  graph,
+  handleStores,
+  onMouse,
+}: {
+  inputSource?: DirectOpenVrInputSource;
+  graph: SpatialGraph;
+  handleStores: Map<string, HandleStore<unknown>>;
+  onMouse: DisplayMouseSink;
+}) {
+  const scene = useThree((state) => state.scene);
+  const raycaster = React.useMemo(() => new THREE.Raycaster(), []);
+  const origin = React.useMemo(() => new THREE.Vector3(), []);
+  const direction = React.useMemo(() => new THREE.Vector3(), []);
+  const quaternion = React.useMemo(() => new THREE.Quaternion(), []);
+  const scrollAccumulator = React.useRef(0);
+
+  useFrame((_state, delta) => {
+    const right = inputSource?.getSnapshot().controllers.right;
+    if (!right) {
+      scrollAccumulator.current = 0;
+      return;
+    }
+    const axis = Math.abs(right.joystick[1]) > 0.2 ? right.joystick[1] : 0;
+    origin.fromArray(right.position);
+    quaternion.fromArray(right.quaternion);
+    direction.set(0, 0, -1).applyQuaternion(quaternion).normalize();
+    raycaster.set(origin, direction);
+    const hit = raycaster.intersectObject(scene, true).find((intersection) =>
+      intersection.object.userData.displayInstanceRayHitSurface === true
+    );
+    let displayObject = hit?.object ?? null;
+    while (displayObject && displayObject.userData.spatialKind !== "display") {
+      displayObject = displayObject.parent;
+    }
+    const pointedId = displayObject?.userData.spatialElementId as string | undefined;
+    if (right.grab > 0.5) {
+      let closestPointer: {
+        pointerWorldOrigin: { x: number; y: number; z: number };
+        initialPointerWorldPoint: {
+          x: number;
+          y: number;
+          z: number;
+          set(x: number, y: number, z: number): unknown;
+        };
+      } | undefined;
+      let closestDistanceSq = Number.POSITIVE_INFINITY;
+      for (const store of handleStores.values()) {
+        for (const pointer of store.inputState.values()) {
+          const dx = pointer.pointerWorldOrigin.x - origin.x;
+          const dy = pointer.pointerWorldOrigin.y - origin.y;
+          const dz = pointer.pointerWorldOrigin.z - origin.z;
+          const distanceSq = dx * dx + dy * dy + dz * dz;
+          if (distanceSq < closestDistanceSq) {
+            closestDistanceSq = distanceSq;
+            closestPointer = pointer;
+          }
+        }
+      }
+      if (closestPointer && closestDistanceSq <= 0.25 * 0.25) {
+        if (axis !== 0) {
+          const step = axis * JOYSTICK_PUSH_PULL_METERS_PER_SECOND * delta;
+          closestPointer.initialPointerWorldPoint.set(
+            closestPointer.initialPointerWorldPoint.x - direction.x * step,
+            closestPointer.initialPointerWorldPoint.y - direction.y * step,
+            closestPointer.initialPointerWorldPoint.z - direction.z * step,
+          );
+        }
+        return;
+      }
+    }
+    if (axis === 0) {
+      scrollAccumulator.current = 0;
+      return;
+    }
+    if (!hit?.uv || !pointedId) return;
+    scrollAccumulator.current += Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND * delta;
+    const clicks = Math.floor(scrollAccumulator.current);
+    if (clicks === 0) return;
+    scrollAccumulator.current -= clicks;
+    const node = graph.nodes[pointedId];
+    const crop = node?.kind === "display"
+      ? node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 }
+      : { x: 0, y: 0, width: 1, height: 1 };
+    onMouse({
+      kind: "wheel",
+      deltaY: -Math.sign(axis) * clicks,
+      x: crop.x + hit.uv.x * crop.width,
+      y: crop.y + (1 - hit.uv.y) * crop.height,
+    });
+  });
+  return null;
+}
+
 function WindowLayer({
   displayInstanceActor,
   onMouse,
   onKey,
+  directOpenVrInputSource,
 }: {
   displayInstanceActor: string | null;
   onMouse: DisplayMouseSink;
   onKey: KeyboardSink;
+  directOpenVrInputSource?: DirectOpenVrInputSource;
 }) {
   const visible = useWindowLayerVisible();
   const camera = useThree((r3fState) => r3fState.camera);
@@ -321,6 +445,7 @@ function WindowLayer({
   const rotation = React.useMemo(() => new THREE.Euler(), []);
   const forwardOffset = React.useMemo(() => new THREE.Vector3(0, -0.08, -1.35), []);
   const [graph, setGraph] = React.useState(createInitialSpatialGraph);
+  const handleStores = React.useMemo(() => new Map<string, HandleStore<unknown>>(), []);
   const [workspaceOutputs, setWorkspaceOutputs] = React.useState<
     Awaited<ReturnType<typeof loadKdeWorkspaceOutputs>>
   >([]);
@@ -387,6 +512,12 @@ function WindowLayer({
 
   return (
     <group userData={{ spatialGraphRoot: true, originId: "scene-origin", static: true }}>
+      <CommonOverlayChords
+        inputSource={directOpenVrInputSource}
+        graph={graph}
+        handleStores={handleStores}
+        onMouse={onMouse}
+      />
       <SpatialAudioProvider>
         {getSpatialChildren(graph, null).map((node) => (
           <SpatialNodeView
@@ -394,6 +525,7 @@ function WindowLayer({
             node={node}
             graph={graph}
             setGraph={setGraph}
+            handleStores={handleStores}
             displayInstanceActor={displayInstanceActor}
             onMouse={onMouse}
             onKey={onKey}
@@ -407,6 +539,7 @@ function WindowLayer({
 type SpatialGraphViewProps = {
   graph: SpatialGraph;
   setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>;
+  handleStores: Map<string, HandleStore<unknown>>;
   displayInstanceActor: string | null;
   onMouse: DisplayMouseSink;
   onKey: KeyboardSink;
@@ -537,6 +670,7 @@ function DisplaySpatialNodeView({
   node,
   graph,
   setGraph,
+  handleStores,
   displayInstanceActor,
   onMouse,
   onKey,
@@ -550,7 +684,7 @@ function DisplaySpatialNodeView({
 
   const commitFreeTransform = React.useCallback(
     (state: HandleState<unknown>, target: import("three").Object3D) => {
-      defaultApply(state, target);
+      applyDampedHandleState(state, target);
       if (state.last) {
         const nextTransform = objectTransform(target);
         setGraph((current) => commitNodeTransform(current, node.id, nextTransform));
@@ -559,8 +693,16 @@ function DisplaySpatialNodeView({
     [node.id, setGraph],
   );
   const targetRef = manipulationTargetRef ?? nodeRef;
+  const setManipulationStore = React.useCallback((store: HandleStore<unknown> | null) => {
+    if (store) handleStores.set(node.id, store);
+    else handleStores.delete(node.id);
+    if (typeof manipulationStoreRef === "function") manipulationStoreRef(store);
+    else if (manipulationStoreRef) {
+      (manipulationStoreRef as React.MutableRefObject<HandleStore<unknown> | null>).current = store;
+    }
+  }, [handleStores, manipulationStoreRef, node.id]);
   const baseOptions = React.useMemo(
-    () => manipulationOptions ?? { apply: commitFreeTransform },
+    () => ({ ...(manipulationOptions ?? { apply: commitFreeTransform }), alwaysUpdate: true }),
     [commitFreeTransform, manipulationOptions],
   );
   const deletion = useScaleToDelete(node.id, DISPLAY_GRAB_SIZE, baseOptions, setGraph);
@@ -604,7 +746,7 @@ function DisplaySpatialNodeView({
         shellRayPickable={displayInstanceActor == null}
         manipulationTargetRef={targetRef}
         manipulationOptions={deletion.options}
-        manipulationStoreRef={manipulationStoreRef}
+        manipulationStoreRef={setManipulationStore}
       />
       {children.map((child) => (
         <SpatialAttachmentView
@@ -612,6 +754,7 @@ function DisplaySpatialNodeView({
           node={child}
           graph={graph}
           setGraph={setGraph}
+          handleStores={handleStores}
           displayInstanceActor={displayInstanceActor}
           onMouse={onMouse}
           onKey={onKey}
@@ -625,6 +768,7 @@ function KeyboardSpatialNodeView({
   node,
   graph,
   setGraph,
+  handleStores,
   displayInstanceActor,
   onMouse,
   onKey,
@@ -637,7 +781,7 @@ function KeyboardSpatialNodeView({
   const local = localTransformOverride ?? node.localTransform;
   const commitFreeTransform = React.useCallback(
     (state: HandleState<unknown>, target: import("three").Object3D) => {
-      defaultApply(state, target);
+      applyDampedHandleState(state, target);
       if (state.last) {
         const nextTransform = objectTransform(target);
         setGraph((current) => {
@@ -655,8 +799,16 @@ function KeyboardSpatialNodeView({
     [node.id, setGraph],
   );
   const targetRef = manipulationTargetRef ?? nodeRef;
+  const setManipulationStore = React.useCallback((store: HandleStore<unknown> | null) => {
+    if (store) handleStores.set(node.id, store);
+    else handleStores.delete(node.id);
+    if (typeof manipulationStoreRef === "function") manipulationStoreRef(store);
+    else if (manipulationStoreRef) {
+      (manipulationStoreRef as React.MutableRefObject<HandleStore<unknown> | null>).current = store;
+    }
+  }, [handleStores, manipulationStoreRef, node.id]);
   const baseOptions = React.useMemo(
-    () => manipulationOptions ?? { apply: commitFreeTransform },
+    () => ({ ...(manipulationOptions ?? { apply: commitFreeTransform }), alwaysUpdate: true }),
     [commitFreeTransform, manipulationOptions],
   );
   const deletion = useScaleToDelete(node.id, node.snapSource.size, baseOptions, setGraph);
@@ -684,7 +836,7 @@ function KeyboardSpatialNodeView({
         onKey={onKey}
         manipulationTargetRef={targetRef}
         manipulationOptions={deletion.options}
-        manipulationStoreRef={manipulationStoreRef}
+        manipulationStoreRef={setManipulationStore}
         onGrabBoxSize={updateBounds}
       />
       {children.map((child) => (
@@ -693,6 +845,7 @@ function KeyboardSpatialNodeView({
           node={child}
           graph={graph}
           setGraph={setGraph}
+          handleStores={handleStores}
           displayInstanceActor={displayInstanceActor}
           onMouse={onMouse}
           onKey={onKey}
@@ -766,10 +919,10 @@ function AttachedSpatialNodeView(
   const applyHinge = React.useCallback(
     (state: HandleState<unknown>, target: import("three").Object3D) => {
       if (hinge == null) {
-        defaultApply(state, target);
+        applyDampedHandleState(state, target);
         return;
       }
-      defaultApply(state, target);
+      applyDampedHandleState(state, target);
       const object = target as unknown as THREE.Object3D;
       object.position.set(...hinge.parentPivot);
       object.scale.set(1, 1, 1);
@@ -883,7 +1036,7 @@ function AttachedSpatialNodeView(
       // hinge-shaped until the next move. Avoid replaying that stale state if
       // the pointer is released immediately after breakaway.
       if (!(state.last && handoffActiveRef.current && !handoffMovedRef.current)) {
-        defaultApply(state, target);
+        applyDampedHandleState(state, target);
       }
       if (!state.last && handoffActiveRef.current) {
         handoffMovedRef.current = true;
@@ -1034,7 +1187,11 @@ function SpatialControlGlyph({ action }: { action: ControlSpatialNode["action"] 
 }
 
 export function WebXRScene(
-  { XROrigin: _XROrigin, displayInstanceActor = null }: WebXRSceneProps,
+  {
+    XROrigin: _XROrigin,
+    displayInstanceActor = null,
+    directOpenVrInputSource,
+  }: WebXRSceneProps,
 ) {
   void _XROrigin;
   const accentRef = useRef<THREE.Mesh>(null!);
@@ -1107,6 +1264,7 @@ export function WebXRScene(
         displayInstanceActor={displayInstanceActor}
         onMouse={displayMouseSink}
         onKey={keyboardSink}
+        directOpenVrInputSource={directOpenVrInputSource}
       />
     </>
   );

@@ -14,6 +14,11 @@ export type DisplayMouseLogicEvent = {
   x: number;
   /** Vertical position down the display, clamped to 0..1. */
   y: number;
+} | {
+  kind: "wheel";
+  deltaY: number;
+  x: number;
+  y: number;
 };
 
 export type DisplayMouseSink = (event: DisplayMouseLogicEvent) => void;
@@ -53,6 +58,10 @@ export function createSmoothedDisplayMouseSink(
   let lastMoveEmittedAt = Number.NEGATIVE_INFINITY;
 
   return (event) => {
+    if (event.kind === "wheel") {
+      sink(event);
+      return;
+    }
     if (event.kind === "button") {
       filtered = { x: event.x, y: event.y };
       emitted = { ...filtered };
@@ -267,10 +276,14 @@ function dispatch(km: Win32Km, ev: DisplayMouseLogicEvent): void {
   const ax = toAbsoluteMouseCoordinate(px, rect.x, rect.width);
   const ay = toAbsoluteMouseCoordinate(py, rect.y, rect.height);
   let flags = km.MOUSEEVENTF_ABSOLUTE | km.MOUSEEVENTF_MOVE;
+  let mouseData = 0;
   if (ev.kind === "button") {
     flags |= mouseButtonFlags(km, ev.button, ev.pressed);
+  } else if (ev.kind === "wheel") {
+    flags |= km.MOUSEEVENTF_WHEEL;
+    mouseData = Math.round(-ev.deltaY * 120);
   }
-  sendInput(km, packInputMouse(km, ax, ay, 0, flags));
+  sendInput(km, packInputMouse(km, ax, ay, mouseData, flags));
 }
 
 export function createWindowsSystemDisplayMouseSink(): DisplayMouseSink {
@@ -282,9 +295,9 @@ export function createWindowsSystemDisplayMouseSink(): DisplayMouseSink {
     diagnostics.lastEvent = ev;
     if (ev.kind === "move") {
       diagnostics.moves++;
-    } else if (ev.pressed) {
+    } else if (ev.kind === "button" && ev.pressed) {
       diagnostics.buttonDowns++;
-    } else {
+    } else if (ev.kind === "button") {
       diagnostics.buttonUps++;
     }
     void win32Km.then((km) => {

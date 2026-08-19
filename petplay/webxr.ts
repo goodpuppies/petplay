@@ -3,6 +3,7 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import * as THREE from "three";
 import { selectActiveControllerIndex } from "../classes/openVrControllerSelection.ts";
+import { OpenVrControllerTipPoseResolver } from "../classes/openVrControllerTipPose.ts";
 import { wait } from "../classes/utils.ts";
 import { getDisplayMouseDiagnostics } from "../classes/environment/displayInstance/mouse.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
@@ -147,6 +148,7 @@ type StartWebXRPayload = {
   vrCompositorPointer?: bigint | null;
   /** `GETINPUTPTR` from the OpenVR actor; enables DirectOpenVrInputSource trigger/grab reads. */
   vrInputPointer?: number | bigint | null;
+  vrRenderModelsPointer?: number | bigint | null;
 };
 
 type DesktopViewOffsetPayload = {
@@ -179,6 +181,7 @@ const state = actorState({
   nativeRaylibDebugWithHost: false,
   nativeRaylibPacer: null as OpenVrOverlayFramePacer | null,
   nativeRaylibVrSystem: null as OpenVR.IVRSystem | null,
+  controllerTipPoseResolver: null as OpenVrControllerTipPoseResolver | null,
   nativeRaylibLeftControllerIndex: null as number | null,
   nativeRaylibRightControllerIndex: null as number | null,
   nativeRaylibDebugTraceFirstFrame: false,
@@ -685,9 +688,7 @@ function applyOpenVrEyeGeometry(): boolean {
   } catch (error) {
     LogChannel.error(
       "webxrv2",
-      `[webxr] could not read eye transforms: ${
-        error instanceof Error ? error.message : error
-      }`,
+      `[webxr] could not read eye transforms: ${error instanceof Error ? error.message : error}`,
     );
     return false;
   }
@@ -841,6 +842,7 @@ async function stopWebXR(): Promise<true> {
   LogChannel.log("webxrv2", "[webxr] shutdown: native cleanup complete");
   state.nativeRaylibPacer = null;
   state.nativeRaylibVrSystem = null;
+  state.controllerTipPoseResolver = null;
   state.nativeRaylibLeftControllerIndex = null;
   state.nativeRaylibRightControllerIndex = null;
   state.nativeRaylibDebug = false;
@@ -1097,6 +1099,27 @@ function initializeRaylibOpenVrPacer(
     throw new Error(`invalid vrSystemPointer for ${label}`);
   }
   state.nativeRaylibVrSystem = new OpenVR.IVRSystem(systemPointer);
+  if (payload.vrRenderModelsPointer) {
+    const renderModelsPointer = Deno.UnsafePointer.create(
+      typeof payload.vrRenderModelsPointer === "bigint"
+        ? payload.vrRenderModelsPointer
+        : BigInt(payload.vrRenderModelsPointer),
+    );
+    if (renderModelsPointer) {
+      state.controllerTipPoseResolver = new OpenVrControllerTipPoseResolver(
+        systemPointer,
+        renderModelsPointer,
+        (index, renderModel, found) =>
+          LogChannel.log(
+            "webxrv2",
+            `[webxr] controller index=${index} renderModel=${renderModel} ` +
+              (found
+                ? "using standardized /pose/tip"
+                : "has no tip; using legacy target-ray offset"),
+          ),
+      );
+    }
+  }
   applyOpenVrEyeGeometry();
   LogChannel.log("webxrv2", `[webxr] ${label} init: creating OpenVR pacer`);
   state.nativeRaylibPacer = tryCreateOpenVrOverlayFramePacer(
@@ -1584,11 +1607,14 @@ function getNativeRaylibControllerSelection(
           : ` (replacing inactive index=${cachedIndex})`),
     );
   }
+  const trackedPose = index === OpenVR.k_unTrackedDeviceIndexInvalid
+    ? null
+    : pacer.getCachedTrackedDevicePose(index);
   return {
     index,
-    pose: index === OpenVR.k_unTrackedDeviceIndexInvalid
-      ? null
-      : pacer.getCachedTrackedDevicePose(index),
+    pose: trackedPose && state.controllerTipPoseResolver
+      ? state.controllerTipPoseResolver.resolve(index, trackedPose)
+      : trackedPose,
   };
 }
 
