@@ -1,4 +1,3 @@
-import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
 import React, { useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
@@ -8,7 +7,6 @@ import {
   useFrame,
   type UseFrameNextOptions,
 } from "@react-three/fiber/webgpu";
-import { Handle } from "@react-three/handle";
 import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { hmd34FromColumnMajor4x4 } from "../../openvrTransform.ts";
@@ -40,6 +38,8 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   /** Optional constraint/apply policy for the Handle targeting this display. */
   manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
+  onSpatialFocus?: () => void;
+  onSpatialHoverChange?: (hovered: boolean) => void;
 };
 
 export {
@@ -81,6 +81,8 @@ export function DisplayInstance(
     manipulationTargetRef,
     manipulationOptions,
     manipulationStoreRef,
+    onSpatialFocus,
+    onSpatialHoverChange,
     ...frameProps
   }: DisplayInstanceProps,
 ) {
@@ -215,18 +217,15 @@ export function DisplayInstance(
         displayInstanceActor: displayInstanceActor ?? null,
       }}
     >
-      <Handle
-        ref={manipulationStoreRef}
-        handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
-        targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
-        {...manipulationOptions}
-        multitouch={manipulationOptions?.multitouch ?? true}
-        scale={manipulationOptions?.scale ?? { uniform: true }}
-        // Same as KeyboardPanel: no translate from trigger; squeeze grab-ray only.
-        filter={(e: PenPointerEvent) => e.pointerType !== "ray" && e.pointerType !== "poker"}
-      >
-        <DisplayInstanceFrame ref={handleRef} {...frameProps} />
-      </Handle>
+      <DisplayInstanceFrame
+        ref={handleRef}
+        {...frameProps}
+        manipulationTargetRef={manipulationTargetRef}
+        manipulationOptions={manipulationOptions}
+        manipulationStoreRef={manipulationStoreRef}
+        onSpatialFocus={onSpatialFocus}
+        onSpatialHoverChange={onSpatialHoverChange}
+      />
     </group>
   );
 }

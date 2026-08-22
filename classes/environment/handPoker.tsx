@@ -2,7 +2,6 @@ import React, { useEffect, useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
-import { Handle } from "@react-three/handle";
 import { useTouchPointer, useXRInputSourceStateContext, XRSpace } from "@pmndrs/xr";
 import { GrabBox } from "./grabbox.tsx";
 import { useToolEditMode } from "./toolEditMode.ts";
@@ -126,27 +125,21 @@ export function HandPoker() {
 
   return (
     <XRSpace space="grip-space">
-      <Handle
-        handleRef={pokerRef as unknown as React.RefObject<import("three").Object3D | null>}
-        multitouch
-        scale={false}
-        rotate={false}
-        filter={(e) => toolEditActive && e.pointerType !== "poker"}
+      <GrabBox
+        ref={pokerRef}
+        width={POKER_GRABBOX_SIZE}
+        height={POKER_GRABBOX_SIZE}
+        depth={POKER_GRABBOX_SIZE}
+        lineColor={0xffd166}
+        shellRayPickable={toolEditActive}
+        interactionHull={toolEditActive}
+        visibleChrome={toolEditActive}
+        manipulationOptions={{ multitouch: true, scale: false, rotate: false }}
+        grabFilter={(event) => toolEditActive && event.pointerType !== "poker"}
+        userData={{ handPoker: true }}
       >
-        <group ref={pokerRef} userData={{ handPoker: true }}>
-          <GrabBox
-            width={POKER_GRABBOX_SIZE}
-            height={POKER_GRABBOX_SIZE}
-            depth={POKER_GRABBOX_SIZE}
-            lineColor={0xffd166}
-            shellRayPickable={toolEditActive}
-            interactionHull={toolEditActive}
-            visibleChrome={toolEditActive}
-          >
-            <PokerBall />
-          </GrabBox>
-        </group>
-      </Handle>
+        <PokerBall />
+      </GrabBox>
     </XRSpace>
   );
 }

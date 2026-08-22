@@ -38,32 +38,50 @@ import {
 import { useWindowLayerVisible } from "./windowLayerMode.ts";
 import { GrabBox } from "./grabbox.tsx";
 import {
-  assignWorkspaceOutputs,
+  assignWorkspaceOutput,
   commitNodeTransform,
+  commitSpatialNodeTransformAndSnap,
   type ControlSpatialNode,
   createInitialSpatialGraph,
   deleteSpatialNode,
+  detachDisplayHierarchy,
   detachFromParent,
   type DisplaySpatialNode,
-  ensureDefaultSpatialContent,
   getDisplayAttachmentRole,
   getSpatialChildren,
+  hasAvailableDisplayAttachmentSlot,
   type HingeConstraint,
   IDENTITY_SPATIAL_TRANSFORM,
+  initializeWorkspaceLayoutOutputs,
   type KeyboardSpatialNode,
+  reconcileWorkspaceOutputs,
   releaseHinge,
+  resetSpatialNodeTransform,
   setHingeAngle,
-  snapNodeToOverlappingHitbox,
   type SpatialGraph,
   type SpatialNode,
   type SpatialTransform,
+  spawnDisplayForWorkspaceOutput,
   spawnHingedDisplay,
+  spawnHingedDisplayWithAutomaticOutput,
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
-import { loadKdeWorkspaceOutputs } from "./workspaceDisplays.ts";
-import { useWorkspaceOutputOrder } from "./workspaceOutputOrder.ts";
+import { loadKdeWorkspaceOutputs, type WorkspaceOutput } from "./workspaceDisplays.ts";
+import { publishWorkspaceLayout, registerWorkspaceLayoutActions } from "./workspaceLayoutStore.ts";
+import {
+  loadSpatialLayoutSync,
+  saveSpatialLayoutSync,
+  spatialLayoutPersistenceEnabled,
+} from "./spatialLayoutPersistence.ts";
 import { isDesktopMousePointerType } from "./spatialPointer.ts";
 import type { DirectOpenVrInputSource } from "../directOpenVrInputSource.ts";
+import {
+  type SpatialContextAction,
+  SpatialContextToolbar,
+  SpatialHierarchyIndicator,
+  SpatialSettingsButton,
+  SpatialSettingsSection,
+} from "./spatialContextToolbar.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -370,36 +388,26 @@ function CommonOverlayChords({
     }
     const pointedId = displayObject?.userData.spatialElementId as string | undefined;
     if (right.grab > 0.5) {
-      let closestPointer: {
-        pointerWorldOrigin: { x: number; y: number; z: number };
-        initialPointerWorldPoint: {
-          x: number;
-          y: number;
-          z: number;
-          set(x: number, y: number, z: number): unknown;
-        };
-      } | undefined;
+      let closestStore: HandleStore<unknown> | undefined;
+      let closestPointerId: number | undefined;
       let closestDistanceSq = Number.POSITIVE_INFINITY;
       for (const store of handleStores.values()) {
-        for (const pointer of store.inputState.values()) {
+        for (const [pointerId, pointer] of store.inputState) {
           const dx = pointer.pointerWorldOrigin.x - origin.x;
           const dy = pointer.pointerWorldOrigin.y - origin.y;
           const dz = pointer.pointerWorldOrigin.z - origin.z;
           const distanceSq = dx * dx + dy * dy + dz * dz;
           if (distanceSq < closestDistanceSq) {
             closestDistanceSq = distanceSq;
-            closestPointer = pointer;
+            closestStore = store;
+            closestPointerId = pointerId;
           }
         }
       }
-      if (closestPointer && closestDistanceSq <= 0.25 * 0.25) {
+      if (closestStore != null && closestPointerId != null && closestDistanceSq <= 0.25 * 0.25) {
         if (axis !== 0) {
           const step = axis * JOYSTICK_PUSH_PULL_METERS_PER_SECOND * delta;
-          closestPointer.initialPointerWorldPoint.set(
-            closestPointer.initialPointerWorldPoint.x - direction.x * step,
-            closestPointer.initialPointerWorldPoint.y - direction.y * step,
-            closestPointer.initialPointerWorldPoint.z - direction.z * step,
-          );
+          closestStore.translateAlongPointerRay(closestPointerId, step);
         }
         return;
       }
@@ -439,22 +447,32 @@ function WindowLayer({
   directOpenVrInputSource?: DirectOpenVrInputSource;
 }) {
   const visible = useWindowLayerVisible();
-  const workspaceOutputOrder = useWorkspaceOutputOrder();
   const camera = useThree((r3fState) => r3fState.camera);
   const renderer = useThree((r3fState) => r3fState.gl);
   const position = React.useMemo(() => new THREE.Vector3(), []);
   const quaternion = React.useMemo(() => new THREE.Quaternion(), []);
   const rotation = React.useMemo(() => new THREE.Euler(), []);
   const forwardOffset = React.useMemo(() => new THREE.Vector3(0, -0.08, -1.35), []);
-  const [graph, setGraph] = React.useState(createInitialSpatialGraph);
+  const [layoutBootstrap] = React.useState(() => {
+    const persistenceEnabled = spatialLayoutPersistenceEnabled();
+    const restoredGraph = persistenceEnabled ? loadSpatialLayoutSync() : null;
+    return {
+      graph: restoredGraph ?? createInitialSpatialGraph(),
+      persistenceEnabled,
+      restored: restoredGraph != null,
+    };
+  });
+  const [graph, setGraph] = React.useState(layoutBootstrap.graph);
+  const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>("display-1");
   const handleStores = React.useMemo(() => new Map<string, HandleStore<unknown>>(), []);
   const [workspaceOutputs, setWorkspaceOutputs] = React.useState<
     Awaited<ReturnType<typeof loadKdeWorkspaceOutputs>>
   >([]);
+  const [persistenceReady, setPersistenceReady] = React.useState(Deno.build.os !== "linux");
   const workspaceOutputsInitialized = React.useRef(false);
+  const layoutPositionInitialized = React.useRef(layoutBootstrap.restored);
 
   React.useEffect(() => {
-    if (!visible) return;
     let cancelled = false;
     void loadKdeWorkspaceOutputs().then((outputs) => {
       if (!cancelled) setWorkspaceOutputs(outputs);
@@ -466,29 +484,75 @@ function WindowLayer({
 
   React.useEffect(() => {
     if (workspaceOutputs.length === 0) return;
-    const orderedOutputs = workspaceOutputs.map((_, index) =>
-      workspaceOutputs[(index + workspaceOutputOrder) % workspaceOutputs.length]
-    );
+    const initializing = !workspaceOutputsInitialized.current;
+    workspaceOutputsInitialized.current = true;
     setGraph((current) => {
-      let next = current;
-      let displays = Object.values(next.nodes)
-        .filter((node): node is DisplaySpatialNode => node.kind === "display")
-        .sort((a, b) => a.ordinal - b.ordinal);
-      if (!workspaceOutputsInitialized.current) {
-        workspaceOutputsInitialized.current = true;
-        while (displays.length < orderedOutputs.length) {
-          next = spawnHingedDisplay(next, displays.at(-1)!.id);
-          displays = Object.values(next.nodes)
-            .filter((node): node is DisplaySpatialNode => node.kind === "display")
-            .sort((a, b) => a.ordinal - b.ordinal);
-        }
+      if (initializing) {
+        return initializeWorkspaceLayoutOutputs(
+          current,
+          workspaceOutputs,
+          layoutBootstrap.restored,
+        );
       }
-      return assignWorkspaceOutputs(next, orderedOutputs);
+      return reconcileWorkspaceOutputs(current, workspaceOutputs);
     });
-  }, [workspaceOutputOrder, workspaceOutputs]);
+    if (initializing) setPersistenceReady(true);
+  }, [layoutBootstrap.restored, workspaceOutputs]);
+
+  React.useEffect(() => {
+    if (!layoutBootstrap.persistenceEnabled || !persistenceReady) return;
+    saveSpatialLayoutSync(graph);
+  }, [graph, layoutBootstrap.persistenceEnabled, persistenceReady]);
+
+  React.useEffect(() => {
+    const displays = Object.values(graph.nodes)
+      .filter((node): node is DisplaySpatialNode => node.kind === "display")
+      .sort((a, b) => a.ordinal - b.ordinal);
+    publishWorkspaceLayout({
+      displays: displays.map((display) => ({
+        id: display.id,
+        ordinal: display.ordinal,
+        root: display.parentId == null,
+        outputId: display.workspaceOutputId ?? null,
+        outputName: display.workspaceOutputName ?? null,
+      })),
+      outputs: workspaceOutputs.map((output) => ({
+        id: output.id,
+        name: output.name,
+        assignedDisplayId: displays.find((display) =>
+          display.workspaceOutputId === output.id
+        )?.id ??
+          null,
+      })),
+    });
+  }, [graph, workspaceOutputs]);
+
+  React.useEffect(() =>
+    registerWorkspaceLayoutActions({
+      assignOutput: (displayId, outputId) => {
+        setGraph((current) =>
+          assignWorkspaceOutput(current, displayId, outputId, workspaceOutputs)
+        );
+      },
+      addOutput: (outputId) => {
+        const output = workspaceOutputs.find((candidate) => candidate.id === outputId);
+        if (output != null) {
+          setGraph((current) => spawnDisplayForWorkspaceOutput(current, output));
+        }
+      },
+    }), [workspaceOutputs]);
+
+  React.useEffect(() => {
+    if (selectedNodeId != null && graph.nodes[selectedNodeId]?.kind !== "control") return;
+    const fallback = Object.values(graph.nodes)
+      .filter((node) => node.kind !== "control")
+      .sort((a, b) => a.id.localeCompare(b.id))[0];
+    setSelectedNodeId(fallback?.id ?? null);
+  }, [graph, selectedNodeId]);
 
   React.useLayoutEffect(() => {
-    if (!visible) return;
+    if (!visible || layoutPositionInitialized.current) return;
+    layoutPositionInitialized.current = true;
     const xr = (renderer as unknown as {
       xr?: { getCamera?: (camera: THREE.Camera) => THREE.Camera };
     }).xr;
@@ -501,14 +565,13 @@ function WindowLayer({
     position.add(forwardOffset.clone().applyQuaternion(quaternion));
     rotation.setFromQuaternion(quaternion, "XYZ");
     setGraph((current) => {
-      const ensured = ensureDefaultSpatialContent(current);
-      const primaryDisplay = Object.values(ensured.nodes)
+      const primaryDisplay = Object.values(current.nodes)
         .filter((node): node is DisplaySpatialNode =>
           node.kind === "display" && node.parentId == null
         )
         .sort((a, b) => a.ordinal - b.ordinal)[0];
-      if (primaryDisplay == null) return ensured;
-      return commitNodeTransform(ensured, primaryDisplay.id, {
+      if (primaryDisplay == null) return current;
+      return commitNodeTransform(current, primaryDisplay.id, {
         position: position.toArray() as [number, number, number],
         rotation: [rotation.x, rotation.y, rotation.z],
         scale: primaryDisplay.localTransform.scale,
@@ -533,6 +596,9 @@ function WindowLayer({
             node={node}
             graph={graph}
             setGraph={setGraph}
+            workspaceOutputs={workspaceOutputs}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={setSelectedNodeId}
             handleStores={handleStores}
             directOpenVrInputSource={directOpenVrInputSource}
             displayInstanceActor={displayInstanceActor}
@@ -548,6 +614,9 @@ function WindowLayer({
 type SpatialGraphViewProps = {
   graph: SpatialGraph;
   setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>;
+  workspaceOutputs: WorkspaceOutput[];
+  selectedNodeId: string | null;
+  onSelectNode: (nodeId: string) => void;
   handleStores: Map<string, HandleStore<unknown>>;
   directOpenVrInputSource?: DirectOpenVrInputSource;
   displayInstanceActor: string | null;
@@ -680,6 +749,9 @@ function DisplaySpatialNodeView({
   node,
   graph,
   setGraph,
+  workspaceOutputs,
+  selectedNodeId,
+  onSelectNode,
   handleStores,
   directOpenVrInputSource,
   displayInstanceActor,
@@ -691,6 +763,7 @@ function DisplaySpatialNodeView({
   localTransformOverride,
 }: SpatialNodeViewProps & { node: DisplaySpatialNode }) {
   const nodeRef = React.useRef<THREE.Group>(null);
+  const [hovered, setHovered] = React.useState(false);
   const local = localTransformOverride ?? node.localTransform;
 
   const commitFreeTransform = React.useCallback(
@@ -698,7 +771,7 @@ function DisplaySpatialNodeView({
       applyDampedHandleState(state, target);
       if (state.last) {
         const nextTransform = objectTransform(target);
-        setGraph((current) => commitNodeTransform(current, node.id, nextTransform));
+        setGraph((current) => commitSpatialNodeTransformAndSnap(current, node.id, nextTransform));
       }
     },
     [node.id, setGraph],
@@ -719,6 +792,8 @@ function DisplaySpatialNodeView({
   const deletion = useScaleToDelete(node.id, DISPLAY_GRAB_SIZE, baseOptions, setGraph);
   const children = getSpatialChildren(graph, node.id);
   const attachmentRole = getDisplayAttachmentRole(graph, node.id);
+  const outputConnected = node.workspaceOutputId != null && node.workspaceOutputConnected !== false;
+  const activeDisplayInstanceActor = outputConnected ? displayInstanceActor : null;
   const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
   const mouseButtonForPointer = React.useCallback((event: PenPointerEvent) => {
     const handedness = (event.pointerState as { inputSource?: { handedness?: XRHandedness } })
@@ -734,6 +809,38 @@ function DisplaySpatialNodeView({
       y: workspaceCrop.y + event.y * workspaceCrop.height,
     });
   }, [onMouse, workspaceCrop.x, workspaceCrop.y, workspaceCrop.width, workspaceCrop.height]);
+  const selectNode = React.useCallback(() => onSelectNode(node.id), [node.id, onSelectNode]);
+  const contextActions = React.useMemo<SpatialContextAction[]>(() => {
+    const actions: SpatialContextAction[] = [];
+    if (hasAvailableDisplayAttachmentSlot(graph, node.id)) {
+      actions.push({
+        id: "add-display",
+        label: "Add display",
+        tone: "accent",
+        run: () =>
+          setGraph((current) =>
+            spawnHingedDisplayWithAutomaticOutput(current, node.id, workspaceOutputs)
+          ),
+      });
+    }
+    if (node.parentId != null || attachmentRole === "parent") {
+      actions.push({
+        id: "detach",
+        label: "Detach",
+        run: () => setGraph((current) => detachDisplayHierarchy(current, node.id)),
+      });
+    }
+    actions.push({
+      id: "delete",
+      label: "Delete",
+      tone: "danger",
+      run: () => setGraph((current) => deleteSpatialNode(current, node.id)),
+    });
+    return actions;
+  }, [attachmentRole, graph, node.id, node.parentId, setGraph, workspaceOutputs]);
+  const assignedSide = node.constraint?.kind === "hinge"
+    ? node.constraint.attachmentSlotId.match(/-(left|right|top|bottom)-slot$/)?.[1]
+    : undefined;
 
   return (
     <group
@@ -751,28 +858,76 @@ function DisplaySpatialNodeView({
         workspaceCrop: node.workspaceCrop ?? null,
         workspaceOutputId: node.workspaceOutputId ?? null,
         workspaceOutputName: node.workspaceOutputName ?? null,
+        workspaceOutputConnected: node.workspaceOutputConnected ?? null,
       }}
     >
       {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
       <DisplayInstance
-        displayInstanceActor={displayInstanceActor}
+        displayInstanceActor={activeDisplayInstanceActor}
         virtualDisplayId={node.id}
         virtualDisplayName={node.workspaceOutputName ?? `PetPlay ${node.id}`}
         workspaceCrop={workspaceCrop}
-        onMouse={displayInstanceActor != null ? croppedMouseSink : undefined}
+        onMouse={activeDisplayInstanceActor != null ? croppedMouseSink : undefined}
         mouseButtonForPointer={mouseButtonForPointer}
-        rayHitSurface={displayInstanceActor != null}
-        shellRayPickable={displayInstanceActor == null}
+        rayHitSurface={activeDisplayInstanceActor != null}
+        shellRayPickable={activeDisplayInstanceActor == null}
         manipulationTargetRef={targetRef}
         manipulationOptions={deletion.options}
         manipulationStoreRef={setManipulationStore}
-      />
+        onSpatialFocus={selectNode}
+        onSpatialHoverChange={setHovered}
+      >
+        {hovered && attachmentRole != null && (
+          <SpatialHierarchyIndicator
+            role={attachmentRole}
+            position={[0, DEFAULT_DISPLAY_HEIGHT * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
+          />
+        )}
+        {selectedNodeId === node.id && (
+          <SpatialContextToolbar
+            title={node.workspaceOutputName ?? `Display ${node.ordinal}`}
+            position={[0, -DEFAULT_DISPLAY_HEIGHT * 0.5 - 0.085, DEFAULT_DISPLAY_DEPTH]}
+            actions={contextActions}
+            settings={
+              <>
+                <SpatialSettingsSection label="Physical output">
+                  {workspaceOutputs.map((output) => (
+                    <SpatialSettingsButton
+                      key={output.id}
+                      label={output.name}
+                      selected={node.workspaceOutputId === output.id}
+                      onClick={() =>
+                        setGraph((current) =>
+                          assignWorkspaceOutput(current, node.id, output.id, workspaceOutputs)
+                        )}
+                    />
+                  ))}
+                </SpatialSettingsSection>
+                <SpatialSettingsSection
+                  label={assignedSide == null
+                    ? "Free spatial element"
+                    : `Attached: ${assignedSide}`}
+                >
+                  <SpatialSettingsButton
+                    label="Reset pose"
+                    onClick={() =>
+                      setGraph((current) => resetSpatialNodeTransform(current, node.id))}
+                  />
+                </SpatialSettingsSection>
+              </>
+            }
+          />
+        )}
+      </DisplayInstance>
       {children.map((child) => (
         <SpatialAttachmentView
           key={child.id}
           node={child}
           graph={graph}
           setGraph={setGraph}
+          workspaceOutputs={workspaceOutputs}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={onSelectNode}
           handleStores={handleStores}
           directOpenVrInputSource={directOpenVrInputSource}
           displayInstanceActor={displayInstanceActor}
@@ -788,6 +943,9 @@ function KeyboardSpatialNodeView({
   node,
   graph,
   setGraph,
+  workspaceOutputs,
+  selectedNodeId,
+  onSelectNode,
   handleStores,
   directOpenVrInputSource,
   displayInstanceActor,
@@ -805,10 +963,7 @@ function KeyboardSpatialNodeView({
       applyDampedHandleState(state, target);
       if (state.last) {
         const nextTransform = objectTransform(target);
-        setGraph((current) => {
-          const moved = commitNodeTransform(current, node.id, nextTransform);
-          return snapNodeToOverlappingHitbox(moved, node.id);
-        });
+        setGraph((current) => commitSpatialNodeTransformAndSnap(current, node.id, nextTransform));
       }
     },
     [node.id, setGraph],
@@ -834,6 +989,28 @@ function KeyboardSpatialNodeView({
   );
   const deletion = useScaleToDelete(node.id, node.snapSource.size, baseOptions, setGraph);
   const children = getSpatialChildren(graph, node.id);
+  const selectNode = React.useCallback(() => onSelectNode(node.id), [node.id, onSelectNode]);
+  const contextActions = React.useMemo<SpatialContextAction[]>(() => {
+    const actions: SpatialContextAction[] = [{
+      id: "reset",
+      label: "Reset pose",
+      run: () => setGraph((current) => resetSpatialNodeTransform(current, node.id)),
+    }];
+    if (node.parentId != null) {
+      actions.push({
+        id: "detach",
+        label: "Detach",
+        run: () => setGraph((current) => detachFromParent(current, node.id)),
+      });
+    }
+    actions.push({
+      id: "delete",
+      label: "Delete",
+      tone: "danger",
+      run: () => setGraph((current) => deleteSpatialNode(current, node.id)),
+    });
+    return actions;
+  }, [node.id, node.parentId, setGraph]);
 
   return (
     <group
@@ -859,13 +1036,25 @@ function KeyboardSpatialNodeView({
         manipulationOptions={deletion.options}
         manipulationStoreRef={setManipulationStore}
         onGrabBoxSize={updateBounds}
-      />
+        onSpatialFocus={selectNode}
+      >
+        {selectedNodeId === node.id && (
+          <SpatialContextToolbar
+            title="Keyboard"
+            position={[0, -node.snapSource.size[1] * 0.5 - 0.085, node.snapSource.size[2]]}
+            actions={contextActions}
+          />
+        )}
+      </KeyboardPanel>
       {children.map((child) => (
         <SpatialAttachmentView
           key={child.id}
           node={child}
           graph={graph}
           setGraph={setGraph}
+          workspaceOutputs={workspaceOutputs}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={onSelectNode}
           handleStores={handleStores}
           directOpenVrInputSource={directOpenVrInputSource}
           displayInstanceActor={displayInstanceActor}
@@ -1066,10 +1255,7 @@ function AttachedSpatialNodeView(
       if (!state.last) return;
 
       const nextTransform = objectTransform(target);
-      setGraph((current) => {
-        const moved = commitNodeTransform(current, node.id, nextTransform);
-        return node.kind === "keyboard" ? snapNodeToOverlappingHitbox(moved, node.id) : moved;
-      });
+      setGraph((current) => commitSpatialNodeTransformAndSnap(current, node.id, nextTransform));
       handoffActiveRef.current = false;
       handoffMovedRef.current = false;
     },
@@ -1163,6 +1349,7 @@ function SpatialControlView({
         depth={0.035}
         lineColor={color}
         interactionHull={false}
+        grabbable={false}
       >
         <mesh onClick={activate}>
           <boxGeometry args={[0.11, 0.11, 0.035]} />

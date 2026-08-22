@@ -4,6 +4,7 @@ import { OBB } from "three/addons/math/OBB.js";
 import type { WorkspaceOutput, WorkspaceRect } from "./workspaceDisplays.ts";
 
 export type SpatialNodeId = string;
+export type SpatialAttachmentSide = "left" | "right" | "top" | "bottom";
 
 export type SpatialTransform = {
   position: [number, number, number];
@@ -13,6 +14,7 @@ export type SpatialTransform = {
 
 export type HingeConstraint = {
   kind: "hinge";
+  attachmentSlotId: string;
   axis: "x" | "y" | "z";
   angle: number;
   limits: [number, number];
@@ -47,6 +49,7 @@ export type DisplaySpatialNode = SpatialNodeBase & {
   workspaceCrop?: WorkspaceRect;
   workspaceOutputId?: string;
   workspaceOutputName?: string;
+  workspaceOutputConnected?: boolean;
 };
 
 export type KeyboardSpatialNode = SpatialNodeBase & {
@@ -70,14 +73,17 @@ export type BoxSnapHitbox = {
   shape: "box";
   size: [number, number, number];
   localTransform: SpatialTransform;
+  side: SpatialAttachmentSide;
   accepts: Array<SpatialNode["kind"]>;
-  attachment: {
-    kind: "hinge";
-    axis: HingeConstraint["axis"];
-    angle: number;
-    limits: [number, number];
-    parentPivot: [number, number, number];
-  };
+  attachments: Partial<
+    Record<SpatialNode["kind"], {
+      kind: "hinge";
+      axis: HingeConstraint["axis"];
+      angle: number;
+      limits: [number, number];
+      parentPivot: [number, number, number];
+    }>
+  >;
 };
 
 export type SpatialHitbox = BoxSnapHitbox;
@@ -97,6 +103,13 @@ export const IDENTITY_SPATIAL_TRANSFORM: SpatialTransform = {
 
 const DISPLAY_CENTER_DISTANCE = 1.04;
 const DISPLAY_EDGE = DISPLAY_CENTER_DISTANCE / 2;
+const DISPLAY_HEIGHT = 0.5;
+const DISPLAY_VERTICAL_EDGE = 0.285;
+const DISPLAY_SNAP_SIZE: [number, number, number] = [
+  DISPLAY_CENTER_DISTANCE,
+  DISPLAY_HEIGHT,
+  0.04,
+];
 
 function transform(
   position: [number, number, number],
@@ -132,6 +145,13 @@ function addDefaultKeyboard(graph: SpatialGraph, displayId: SpatialNodeId): void
   if (display?.kind !== "display") return;
   const keyboardScale = 0.38;
   const keyboardHeight = 0.2;
+  const snapSource: BoxSnapSource = {
+    shape: "box",
+    size: [0.5, keyboardHeight, 0.04],
+    localTransform: { ...IDENTITY_SPATIAL_TRANSFORM },
+  };
+  const bottomSlot = graph.hitboxes[`${displayId}-bottom-slot`];
+  if (bottomSlot == null) return;
   graph.nodes.keyboard = {
     id: "keyboard",
     kind: "keyboard",
@@ -143,19 +163,13 @@ function addDefaultKeyboard(graph: SpatialGraph, displayId: SpatialNodeId): void
       keyboardScale,
     ]),
     onParentDelete: "preserve",
-    constraint: {
-      kind: "hinge",
-      axis: "x",
-      angle: THREE.MathUtils.degToRad(-55),
-      limits: [THREE.MathUtils.degToRad(-100), THREE.MathUtils.degToRad(15)],
-      parentPivot: [0, -0.285, 0.025],
-      childPivot: [0, 0.5 * keyboardHeight * keyboardScale, 0],
-    },
-    snapSource: {
-      shape: "box",
-      size: [0.5, keyboardHeight, 0.04],
-      localTransform: { ...IDENTITY_SPATIAL_TRANSFORM },
-    },
+    constraint: hingeConstraintForSlot(
+      bottomSlot,
+      "keyboard",
+      snapSource.size,
+      [keyboardScale, keyboardScale, keyboardScale],
+    ),
+    snapSource,
   };
 }
 
@@ -176,7 +190,7 @@ export function createInitialSpatialGraph(): SpatialGraph {
     localTransform: transform([0, 0, 0]),
     onParentDelete: "preserve",
   };
-  addDisplayBottomHitbox(graph, rootId);
+  addDisplayAttachmentSlots(graph, rootId);
   addDefaultKeyboard(graph, rootId);
   return reconcileDisplayControls(graph);
 }
@@ -199,7 +213,7 @@ export function ensureDefaultSpatialContent(current: SpatialGraph): SpatialGraph
       localTransform: transform([0, 0, 0]),
       onParentDelete: "preserve",
     };
-    addDisplayBottomHitbox(graph, id);
+    addDisplayAttachmentSlots(graph, id);
   }
   if (!hasKeyboard) {
     const primaryDisplay = Object.values(graph.nodes)
@@ -225,39 +239,201 @@ export function assignWorkspaceOutputs(
   for (const [index, display] of displays.entries()) {
     const output = outputs[index];
     graph.nodes[display.id] = output == null
-      ? {
-        ...display,
-        workspaceCrop: undefined,
-        workspaceOutputId: undefined,
-        workspaceOutputName: undefined,
-      }
-      : {
-        ...display,
-        workspaceCrop: output.crop,
-        workspaceOutputId: output.id,
-        workspaceOutputName: output.name,
-      };
+      ? withoutWorkspaceOutput(display)
+      : withWorkspaceOutput(display, output);
   }
   return graph;
 }
 
-function addDisplayBottomHitbox(graph: SpatialGraph, displayId: SpatialNodeId): void {
-  const id = `${displayId}-bottom-snap`;
-  graph.hitboxes[id] = {
-    id,
-    ownerId: displayId,
-    shape: "box",
-    size: [0.55, 0.14, 0.18],
-    localTransform: transform([0, -0.34, 0.025]),
-    accepts: ["keyboard"],
-    attachment: {
-      kind: "hinge",
-      axis: "x",
-      angle: THREE.MathUtils.degToRad(-55),
-      limits: [THREE.MathUtils.degToRad(-100), THREE.MathUtils.degToRad(15)],
-      parentPivot: [0, -0.285, 0.025],
-    },
+export function initializeWorkspaceLayoutOutputs(
+  current: SpatialGraph,
+  outputs: WorkspaceOutput[],
+  restoredLayout: boolean,
+): SpatialGraph {
+  if (restoredLayout) return reconcileWorkspaceOutputs(current, outputs);
+
+  let graph = ensureDefaultSpatialContent(current);
+  let displays = displayNodesByOrdinal(graph);
+  while (displays.length < outputs.length) {
+    const parent = displays.at(-1);
+    if (parent == null) break;
+    const expanded = spawnHingedDisplay(graph, parent.id);
+    if (expanded === graph) break;
+    graph = expanded;
+    displays = displayNodesByOrdinal(graph);
+  }
+  return assignWorkspaceOutputs(graph, outputs);
+}
+
+export function reconcileWorkspaceOutputs(
+  current: SpatialGraph,
+  outputs: WorkspaceOutput[],
+): SpatialGraph {
+  const byId = new Map(outputs.map((output) => [output.id, output]));
+  const graph = cloneGraph(current);
+  for (const node of Object.values(graph.nodes)) {
+    if (node.kind !== "display" || node.workspaceOutputId == null) continue;
+    const output = byId.get(node.workspaceOutputId);
+    graph.nodes[node.id] = output == null
+      ? withDisconnectedWorkspaceOutput(node)
+      : withWorkspaceOutput(node, output);
+  }
+  return graph;
+}
+
+export function assignWorkspaceOutput(
+  current: SpatialGraph,
+  displayId: SpatialNodeId,
+  outputId: string,
+  outputs: WorkspaceOutput[],
+): SpatialGraph {
+  const target = current.nodes[displayId];
+  const output = outputs.find((candidate) => candidate.id === outputId);
+  if (target?.kind !== "display" || output == null) return current;
+  if (target.workspaceOutputId === outputId) return reconcileWorkspaceOutputs(current, outputs);
+
+  const graph = cloneGraph(current);
+  const previousOutput = outputs.find((candidate) => candidate.id === target.workspaceOutputId);
+  const previousOwner = Object.values(graph.nodes).find((node): node is DisplaySpatialNode =>
+    node.kind === "display" && node.workspaceOutputId === outputId
+  );
+  graph.nodes[target.id] = withWorkspaceOutput(target, output);
+  if (previousOwner != null && previousOwner.id !== target.id) {
+    graph.nodes[previousOwner.id] = previousOutput == null
+      ? withoutWorkspaceOutput(previousOwner)
+      : withWorkspaceOutput(previousOwner, previousOutput);
+  }
+  return graph;
+}
+
+export function spawnDisplayForWorkspaceOutput(
+  current: SpatialGraph,
+  output: WorkspaceOutput,
+): SpatialGraph {
+  if (
+    Object.values(current.nodes).some((node) =>
+      node.kind === "display" && node.workspaceOutputId === output.id
+    )
+  ) return current;
+
+  let graph = current;
+  let displays = displayNodesByOrdinal(graph);
+  graph = displays.length === 0
+    ? ensureDefaultSpatialContent(graph)
+    : spawnHingedDisplay(graph, displays.at(-1)!.id);
+  displays = displayNodesByOrdinal(graph);
+  const created = displays.at(-1);
+  return created == null ? graph : assignWorkspaceOutput(graph, created.id, output.id, [output]);
+}
+
+function displayNodesByOrdinal(graph: SpatialGraph): DisplaySpatialNode[] {
+  return Object.values(graph.nodes)
+    .filter((node): node is DisplaySpatialNode => node.kind === "display")
+    .sort((a, b) => a.ordinal - b.ordinal);
+}
+
+function withWorkspaceOutput(
+  display: DisplaySpatialNode,
+  output: WorkspaceOutput,
+): DisplaySpatialNode {
+  return {
+    ...display,
+    workspaceCrop: output.crop,
+    workspaceOutputId: output.id,
+    workspaceOutputName: output.name,
+    workspaceOutputConnected: true,
   };
+}
+
+function withDisconnectedWorkspaceOutput(display: DisplaySpatialNode): DisplaySpatialNode {
+  return {
+    ...display,
+    workspaceCrop: undefined,
+    workspaceOutputConnected: false,
+  };
+}
+
+function withoutWorkspaceOutput(display: DisplaySpatialNode): DisplaySpatialNode {
+  return {
+    ...display,
+    workspaceCrop: undefined,
+    workspaceOutputId: undefined,
+    workspaceOutputName: undefined,
+    workspaceOutputConnected: undefined,
+  };
+}
+
+function addDisplayAttachmentSlots(graph: SpatialGraph, displayId: SpatialNodeId): void {
+  const sideSpecs: Array<{
+    side: SpatialAttachmentSide;
+    size: [number, number, number];
+    hitboxPosition: [number, number, number];
+    parentPivot: [number, number, number];
+    axis: HingeConstraint["axis"];
+  }> = [
+    {
+      side: "left",
+      size: [0.18, 0.55, 0.18],
+      hitboxPosition: [-DISPLAY_EDGE, 0, 0.025],
+      parentPivot: [-DISPLAY_EDGE, 0, 0],
+      axis: "y",
+    },
+    {
+      side: "right",
+      size: [0.18, 0.55, 0.18],
+      hitboxPosition: [DISPLAY_EDGE, 0, 0.025],
+      parentPivot: [DISPLAY_EDGE, 0, 0],
+      axis: "y",
+    },
+    {
+      side: "top",
+      size: [0.55, 0.14, 0.18],
+      hitboxPosition: [0, DISPLAY_VERTICAL_EDGE + 0.055, 0.025],
+      parentPivot: [0, DISPLAY_VERTICAL_EDGE, 0.025],
+      axis: "x",
+    },
+    {
+      side: "bottom",
+      size: [0.55, 0.14, 0.18],
+      hitboxPosition: [0, -DISPLAY_VERTICAL_EDGE - 0.055, 0.025],
+      parentPivot: [0, -DISPLAY_VERTICAL_EDGE, 0.025],
+      axis: "x",
+    },
+  ];
+  for (const spec of sideSpecs) {
+    const id = `${displayId}-${spec.side}-slot`;
+    const displayAttachment = {
+      kind: "hinge" as const,
+      axis: spec.axis,
+      angle: 0,
+      limits: [
+        THREE.MathUtils.degToRad(-75),
+        THREE.MathUtils.degToRad(75),
+      ] as [number, number],
+      parentPivot: spec.parentPivot,
+    };
+    graph.hitboxes[id] = {
+      id,
+      ownerId: displayId,
+      side: spec.side,
+      shape: "box",
+      size: spec.size,
+      localTransform: transform(spec.hitboxPosition),
+      accepts: spec.side === "bottom" ? ["display", "keyboard"] : ["display"],
+      attachments: spec.side === "bottom"
+        ? {
+          display: displayAttachment,
+          keyboard: {
+            kind: "hinge",
+            axis: "x",
+            angle: THREE.MathUtils.degToRad(-55),
+            limits: [THREE.MathUtils.degToRad(-100), THREE.MathUtils.degToRad(15)],
+            parentPivot: spec.parentPivot,
+          },
+        }
+        : { display: displayAttachment },
+    };
+  }
 }
 
 function cloneGraph(graph: SpatialGraph): SpatialGraph {
@@ -282,39 +458,34 @@ function removeControls(
 
 function reconcileDisplayControls(current: SpatialGraph): SpatialGraph {
   const graph = cloneGraph(current);
+  // Legacy graph-authored 3D controls are removed in favor of the selected
+  // GrabBox's UIKit contextual toolbar.
   removeControls(graph, () => true);
-  const displays = Object.values(graph.nodes)
-    .filter((node): node is DisplaySpatialNode => node.kind === "display")
-    .sort((a, b) => a.ordinal - b.ordinal);
-  for (const display of displays) {
-    const hasDisplayChild = displays.some((candidate) => candidate.parentId === display.id);
-    if (!hasDisplayChild) {
-      addControl(graph, display.id, "spawn-display", display.id, [0.53, 0, 0.025]);
-    }
-    if (display.parentId == null) continue;
-    addControl(
-      graph,
-      display.id,
-      display.constraint?.kind === "hinge" ? "release-hinge" : "detach",
-      display.id,
-      [-0.4, -0.34, 0.025],
-    );
-  }
   return graph;
 }
 
 export function spawnHingedDisplay(
   current: SpatialGraph,
   parentId: SpatialNodeId,
+  preferredSide?: SpatialAttachmentSide,
 ): SpatialGraph {
   const parent = current.nodes[parentId];
   if (parent?.kind !== "display") return current;
 
   const graph = cloneGraph(current);
+  const sideOrder: SpatialAttachmentSide[] = preferredSide == null
+    ? ["right", "left", "top", "bottom"]
+    : [preferredSide];
+  const slot = sideOrder
+    .map((side) => graph.hitboxes[`${parentId}-${side}-slot`])
+    .find((candidate) =>
+      candidate?.accepts.includes("display") && !isAttachmentSlotOccupied(graph, candidate.id)
+    );
+  if (slot == null) return current;
 
   const ordinal = graph.nextDisplayOrdinal++;
   const id = `display-${ordinal}`;
-  graph.nodes[id] = {
+  const display: DisplaySpatialNode = {
     id,
     kind: "display",
     ordinal,
@@ -322,19 +493,36 @@ export function spawnHingedDisplay(
     originId: parent.originId,
     localTransform: { ...IDENTITY_SPATIAL_TRANSFORM },
     onParentDelete: "preserve",
-    constraint: {
-      kind: "hinge",
-      axis: "y",
-      angle: 0,
-      limits: [THREE.MathUtils.degToRad(-75), THREE.MathUtils.degToRad(75)],
-      parentPivot: [DISPLAY_EDGE, 0, 0],
-      childPivot: [-DISPLAY_EDGE, 0, 0],
-    },
+    constraint: hingeConstraintForSlot(slot, "display", DISPLAY_SNAP_SIZE, [1, 1, 1]),
   };
+  graph.nodes[id] = display;
 
-  addDisplayBottomHitbox(graph, id);
+  addDisplayAttachmentSlots(graph, id);
 
   return reconcileDisplayControls(graph);
+}
+
+export function spawnHingedDisplayWithAutomaticOutput(
+  current: SpatialGraph,
+  parentId: SpatialNodeId,
+  outputs: WorkspaceOutput[],
+  preferredSide?: SpatialAttachmentSide,
+): SpatialGraph {
+  const assignedOutputIds = new Set(
+    Object.values(current.nodes)
+      .filter((node): node is DisplaySpatialNode => node.kind === "display")
+      .map((display) => display.workspaceOutputId)
+      .filter((id): id is string => id != null),
+  );
+  const unusedOutput = outputs.find((output) => !assignedOutputIds.has(output.id));
+  const existingNodeIds = new Set(Object.keys(current.nodes));
+  const graph = spawnHingedDisplay(current, parentId, preferredSide);
+  if (graph === current || unusedOutput == null) return graph;
+
+  const created = displayNodesByOrdinal(graph).find((display) => !existingNodeIds.has(display.id));
+  return created == null
+    ? graph
+    : assignWorkspaceOutput(graph, created.id, unusedOutput.id, outputs);
 }
 
 export function setHingeAngle(
@@ -420,6 +608,18 @@ export function commitNodeTransform(
   return graph;
 }
 
+/** Commit a completed free manipulation and adopt the closest overlapping attachment slot. */
+export function commitSpatialNodeTransformAndSnap(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+  localTransform: SpatialTransform,
+): SpatialGraph {
+  return snapNodeToOverlappingHitbox(
+    commitNodeTransform(current, nodeId, localTransform),
+    nodeId,
+  );
+}
+
 export function updateSnapSourceSize(
   current: SpatialGraph,
   nodeId: SpatialNodeId,
@@ -458,18 +658,125 @@ export function getSpatialHitboxWorldMatrix(
     .multiply(composeTransform(hitbox.localTransform));
 }
 
+function displayAttachmentSlots(graph: SpatialGraph, displayId: SpatialNodeId): SpatialHitbox[] {
+  return Object.values(graph.hitboxes).filter((hitbox) => hitbox.ownerId === displayId);
+}
+
+export function hasAvailableDisplayAttachmentSlot(
+  graph: SpatialGraph,
+  displayId: SpatialNodeId,
+): boolean {
+  return displayAttachmentSlots(graph, displayId).some((slot) =>
+    slot.accepts.includes("display") && !isAttachmentSlotOccupied(graph, slot.id)
+  );
+}
+
+function isAttachmentSlotOccupied(graph: SpatialGraph, slotId: string): boolean {
+  return Object.values(graph.nodes).some((node) =>
+    node.constraint?.kind === "hinge" && node.constraint.attachmentSlotId === slotId
+  );
+}
+
+function nodeSnapSource(node: DisplaySpatialNode | KeyboardSpatialNode): BoxSnapSource {
+  return node.kind === "keyboard" ? node.snapSource : {
+    shape: "box",
+    size: DISPLAY_SNAP_SIZE,
+    localTransform: IDENTITY_SPATIAL_TRANSFORM,
+  };
+}
+
+function childPivotForSlot(
+  side: SpatialAttachmentSide,
+  size: [number, number, number],
+  scale: [number, number, number],
+): [number, number, number] {
+  const halfWidth = 0.5 * size[0] * scale[0];
+  const halfHeight = 0.5 * size[1] * scale[1];
+  switch (side) {
+    case "left":
+      return [halfWidth, 0, 0];
+    case "right":
+      return [-halfWidth, 0, 0];
+    case "top":
+      return [0, -halfHeight, 0];
+    case "bottom":
+      return [0, halfHeight, 0];
+  }
+}
+
+function hingeConstraintForSlot(
+  slot: SpatialHitbox,
+  childKind: DisplaySpatialNode["kind"] | KeyboardSpatialNode["kind"],
+  childSize: [number, number, number],
+  childScale: [number, number, number],
+): HingeConstraint {
+  const attachment = slot.attachments[childKind];
+  if (attachment == null) throw new Error(`Slot ${slot.id} does not accept ${childKind}`);
+  return {
+    kind: "hinge",
+    attachmentSlotId: slot.id,
+    axis: attachment.axis,
+    angle: attachment.angle,
+    limits: attachment.limits,
+    parentPivot: attachment.parentPivot,
+    childPivot: childPivotForSlot(slot.side, childSize, childScale),
+  };
+}
+
+export function attachSpatialNodeToSlot(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+  slotId: string,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  const slot = current.hitboxes[slotId];
+  const owner = slot && current.nodes[slot.ownerId];
+  if (
+    (node?.kind !== "keyboard" && node?.kind !== "display") ||
+    node.constraint != null ||
+    slot == null ||
+    owner == null ||
+    !slot.accepts.includes(node.kind) ||
+    isAttachmentSlotOccupied(current, slot.id) ||
+    slot.ownerId === node.id ||
+    isSpatialDescendant(current, slot.ownerId, node.id)
+  ) return current;
+
+  const snapSource = nodeSnapSource(node);
+  const graph = cloneGraph(current);
+  graph.nodes[nodeId] = {
+    ...node,
+    parentId: slot.ownerId,
+    originId: owner.originId,
+    localTransform: transform([0, 0, 0], [0, 0, 0], node.localTransform.scale),
+    constraint: hingeConstraintForSlot(
+      slot,
+      node.kind,
+      snapSource.size,
+      node.localTransform.scale,
+    ),
+  };
+  return reconcileDisplayControls(graph);
+}
+
 export function snapNodeToOverlappingHitbox(
   current: SpatialGraph,
   nodeId: SpatialNodeId,
 ): SpatialGraph {
   const node = current.nodes[nodeId];
-  if (node?.kind !== "keyboard" || node.constraint != null) return current;
+  if ((node?.kind !== "keyboard" && node?.kind !== "display") || node.constraint != null) {
+    return current;
+  }
+  const snapSource = nodeSnapSource(node);
   const sourceMatrix = getSpatialNodeWorldMatrix(current, nodeId)
-    .multiply(composeTransform(node.snapSource.localTransform));
-  const sourceBox = orientedBoxFromMatrix(node.snapSource.size, sourceMatrix);
+    .multiply(composeTransform(snapSource.localTransform));
+  const sourceBox = orientedBoxFromMatrix(snapSource.size, sourceMatrix);
   const sourceCenter = sourceBox.center;
   const candidates = Object.values(current.hitboxes)
     .filter((hitbox) => hitbox.accepts.includes(node.kind))
+    .filter((hitbox) => hitbox.ownerId !== node.id)
+    .filter((hitbox) => !isAttachmentSlotOccupied(current, hitbox.id))
+    .filter((hitbox) => !isSpatialDescendant(current, hitbox.ownerId, node.id))
     .filter((hitbox) =>
       sourceBox.intersectsOBB(orientedBoxFromMatrix(
         hitbox.size,
@@ -492,26 +799,20 @@ export function snapNodeToOverlappingHitbox(
       return adx * adx + ady * ady + adz * adz - (bdx * bdx + bdy * bdy + bdz * bdz);
     });
   const hitbox = candidates[0];
-  const owner = hitbox && current.nodes[hitbox.ownerId];
-  if (!hitbox || !owner) return current;
+  return hitbox == null ? current : attachSpatialNodeToSlot(current, nodeId, hitbox.id);
+}
 
-  const graph = cloneGraph(current);
-  const scaledHalfHeight = 0.5 * node.snapSource.size[1] * node.localTransform.scale[1];
-  graph.nodes[nodeId] = {
-    ...node,
-    parentId: hitbox.ownerId,
-    originId: owner.originId,
-    localTransform: transform([0, 0, 0], [0, 0, 0], node.localTransform.scale),
-    constraint: {
-      kind: "hinge",
-      axis: hitbox.attachment.axis,
-      angle: hitbox.attachment.angle,
-      limits: hitbox.attachment.limits,
-      parentPivot: hitbox.attachment.parentPivot,
-      childPivot: [0, scaledHalfHeight, 0],
-    },
-  };
-  return graph;
+function isSpatialDescendant(
+  graph: SpatialGraph,
+  candidateId: SpatialNodeId,
+  ancestorId: SpatialNodeId,
+): boolean {
+  let current = graph.nodes[candidateId];
+  while (current?.parentId != null) {
+    if (current.parentId === ancestorId) return true;
+    current = graph.nodes[current.parentId];
+  }
+  return false;
 }
 
 export function releaseHinge(current: SpatialGraph, nodeId: SpatialNodeId): SpatialGraph {
@@ -540,13 +841,45 @@ export function detachFromParent(current: SpatialGraph, nodeId: SpatialNodeId): 
   return reconcileDisplayControls(graph);
 }
 
-function hasPreservedDescendant(graph: SpatialGraph, nodeId: SpatialNodeId): boolean {
-  for (const child of getSpatialChildren(graph, nodeId)) {
-    if (child.onParentDelete === "preserve" || hasPreservedDescendant(graph, child.id)) {
-      return true;
-    }
-  }
-  return false;
+/**
+ * Detach the display edge represented by a selected hierarchy node.
+ * Attached parents move their complete subtree to root; root parents release
+ * their direct display children. Non-display children remain owned normally.
+ */
+export function detachDisplayHierarchy(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  if (node?.kind !== "display") return current;
+  if (node.parentId != null) return detachFromParent(current, nodeId);
+
+  const displayChildren = getSpatialChildren(current, nodeId)
+    .filter((child): child is DisplaySpatialNode => child.kind === "display");
+  return displayChildren.reduce(
+    (graph, child) => detachFromParent(graph, child.id),
+    current,
+  );
+}
+
+export function resetSpatialNodeTransform(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  if (node == null || node.kind === "control") return current;
+  const graph = cloneGraph(current);
+  graph.nodes[nodeId] = node.constraint?.kind === "hinge"
+    ? { ...node, constraint: { ...node.constraint, angle: 0 } }
+    : {
+      ...node,
+      localTransform: {
+        position: node.localTransform.position,
+        rotation: [0, 0, 0],
+        scale: [1, 1, 1],
+      },
+    };
+  return graph;
 }
 
 export function getDisplayAttachmentRole(
@@ -555,7 +888,9 @@ export function getDisplayAttachmentRole(
 ): DisplayAttachmentRole | null {
   const node = graph.nodes[nodeId];
   if (node?.kind !== "display") return null;
-  if (hasPreservedDescendant(graph, nodeId)) return "parent";
+  if (getSpatialChildren(graph, nodeId).some((child) => child.kind === "display")) {
+    return "parent";
+  }
   return node.parentId == null ? "solo" : "child";
 }
 

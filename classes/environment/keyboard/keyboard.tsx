@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
-import { Handle } from "@react-three/handle";
 import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
 import {
@@ -44,6 +43,8 @@ export type KeyboardPanelProps = WorldKeyboardPanelProps & {
   manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
   onGrabBoxSize?: (size: [number, number, number]) => void;
+  onSpatialFocus?: () => void;
+  children?: React.ReactNode;
 };
 
 /**
@@ -64,6 +65,8 @@ export function KeyboardPanel(
     manipulationOptions,
     manipulationStoreRef,
     onGrabBoxSize,
+    onSpatialFocus,
+    children,
   }: KeyboardPanelProps = {},
 ) {
   const handleRef = useRef<THREE.Group | null>(null);
@@ -127,37 +130,33 @@ export function KeyboardPanel(
     >
       {layoutReady != null
         ? (
-          <Handle
-            ref={manipulationStoreRef}
-            handleRef={handleRef as unknown as React.RefObject<import("three").Object3D | null>}
-            targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
-            {...manipulationOptions}
-            multitouch={manipulationOptions?.multitouch ?? true}
-            scale={manipulationOptions?.scale ?? { uniform: true }}
-            filter={(e) => e.pointerType !== "ray" && e.pointerType !== "poker"}
+          <GrabBox
+            ref={handleRef}
+            width={grabSize[0]}
+            height={grabSize[1]}
+            depth={grabSize[2]}
+            lineColor={grabLineColor}
+            shellRayPickable={false}
+            manipulationTargetRef={manipulationTargetRef}
+            manipulationOptions={manipulationOptions}
+            manipulationStoreRef={manipulationStoreRef}
+            onSpatialFocus={onSpatialFocus}
+            grabFilter={(event) => event.pointerType !== "ray" && event.pointerType !== "poker"}
           >
-            <GrabBox
-              ref={handleRef}
-              width={grabSize[0]}
-              height={grabSize[1]}
-              depth={grabSize[2]}
-              lineColor={grabLineColor}
-              shellRayPickable={false}
+            <group
+              position={contentOffset}
+              {...({ pointerEventsType: { deny: "grab" } } as Record<string, unknown>)}
             >
-              <group
-                position={contentOffset}
-                {...({ pointerEventsType: { deny: "grab" } } as Record<string, unknown>)}
-              >
-                <KeyboardFromJson
-                  preloadedLayout={layoutReady}
-                  onKey={onKey}
-                  layoutFormat={layoutFormat}
-                  layoutMode={layoutMode}
-                  pixelSize={pixel}
-                />
-              </group>
-            </GrabBox>
-          </Handle>
+              <KeyboardFromJson
+                preloadedLayout={layoutReady}
+                onKey={onKey}
+                layoutFormat={layoutFormat}
+                layoutMode={layoutMode}
+                pixelSize={pixel}
+              />
+            </group>
+            {children}
+          </GrabBox>
         )
         : null}
     </group>

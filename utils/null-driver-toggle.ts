@@ -1,16 +1,13 @@
 #!/usr/bin/env -S deno run -A
 
-const NULL_DRIVER_SETTINGS =
-  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\SteamVR\\drivers\\null\\resources\\settings\\default.vrsettings";
-const NULL_DRIVER_MANIFEST =
-  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\SteamVR\\drivers\\null\\driver.vrdrivermanifest";
-const STEAMVR_SETTINGS = "C:\\Program Files (x86)\\Steam\\config\\steamvr.vrsettings";
-const BIGSCREEN_DRIVER_MANIFESTS = [
-  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Bigscreen Beyond Driver\\bin\\steamvr\\BeyondSteamVR\\driver.vrdrivermanifest",
-  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Bigscreen Beyond Driver\\bin\\eyetracking\\ETDriver\\driver.vrdrivermanifest",
-];
-
 type JsonObject = Record<string, unknown>;
+
+interface SteamVrPaths {
+  nullDriverSettings: string;
+  nullDriverManifest: string;
+  steamVrSettings: string;
+  bigscreenDriverManifests: string[];
+}
 
 const valueArg = Deno.args[0];
 
@@ -20,47 +17,100 @@ if (valueArg !== "true" && valueArg !== "false") {
 }
 
 const enabled = valueArg === "true";
+const paths = getSteamVrPaths();
 
-await updateJsonFile(NULL_DRIVER_SETTINGS, (json) => {
-  const driverNull = expectObject(json.driver_null, "driver_null", NULL_DRIVER_SETTINGS);
+await updateJsonFile(paths.nullDriverSettings, (json) => {
+  const driverNull = expectObject(
+    json.driver_null,
+    "driver_null",
+    paths.nullDriverSettings,
+  );
   driverNull.enable = enabled;
 });
 
-await updateJsonFile(NULL_DRIVER_MANIFEST, (json) => {
+await updateJsonFile(paths.nullDriverManifest, (json) => {
   setAlwaysActive(json, enabled);
 });
 
-await updateJsonFile(STEAMVR_SETTINGS, (json) => {
+await updateJsonFile(paths.steamVrSettings, (json) => {
   const steamvr = ensureObject(json, "steamvr");
-  steamvr.forcedDriver = enabled ? "null" : "";
-  steamvr.activateMultipleDrivers = !enabled;
 
-  const beyondSteamVr = ensureObject(json, "driver_BeyondSteamVR");
-  beyondSteamVr.enable = !enabled;
+  if (Deno.build.os === "windows") {
+    steamvr.forcedDriver = enabled ? "null" : "";
+    steamvr.activateMultipleDrivers = !enabled;
 
-  const beyondEyetracking = ensureObject(json, "driver_BeyondEyetracking");
-  beyondEyetracking.enable = !enabled;
+    const beyondSteamVr = ensureObject(json, "driver_BeyondSteamVR");
+    beyondSteamVr.enable = !enabled;
 
-  if (enabled) {
-    const lighthouse = ensureObject(json, "driver_lighthouse");
-    lighthouse.enable = false;
+    const beyondEyetracking = ensureObject(json, "driver_BeyondEyetracking");
+    beyondEyetracking.enable = !enabled;
+
+    if (enabled) {
+      const lighthouse = ensureObject(json, "driver_lighthouse");
+      lighthouse.enable = false;
+    } else {
+      const lighthouse = expectObject(
+        json.driver_lighthouse,
+        "driver_lighthouse",
+        paths.steamVrSettings,
+      );
+      delete lighthouse.enable;
+    }
+  } else if (enabled) {
+    steamvr.forcedDriver = "null";
+    steamvr.displayDebug = true;
+    steamvr.directMode = false;
   } else {
-    const lighthouse = expectObject(json.driver_lighthouse, "driver_lighthouse", STEAMVR_SETTINGS);
-    delete lighthouse.enable;
+    delete steamvr.forcedDriver;
+    delete steamvr.displayDebug;
+    delete steamvr.directMode;
   }
 });
 
-for (const manifest of BIGSCREEN_DRIVER_MANIFESTS) {
+for (const manifest of paths.bigscreenDriverManifests) {
   await updateJsonFile(manifest, (json) => {
     setAlwaysActive(json, !enabled);
   });
 }
 
-console.log(
-  `SteamVR null driver ${enabled ? "enabled" : "disabled"}; Bigscreen/lighthouse ${
-    enabled ? "disabled" : "restored"
-  }.`,
-);
+const platformDetail = Deno.build.os === "windows"
+  ? `; Bigscreen/lighthouse ${enabled ? "disabled" : "restored"}`
+  : "";
+console.log(`SteamVR null driver ${enabled ? "enabled" : "disabled"}${platformDetail}.`);
+
+function getSteamVrPaths(): SteamVrPaths {
+  if (Deno.build.os === "windows") {
+    const steamRoot = Deno.env.get("PETPLAY_STEAM_ROOT") ??
+      "C:\\Program Files (x86)\\Steam";
+    const steamVrRoot = Deno.env.get("PETPLAY_STEAMVR_ROOT") ??
+      `${steamRoot}\\steamapps\\common\\SteamVR`;
+
+    return {
+      nullDriverSettings: `${steamVrRoot}\\drivers\\null\\resources\\settings\\default.vrsettings`,
+      nullDriverManifest: `${steamVrRoot}\\drivers\\null\\driver.vrdrivermanifest`,
+      steamVrSettings: `${steamRoot}\\config\\steamvr.vrsettings`,
+      bigscreenDriverManifests: [
+        `${steamRoot}\\steamapps\\common\\Bigscreen Beyond Driver\\bin\\steamvr\\BeyondSteamVR\\driver.vrdrivermanifest`,
+        `${steamRoot}\\steamapps\\common\\Bigscreen Beyond Driver\\bin\\eyetracking\\ETDriver\\driver.vrdrivermanifest`,
+      ],
+    };
+  }
+
+  const home = Deno.env.get("HOME");
+  if (!home) throw new Error("HOME is required to locate SteamVR on Linux");
+
+  const steamRoot = Deno.env.get("PETPLAY_STEAM_ROOT") ??
+    `${home}/.local/share/Steam`;
+  const steamVrRoot = Deno.env.get("PETPLAY_STEAMVR_ROOT") ??
+    `${steamRoot}/steamapps/common/SteamVR`;
+
+  return {
+    nullDriverSettings: `${steamVrRoot}/drivers/null/resources/settings/default.vrsettings`,
+    nullDriverManifest: `${steamVrRoot}/drivers/null/driver.vrdrivermanifest`,
+    steamVrSettings: `${steamRoot}/config/steamvr.vrsettings`,
+    bigscreenDriverManifests: [],
+  };
+}
 
 async function updateJsonFile(
   path: string,

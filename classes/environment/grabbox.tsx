@@ -1,7 +1,20 @@
-import React, { forwardRef, useEffect, useMemo } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
+import { Handle } from "@react-three/handle";
+import type { HandleOptions, HandleStore } from "@pmndrs/handle";
+import type {
+  PointerEvent as PenPointerEvent,
+  WheelEvent as PenWheelEvent,
+} from "@pmndrs/pointer-events";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -31,12 +44,27 @@ export type GrabBoxProps = {
   interactionHull?: boolean;
   /** Draw the wireframe chrome. The invisible interaction hull remains active. */
   visibleChrome?: boolean;
+  /**
+   * Whether this spatial-object boundary owns manipulation for its complete subtree.
+   * Defaults to true; decorative/action-only boxes must explicitly opt out.
+   */
+  grabbable?: boolean;
+  manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
+  manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
+  manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
+  grabFilter?: (event: PenPointerEvent) => boolean;
+  /** Select/focus this spatial object without coupling its contents to a specific node type. */
+  onSpatialFocus?: () => void;
+  /** Report hover at the spatial-object boundary without coupling chrome to its contents. */
+  onSpatialHoverChange?: (hovered: boolean) => void;
+  userData?: Record<string, unknown>;
   /** Uikit + this box both use a centered origin; children only need a `contentOffset` nudge, not a pivot correction. */
   children?: React.ReactNode;
 };
 
 /**
- * Simple wireframe box (AABB) for a grabbable region: universal overlay chrome + debug “hit hull”.
+ * Canonical spatial-object boundary for an arbitrary subtree (from one widget to a complete OS UI).
+ * It owns manipulation, push/pull, interaction hull, chrome, and spatial metadata in one place.
  *
  * `wireframeMode="edges"` draws only the AABB outline and keeps a separate invisible mesh as the
  * interaction hull. `wireframeMode="mesh"` preserves the old triangle-wireframe visual.
@@ -51,10 +79,35 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     shellRayPickable = true,
     interactionHull = true,
     visibleChrome = true,
+    grabbable = true,
+    manipulationTargetRef,
+    manipulationOptions,
+    manipulationStoreRef,
+    grabFilter,
+    onSpatialFocus,
+    onSpatialHoverChange,
+    userData,
     children,
   },
   ref,
 ) {
+  const boxRef = useRef<THREE.Group>(null);
+  const handleStoreRef = useRef<HandleStore<unknown> | null>(null);
+  useImperativeHandle(ref, () => boxRef.current!, []);
+  const setHandleStore = useCallback((store: HandleStore<unknown> | null) => {
+    handleStoreRef.current = store;
+    if (typeof manipulationStoreRef === "function") manipulationStoreRef(store);
+    else if (manipulationStoreRef != null) {
+      (manipulationStoreRef as React.MutableRefObject<HandleStore<unknown> | null>).current = store;
+    }
+  }, [manipulationStoreRef]);
+  const handleWheel = useCallback((event: PenWheelEvent) => {
+    const store = handleStoreRef.current;
+    const notches = -event.deltaY / 100;
+    if (store?.translateAlongPointerRay(event.pointerId, notches * 0.08) === true) {
+      event.stopPropagation();
+    }
+  }, []);
   const color = useMemo(() => new THREE.Color(lineColor), [lineColor]);
   const edgeGeometry = useMemo(() => {
     if (wireframeMode !== "edges") {
@@ -81,10 +134,14 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     } as Record<string, unknown>)
     : {};
 
-  return (
+  const box = (
     <group
-      ref={ref}
-      userData={{ grabbox: true, grabboxSize: [width, height, depth] as const }}
+      ref={boxRef}
+      onWheel={handleWheel}
+      onPointerOver={onSpatialFocus}
+      onPointerEnter={() => onSpatialHoverChange?.(true)}
+      onPointerLeave={() => onSpatialHoverChange?.(false)}
+      userData={{ ...userData, grabbox: true, grabboxSize: [width, height, depth] as const }}
     >
       {wireframeMode === "edges" && edgeGeometry != null
         ? (
@@ -133,5 +190,19 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
         )}
       {children}
     </group>
+  );
+  if (!grabbable) return box;
+  return (
+    <Handle
+      ref={setHandleStore}
+      handleRef={boxRef as unknown as React.RefObject<import("three").Object3D | null>}
+      targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
+      {...manipulationOptions}
+      multitouch={manipulationOptions?.multitouch ?? true}
+      scale={manipulationOptions?.scale ?? { uniform: true }}
+      filter={grabFilter}
+    >
+      {box}
+    </Handle>
   );
 });

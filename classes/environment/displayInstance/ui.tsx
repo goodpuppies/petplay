@@ -6,6 +6,7 @@ import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
 import { createMainControllerGate } from "../mainController.ts";
 import type { DisplayMouseButton, DisplayMouseSink } from "./mouse.ts";
+import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -47,6 +48,11 @@ export type DisplayInstanceFrameProps = {
   /** Optional display-space mouse sink; receives normalized 0..1 coordinates on the screen plane. */
   onMouse?: DisplayMouseSink;
   mouseButtonForPointer?: (event: PenPointerEvent) => DisplayMouseButton | undefined;
+  manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
+  manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
+  manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
+  onSpatialFocus?: () => void;
+  onSpatialHoverChange?: (hovered: boolean) => void;
   /** Controls and other spatial content structurally owned by this display. */
   children?: React.ReactNode;
 };
@@ -96,6 +102,11 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       rayHitSurface = true,
       onMouse,
       mouseButtonForPointer,
+      manipulationTargetRef,
+      manipulationOptions,
+      manipulationStoreRef,
+      onSpatialFocus,
+      onSpatialHoverChange,
       children,
     },
     ref,
@@ -240,6 +251,12 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         depth={depth}
         lineColor={lineColor}
         shellRayPickable={shellRayPickable}
+        manipulationTargetRef={manipulationTargetRef}
+        manipulationOptions={manipulationOptions}
+        manipulationStoreRef={manipulationStoreRef}
+        onSpatialFocus={onSpatialFocus}
+        onSpatialHoverChange={onSpatialHoverChange}
+        grabFilter={(event) => event.pointerType !== "ray" && event.pointerType !== "poker"}
       >
         {rayHitSurface
           ? (

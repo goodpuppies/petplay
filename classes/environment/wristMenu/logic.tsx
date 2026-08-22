@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
-import { Handle } from "@react-three/handle";
 import { useXRInputSourceStateContext, XRSpace } from "@pmndrs/xr";
 import type {
   AllowedPointerEventsType,
@@ -14,6 +13,12 @@ import { WristMenuUi } from "./ui.tsx";
 import type { WristMenuButtonId, WristMenuStateSnapshot } from "./types.ts";
 import { setToolEditMode } from "../toolEditMode.ts";
 import { setWindowLayerVisible } from "../windowLayerMode.ts";
+import {
+  addWorkspaceLayoutOutput,
+  assignWorkspaceLayoutOutput,
+  useWorkspaceLayoutSnapshot,
+} from "../workspaceLayoutStore.ts";
+import { GrabBox } from "../grabbox.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -188,6 +193,7 @@ export function WristMenuPanel(
   const startedAt = useRef(performance.now());
   const [buttonState, setButtonState] = useState(() => toStateSnapshot(initialState));
   const [now, setNow] = useState(() => Date.now());
+  const workspaceLayout = useWorkspaceLayoutSnapshot();
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -249,8 +255,13 @@ export function WristMenuPanel(
       scale={scale}
       userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}
     >
-      <Handle
-        filter={(e: PenPointerEvent) =>
+      <GrabBox
+        width={0.48}
+        height={0.42}
+        depth={0.04}
+        visibleChrome={false}
+        shellRayPickable={false}
+        grabFilter={(e: PenPointerEvent) =>
           e.pointerType !== "poker" && !isPointerEventFromHostHand(e, hostHandedness)}
       >
         <WristMenuUi
@@ -261,9 +272,12 @@ export function WristMenuPanel(
           musicActive={buttonState.musicActive}
           signalActive={buttonState.signalActive}
           onToggle={handleToggle}
+          workspaceLayout={workspaceLayout}
+          onAssignOutput={assignWorkspaceLayoutOutput}
+          onAddOutput={addWorkspaceLayoutOutput}
           pointerEventsType={menuPointerType}
         />
-      </Handle>
+      </GrabBox>
     </group>
   );
 }
