@@ -6,6 +6,7 @@ import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
 import { WebXRScene } from "../classes/environment/scene.tsx";
 import { VREnvironmentPlaceholder } from "../classes/environment/vrEnvironmentPlaceholder.tsx";
+import { getAgentReplBaseUrl } from "../classes/utils.ts";
 import {
   getScreenCaptureStatus,
   requestScreenCapture,
@@ -394,7 +395,7 @@ async function postDesktopViewOffset(offset: [number, number, number]): Promise<
   if (!target) {
     return;
   }
-  await fetch("http://127.0.0.1:3987/message", {
+  await fetch(`${getAgentReplBaseUrl()}/message`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

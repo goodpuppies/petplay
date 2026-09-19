@@ -51,7 +51,11 @@
     "check": "deno run -A utils/type-check.ts",
     "check:all": "deno check --allow-import",
     "ui": "deno run -A petplay/uiViewer.tsx ",
-    "desktop": "deno run -A --unstable-webgpu --env-file petplay/desktopControlSurface.tsx --desktop-control-child ",
+    "server": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev --agent-repl",
+    "status": "deno run -A petplay/client.ts status",
+    "reboot": "deno run -A petplay/client.ts reboot",
+    "desktop": "deno run -A petplay/client.ts desktop",
+    "client": "deno run -A petplay/client.ts ",
     "overlay:perf": "deno run -A utils/overlay-perf.ts --launch",
     "keyb": "deno run -A petplay/keyboardViewer.tsx ",
     "keyb:reset": "deno run -A petplay/resetKeyboard.ts",
@@ -64,14 +68,20 @@
         "cefbuild"
       ]
     },
-    "dev": {
+    "app": {
       "command": "deno run -A utils/dev-runner.ts",
       "dependencies": [
         //"iwerbuild"
       ]
     },
+    "dev": {
+      "command": "deno run -A petplay/client.ts dev",
+      "dependencies": [
+        //"iwerbuild"
+      ]
+    },
     "dev:network": {
-      "command": "deno task dev --stageforge-networking"
+      "command": "deno task server -- --stageforge-networking"
     },
     "dev:novr": {
       "command": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev --novr",

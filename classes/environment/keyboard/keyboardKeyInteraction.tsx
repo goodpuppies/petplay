@@ -25,6 +25,9 @@ const KEY_DEPRESS_Z = -32;
 const KEY_RELEASE_EASE_MS = 200;
 const KEY_PRIMARY_LABEL_SCALE = 1.15;
 const KEY_SECONDARY_LABEL_SCALE = 0.72;
+/** Hold this long before a key starts repeating, then repeat this often. */
+const KEY_REPEAT_DELAY_MS = 420;
+const KEY_REPEAT_INTERVAL_MS = 45;
 
 type ImperativeUIKitRef = {
   setProperties?: (props: Record<string, unknown>) => void;
@@ -129,6 +132,24 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
   const hoveredRef = useRef(false);
   const releaseRafRef = useRef<number | null>(null);
   const depressRef = useRef(0);
+  // Timer handles are stored as numbers to match the rAF handle above; this
+  // runtime's `setTimeout` returns a `Timeout` object, hence the casts below.
+  const repeatDelayRef = useRef<number | null>(null);
+  const repeatIntervalRef = useRef<number | null>(null);
+
+  /** Modifiers and toggles latch instead: holding them must not repeat. */
+  const canRepeat = face.sticky !== true && face.toggle !== true;
+
+  const stopRepeat = () => {
+    if (repeatDelayRef.current != null) {
+      clearTimeout(repeatDelayRef.current);
+      repeatDelayRef.current = null;
+    }
+    if (repeatIntervalRef.current != null) {
+      clearInterval(repeatIntervalRef.current);
+      repeatIntervalRef.current = null;
+    }
+  };
 
   const litSurface = latched;
   const tc = keyTextColor(face.colorToken, litSurface);
@@ -171,6 +192,7 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
   useEffect(
     () => () => {
       cancelReleaseRaf();
+      stopRepeat();
     },
     [],
   );
@@ -257,10 +279,22 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
           : undefined;
         onActivate(face, (e.object as unknown as THREE.Object3D | undefined) ?? null, worldPoint);
         updateDepressVisual(1);
+        // Hold to repeat: one press now, then this key keeps firing until the
+        // pointer leaves or lifts.
+        if (canRepeat) {
+          stopRepeat();
+          repeatDelayRef.current = setTimeout(() => {
+            repeatDelayRef.current = null;
+            repeatIntervalRef.current = setInterval(() => {
+              onActivate(face, (e.object as unknown as THREE.Object3D | undefined) ?? null, worldPoint);
+            }, KEY_REPEAT_INTERVAL_MS) as unknown as number;
+          }, KEY_REPEAT_DELAY_MS) as unknown as number;
+        }
       }}
       onPointerOut={(e) => {
         if (!isTriggerLikePointer(e)) return;
         e.stopPropagation();
+        stopRepeat();
         if (!hoveredRef.current && depressRef.current <= 0) return;
         hoveredRef.current = false;
         applyCurrentVisual();
@@ -268,6 +302,7 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
       }}
       onPointerUp={(e) => {
         if (!isTriggerLikePointer(e)) return;
+        stopRepeat();
         beginRelease();
       }}
     >

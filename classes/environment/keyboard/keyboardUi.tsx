@@ -8,6 +8,7 @@ import type { EventHandlersProperties } from "../../../submodules/threewebxrwebg
 import type {
   KeyboardLayoutJson,
   KeyboardLayoutMode,
+  KeyboardLocaleId,
   KeyboardLogicEvent,
   KeyboardSink,
   LayoutFormat,
@@ -18,13 +19,20 @@ import { COLOR } from "../ui/tokens.ts";
 import {
   getMainGroupRows,
   isModifierLatchedVisual,
+  keyboardColumns,
   resolveLabel,
   type RowItem,
 } from "./keyboardLayout.ts";
 import { stripJsonComments } from "./parseJsonComments.ts";
 import { InteractiveKeyCap } from "./keyboardKeyInteraction.tsx";
 import { useSpatialAudio } from "../spatialAudio.tsx";
-import { scanCodeHexToNumber, usQwertyFromScan } from "./usLayout.ts";
+import {
+  keyboardFormatFor,
+  keyLegendFromScan,
+  resolveKeyboardLocale,
+  scanCodeHexToNumber,
+  useKeyboardLocale,
+} from "./keyboardLocale.ts";
 
 const DEFAULT_ROW_HEIGHT = 64;
 
@@ -456,16 +464,26 @@ export type KeyboardRowViewProps = {
   pixelSize: number;
   renderKey: (face: NormalizedKeyFace) => React.ReactNode;
   renderSpacer: (width: number, height: number) => React.ReactNode;
+  /**
+   * A ray that lands in the padding between two caps belongs to one of them:
+   * without this the space between keys is dead and snapping between two keys
+   * types nothing. Gaps forward to the key that follows them.
+   */
+  activateGap?: (face: NormalizedKeyFace) => void;
 };
 
 export function KeyboardRowView(
-  { faces, keyWidth, keyPadding, keyRowHeight: _rowH, pixelSize, renderKey, renderSpacer }:
+  { faces, keyWidth, keyPadding, keyRowHeight, pixelSize, renderKey, renderSpacer, activateGap }:
     KeyboardRowViewProps,
 ) {
   // Avoid flex `gapColumn` — in this uikit build it can allocate visible (often white) gap panels.
   const rowChildren: React.ReactNode[] = [];
   for (let i = 0; i < faces.length; i++) {
+    const cell = faces[i]!;
     if (i > 0) {
+      const neighbour = activateGap != null && !("spacer" in cell && cell.spacer)
+        ? cell as NormalizedKeyFace
+        : null;
       rowChildren.push(
         <Container
           key={`h-gap-${i}`}
@@ -473,11 +491,16 @@ export function KeyboardRowView(
           minWidth={keyPadding}
           minHeight={1}
           alignSelf="stretch"
+          {...(neighbour == null ? {} : {
+            onPointerDown: (event: { pointerType?: string }) => {
+              if (event.pointerType === "grab") return;
+              activateGap!(neighbour);
+            },
+          })}
           {...LAYOUT_CHROME}
         />,
       );
     }
-    const cell = faces[i]!;
     if ("spacer" in cell && cell.spacer) {
       rowChildren.push(
         <React.Fragment key={`s-${i}`}>{renderSpacer(cell.width, cell.height)}</React.Fragment>,
@@ -494,6 +517,12 @@ export function KeyboardRowView(
       pixelSize={pixelSize}
       flexDirection="row"
       alignItems="stretch"
+      // Every row occupies exactly one band. A tall key (ISO/JIS Enter, JSON
+      // `height` > 1) has to spill into the next row's band, where the layout
+      // reserves its footprint with a spacer; letting it stretch its own row
+      // instead pushed every following row down and left the board overflowing
+      // its panel and grab box.
+      height={keyRowHeight}
       {...LAYOUT_CHROME}
     >
       {rowChildren}
@@ -546,15 +575,57 @@ export type KeyboardFromJsonProps = {
    */
   preloadedLayout?: KeyboardLayoutJson | null;
   onKey?: KeyboardSink;
+  /** Row set from `Keyboard.json`; defaults to the locale’s own format. */
   layoutFormat?: LayoutFormat;
+  /** Legend locale; defaults to the app-wide [getKeyboardLocale](keyboardLocale.ts). */
+  locale?: KeyboardLocaleId;
   columnBackground?: string;
   /** Uikit `pixelSize` for flex layout. */
   pixelSize?: number;
-  /** `compact` = main only (default); `full` = nav + numpad. */
+  /** `compact` = main only; `arrows` = main + arrow cluster (default); `full` = nav + numpad. */
   layoutMode?: KeyboardLayoutMode;
 };
 
-export const DEFAULT_KEYBOARD_LAYOUT_MODE: KeyboardLayoutMode = "compact";
+/** Main block plus the arrow cluster: what xso's nav group ends with, without the nav block. */
+export const DEFAULT_KEYBOARD_LAYOUT_MODE: KeyboardLayoutMode = "arrows";
+
+/**
+ * Latched modifiers that release after the next key press. Caps Lock is
+ * deliberately absent: it is a `toggle` cell and latches.
+ */
+const STICKY_MODIFIER_KEYS = [
+  "shift",
+  "leftCtrl",
+  "rightCtrl",
+  "leftAlt",
+  "rightAlt",
+  "leftMeta",
+  "rightMeta",
+] as const satisfies readonly (keyof ModifierSnapshot)[];
+
+const LAYOUT_MODE_ENV_VAR = "PETPLAY_KEYBOARD_LAYOUT_MODE";
+const KEYBOARD_LAYOUT_MODES: Record<string, KeyboardLayoutMode> = {
+  compact: "compact",
+  arrows: "arrows",
+  full: "full",
+};
+
+/** [DEFAULT_KEYBOARD_LAYOUT_MODE], overridable with `PETPLAY_KEYBOARD_LAYOUT_MODE`. */
+export function getKeyboardLayoutMode(): KeyboardLayoutMode {
+  const requested = Deno.env.get(LAYOUT_MODE_ENV_VAR)?.trim().toLowerCase();
+  if (requested == null || requested === "") {
+    return DEFAULT_KEYBOARD_LAYOUT_MODE;
+  }
+  const mode = KEYBOARD_LAYOUT_MODES[requested];
+  if (mode == null) {
+    console.warn(
+      `[keyboard] ignoring ${LAYOUT_MODE_ENV_VAR}="${requested}" ` +
+        `(expected ${Object.keys(KEYBOARD_LAYOUT_MODES).join(", ")})`,
+    );
+    return DEFAULT_KEYBOARD_LAYOUT_MODE;
+  }
+  return mode;
+}
 
 /**
  * Load `Keyboard.json`, parse rows (ansi / iso / jis + nav + numpad), and render the uikit keyboard with modifier handling.
@@ -567,15 +638,21 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       layoutUrl = DEFAULT_KEYBOARD_JSON_URL,
       preloadedLayout = null,
       onKey,
-      layoutFormat = "ansi",
+      layoutFormat,
+      locale: localeProp,
       columnBackground = DEFAULT_KEYBOARD_COLUMN_BACKGROUND,
       pixelSize = DEFAULT_KEYBOARD_PIXEL_SIZE,
-      layoutMode = DEFAULT_KEYBOARD_LAYOUT_MODE,
+      layoutMode = getKeyboardLayoutMode(),
     },
     ref,
   ) {
     const [raw, setRaw] = useState<KeyboardLayoutJson | null>(() => preloadedLayout);
     const [mods, setMods] = useState<ModifierSnapshot>(initialMods);
+
+    // Subscribed, not read once: a locale switch has to relabel the live caps.
+    const storeLocale = useKeyboardLocale();
+    const locale = localeProp == null ? storeLocale : resolveKeyboardLocale(localeProp);
+    const format = keyboardFormatFor(locale, layoutFormat);
 
     const path = useMemo(() => layoutUrl, [layoutUrl]);
 
@@ -699,9 +776,10 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
             return;
           }
         }
-        const { main } = usQwertyFromScan(
+        const { main } = keyLegendFromScan(
+          locale,
           face.scanCodeHex,
-          { shift: mods.shift, caps: mods.caps },
+          { shift: mods.shift, caps: mods.caps, altGr: mods.rightAlt },
           face.respectCapsLock,
         );
         emit({
@@ -710,8 +788,23 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
           scanCodeHex: hi,
           char: main.length === 1 ? main : undefined,
         });
+        // Sticky modifiers are one-shot: they apply to the key that follows and
+        // release with it, so a chord does not leave Ctrl or Shift held. Caps
+        // Lock is the exception — it is `toggle`, and stays latched.
+        setMods((m) => {
+          const latched = STICKY_MODIFIER_KEYS.filter((key) => m[key] === true);
+          if (latched.length === 0) {
+            return m;
+          }
+          const next = { ...m };
+          for (const key of latched) {
+            next[key] = false;
+            emit({ kind: "modifier", modifier: key, active: false });
+          }
+          return next;
+        });
       },
-      [emit, mods, spatialAudio],
+      [emit, mods, spatialAudio, locale],
     );
 
     // Parsing the layout allocates a fresh face object per key cell. Doing it during render gave
@@ -719,8 +812,8 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     // per-key `KeyCapChrome` effect (Box3 + spherecast closure rebuild) and defeated memoization
     // for all 74 caps — including re-renders triggered by unrelated hover/selection changes.
     const layoutRows = useMemo(
-      () => (raw == null ? null : getMainGroupRows(raw, layoutFormat)),
-      [raw, layoutFormat],
+      () => (raw == null ? null : getMainGroupRows(raw, format, locale)),
+      [raw, format, locale],
     );
 
     if (layoutRows == null) {
@@ -730,8 +823,13 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     const { keyWidth, keyPadding, keyGroupsPadding, mainRows, navRows, numpadRows, rowH } =
       layoutRows;
 
+    const activateFace = (face: NormalizedKeyFace) => handleKey(face, null);
+
     const makeColumn = (rows: RowItem[][], columnId: string) => {
       // Avoid flex `gap` in the column: same “white gap quads” issue as `gapColumn` on rows.
+      const firstKeyOfRow = (row: RowItem[]): NormalizedKeyFace | null =>
+        (row.find((cell) => !("spacer" in cell && cell.spacer)) as NormalizedKeyFace | undefined) ??
+          null;
       const colChildren: React.ReactNode[] = rows.flatMap((r, i) => {
         const rowView = (
           <KeyboardRowView
@@ -741,6 +839,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
             keyPadding={keyPadding}
             keyRowHeight={rowH}
             pixelSize={pixelSize}
+            activateGap={activateFace}
             renderKey={(face) => (
               <InteractiveKeyCap
                 key={face.id}
@@ -748,7 +847,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
                 minWidth={keyWidth * face.widthMul}
                 minHeight={rowH * face.heightMul}
                 pixelSize={pixelSize}
-                currentLabel={resolveLabel(face, mods)}
+                currentLabel={resolveLabel(face, mods, locale)}
                 latched={isModifierLatchedVisual(face, mods)}
                 onActivate={handleKey}
               />
@@ -765,6 +864,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
         if (i === 0) {
           return [rowView];
         }
+        const below = firstKeyOfRow(r);
         return [
           <Container
             key={`${columnId}-v-gap-${i}`}
@@ -772,6 +872,14 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
             minHeight={keyPadding}
             minWidth={1}
             alignSelf="stretch"
+            // Row gaps are dead space otherwise: a ray that falls between two
+            // rows types the first key of the row it lands in.
+            {...(below == null ? {} : {
+              onPointerDown: (event: { pointerType?: string }) => {
+                if (event.pointerType === "grab") return;
+                activateFace(below);
+              },
+            })}
             {...LAYOUT_CHROME}
           />,
           rowView,
@@ -792,26 +900,8 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
 
     const packH = 2 * (keyGroupsPadding + 2);
     const colH = (rows: number) => rows * rowH + Math.max(0, rows - 1) * keyPadding + packH;
-    const columnBlockH = Math.max(
-      colH(mainRows.length),
-      colH(navRows.length),
-      colH(numpadRows.length),
-    );
-    if (layoutMode === "compact") {
-      return (
-        <Container
-          ref={ref}
-          pixelSize={pixelSize}
-          flexDirection="row"
-          alignItems="flex-start"
-          gap={0}
-          {...LAYOUT_CHROME}
-        >
-          {makeColumn(mainRows, "main")}
-        </Container>
-      );
-    }
-
+    const columns = keyboardColumns(layoutMode, { mainRows, navRows, numpadRows });
+    const columnBlockH = Math.max(...columns.map((column) => colH(column.rows.length)));
     return (
       <Container
         ref={ref}
@@ -821,21 +911,18 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
         gap={0}
         {...LAYOUT_CHROME}
       >
-        {makeColumn(mainRows, "main")}
-        <Container
-          pixelSize={pixelSize}
-          minWidth={keyGroupsPadding}
-          minHeight={columnBlockH}
-          {...LAYOUT_CHROME}
-        />
-        {makeColumn(navRows, "nav")}
-        <Container
-          pixelSize={pixelSize}
-          minWidth={keyGroupsPadding}
-          minHeight={columnBlockH}
-          {...LAYOUT_CHROME}
-        />
-        {makeColumn(numpadRows, "numpad")}
+        {columns.flatMap((column, i) => [
+          ...(i === 0 ? [] : [
+            <Container
+              key={`${column.id}-gap`}
+              pixelSize={pixelSize}
+              minWidth={keyGroupsPadding}
+              minHeight={columnBlockH}
+              {...LAYOUT_CHROME}
+            />,
+          ]),
+          makeColumn(column.rows, column.id),
+        ])}
       </Container>
     );
   },

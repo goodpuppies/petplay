@@ -13,6 +13,7 @@ import { WristMenuUi } from "./ui.tsx";
 import type { WristMenuButtonId, WristMenuStateSnapshot } from "./types.ts";
 import { setToolEditMode } from "../toolEditMode.ts";
 import { setWindowLayerVisible } from "../windowLayerMode.ts";
+import { getAgentReplBaseUrl } from "../../utils.ts";
 import {
   addWorkspaceLayoutOutput,
   assignWorkspaceLayoutOutput,
@@ -29,6 +30,10 @@ declare module "@react-three/fiber/webgpu" {
 }
 
 const CONTROLLER_UI_POSITION: [number, number, number] = [0.14, 0.0, 0.04];
+/** Wrist panel bounds: the grab box, and the occluder behind it, both derive from these. */
+const WRIST_UI_WIDTH = 0.528;
+const WRIST_UI_HEIGHT = 0.528;
+const WRIST_UI_DEPTH = 0.04;
 const CONTROLLER_UI_ROTATION: [number, number, number] = [
   -1.1064536056499201,
   -0.5691113573725565,
@@ -187,7 +192,7 @@ async function requestDesktopActor<T>(
   type: string,
   payload: unknown,
 ): Promise<T> {
-  const response = await fetch("http://127.0.0.1:3987/message", {
+  const response = await fetch(`${getAgentReplBaseUrl()}/message`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ target, type, payload, reply: true }),
@@ -279,34 +284,60 @@ export function WristMenuPanel(
       position={position}
       rotation={rotation}
       scale={scale}
-      userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}
       {...({ pointerEventsOrder: WRIST_MENU_POINTER_EVENTS_ORDER } as Record<string, unknown>)}
     >
-      <GrabBox
-        width={0.528}
-        height={0.528}
-        depth={0.04}
-        visibleChrome={false}
-        shellRayPickable={false}
-        interactionHullFilter={(_id, pointerType, pointerState) =>
-          !isPointerBlockedByHost(pointerType, pointerState, hostHandedness, attached)}
-        grabFilter={(e: PenPointerEvent) =>
-          e.pointerType !== "poker" &&
-          !isPointerEventFromHostHand(e, hostHandedness, attached)}
+      <group userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}>
+        <GrabBox
+          width={WRIST_UI_WIDTH}
+          height={WRIST_UI_HEIGHT}
+          depth={WRIST_UI_DEPTH}
+          visibleChrome={false}
+          shellRayPickable={false}
+          interactionHullFilter={(_id, pointerType, pointerState) =>
+            !isPointerBlockedByHost(pointerType, pointerState, hostHandedness, attached)}
+          grabFilter={(e: PenPointerEvent) =>
+            e.pointerType !== "poker" &&
+            !isPointerEventFromHostHand(e, hostHandedness, attached)}
+        >
+          <WristMenuUi
+            clock={clockLabel}
+            dateLabel={dateLabel}
+            elapsed={elapsedLabel}
+            layoutActive={buttonState.layoutActive}
+            editActive={buttonState.editActive}
+            onToggle={handleToggle}
+            workspaceLayout={workspaceLayout}
+            onAssignOutput={assignWorkspaceLayoutOutput}
+            onAddOutput={addWorkspaceLayoutOutput}
+            pointerEventsType={menuPointerType}
+          />
+        </GrabBox>
+      </group>
+      {
+        /*
+         * Depth-only occluder, the pattern displays and the keyboard use: it paints depth and no
+         * colour, drawn first, so whatever is depth-tested behind the wrist panel — the controller
+         * model, a hand, another object's chrome — is hidden by it. Not pickable: the menu's own
+         * surfaces own pointer input.
+         *
+         * Deliberately a sibling of the `bridge: { kind: "skip" }` group rather than a child of it:
+         * that flag skips an entire subtree from the raylib IR (the menu's visuals travel in the
+         * uikit payload instead), so an occluder inside it would never reach the overlay.
+         */
+      }
+      <mesh
+        position={[0, 0, -WRIST_UI_DEPTH / 2]}
+        renderOrder={-100}
+        {...({ pointerEvents: "none" } as Record<string, unknown>)}
       >
-        <WristMenuUi
-          clock={clockLabel}
-          dateLabel={dateLabel}
-          elapsed={elapsedLabel}
-          layoutActive={buttonState.layoutActive}
-          editActive={buttonState.editActive}
-          onToggle={handleToggle}
-          workspaceLayout={workspaceLayout}
-          onAssignOutput={assignWorkspaceLayoutOutput}
-          onAddOutput={addWorkspaceLayoutOutput}
-          pointerEventsType={menuPointerType}
+        <planeGeometry args={[WRIST_UI_WIDTH, WRIST_UI_HEIGHT]} />
+        <meshBasicMaterial
+          depthTest
+          depthWrite
+          colorWrite={false}
+          side={THREE.DoubleSide}
         />
-      </GrabBox>
+      </mesh>
     </group>
   );
 }

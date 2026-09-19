@@ -1,6 +1,7 @@
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
 import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
+import { getAgentReplPort } from "../classes/utils.ts";
 
 type ActorRegistry = Record<string, ActorId>;
 
@@ -77,14 +78,6 @@ new PostMan(
     },
   } as const,
 );
-
-function getAgentReplPort(): number {
-  const raw = Deno.args.find((arg) => arg.startsWith("--agent-repl-port="));
-  const parsed = raw
-    ? Number(raw.split("=", 2)[1])
-    : Number(Deno.env.get("PETPLAY_AGENT_REPL_PORT"));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3987;
-}
 
 function getRegistrySnapshot() {
   return {

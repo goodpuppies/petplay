@@ -30,6 +30,23 @@ function tryBeginExit(): boolean {
  * Used by both clean and fatal exit; does not log or `Deno.exit`.
  */
 async function petplaySharedShutdown(): Promise<void> {
+  // Stop the root's supervision loop first: it would otherwise start another
+  // OpenVR attach/detach pass against actors that are being torn down.
+  const rootActorId = postalservice.getRootActorId();
+  if (rootActorId != null) {
+    try {
+      await Promise.race([
+        postalservice.PostMessage({
+          target: rootActorId,
+          type: "PREPARESHUTDOWN",
+          payload: null,
+        }, true),
+        wait(3_000),
+      ]);
+    } catch {
+      // Best effort: teardown must not depend on a live root.
+    }
+  }
   // Run native teardown sequentially, but keep each worker alive after its hook.
   // SHUTDOWN_AND_CLOSE acknowledges before its scheduled globalThis.close(),
   // allowing the worker's native destructors to race the next actor's cleanup.
@@ -39,11 +56,17 @@ async function petplaySharedShutdown(): Promise<void> {
     const actor = PostalService.actors.get(actorId);
     try {
       console.log(`[petplay] shutting down actor ${actorId}`);
-      await postalservice.PostMessage({
-        target: actorId,
-        type: "SHUTDOWN",
-        payload: { reason: "process-exit" },
-      }, true);
+      // Bounded: a worker whose transport is already gone (a VR-facing child
+      // that died with SteamVR) never answers, and an unbounded await here
+      // hangs Ctrl-C and the fatal path for the life of the process.
+      await Promise.race([
+        postalservice.PostMessage({
+          target: actorId,
+          type: "SHUTDOWN",
+          payload: { reason: "process-exit" },
+        }, true),
+        wait(5_000),
+      ]);
       console.log(`[petplay] actor shutdown complete ${actorId}`);
     } catch (error) {
       console.warn(`petplay: actor shutdown failed (${actorId}):`, error);
@@ -135,9 +158,43 @@ function isRecoverableDisplayOverlayHostWorkerError(ev: ErrorEvent): boolean {
   return false;
 }
 
+/**
+ * SteamVR-facing workers in supervised mode. `main` keeps the process alive
+ * across SteamVR coming and going, so a death among these is a detach/reattach
+ * for the supervisor rather than a reason to take the whole session down. The
+ * `--novr` path never creates them, so it keeps the fatal policy.
+ */
+const OPENVR_FACING_WORKER_MARKERS = [
+  "./openvr.ts",
+  "./hmd.ts",
+  "./vrcorigin.ts",
+  "./vrcorigincamera.ts",
+  "./displayoverlayhost.ts",
+  // `IPCWorker` child exits (the display overlay host) surface twice: the
+  // transport that carried the actor dies first, then the exit itself. Carries
+  // no script name either way.
+  "transport failed",
+  "ipcworker child exited",
+];
+
+function isRecoverableSupervisedOpenVrWorkerError(ev: ErrorEvent): boolean {
+  if (Deno.args.includes("--novr")) {
+    return false;
+  }
+  const message = String(ev.error ?? ev.message ?? "").toLowerCase();
+  return OPENVR_FACING_WORKER_MARKERS.some((marker) => message.includes(marker));
+}
+
 PostalService.onActorWorkerError = (ev) => {
   if (isRecoverableDisplayOverlayHostWorkerError(ev)) {
     console.warn("petplay: recoverable worker error ignored:", ev.error ?? ev.message);
+    return;
+  }
+  if (isRecoverableSupervisedOpenVrWorkerError(ev)) {
+    console.warn(
+      "petplay: SteamVR worker error ignored (supervisor will reattach):",
+      ev.error ?? ev.message,
+    );
     return;
   }
   void petplayFatalExit(ev.error ?? ev.message);

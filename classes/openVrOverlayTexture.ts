@@ -11,12 +11,18 @@ type OverlayOptions = {
   sortOrder?: number;
   attachToHmd?: boolean;
   flipVertical?: boolean;
+  /** Keys of overlays whose owning process is gone; destroyed before creating. */
+  staleKeys?: string[];
 };
 
 type OverlayTextureReleaseApi = Pick<
   OpenVR.IVROverlay,
   "HideOverlay" | "ClearOverlayTexture" | "WaitFrameSync" | "DestroyOverlay"
 >;
+
+/** SteamVR frees an overlay key a frame after the key's owner is destroyed. */
+const OVERLAY_KEY_IN_USE_RETRIES = 4;
+const OVERLAY_KEY_RELEASE_WAIT_MS = 120;
 
 /**
  * Stop compositor use of an imported GL texture before its owning context is
@@ -77,19 +83,42 @@ export class OpenVrOverlayTexture {
     const overlayHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
     const key = options.key ?? `petplay.webxr.${crypto.randomUUID()}`;
     const name = options.name ?? "PetPlay WebXR";
+    // Ghost overlays from processes that died without cleanup: destroying them
+    // here is the only way they leave the compositor, and their texture would
+    // otherwise keep being drawn.
+    for (const staleKey of options.staleKeys ?? []) {
+      const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+      if (
+        this.overlayClass.FindOverlay(staleKey, staleHandlePtr) !==
+          OpenVR.OverlayError.VROverlayError_None
+      ) {
+        continue;
+      }
+      const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
+      releaseAndDestroyOpenVrOverlay(this.overlayClass, staleHandle);
+      this.overlayClass.WaitFrameSync(OVERLAY_KEY_RELEASE_WAIT_MS);
+    }
     let createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
 
     // A module reload can terminate the old worker before its OpenVR cleanup
-    // runs. SteamVR then retains the key and its stale texture. Replace that
-    // server-side overlay so the new renderer always owns the presented image.
-    if (createError === OpenVR.OverlayError.VROverlayError_KeyInUse) {
+    // runs, and SteamVR then retains the key *and* its stale texture. Destroying
+    // it is not enough on its own: SteamVR frees the key an overlay frame later,
+    // so retry while it is still reported in use.
+    for (
+      let attempt = 0;
+      createError === OpenVR.OverlayError.VROverlayError_KeyInUse &&
+      attempt < OVERLAY_KEY_IN_USE_RETRIES;
+      attempt++
+    ) {
       const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-      this.assertOverlayOk(
-        this.overlayClass.FindOverlay(key, staleHandlePtr),
-        "Find stale overlay",
-      );
-      const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
-      releaseAndDestroyOpenVrOverlay(this.overlayClass, staleHandle);
+      if (
+        this.overlayClass.FindOverlay(key, staleHandlePtr) ===
+          OpenVR.OverlayError.VROverlayError_None
+      ) {
+        const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
+        releaseAndDestroyOpenVrOverlay(this.overlayClass, staleHandle);
+      }
+      this.overlayClass.WaitFrameSync(OVERLAY_KEY_RELEASE_WAIT_MS);
       createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
     }
 
@@ -208,6 +237,34 @@ export class OpenVrOverlayTexture {
       throw new Error(`SetOverlayTexture failed: ${OpenVR.OverlayError[error]}`);
     }
     return true;
+  }
+
+  /**
+   * `IVROverlay::IsOverlayVisible`. `null` means "cannot tell" (no handle yet, or
+   * SteamVR refused the query) — callers must not treat that as invisible.
+   */
+  isVisible(): boolean | null {
+    if (!this.overlayHandle) {
+      return null;
+    }
+    try {
+      return this.overlayClass.IsOverlayVisible(this.overlayHandle);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Re-show an overlay the compositor stopped drawing; `false` when it errors. */
+  show(): boolean {
+    if (!this.overlayHandle) {
+      return false;
+    }
+    try {
+      return this.overlayClass.ShowOverlay(this.overlayHandle) ===
+        OpenVR.OverlayError.VROverlayError_None;
+    } catch {
+      return false;
+    }
   }
 
   cleanup() {

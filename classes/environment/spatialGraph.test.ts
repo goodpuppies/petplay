@@ -2,6 +2,7 @@ import {
   assignWorkspaceOutput,
   assignWorkspaceOutputs,
   attachSpatialNodeToSlot,
+  commitHingePose,
   commitNodeTransform,
   commitSpatialNodeTransformAndSnap,
   createInitialSpatialGraph,
@@ -12,14 +13,51 @@ import {
   getDisplayAttachmentRole,
   getSpatialNodeWorldMatrix,
   initializeWorkspaceLayoutOutputs,
+  normalizeSpatialLayout,
   reconcileWorkspaceOutputs,
   releaseHinge,
   resetSpatialNodeTransform,
   spawnDisplayForWorkspaceOutput,
   spawnHingedDisplay,
   spawnHingedDisplayWithAutomaticOutput,
+  type SpatialGraph,
 } from "./spatialGraph.ts";
+import { DEFAULT_DISPLAY_HEIGHT, DISPLAY_PANEL_WIDTH } from "./displayMetrics.ts";
 import type { WorkspaceOutput } from "./workspaceDisplays.ts";
+import * as THREE from "three/webgpu";
+
+const PANEL_HALF_WIDTH = DISPLAY_PANEL_WIDTH / 2;
+const PANEL_HALF_HEIGHT = DEFAULT_DISPLAY_HEIGHT / 2;
+
+/** World position of a point given in a node's local frame. */
+function worldPointOf(
+  graph: SpatialGraph,
+  nodeId: string,
+  local: [number, number, number],
+): THREE.Vector3 {
+  // Expanded by hand: `three/webgpu` and `@types/three` resolve `Matrix4` to incompatible types.
+  const m = getSpatialNodeWorldMatrix(graph, nodeId).elements;
+  const [x, y, z] = local;
+  return new THREE.Vector3(
+    m[0] * x + m[4] * y + m[8] * z + m[12],
+    m[1] * x + m[5] * y + m[9] * z + m[13],
+    m[2] * x + m[6] * y + m[10] * z + m[14],
+  );
+}
+
+/** Distance between the touching panel edges of a display hinged to `side` of `display-1`. */
+function hingeEdgeGap(graph: SpatialGraph, side: "left" | "right" | "top" | "bottom"): number {
+  const horizontal = side === "left" || side === "right";
+  const positive = side === "right" || side === "top";
+  const half = horizontal ? PANEL_HALF_WIDTH : PANEL_HALF_HEIGHT;
+  const axis = horizontal ? 0 : 1;
+  const parentLocal: [number, number, number] = [0, 0, 0];
+  const childLocal: [number, number, number] = [0, 0, 0];
+  parentLocal[axis] = positive ? half : -half;
+  childLocal[axis] = positive ? -half : half;
+  return worldPointOf(graph, "display-1", parentLocal)
+    .distanceTo(worldPointOf(graph, "display-2", childLocal));
+}
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -383,4 +421,94 @@ Deno.test("reset pose returns an attached element to its slot hinge angle", () =
   graph = resetSpatialNodeTransform(graph, display.id);
   const reset = graph.nodes[display.id];
   assert(reset?.constraint?.kind === "hinge" && reset.constraint.angle === 0, "hinge resets");
+});
+
+Deno.test("a hinged display meets its parent's panel edge on every side", () => {
+  for (const side of ["left", "right", "top", "bottom"] as const) {
+    // The default keyboard occupies the bottom slot; free it so every side can be exercised.
+    const base = detachFromParent(createInitialSpatialGraph(), "keyboard");
+    const graph = spawnHingedDisplay(base, "display-1", side);
+    const gap = hingeEdgeGap(graph, side);
+    assert(gap < 0.0001, `a ${side} hinge should leave no gap between panels (${gap} m)`);
+  }
+});
+
+Deno.test("normalizing a saved layout re-seats a scaled hinge on the panel edge", () => {
+  const graph = spawnHingedDisplay(createInitialSpatialGraph(), "display-1", "right");
+  const parent = graph.nodes["display-1"];
+  const child = graph.nodes["display-2"];
+  assert(parent?.kind === "display" && child != null, "hinge fixture should exist");
+  // Scales changed after the hinge was created: the persisted childPivot no longer matches the
+  // child's rendered size, which is exactly the state an old saved layout loads in.
+  graph.nodes[parent.id] = {
+    ...parent,
+    localTransform: { ...parent.localTransform, scale: [1.7, 1.7, 1.7] },
+  };
+  graph.nodes[child.id] = {
+    ...child,
+    localTransform: { ...child.localTransform, scale: [0.9, 0.9, 0.9] },
+  };
+  assert(hingeEdgeGap(graph, "right") > 0.05, "a stale pivot should separate the scaled panels");
+
+  const normalized = normalizeSpatialLayout(graph);
+  const gap = hingeEdgeGap(normalized, "right");
+  assert(gap < 0.0001, `normalization should re-seat the hinge (${gap} m gap left)`);
+});
+
+Deno.test("normalizing a layout saved under the old panel size closes the hinge gap", () => {
+  const graph = spawnHingedDisplay(createInitialSpatialGraph(), "display-1", "right");
+  const child = graph.nodes["display-2"];
+  assert(child?.constraint?.kind === "hinge", "hinge fixture should exist");
+  // A layout written before the panel metrics were corrected: the whole attachment table, slot
+  // pivots included, is stale, not just the node's own pivot.
+  const staleDisplayPivots: Record<string, [number, number, number]> = {
+    left: [-0.52, 0, 0],
+    right: [0.52, 0, 0],
+    top: [0, 0.285, 0.025],
+    bottom: [0, -0.285, 0.025],
+  };
+  for (const slot of Object.values(graph.hitboxes)) {
+    slot.attachments.display = {
+      ...slot.attachments.display!,
+      parentPivot: staleDisplayPivots[slot.side],
+    };
+  }
+  graph.nodes[child.id] = {
+    ...child,
+    constraint: { ...child.constraint, parentPivot: [0.52, 0, 0], childPivot: [-0.52, 0, 0] },
+  };
+  assert(hingeEdgeGap(graph, "right") > 0.1, "the old table should leave a visible gap");
+
+  const normalized = normalizeSpatialLayout(graph);
+  const gap = hingeEdgeGap(normalized, "right");
+  assert(gap < 0.0001, `the rebuilt table should close the gap (${gap} m left)`);
+});
+
+Deno.test("resizing a hinged panel keeps its hinged edge on the pivot", () => {
+  let graph = spawnHingedDisplay(createInitialSpatialGraph(), "display-1", "right");
+  graph = commitHingePose(graph, "display-2", 0.4, 1.5);
+  const resized = graph.nodes["display-2"];
+  assert(resized?.constraint?.kind === "hinge", "the node should still be hinged");
+  assert(resized.localTransform.scale[0] === 1.5, "the uniform scale should be committed");
+  assert(resized.constraint.angle === 0.4, "the angle should survive the resize");
+  assert(
+    Math.abs(resized.constraint.childPivot[0] + PANEL_HALF_WIDTH * 1.5) < 0.00001,
+    "the child pivot must follow the panel's new half-extent",
+  );
+  const gap = hingeEdgeGap(graph, "right");
+  assert(gap < 0.0001, `a resized hinge must stay flush (${gap} m gap)`);
+});
+
+Deno.test("normalization keeps the keyboard tray hang and is a no-op when already correct", () => {
+  const graph = createInitialSpatialGraph();
+  const keyboard = graph.nodes.keyboard;
+  assert(keyboard?.constraint?.kind === "hinge", "keyboard should start hinged");
+  assert(
+    keyboard.constraint.parentPivot[1] < -PANEL_HALF_HEIGHT,
+    "the keyboard tray pivot should hang below the panel edge",
+  );
+  assert(
+    normalizeSpatialLayout(graph) === graph,
+    "an already-normalized layout should be returned unchanged",
+  );
 });

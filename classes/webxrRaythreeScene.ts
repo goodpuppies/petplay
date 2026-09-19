@@ -88,7 +88,7 @@ export class WebXRRaythreeSceneBridge {
   }
 }
 
-function getSceneBackgroundColor(
+export function getSceneBackgroundColor(
   scene: object,
 ): [number, number, number, number] {
   const background =

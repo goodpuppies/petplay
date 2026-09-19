@@ -1606,7 +1606,19 @@ export class WebXRRaythreeRaylibRenderer {
           const nativeMesh = this.geometries.get(instance.geometryId);
           const nativeMaterial = this.materials.get(instance.materialId);
           if (nativeMesh == null || nativeMaterial == null) {
+            debugLog(
+              `hud-over-ui skip node=${instance.nodeId} geometry=${instance.geometryId} material=${instance.materialId} ` +
+                `mesh=${nativeMesh != null} materialAsset=${nativeMaterial != null}`,
+            );
             continue;
+          }
+          if (WEBXR_RAYTHREE_DEBUG) {
+            debugLog(
+              `hud-over-ui draw node=${instance.nodeId} geometry=${instance.geometryId} verts=${nativeMesh.mesh.vertexCount} ` +
+                `tris=${nativeMesh.mesh.triangleCount} indices=${
+                  (nativeMesh.mesh.indices as unknown as bigint) === ZERO_POINTER ? "no" : "yes"
+                }`,
+            );
           }
           this.drawInstance(nativeMesh, nativeMaterial, instance);
         }

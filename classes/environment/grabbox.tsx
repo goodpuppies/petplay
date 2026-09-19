@@ -68,6 +68,64 @@ export type GrabBoxProps = {
 };
 
 /**
+ * Bar cross-section in meters. The headset sees these bars at full eye
+ * resolution, where 2 mm already reads as a clear line; the desktop preview
+ * only has 1080p over the same FOV, so it is worth capturing larger to inspect
+ * them.
+ */
+export const GRABBOX_CHROME_THICKNESS = 0.002;
+
+/**
+ * The box outline as twelve thin bars.
+ *
+ * This used to be a `lineSegments` with a raythree `bridge`, which the lowerer
+ * turns into merged tube geometry: the overlay extracts and uploads it, issues
+ * the draw, and nothing appears — grab boxes had no chrome in the headset or in
+ * captures. Meshes draw on both the raylib and WebGPU paths, so the outline is
+ * built from boxes instead of lines. `raythreeHudOverUi` keeps it above the
+ * uikit pass that draws the keys and panels over everything before it.
+ */
+function GrabBoxFrame(
+  { width, height, depth, color }: { width: number; height: number; depth: number; color: THREE.Color },
+) {
+  const t = GRABBOX_CHROME_THICKNESS;
+  const hx = width / 2;
+  const hy = height / 2;
+  const hz = depth / 2;
+  const bars: Array<{ position: [number, number, number]; size: [number, number, number] }> = [];
+  for (const y of [-hy, hy]) {
+    for (const z of [-hz, hz]) {
+      bars.push({ position: [0, y, z], size: [width + t, t, t] });
+    }
+  }
+  for (const x of [-hx, hx]) {
+    for (const z of [-hz, hz]) {
+      bars.push({ position: [x, 0, z], size: [t, height + t, t] });
+    }
+  }
+  for (const x of [-hx, hx]) {
+    for (const y of [-hy, hy]) {
+      bars.push({ position: [x, y, 0], size: [t, t, depth + t] });
+    }
+  }
+  return (
+    <>
+      {bars.map((bar, index) => (
+        <mesh
+          key={index}
+          position={bar.position}
+          userData={{ raythreeHudOverUi: true }}
+          {...({ pointerEvents: "none" } as Record<string, unknown>)}
+        >
+          <boxGeometry args={bar.size} />
+          <meshBasicMaterial color={color} toneMapped={false} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+/**
  * Canonical spatial-object boundary for an arbitrary subtree (from one widget to a complete OS UI).
  * It owns manipulation, push/pull, interaction hull, chrome, and spatial metadata in one place.
  *
@@ -115,21 +173,6 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     }
   }, []);
   const color = useMemo(() => new THREE.Color(lineColor), [lineColor]);
-  const edgeGeometry = useMemo(() => {
-    if (wireframeMode !== "edges") {
-      return null;
-    }
-    const box = new THREE.BoxGeometry(width, height, depth);
-    const edges = new THREE.EdgesGeometry(box);
-    box.dispose();
-    return edges;
-  }, [depth, height, width, wireframeMode]);
-
-  useEffect(() => {
-    return () => {
-      edgeGeometry?.dispose();
-    };
-  }, [edgeGeometry]);
 
   const shellPointerMods = !shellRayPickable
     ? ({
@@ -169,19 +212,11 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
       onPointerLeave={handleHoverLeave}
       userData={{ ...userData, grabbox: true, grabboxSize: [width, height, depth] as const }}
     >
-      {wireframeMode === "edges" && edgeGeometry != null
+      {wireframeMode === "edges"
         ? (
           <>
             {visibleChrome
-              ? (
-                <lineSegments
-                  geometry={edgeGeometry as unknown as THREE.BufferGeometry}
-                  userData={{ bridge: { radius: 0.001, radialSegments: 4 } }}
-                  {...({ pointerEvents: "none" } as Record<string, unknown>)}
-                >
-                  <lineBasicMaterial color={color} />
-                </lineSegments>
-              )
+              ? <GrabBoxFrame width={width} height={height} depth={depth} color={color} />
               : null}
             {interactionHull
               ? (

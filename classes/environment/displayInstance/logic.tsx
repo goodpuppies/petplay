@@ -11,11 +11,13 @@ import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { hmd34FromColumnMajor4x4 } from "../../openvrTransform.ts";
 import {
-  DEFAULT_DISPLAY_HEIGHT,
-  DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
   DisplayInstanceFrame,
   type DisplayInstanceFrameProps,
 } from "./ui.tsx";
+import {
+  DEFAULT_DISPLAY_HEIGHT,
+  DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+} from "../displayMetrics.ts";
 import type { WorkspaceRect } from "../workspaceDisplays.ts";
 
 // deno-lint-ignore no-explicit-any

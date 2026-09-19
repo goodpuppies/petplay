@@ -2,12 +2,17 @@ import type {
   KeyboardJsonKeyCell,
   KeyboardLayoutJson,
   KeyboardLayoutMode,
+  KeyboardLocale,
   LayoutFormat,
   ModifierSnapshot,
   NormalizedKeyFace,
 } from "./types.ts";
 import { keyFaceToToken } from "./theme.ts";
-import { usQwertyFromScan } from "./usLayout.ts";
+import {
+  getKeyboardLocale,
+  keyLegendFromScan,
+  localeKeyFor,
+} from "./keyboardLocale.ts";
 
 export function isSpacer(
   c: KeyboardJsonKeyCell,
@@ -28,6 +33,7 @@ export function hexFromCell(c: KeyboardJsonKeyCell): string {
 export function normalizeKeyFace(
   pre: { row: number; col: number; ns: string },
   c: KeyboardJsonKeyCell,
+  locale: KeyboardLocale,
 ): NormalizedKeyFace | { spacer: true; width: number; height: number } | null {
   if (isSpacer(c)) {
     return {
@@ -61,18 +67,15 @@ export function normalizeKeyFace(
     };
   }
   const hx = hexFromCell(c);
-  const m = usQwertyFromScan(
-    hx,
-    { shift: false, caps: false },
-    c.respectCapsLock ?? false,
-  );
+  const legend = keyLegendFromScan(locale, hx, { shift: false, caps: false }, false);
+  const secondary = c.secondaryLabel ?? legend.altGrLabel;
   return {
     id: `${pre.ns}-r${pre.row}-c${pre.col}-${hx}`,
     scanCodeHex: hx,
-    displayMain: c.label ? c.label : m.main,
-    displayShift: c.label ? c.label : m.shiftLabel,
-    displayAlt: c.secondaryLabel ?? "",
-    hasSecondary: Boolean(c.secondaryLabel),
+    displayMain: c.label ? c.label : legend.main,
+    displayShift: c.label ? c.label : legend.shiftLabel,
+    displayAlt: secondary ?? "",
+    hasSecondary: secondary != null,
     widthMul: c.width ?? 1,
     heightMul: c.height == null ? 1 : c.height,
     fontSize: c.fontSize ?? 20,
@@ -81,7 +84,10 @@ export function normalizeKeyFace(
     iconSize: c.iconSize,
     audio: c.audio,
     labelOverride: c.label,
-    respectCapsLock: c.respectCapsLock ?? false,
+    // Caps Lock follows the locale’s letters, not the US letter scancode rows:
+    // JSON only marks the US letters, and `ö`/`ä`/`å` are not among them.
+    respectCapsLock: (c.respectCapsLock ?? false) ||
+      (localeKeyFor(locale, hx)?.letter ?? false),
     toggle: c.toggle ?? false,
     sticky: c.sticky ?? false,
   };
@@ -93,6 +99,7 @@ export function mapRow(
   row: KeyboardJsonKeyCell[],
   rowIndex: number,
   namespace: string,
+  locale: KeyboardLocale,
 ): RowItem[] {
   const out: RowItem[] = [];
   for (let i = 0; i < row.length; i++) {
@@ -100,6 +107,7 @@ export function mapRow(
     const n = normalizeKeyFace(
       { row: rowIndex, col: i, ns: namespace },
       cell,
+      locale,
     );
     if (n != null) {
       out.push(n);
@@ -111,6 +119,7 @@ export function mapRow(
 export function resolveLabel(
   face: NormalizedKeyFace,
   mods: ModifierSnapshot,
+  locale: KeyboardLocale,
 ): string {
   if (face.labelOverride) {
     return face.labelOverride;
@@ -118,9 +127,10 @@ export function resolveLabel(
   if (face.useVirtualKeyCode) {
     return face.displayMain;
   }
-  const { main } = usQwertyFromScan(
+  const { main } = keyLegendFromScan(
+    locale,
     face.scanCodeHex,
-    { shift: mods.shift, caps: mods.caps },
+    { shift: mods.shift, caps: mods.caps, altGr: mods.rightAlt },
     face.respectCapsLock,
   );
   return main;
@@ -129,6 +139,7 @@ export function resolveLabel(
 export function getMainGroupRows(
   layout: KeyboardLayoutJson,
   format: LayoutFormat,
+  locale: KeyboardLocale,
 ): {
   mainRows: RowItem[][];
   navRows: RowItem[][];
@@ -144,29 +155,90 @@ export function getMainGroupRows(
     : format === "jis"
     ? layout.keyboardGroups.mainGroup.jisRows
     : layout.keyboardGroups.mainGroup.ansiRows;
-  const mainRows = mainGroup.map((row, ri) => mapRow(row, ri, "main"));
+  const mainRows = mainGroup.map((row, ri) => mapRow(row, ri, "main", locale));
   const navRows = layout.keyboardGroups.navigationGroup.rows.map((row, ri) =>
-    mapRow(row, ri, "nav")
+    mapRow(row, ri, "nav", locale)
   );
   const numpadRows = layout.keyboardGroups.numpadGroup.rows.map((row, ri) =>
-    mapRow(row, ri, "numpad")
+    mapRow(row, ri, "numpad", locale)
   );
   const rowH = keyWidth * 0.9;
   return { mainRows, navRows, numpadRows, rowH, keyWidth, keyPadding, keyGroupsPadding };
+}
+
+export type KeyboardColumn = {
+  id: "main" | "nav" | "numpad";
+  rows: RowItem[][];
+};
+
+const ARROW_ICONS: Record<string, true> = { up: true, down: true, left: true, right: true };
+
+/**
+ * Replace the nav rows above the arrow cluster with spacers, keeping the row
+ * count so the cluster lands at the bottom of the board. An arrow row is one
+ * whose keys are all arrow icons; the cluster is the trailing run of them.
+ */
+function navRowsWithArrowsOnly(navRows: RowItem[][]): RowItem[][] {
+  let clusterStart = navRows.length;
+  for (let i = navRows.length - 1; i >= 0; i--) {
+    const keys = navRows[i]!.filter((cell): cell is NormalizedKeyFace =>
+      !("spacer" in cell && cell.spacer)
+    );
+    if (
+      keys.length === 0 ||
+      !keys.every((key) => key.icon != null && ARROW_ICONS[key.icon] === true)
+    ) {
+      break;
+    }
+    clusterStart = i;
+  }
+  return navRows.map((row, i) =>
+    i < clusterStart
+      ? row.map((): RowItem => ({ spacer: true, width: 1, height: 1 }))
+      : row
+  );
+}
+
+/**
+ * Columns a layout mode renders, in board order. The window UI and
+ * [keyboardContentBoundsUnits] both go through this so the grab box cannot
+ * describe a board other than the one drawn.
+ */
+export function keyboardColumns(
+  mode: KeyboardLayoutMode,
+  rows: { mainRows: RowItem[][]; navRows: RowItem[][]; numpadRows: RowItem[][] },
+): KeyboardColumn[] {
+  const columns: KeyboardColumn[] = [{ id: "main", rows: rows.mainRows }];
+  if (mode === "compact") {
+    return columns;
+  }
+  columns.push({
+    id: "nav",
+    rows: mode === "arrows" ? navRowsWithArrowsOnly(rows.navRows) : rows.navRows,
+  });
+  if (mode === "full") {
+    columns.push({ id: "numpad", rows: rows.numpadRows });
+  }
+  return columns;
 }
 
 /**
  * Axis-aligned size in the same “layout units” as `keyWidth` / `rowH`
  * (multiply by uikit `pixelSize` for scene size). Matches
  * [keyboardUi](keyboardUi.tsx) for the given [KeyboardLayoutMode].
+ *
+ * The locale only picks *legends*, which are not measured; it is threaded
+ * through because it also picks the format when the caller has none (`fi` is
+ * ISO, one key wider than ANSI).
  */
 export function keyboardContentBoundsUnits(
   layout: KeyboardLayoutJson,
   format: LayoutFormat,
   mode: KeyboardLayoutMode = "compact",
+  locale: KeyboardLocale = getKeyboardLocale(),
 ): { width: number; height: number; depth: number } {
   const { mainRows, navRows, numpadRows, rowH, keyWidth, keyPadding, keyGroupsPadding } =
-    getMainGroupRows(layout, format);
+    getMainGroupRows(layout, format, locale);
   const shellPad = keyGroupsPadding + 2;
   const packH = 2 * shellPad;
 
@@ -191,21 +263,17 @@ export function keyboardContentBoundsUnits(
     nRows * rowH + Math.max(0, nRows - 1) * keyPadding + packH;
 
   const wMain = colWidth(mainRows);
-  if (mode === "compact") {
+  const columns = keyboardColumns(mode, { mainRows, navRows, numpadRows });
+  if (columns.length === 1) {
     const h = colH(mainRows.length);
     const depth = rowH * 0.55;
     return { width: wMain, height: h, depth };
   }
 
-  const wNav = colWidth(navRows);
-  const wNum = colWidth(numpadRows);
-  const totalW = wMain + wNav + wNum + 2 * keyGroupsPadding;
+  const totalW = columns.reduce((sum, column) => sum + colWidth(column.rows), 0) +
+    (columns.length - 1) * keyGroupsPadding;
 
-  const h = Math.max(
-    colH(mainRows.length),
-    colH(navRows.length),
-    colH(numpadRows.length),
-  );
+  const h = Math.max(...columns.map((column) => colH(column.rows.length)));
   const depth = rowH * 0.55;
   return { width: totalW, height: h, depth };
 }
@@ -218,8 +286,9 @@ export function keyboardContentBoundsMeters(
   format: LayoutFormat,
   pixelSize: number,
   mode: KeyboardLayoutMode = "compact",
+  locale: KeyboardLocale = getKeyboardLocale(),
 ): { width: number; height: number; depth: number } {
-  const u = keyboardContentBoundsUnits(layout, format, mode);
+  const u = keyboardContentBoundsUnits(layout, format, mode, locale);
   return {
     width: u.width * pixelSize,
     height: u.height * pixelSize,

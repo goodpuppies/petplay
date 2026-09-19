@@ -1,12 +1,14 @@
 /**
- * Framebuffer capture for the desktop window, for visual inspection of UI work.
+ * Framebuffer capture for the desktop window and for XR render targets, for
+ * visual inspection of UI work.
  *
  * The GL read **must** happen inside the render loop. Calling
  * `LoadImageFromScreen` from an agent-REPL `/eval` races the loop writing the
  * same target and segfaults the process, and native crashes are not catchable
  * by JS error guards. So the REPL only ever sets a flag here (pure JS, safe),
  * and {@link runPendingScreenCapture} does the actual read from inside the
- * loop, after `EndDrawing`.
+ * loop, after `EndDrawing`. The same applies to {@link writeTexturePng}, which
+ * reads a render target the loop is drawing into.
  *
  * Encoding is pngjs rather than raylib's `ExportImage` so the pixel buffer is
  * already in JS — the same read can later feed diffing or thumbnails without a

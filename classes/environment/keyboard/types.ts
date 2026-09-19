@@ -48,10 +48,49 @@ export type KeyboardLayoutJson = {
 export type LayoutFormat = "ansi" | "iso" | "jis";
 
 /**
- * - `compact` — main key block only (default): hides navigation (arrows, home…end) and numpad.
- * - `full` — main + nav + numpad.
+ * Keyboard locals with a legend table — see [keyboardLocale](keyboardLocale.ts).
+ * A new locale needs its table *and* its id here.
  */
-export type KeyboardLayoutMode = "compact" | "full";
+export type KeyboardLocaleId = "us" | "fi";
+
+/** Legends for one physical key, per shift state. */
+export type KeyboardLocaleKey = {
+  base: string;
+  shift: string;
+  /** AltGr (right alt / level 3) legend. Absent = the key has no AltGr entry. */
+  altGr?: string;
+  /** Caps Lock swaps [base] and [shift], as it does for letters. */
+  letter?: boolean;
+};
+
+/**
+ * One typing locale: the legends printed on the caps, plus the physical format
+ * that carries every key the locale reaches.
+ *
+ * Legends are set-1 make-codes (hex) because that is the scancode space
+ * [Keyboard.json](resources/Keyboard.json) is written in and the space the OS
+ * input sinks deliver; the characters a key *produces* are still decided by the
+ * host layout, which should be the same one the locale names.
+ */
+export type KeyboardLocale = {
+  id: KeyboardLocaleId;
+  /** Human-readable name (logs, future settings UI). */
+  label: string;
+  /** `Keyboard.json` row set used when [WorldKeyboardPanelProps.layoutFormat] is not set. */
+  format: LayoutFormat;
+  /** Key legends by set-1 make-code. */
+  keys: Record<string, KeyboardLocaleKey>;
+};
+
+/**
+ * - `compact` - main key block only.
+ * - `arrows` - main block plus the nav group's arrow cluster, which is what the
+ *   JSON's `navigationGroup` ends with (`SP up SP` / `left down right`). The rows
+ *   above the cluster stay as spacers so it lines up with the bottom of the main
+ *   block, the way a physical nav cluster does.
+ * - `full` - main + nav + numpad.
+ */
+export type KeyboardLayoutMode = "compact" | "arrows" | "full";
 
 export type NormalizedKeyFace = {
   id: string;
@@ -96,7 +135,7 @@ export type KeyboardLogicEvent = {
    * Used to derive extended + scan for `SendInput`.
    */
   scanCodeHex: string;
-  /** Best-effort US QWERTY char with current modifiers, if applicable. */
+  /** Best-effort char for the active locale and modifiers, if applicable. */
   char?: string;
   /** Set when the cell used `useVirtualKeyCode` — JSON `keycode` (e.g. `F1`, `ESCAPE`). */
   virtualKeyName?: string;
@@ -126,8 +165,10 @@ export type WorldKeyboardPanelProps = {
   onKey?: KeyboardSink;
   /** Optional: override layout path (default: `resources/Keyboard.json`). */
   layoutUrl?: URL;
-  /** Row set from `Keyboard.json` (default `ansi`). */
+  /** Row set from `Keyboard.json` (default: the locale’s own format). */
   layoutFormat?: LayoutFormat;
+  /** Legend locale (default: [getKeyboardLocale](keyboardLocale.ts) — `--keyboard-locale` / env). */
+  locale?: KeyboardLocaleId;
   /** `compact` = main only (default); `full` = add nav + numpad. */
   layoutMode?: KeyboardLayoutMode;
   /**

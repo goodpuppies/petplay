@@ -5,6 +5,27 @@ export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(() => resolve(), ms));
 }
 
+/**
+ * Control port of the `agentRepl` actor. Server and clients resolve it the same
+ * way — `--agent-repl-port=<port>`, then `PETPLAY_AGENT_REPL_PORT`, then 3987 —
+ * so a client can be pointed at a server that is not on the default port.
+ */
+/** Default agent-REPL port; `--agent-repl-port` / `PETPLAY_AGENT_REPL_PORT` override it. */
+export const DEFAULT_AGENT_REPL_PORT = 3987;
+
+export function getAgentReplPort(): number {
+  const fromArgs = Deno.args
+    .find((arg) => arg.startsWith("--agent-repl-port="))
+    ?.split("=", 2)[1];
+  const parsed = Number(fromArgs ?? Deno.env.get("PETPLAY_AGENT_REPL_PORT"));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_AGENT_REPL_PORT;
+}
+
+/** `http://127.0.0.1:<agentReplPort>` — the server's actor message surface. */
+export function getAgentReplBaseUrl(): string {
+  return `http://127.0.0.1:${getAgentReplPort()}`;
+}
+
 type ActorAddress = string;
 
 interface ActorNode {

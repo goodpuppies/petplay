@@ -14,3 +14,4 @@ tests/openvr_raylib_overlay_probe/native_timing.exp
 tests/openvr_raylib_overlay_probe/native_timing.lib
 tests/openvr_raylib_overlay_probe/native_timing.obj
 .codex-runlogs/
+_scratch/

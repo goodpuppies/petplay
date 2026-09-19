@@ -7,6 +7,11 @@ import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
 import { createMainControllerGate } from "../mainController.ts";
 import type { DisplayMouseButton, DisplayMouseSink } from "./mouse.ts";
 import type { HandleOptions, HandleStore } from "@pmndrs/handle";
+import {
+  DEFAULT_DISPLAY_DEPTH,
+  DEFAULT_DISPLAY_HEIGHT,
+  DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+} from "../displayMetrics.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -14,18 +19,6 @@ extend(THREE as any);
 declare module "@react-three/fiber/webgpu" {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
-
-/** 16:9 content aspect (width = height × this value). */
-export const DISPLAY_ASPECT_WIDTH_OVER_HEIGHT = 16 / 9;
-
-/** Default full-height of the display frame in scene units (meters). */
-export const DEFAULT_DISPLAY_HEIGHT = 0.5;
-
-/** Default depth of the thin box “screen” volume. */
-export const DEFAULT_DISPLAY_DEPTH = 0.04;
-
-/** @deprecated Use [DEFAULT_GRABBOX_LINE_COLOR](grabbox.tsx). */
-export const DEFAULT_LINE_COLOR = DEFAULT_GRABBOX_LINE_COLOR;
 
 const STABLE_CLICK_HOLD_MS = 180;
 
@@ -97,7 +90,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     {
       height = DEFAULT_DISPLAY_HEIGHT,
       depth = DEFAULT_DISPLAY_DEPTH,
-      lineColor = DEFAULT_LINE_COLOR,
+      lineColor = DEFAULT_GRABBOX_LINE_COLOR,
       shellRayPickable = false,
       rayHitSurface = true,
       onMouse,

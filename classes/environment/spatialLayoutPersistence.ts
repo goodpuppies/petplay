@@ -1,5 +1,9 @@
 import { dirname, join } from "@std/path";
-import type { SpatialGraph, SpatialTransform } from "./spatialGraph.ts";
+import {
+  normalizeSpatialLayout,
+  type SpatialGraph,
+  type SpatialTransform,
+} from "./spatialGraph.ts";
 
 export const SPATIAL_LAYOUT_VERSION = 1;
 export const SPATIAL_LAYOUT_FILENAME = "spatial-layout.json";
@@ -141,7 +145,8 @@ export function getSpatialLayoutPath(): string {
 
 export function loadSpatialLayoutSync(path = getSpatialLayoutPath()): SpatialGraph | null {
   try {
-    return parseSpatialLayout(Deno.readTextFileSync(path));
+    const graph = parseSpatialLayout(Deno.readTextFileSync(path));
+    return graph == null ? null : normalizeSpatialLayout(graph);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return null;
     console.warn(`[spatial-layout] could not load ${path}`, error);

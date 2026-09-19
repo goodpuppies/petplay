@@ -36,6 +36,31 @@ const EMPTY_POINTERS = (): OpenVrRuntimePointers => ({
   renderModels: null,
 });
 
+/**
+ * Presence probes that need the library but no client runtime — what a
+ * supervisor polls while SteamVR is missing.
+ */
+export type OpenVrPresence = {
+  libraryLoaded: boolean;
+  runtimeInstalled: boolean;
+  hmdPresent: boolean;
+};
+
+/**
+ * `VREvent_t` is copied whole by `PollNextEvent`; 256B is a comfortable
+ * over-allocation (the struct starts with `eventType` and is far smaller), so
+ * reading the type needs no union layout knowledge.
+ */
+const EVENT_BUFFER_BYTES = 256;
+const MAX_EVENTS_PER_POLL = 32;
+
+/** Events that mean the runtime itself is going away. */
+const RUNTIME_EXIT_EVENTS = new Set<number>([
+  OpenVR.EventType.VREvent_Quit,
+  OpenVR.EventType.VREvent_DriverRequestedQuit,
+  OpenVR.EventType.VREvent_RestartRequested,
+]);
+
 /** Owns one process-local OpenVR client runtime and its acquired interfaces. */
 export class OpenVrRuntime {
   private pointers = EMPTY_POINTERS();
@@ -43,14 +68,72 @@ export class OpenVrRuntime {
   private applications: OpenVR.IVRApplications | null = null;
   private applicationManifestPath: string | null = null;
   private ownsApplicationManifest = false;
+  /** `IVRSystem` wrapper, kept for event polling only. */
+  private system: OpenVR.IVRSystem | null = null;
+  private readonly eventBuffer = new Uint8Array(EVENT_BUFFER_BYTES);
+  private readonly eventTypeView = new DataView(this.eventBuffer.buffer);
 
   constructor(private readonly logName = "OpenVR") {}
+
+  /** True while this runtime holds a live client runtime. */
+  isActive(): boolean {
+    return this.active;
+  }
+
+  /**
+   * `VR_IsRuntimeInstalled` / `VR_IsHmdPresent` without initializing a client
+   * runtime. Loading the library is part of probing — it is cheap, and leaving
+   * it loaded makes the following `initialize()` cheaper.
+   */
+  probePresence(): OpenVrPresence {
+    if (!this.ensureLibrary()) {
+      return { libraryLoaded: false, runtimeInstalled: false, hmdPresent: false };
+    }
+    return {
+      libraryLoaded: true,
+      runtimeInstalled: OpenVR.VR_IsRuntimeInstalled(),
+      hmdPresent: OpenVR.VR_IsHmdPresent(),
+    };
+  }
+
+  /**
+   * Drain queued `IVRSystem` events (bounded, so a chatty runtime cannot stall
+   * a poll). `exiting` means SteamVR asked the client to quit or restart: the
+   * caller must detach dependants before releasing this runtime, because the
+   * interface vtables become dangling the moment `shutdown()` runs.
+   */
+  pollRuntimeEvents(): {
+    exiting: boolean;
+    handled: number;
+    lastEventType: number | null;
+    exitEventType: number | null;
+  } {
+    const system = this.system;
+    if (system == null || !this.active) {
+      return { exiting: false, handled: 0, lastEventType: null, exitEventType: null };
+    }
+    let handled = 0;
+    let lastEventType: number | null = null;
+    let exitEventType: number | null = null;
+    for (let i = 0; i < MAX_EVENTS_PER_POLL; i++) {
+      const eventPointer = Deno.UnsafePointer.of(this.eventBuffer) as
+        | Deno.PointerValue<OpenVR.Event>
+        | null;
+      if (eventPointer == null) break;
+      if (!system.PollNextEvent(eventPointer, EVENT_BUFFER_BYTES)) break;
+      const eventType = this.eventTypeView.getUint32(0, true);
+      handled += 1;
+      lastEventType = eventType;
+      if (RUNTIME_EXIT_EVENTS.has(eventType)) exitEventType = eventType;
+    }
+    return { exiting: exitEventType != null, handled, lastEventType, exitEventType };
+  }
 
   initialize(request: OpenVrRuntimeRequest): OpenVrRuntimePointers {
     if (this.active) return this.pointers;
 
     console.log(`[${this.logName}] loading OpenVR bindings`);
-    if (!OpenVR.initializeOpenVR(getOpenVrLibraryPath())) {
+    if (!this.ensureLibrary()) {
       throw new Error("Failed to load OpenVR");
     }
 
@@ -61,7 +144,8 @@ export class OpenVrRuntime {
     );
     const initError = new Deno.UnsafePointerView(errorPointer).getInt32();
     if (initError !== OpenVR.InitError.VRInitError_None) {
-      OpenVR.closeOpenVR();
+      // Keep the library loaded: a supervisor polling for SteamVR retries this
+      // path every few seconds, and dlopen/dlclose churn per attempt is pointless.
       throw new Error(
         `Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`,
       );
@@ -102,6 +186,11 @@ export class OpenVrRuntime {
         "IVRRenderModels",
         errorPointer,
       );
+      // Event polling is the only reason to wrap `IVRSystem` here; consumers
+      // build their own wrappers from the raw pointer in their own worker.
+      this.system = this.pointers.system == null
+        ? null
+        : new OpenVR.IVRSystem(this.pointers.system);
       LogChannel.log("actor", `${this.logName} runtime initialized.`);
       return this.pointers;
     } catch (error) {
@@ -116,6 +205,7 @@ export class OpenVrRuntime {
     if (this.active && OpenVR.isInitialized()) {
       OpenVR.VR_ShutdownInternal();
     }
+    this.system = null;
     this.pointers = EMPTY_POINTERS();
     this.active = false;
     OpenVR.closeOpenVR();
@@ -128,12 +218,20 @@ export class OpenVrRuntime {
    */
   deferReleaseToProcessExit(): void {
     this.cleanupApplicationIdentity(false);
+    this.system = null;
     this.pointers = EMPTY_POINTERS();
     this.active = false;
     LogChannel.log(
       "actor",
       `${this.logName} runtime release deferred to process exit.`,
     );
+  }
+
+  private ensureLibrary(): boolean {
+    // Idempotent: re-calling `initializeOpenVR` would leak the previous
+    // `Deno.DynamicLibrary` handle, and a probe may have loaded it already.
+    if (OpenVR.isInitialized()) return true;
+    return OpenVR.initializeOpenVR(getOpenVrLibraryPath());
   }
 
   private identifyApplication(

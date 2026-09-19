@@ -3,18 +3,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import type { HandleOptions, HandleStore } from "@pmndrs/handle";
-import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
+import { GRABBOX_CHROME_THICKNESS, GrabBox } from "../grabbox.tsx";
 import {
   getDefaultKeyboardLayoutSync,
   isDefaultKeyboardLayoutUrl,
 } from "./defaultLayoutPreload.ts";
 import {
   DEFAULT_KEYBOARD_JSON_URL,
-  DEFAULT_KEYBOARD_LAYOUT_MODE,
+  getKeyboardLayoutMode,
   DEFAULT_KEYBOARD_PIXEL_SIZE,
   KeyboardFromJson,
 } from "./keyboardUi.tsx";
 import { keyboardContentBoundsUnits } from "./keyboardLayout.ts";
+import { keyboardFormatFor, resolveKeyboardLocale, useKeyboardLocale } from "./keyboardLocale.ts";
 import { stripJsonComments } from "./parseJsonComments.ts";
 import type { KeyboardLayoutJson, WorldKeyboardPanelProps } from "./types.ts";
 
@@ -32,11 +33,13 @@ export const DEFAULT_KEYBOARD_SCALE: [number, number, number] = [0.38, 0.38, 0.3
 
 export {
   DEFAULT_KEYBOARD_JSON_URL,
-  DEFAULT_KEYBOARD_LAYOUT_MODE,
+  getKeyboardLayoutMode,
   DEFAULT_KEYBOARD_PIXEL_SIZE,
 } from "./keyboardUi.tsx";
 
 const FALLBACK_GRAB: readonly [number, number, number] = [0.5, 0.2, 0.04];
+/** Keyboard chrome reads magenta so it is never mistaken for a display's box. */
+const KEYBOARD_GRABBOX_LINE_COLOR = 0xff00ff;
 
 export type KeyboardPanelProps = WorldKeyboardPanelProps & {
   manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
@@ -57,10 +60,11 @@ export function KeyboardPanel(
     scale = DEFAULT_KEYBOARD_SCALE,
     onKey,
     layoutUrl = DEFAULT_KEYBOARD_JSON_URL,
-    layoutFormat = "ansi",
+    layoutFormat,
+    locale: localeProp,
     contentOffset = [0, 0, 0],
-    grabLineColor = DEFAULT_GRABBOX_LINE_COLOR,
-    layoutMode = DEFAULT_KEYBOARD_LAYOUT_MODE,
+    grabLineColor = KEYBOARD_GRABBOX_LINE_COLOR,
+    layoutMode = getKeyboardLayoutMode(),
     manipulationTargetRef,
     manipulationOptions,
     manipulationStoreRef,
@@ -94,11 +98,15 @@ export function KeyboardPanel(
     };
   }, [layoutUrl]);
 
+  const storeLocale = useKeyboardLocale();
+  const locale = localeProp == null ? storeLocale : resolveKeyboardLocale(localeProp);
+  const format = keyboardFormatFor(locale, layoutFormat);
+
   const boundsUnits = useMemo(
     () => (layoutReady != null
-      ? keyboardContentBoundsUnits(layoutReady, layoutFormat, layoutMode)
+      ? keyboardContentBoundsUnits(layoutReady, format, layoutMode, locale)
       : null),
-    [layoutReady, layoutFormat, layoutMode],
+    [layoutReady, format, layoutMode, locale],
   );
 
   const pixel = DEFAULT_KEYBOARD_PIXEL_SIZE;
@@ -150,11 +158,34 @@ export function KeyboardPanel(
               <KeyboardFromJson
                 preloadedLayout={layoutReady}
                 onKey={onKey}
-                layoutFormat={layoutFormat}
+                layoutFormat={format}
+                locale={locale.id}
                 layoutMode={layoutMode}
                 pixelSize={pixel}
               />
             </group>
+            {
+              /*
+               * Depth-only occluder, the same trick a display's screen surface uses: it paints
+               * nothing but depth, drawn first, so anything depth-tested later that sits behind the
+               * board fails against it — other objects' chrome, and the box's own rear bars, which
+               * makes the grab box read as a frame around the board instead of a wireframe cube.
+               * Not pickable: the keys and the grab hull own pointer input here.
+               */
+            }
+            <mesh
+              position={[0, 0, -grabSize[2] / 2 + GRABBOX_CHROME_THICKNESS]}
+              renderOrder={-100}
+              {...({ pointerEvents: "none" } as Record<string, unknown>)}
+            >
+              <planeGeometry args={[grabSize[0], grabSize[1]]} />
+              <meshBasicMaterial
+                depthTest
+                depthWrite
+                colorWrite={false}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
             {children}
           </GrabBox>
         )

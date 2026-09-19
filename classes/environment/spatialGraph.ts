@@ -2,6 +2,11 @@
 import * as THREE from "three/webgpu";
 import { OBB } from "three/addons/math/OBB.js";
 import type { WorkspaceOutput, WorkspaceRect } from "./workspaceDisplays.ts";
+import {
+  DEFAULT_DISPLAY_DEPTH,
+  DEFAULT_DISPLAY_HEIGHT,
+  DISPLAY_PANEL_WIDTH,
+} from "./displayMetrics.ts";
 
 export type SpatialNodeId = string;
 export type SpatialAttachmentSide = "left" | "right" | "top" | "bottom";
@@ -101,15 +106,20 @@ export const IDENTITY_SPATIAL_TRANSFORM: SpatialTransform = {
   scale: [1, 1, 1],
 };
 
-const DISPLAY_CENTER_DISTANCE = 1.04;
-const DISPLAY_EDGE = DISPLAY_CENTER_DISTANCE / 2;
-const DISPLAY_HEIGHT = 0.5;
-const DISPLAY_VERTICAL_EDGE = 0.285;
+// Attachment pivots sit on the rendered panel's edges; a pivot that disagrees with the panel size
+// separates the hinged panels by the difference (the gap users see). See displayMetrics.ts.
+const DISPLAY_EDGE = DISPLAY_PANEL_WIDTH / 2;
+const DISPLAY_HEIGHT = DEFAULT_DISPLAY_HEIGHT;
+const DISPLAY_VERTICAL_EDGE = DEFAULT_DISPLAY_HEIGHT / 2;
 const DISPLAY_SNAP_SIZE: [number, number, number] = [
-  DISPLAY_CENTER_DISTANCE,
+  DISPLAY_PANEL_WIDTH,
   DISPLAY_HEIGHT,
-  0.04,
+  DEFAULT_DISPLAY_DEPTH,
 ];
+/** The keyboard tray hangs below the panel edge rather than flush with it. */
+const KEYBOARD_TRAY_OFFSET = 0.035;
+/** Drop targets sit in front of the panel; hinge pivots sit on its edge plane. */
+const ATTACHMENT_FRONT_OFFSET = 0.025;
 
 function transform(
   position: [number, number, number],
@@ -374,29 +384,29 @@ function addDisplayAttachmentSlots(graph: SpatialGraph, displayId: SpatialNodeId
     {
       side: "left",
       size: [0.18, 0.55, 0.18],
-      hitboxPosition: [-DISPLAY_EDGE, 0, 0.025],
+      hitboxPosition: [-DISPLAY_EDGE, 0, ATTACHMENT_FRONT_OFFSET],
       parentPivot: [-DISPLAY_EDGE, 0, 0],
       axis: "y",
     },
     {
       side: "right",
       size: [0.18, 0.55, 0.18],
-      hitboxPosition: [DISPLAY_EDGE, 0, 0.025],
+      hitboxPosition: [DISPLAY_EDGE, 0, ATTACHMENT_FRONT_OFFSET],
       parentPivot: [DISPLAY_EDGE, 0, 0],
       axis: "y",
     },
     {
       side: "top",
       size: [0.55, 0.14, 0.18],
-      hitboxPosition: [0, DISPLAY_VERTICAL_EDGE + 0.055, 0.025],
-      parentPivot: [0, DISPLAY_VERTICAL_EDGE, 0.025],
+      hitboxPosition: [0, DISPLAY_VERTICAL_EDGE + 0.055, ATTACHMENT_FRONT_OFFSET],
+      parentPivot: [0, DISPLAY_VERTICAL_EDGE, 0],
       axis: "x",
     },
     {
       side: "bottom",
       size: [0.55, 0.14, 0.18],
-      hitboxPosition: [0, -DISPLAY_VERTICAL_EDGE - 0.055, 0.025],
-      parentPivot: [0, -DISPLAY_VERTICAL_EDGE, 0.025],
+      hitboxPosition: [0, -DISPLAY_VERTICAL_EDGE - 0.055, ATTACHMENT_FRONT_OFFSET],
+      parentPivot: [0, -DISPLAY_VERTICAL_EDGE, 0],
       axis: "x",
     },
   ];
@@ -412,6 +422,13 @@ function addDisplayAttachmentSlots(graph: SpatialGraph, displayId: SpatialNodeId
       ] as [number, number],
       parentPivot: spec.parentPivot,
     };
+    // The keyboard tray hangs from a pivot below the panel edge so the tilted board clears the
+    // display; a keyboard is the only child accepted under a display.
+    const keyboardPivot: [number, number, number] = [
+      spec.parentPivot[0],
+      spec.parentPivot[1] - KEYBOARD_TRAY_OFFSET,
+      ATTACHMENT_FRONT_OFFSET,
+    ];
     graph.hitboxes[id] = {
       id,
       ownerId: displayId,
@@ -428,7 +445,7 @@ function addDisplayAttachmentSlots(graph: SpatialGraph, displayId: SpatialNodeId
             axis: "x",
             angle: THREE.MathUtils.degToRad(-55),
             limits: [THREE.MathUtils.degToRad(-100), THREE.MathUtils.degToRad(15)],
-            parentPivot: spec.parentPivot,
+            parentPivot: keyboardPivot,
           },
         }
         : { display: displayAttachment },
@@ -757,6 +774,117 @@ export function attachSpatialNodeToSlot(
     ),
   };
   return reconcileDisplayControls(graph);
+}
+
+/**
+ * Commit a hinged node's angle and uniform scale.
+ *
+ * A hinge's child pivot is the node's own half-extent, so a resize has to move it too or the
+ * panel's hinged edge walks off the joint as it grows. The slot table still owns the pivot: this
+ * only feeds it the new size, exactly as a load does.
+ */
+export function commitHingePose(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+  angle: number,
+  scale: number,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  if (
+    (node?.kind !== "display" && node?.kind !== "keyboard") ||
+    node.constraint?.kind !== "hinge" ||
+    !Number.isFinite(scale) || scale <= 0
+  ) return current;
+  const slot = current.hitboxes[node.constraint.attachmentSlotId];
+  if (slot == null || slot.attachments[node.kind] == null) return current;
+
+  const uniform: [number, number, number] = [scale, scale, scale];
+  const hinge = hingeConstraintForSlot(slot, node.kind, nodeSnapSource(node).size, uniform);
+  const graph = cloneGraph(current);
+  graph.nodes[nodeId] = {
+    ...node,
+    localTransform: { ...node.localTransform, scale: uniform },
+    constraint: {
+      ...hinge,
+      angle: THREE.MathUtils.clamp(angle, hinge.limits[0], hinge.limits[1]),
+    },
+  };
+  return graph;
+}
+
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function sameHingeGeometry(a: HingeConstraint, b: HingeConstraint): boolean {
+  return a.attachmentSlotId === b.attachmentSlotId &&
+    a.axis === b.axis &&
+    a.angle === b.angle &&
+    sameNumbers(a.limits, b.limits) &&
+    sameNumbers(a.parentPivot, b.parentPivot) &&
+    sameNumbers(a.childPivot, b.childPivot);
+}
+
+/** Attachment slots as the current code lays them out, independent of what a layout persisted. */
+function attachmentSlotsFor(nodes: SpatialGraph["nodes"]): SpatialGraph["hitboxes"] {
+  const scratch: SpatialGraph = {
+    nodes,
+    hitboxes: {},
+    nextDisplayOrdinal: 0,
+    nextControlOrdinal: 0,
+  };
+  for (const node of Object.values(nodes)) {
+    if (node.kind === "display") addDisplayAttachmentSlots(scratch, node.id);
+  }
+  return scratch.hitboxes;
+}
+
+/**
+ * Re-derive the geometry a saved layout does not own: the attachment slot table and every hinge's
+ * pivots.
+ *
+ * Slots and pivots are a function of the current panel metrics and each node's size, but they are
+ * serialized with the graph, so a layout saved before those metrics changed would keep hinging to
+ * the old geometry and the panels would separate. Only the user's choices — hierarchy, transforms,
+ * hinge angle, workspace assignment — survive; everything derived is rebuilt here. Returns `current`
+ * untouched when the stored geometry already matches.
+ */
+export function normalizeSpatialLayout(current: SpatialGraph): SpatialGraph {
+  const hitboxes = attachmentSlotsFor(current.nodes);
+  const nodes: SpatialGraph["nodes"] = {};
+  let changed = JSON.stringify(hitboxes) !== JSON.stringify(current.hitboxes);
+  for (const node of Object.values(current.nodes)) {
+    if ((node.kind !== "display" && node.kind !== "keyboard") || node.constraint?.kind !== "hinge") {
+      nodes[node.id] = node;
+      continue;
+    }
+    const slot = hitboxes[node.constraint.attachmentSlotId];
+    if (slot == null || slot.attachments[node.kind] == null) {
+      nodes[node.id] = node;
+      continue;
+    }
+    const normalized = hingeConstraintForSlot(
+      slot,
+      node.kind,
+      nodeSnapSource(node).size,
+      node.localTransform.scale,
+    );
+    const constraint: HingeConstraint = {
+      ...normalized,
+      angle: THREE.MathUtils.clamp(
+        node.constraint.angle,
+        normalized.limits[0],
+        normalized.limits[1],
+      ),
+    };
+    if (sameHingeGeometry(node.constraint, constraint)) {
+      nodes[node.id] = node;
+      continue;
+    }
+    nodes[node.id] = { ...node, constraint };
+    changed = true;
+  }
+  return changed ? { ...current, nodes, hitboxes } : current;
 }
 
 export function snapNodeToOverlappingHitbox(

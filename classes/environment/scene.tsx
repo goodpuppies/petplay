@@ -16,8 +16,8 @@ import { DisplayInstance } from "./displayInstance/logic.tsx";
 import {
   DEFAULT_DISPLAY_DEPTH,
   DEFAULT_DISPLAY_HEIGHT,
-  DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
-} from "./displayInstance/ui.tsx";
+  DISPLAY_PANEL_WIDTH,
+} from "./displayMetrics.ts";
 import {
   createSmoothedDisplayMouseSink,
   windowsSystemDisplayMouseSink,
@@ -36,9 +36,11 @@ import {
   type HandleStore,
 } from "@pmndrs/handle";
 import { useWindowLayerVisible } from "./windowLayerMode.ts";
+import { useHingedOneHandScaleMaxGrabOffset } from "./spatialManipulationMode.ts";
 import { GrabBox } from "./grabbox.tsx";
 import {
   assignWorkspaceOutput,
+  commitHingePose,
   commitNodeTransform,
   commitSpatialNodeTransformAndSnap,
   type ControlSpatialNode,
@@ -329,6 +331,7 @@ function VrcCameraDebugVisuals() {
 
 const JOYSTICK_SCROLL_CLICKS_PER_SECOND = 60;
 const JOYSTICK_PUSH_PULL_METERS_PER_SECOND = 2;
+const JOYSTICK_HINGE_RADIANS_PER_SECOND = 1.6;
 const HANDLE_POSITION_DAMPENING = 41;
 const HANDLE_ROTATION_DAMPENING = 61;
 
@@ -397,8 +400,9 @@ function CommonOverlayChords({
     if (right.grab > 0.5) {
       let closestStore: HandleStore<unknown> | undefined;
       let closestPointerId: number | undefined;
+      let closestNodeId: string | undefined;
       let closestDistanceSq = Number.POSITIVE_INFINITY;
-      for (const store of handleStores.values()) {
+      for (const [nodeId, store] of handleStores) {
         for (const [pointerId, pointer] of store.inputState) {
           const dx = pointer.pointerWorldOrigin.x - origin.x;
           const dy = pointer.pointerWorldOrigin.y - origin.y;
@@ -408,10 +412,33 @@ function CommonOverlayChords({
             closestDistanceSq = distanceSq;
             closestStore = store;
             closestPointerId = pointerId;
+            closestNodeId = nodeId;
           }
         }
       }
       if (closestStore != null && closestPointerId != null && closestDistanceSq <= 0.25 * 0.25) {
+        const constraint = closestNodeId == null ? undefined : graph.nodes[closestNodeId]?.constraint;
+        if (constraint?.kind === "hinge") {
+          // A hinge has no free translation, so the stick angles it instead of pushing it away.
+          // Handing over an absolute angle rebases the grab, so the hand stops turning the hinge
+          // while the stick is deflected — the two inputs never fight. The angle is clamped before
+          // it is handed over, so holding the stick against a stop cannot wind up a dead zone.
+          if (axis !== 0) {
+            const limits = constraint.limits;
+            const current = closestStore.getState()?.current.rotation[constraint.axis] ?? 0;
+            // The same rotation sign reads as "pull toward me" on a left/top hinge and "push away"
+            // on the mirrored right/bottom one, so flip it for the mirrored sides.
+            const side = constraint.attachmentSlotId.match(/-(left|right|top|bottom)-slot$/)?.[1];
+            const direction = side === "right" || side === "bottom" ? 1 : -1;
+            const requested = current + direction * axis * JOYSTICK_HINGE_RADIANS_PER_SECOND * delta;
+            closestStore.setTargetAxisAngle(
+              closestPointerId,
+              constraint.axis,
+              Math.min(limits[1], Math.max(limits[0], requested)),
+            );
+          }
+          return;
+        }
         if (axis !== 0) {
           const step = axis * JOYSTICK_PUSH_PULL_METERS_PER_SECOND * delta;
           closestStore.translateAlongPointerRay(closestPointerId, step);
@@ -649,12 +676,16 @@ type SpatialNodeViewProps = SpatialGraphViewProps & {
   localTransformOverride?: SpatialTransform;
 };
 
-const VR_HINGE_BREAKAWAY_SLACK_METERS = 0.22;
+const VR_HINGE_BREAKAWAY_SLACK_METERS = 0.28;
 const DESKTOP_HINGE_BREAKAWAY_SLACK_PIXELS = 180;
+/** After a grab starts, re-arm the baseline for this long so the capture can settle. */
+const HINGE_BREAKAWAY_SETTLE_SECONDS = 0.25;
+/** Consecutive frames past the threshold before it counts as a pull, not jitter. */
+const HINGE_BREAKAWAY_HOLD_FRAMES = 3;
 const DELETE_ARM_SIZE_METERS = 0.1;
 const DELETE_DISARM_SIZE_METERS = 0.13;
 const DISPLAY_GRAB_SIZE: [number, number, number] = [
-  DEFAULT_DISPLAY_HEIGHT * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+  DISPLAY_PANEL_WIDTH,
   DEFAULT_DISPLAY_HEIGHT,
   DEFAULT_DISPLAY_DEPTH,
 ];
@@ -1117,6 +1148,7 @@ function AttachedSpatialNodeView(
   const hinge: HingeConstraint | undefined = node.constraint?.kind === "hinge"
     ? node.constraint
     : undefined;
+  const oneHandScaleMaxGrabOffset = useHingedOneHandScaleMaxGrabOffset();
   const camera = useThree((state) => state.camera);
   const canvasSize = useThree((state) => state.size);
   const targetRef = React.useRef<THREE.Group>(null);
@@ -1126,6 +1158,8 @@ function AttachedSpatialNodeView(
   const handoffMovedRef = React.useRef(false);
   const initialGrabberDistanceRef = React.useRef<number | null>(null);
   const breakawayTriggeredRef = React.useRef(false);
+  const breakawayHoldRef = React.useRef(0);
+  const breakawaySettleUntilRef = React.useRef(0);
   const hingeWorldPositionRef = React.useRef(new THREE.Vector3());
   const hingeScreenPositionRef = React.useRef(new THREE.Vector3());
   const handoffWorldDeltaRef = React.useRef(new THREE.Vector3());
@@ -1133,6 +1167,16 @@ function AttachedSpatialNodeView(
   const currentGrabWorldPositionRef = React.useRef(new THREE.Vector3());
   const grabbedObjectRef = React.useRef<THREE.Object3D | null>(null);
   const localGrabPointRef = React.useRef(new THREE.Vector3());
+  const frameScaleResetRef = React.useRef(false);
+  // Drop the transient pinch factor from the hinge frame in the same commit that puts the committed
+  // size on the node. Doing it any earlier (or letting the render do it) flashes the old size for a
+  // frame: the frame's `[1, 1, 1]` prop never changes, so React never re-applies it.
+  React.useLayoutEffect(() => {
+    const target = targetRef.current;
+    if (!frameScaleResetRef.current || target == null) return;
+    frameScaleResetRef.current = false;
+    target.scale.setScalar(1);
+  }, [node]);
   React.useLayoutEffect(() => {
     if (hinge != null || !handoffPendingRef.current) return;
     const target = targetRef.current;
@@ -1170,7 +1214,9 @@ function AttachedSpatialNodeView(
       applyDampedHandleState(state, target);
       const object = target as unknown as THREE.Object3D;
       object.position.set(...hinge.parentPivot);
-      object.scale.set(1, 1, 1);
+      // The pinch scale rides on the hinge frame, which scales the panel and its child offset by
+      // the same factor — the pivoted edge stays put — and is folded into the graph on release.
+      object.scale.setScalar(state.current.scale.x);
       const angle = THREE.MathUtils.clamp(
         object.rotation[hinge.axis],
         hinge.limits[0],
@@ -1180,7 +1226,14 @@ function AttachedSpatialNodeView(
       object.rotation[hinge.axis] = angle;
 
       const event = state.event;
-      if (event != null && !breakawayTriggeredRef.current) {
+      // A resize always travels away from the hinge — two hands because the grab points separate,
+      // one hand because the grab point's radius *is* the scale — so neither can be a pull. A
+      // direct grab therefore detaches from the context toolbar rather than by pulling; a laser
+      // keeps pull-to-detach because it never resizes.
+      const resizing = state.current.pointerAmount >= 2 ||
+        (event != null &&
+          event.pointerPosition.distanceTo(event.point) <= oneHandScaleMaxGrabOffset);
+      if (event != null && !breakawayTriggeredRef.current && !resizing) {
         const isDesktopMouse = isDesktopMousePointerType(event.pointerType);
         object.updateWorldMatrix(true, false);
         const hingeWorldPosition = hingeWorldPositionRef.current.setFromMatrixPosition(
@@ -1197,21 +1250,37 @@ function AttachedSpatialNodeView(
           distance = Math.hypot(event.clientX - hingeX, event.clientY - hingeY);
           slack = DESKTOP_HINGE_BREAKAWAY_SLACK_PIXELS;
         } else {
-          distance = hingeWorldPosition.distanceTo(
-            event.pointerPosition as unknown as THREE.Vector3,
-          );
+          // The captured pointer's `point` is the frozen-length arm point (`origin + direction *
+          // grab distance`), so this measures how far the arm has been pulled off the hinge — not
+          // the controller's distance, which changes with every rotation of a stationary hand.
+          distance = hingeWorldPosition.distanceTo(event.point as unknown as THREE.Vector3);
           slack = VR_HINGE_BREAKAWAY_SLACK_METERS;
         }
         if (state.first || initialGrabberDistanceRef.current == null) {
           initialGrabberDistanceRef.current = distance;
+          // `state.current.time` is the pointerdown `timeStamp` on the first apply and frame seconds
+          // afterwards, so it cannot serve as a clock.
+          breakawaySettleUntilRef.current = performance.now() + HINGE_BREAKAWAY_SETTLE_SECONDS * 1000;
+          breakawayHoldRef.current = 0;
           const grabbedObject = event.object as unknown as THREE.Object3D;
           grabbedObject.updateWorldMatrix(true, false);
           grabbedObjectRef.current = grabbedObject;
           localGrabPointRef.current
             .copy(event.point as unknown as THREE.Vector3)
             .applyMatrix4(new THREE.Matrix4().copy(grabbedObject.matrixWorld).invert());
+        } else if (performance.now() < breakawaySettleUntilRef.current) {
+          // The baseline is captured from the pointer-down intersection, but the frames that follow
+          // read the *captured* arm point, which sits a whole grab-distance off the hand and swings
+          // with the hand's orientation. Let those agree before trusting the baseline, so a grab
+          // made while the hand is still moving cannot read as an instant pull.
+          initialGrabberDistanceRef.current = distance;
+          breakawayHoldRef.current = 0;
         } else {
-          if (distance > initialGrabberDistanceRef.current + slack) {
+          // A real pull persists; one frame of tracking jitter does not.
+          breakawayHoldRef.current = distance > initialGrabberDistanceRef.current + slack
+            ? breakawayHoldRef.current + 1
+            : 0;
+          if (breakawayHoldRef.current >= HINGE_BREAKAWAY_HOLD_FRAMES) {
             breakawayTriggeredRef.current = true;
             handoffPendingRef.current = true;
             const grabbedObject = grabbedObjectRef.current;
@@ -1236,9 +1305,7 @@ function AttachedSpatialNodeView(
                 projectedDepth,
               ).unproject(camera as unknown as THREE.Camera);
             } else {
-              desiredGrabPoint.copy(
-                event.pointerPosition as unknown as THREE.Vector3,
-              );
+              desiredGrabPoint.copy(event.point as unknown as THREE.Vector3);
             }
             handoffWorldDeltaRef.current.subVectors(
               desiredGrabPoint,
@@ -1256,24 +1323,39 @@ function AttachedSpatialNodeView(
       }
 
       if (state.last && !breakawayTriggeredRef.current) {
-        setGraph((current) => setHingeAngle(current, node.id, angle));
+        // The live scale is relative to the frame the grab started on; the graph owns the absolute.
+        const scale = node.localTransform.scale[0] * state.current.scale.x /
+          (state.initial.scale.x || 1);
+        frameScaleResetRef.current = true;
+        setGraph((current) => commitHingePose(current, node.id, angle, scale));
       }
       if (state.last) {
         initialGrabberDistanceRef.current = null;
         breakawayTriggeredRef.current = false;
+        breakawayHoldRef.current = 0;
+        breakawaySettleUntilRef.current = 0;
       }
     },
-    [camera, canvasSize.height, canvasSize.width, hinge, node.id, setGraph],
+    [camera, canvasSize.height, canvasSize.width, hinge, node, node.id, oneHandScaleMaxGrabOffset, setGraph],
   );
   const hingeOptions = React.useMemo<Omit<HandleOptions<unknown>, "filter">>(
     () => ({
       apply: applyHinge,
-      multitouch: false,
+      // A second hand joins to pinch-resize; the rotation still comes from the first pointer.
+      multitouch: true,
       rotate: hinge?.axis ?? true,
-      scale: false,
-      translate: "as-rotate",
+      scale: { uniform: true },
+      // One hand can resize with the hinge as the second hand (radius to the pivot drives the
+      // scale), but only for a direct grab: a laser's grab point is an arm away from the hand.
+      translate: "as-rotate-and-scale",
+      oneHandScaleMaxGrabOffset,
+      // Drive the hinge from the pointer's captured grab point (a fixed-length arm off the
+      // controller), not from its ray. Re-projecting the ray onto the constraint turns every
+      // millimetre of hand rotation into a metre of arc on the interaction plane, which reads as
+      // random motion and trips breakaway. A frozen point is the same interaction as a hand grab.
+      projectRays: false,
     }),
-    [applyHinge, hinge?.axis],
+    [applyHinge, hinge?.axis, oneHandScaleMaxGrabOffset],
   );
   const applyFree = React.useCallback(
     (state: HandleState<unknown>, target: import("three").Object3D) => {
@@ -1296,7 +1378,9 @@ function AttachedSpatialNodeView(
     [node.id, node.kind, setGraph],
   );
   const freeOptions = React.useMemo<Omit<HandleOptions<unknown>, "filter">>(
-    () => ({ apply: applyFree }),
+    // Same frozen-point model as the hinge so the post-breakaway grab does not inherit the ray
+    // projection the hinge just dropped.
+    () => ({ apply: applyFree, projectRays: false }),
     [applyFree],
   );
   const hingeRotation: [number, number, number] = hinge == null

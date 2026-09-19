@@ -22,7 +22,19 @@ import {
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMetric.ts";
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
-import { WebXRRaythreeSceneBridge } from "../classes/webxrRaythreeScene.ts";
+import {
+  getSceneBackgroundColor,
+  type WebXRRaythreeRenderPayload,
+  WebXRRaythreeSceneBridge,
+} from "../classes/webxrRaythreeScene.ts";
+import type {
+  AssetBatch,
+  GeometryAsset,
+  MaterialAsset,
+  TextureAsset,
+} from "../submodules/raythree/src/ir.ts";
+import { getKeyboardLocaleInfo } from "../classes/environment/keyboard/keyboardLocale.ts";
+import { claimWebXrOverlayKeys } from "../classes/webXrOverlayKeyClaim.ts";
 import {
   CONTROLLER_SAB_BYTE_LENGTH,
   type ControllerExternalDataTuple,
@@ -194,6 +206,8 @@ type OverlayConfig = {
   overlayMode?: "quad" | "stereo-panorama";
   sortOrder?: number;
   attachToHmd?: boolean;
+  /** Overlay keys owned by dead instances; swept when this overlay is created. */
+  staleKeys?: string[];
 };
 
 const state = actorState({
@@ -300,6 +314,12 @@ const state = actorState({
   nominalHmdDisplayHz: null as number | null,
   raythreeSceneBridge: new WebXRRaythreeSceneBridge(),
   lastStartPayload: null as StartWebXRPayload | null,
+  /**
+   * Extra renderers of this scene, keyed by actor id (see [desktopView](desktopView.ts)):
+   * each gets the same IR payload the in-worker raylib overlay rasterizes, and
+   * draws it in its own process at its own rate.
+   */
+  views: new Map<string, WebXrViewChannel>(),
   desktopViewControlAllowed: false,
   desktopViewControlEnabled: false,
   desktopViewOffset: [0, 0, 0] as Vec3Tuple,
@@ -357,6 +377,11 @@ new PostMan(
       state.lastStartPayload = payload ?? null;
       state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ??
         false;
+      // A registered IR view may have asked for camera control; its grant has to
+      // survive the STARTWEBXR policy reset above (attach/detach restarts this).
+      if (hasViewCameraControl()) {
+        state.desktopViewControlAllowed = true;
+      }
       state.desktopViewControlEnabled = state.desktopViewControlAllowed;
       if (!state.desktopViewControlEnabled) {
         state.desktopViewOffset = [0, 0, 0];
@@ -402,6 +427,7 @@ new PostMan(
               state.overlayLoop = pumpOverlayFrames().finally(() => {
                 state.overlayLoop = null;
               });
+              startPresentationWatch();
             }
             if (!state.nativeRaylibDebugWithHost) {
               while (state.overlayRunning) {
@@ -415,6 +441,7 @@ new PostMan(
             state.overlayLoop = pumpOverlayFrames().finally(() => {
               state.overlayLoop = null;
             });
+            startPresentationWatch();
           }
           if (
             includesRaylibOverlay(payload?.overlayRenderMode ?? "raylib") &&
@@ -646,12 +673,312 @@ new PostMan(
     STOPWEBXR: async (_payload: void) => {
       return await stopWebXR();
     },
+    /**
+     * Presentation repair without a process restart: re-show or rebuild the
+     * overlay, or restart the whole rendering stack in this actor (`restart`).
+     */
+    REPAIRWEBXR: async (payload: { reason?: string; restart?: boolean } | null) => {
+      const reason = payload?.reason ?? "operator request";
+      if (payload?.restart === true) {
+        await restartRenderingStack(reason);
+        return { applied: "restart", ...getPresentationStatus() };
+      }
+      return {
+        applied: repairOverlayVisibility(reason),
+        ...getPresentationStatus(),
+      };
+    },
+    /** A renderer in another actor/process wants this scene's IR. */
+    REGISTERWEBXRVIEW: (payload: RegisterWebXrViewPayload | null) => {
+      const actorId = payload?.actorId;
+      if (actorId == null || actorId.length === 0) {
+        throw new Error("REGISTERWEBXRVIEW requires an actorId");
+      }
+      state.views.set(actorId, {
+        label: payload?.label ?? "view",
+        cameraControl: payload?.cameraControl === true,
+        primed: false,
+        inFlight: false,
+        sent: 0,
+        acked: 0,
+        dropped: 0,
+        lastAckAt: 0,
+      });
+      // The view asked for camera control, so grant what STARTWEBXR gatekeeps for
+      // the legacy desktop surface: an observer that may nudge the shared view.
+      if (payload?.cameraControl === true) {
+        state.desktopViewControlAllowed = true;
+        state.desktopViewControlEnabled = true;
+        state.host?.setDesktopViewControlEnabled(true);
+      }
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] view registered: ${actorId} (${payload?.label ?? "view"}, cameraControl=${payload?.cameraControl === true})`,
+      );
+      return getWebXrViewsStatus();
+    },
+    UNREGISTERWEBXRVIEW: (payload: { actorId?: string } | null) => {
+      const actorId = payload?.actorId;
+      if (actorId != null) {
+        state.views.delete(actorId);
+      }
+      if (state.views.size === 0) {
+        // Nothing is observing any more; fall back to the STARTWEBXR policy.
+        state.desktopViewControlAllowed = state.lastStartPayload?.desktopViewControlEnabled ??
+          false;
+        state.desktopViewControlEnabled = state.desktopViewControlAllowed;
+        state.desktopViewOffset = [0, 0, 0];
+        state.host?.setDesktopViewControlEnabled(state.desktopViewControlEnabled);
+        state.host?.setDesktopViewOffset(state.desktopViewOffset);
+      }
+      return getWebXrViewsStatus();
+    },
+    /** One rendered frame for a view: the next payload may be shipped. */
+    WEBXRVIEWFRAMEACK: (payload: { actorId?: string } | null) => {
+      const view = payload?.actorId == null ? null : state.views.get(payload.actorId);
+      if (view == null) {
+        return getWebXrViewsStatus();
+      }
+      view.inFlight = false;
+      view.acked += 1;
+      view.lastAckAt = Date.now();
+      return getWebXrViewsStatus();
+    },
   } as const,
 );
 
 /** Consecutive rebuild attempts, reset by the first frame that submits cleanly. */
 let raylibOverlayRecoveryAttempts = 0;
 const MAX_RAYLIB_OVERLAY_RECOVERY_ATTEMPTS = 10;
+
+/**
+ * Presentation watch — the XR image can stop being drawn without any error
+ * surfacing: the pump keeps uploading into a texture SteamVR no longer imports,
+ * or the compositor stops drawing an overlay we still call `present()` on. Both
+ * are repaired here, in place, because the alternative is a process restart.
+ */
+const presentationWatch = {
+  running: false,
+  loop: null as Promise<void> | null,
+  lastUploadedFrames: 0,
+  lastAdvanceAt: 0,
+  invisibleSince: 0,
+  repairs: 0,
+  reShows: 0,
+  overlayRebuilds: 0,
+  restarts: 0,
+  lastRepairReason: null as string | null,
+  lastRepairAt: 0,
+};
+
+const PRESENTATION_WATCH_INTERVAL_MS = 1_000;
+/** No presented frame for this long means the pump or the compositor died. */
+const PRESENTATION_STALL_MS = 2_500;
+/** Overlay reported invisible for this long means we re-show, then rebuild. */
+const OVERLAY_INVISIBLE_GRACE_MS = 2_000;
+/** A restart is a last resort; keep it bounded so a doomed stack cannot spin. */
+const MAX_PRESENTATION_RESTARTS = 5;
+/** Pause after a failed overlay frame before rebuilding and retrying. */
+const OVERLAY_FRAME_FAILURE_BACKOFF_MS = 250;
+/** Cap for the doubling backoff; the watchdog restarts the stack before this runs away. */
+const MAX_OVERLAY_FRAME_FAILURE_BACKOFF_MS = 4_000;
+
+function getPresentationStatus() {
+  const overlay = state.raylibOverlay;
+  return {
+    watching: presentationWatch.running,
+    overlayVisible: overlay?.isVisible() ?? null,
+    uploadedFrames: state.uploadedFrames,
+    stalledMs: presentationWatch.lastAdvanceAt === 0
+      ? 0
+      : Math.max(0, Date.now() - presentationWatch.lastAdvanceAt),
+    repairs: presentationWatch.repairs,
+    reShows: presentationWatch.reShows,
+    overlayRebuilds: presentationWatch.overlayRebuilds,
+    restarts: presentationWatch.restarts,
+    lastRepairReason: presentationWatch.lastRepairReason,
+    lastRepairAt: presentationWatch.lastRepairAt,
+  };
+}
+
+/** Drop the overlay handle: the next presented frame creates and imports a new one. */
+function dropRaylibOverlayForRecreate(reason: string): void {
+  const overlay = state.raylibOverlay;
+  if (overlay == null) {
+    return;
+  }
+  LogChannel.log("webxrv2", `[webxr] dropping OpenVR overlay handle (${reason})`);
+  try {
+    overlay.cleanup();
+  } catch (error) {
+    LogChannel.error(
+      "webxrv2",
+      `[webxr] overlay cleanup failed: ${error instanceof Error ? error.message : error}`,
+    );
+  }
+  state.raylibOverlay = null;
+}
+
+/**
+ * Bounded, in-actor repair of the presentation path: re-show the overlay when the
+ * compositor stopped drawing it, rebuild its handle when showing does not stick.
+ */
+function repairOverlayVisibility(reason: string): string {
+  presentationWatch.repairs += 1;
+  presentationWatch.lastRepairReason = reason;
+  presentationWatch.lastRepairAt = Date.now();
+  const overlay = state.raylibOverlay;
+  if (overlay == null) {
+    return "no overlay to repair";
+  }
+  if (overlay.show()) {
+    presentationWatch.reShows += 1;
+    LogChannel.log("webxrv2", `[webxr] presentation repair: re-showed overlay (${reason})`);
+    return "re-showed overlay";
+  }
+  presentationWatch.overlayRebuilds += 1;
+  dropRaylibOverlayForRecreate(`unrepairable visibility: ${reason}`);
+  return "rebuilt overlay handle";
+}
+
+/**
+ * The in-actor equivalent of a restart: stop the rendering stack and re-post the
+ * last `STARTWEBXR` payload into this same actor. No process restart, no user
+ * action, and `__RESTORE__` uses exactly the same path.
+ */
+async function restartRenderingStack(reason: string): Promise<void> {
+  const payload = state.lastStartPayload;
+  presentationWatch.restarts += 1;
+  presentationWatch.lastRepairReason = `restart: ${reason}`;
+  presentationWatch.lastRepairAt = Date.now();
+  LogChannel.error(
+    "webxrv2",
+    `[webxr] presentation watchdog restarting the rendering stack (attempt ${presentationWatch.restarts}): ${reason}`,
+  );
+  stopPresentationWatch();
+  await stopWebXR();
+  if (payload == null) {
+    LogChannel.error("webxrv2", "[webxr] no start payload to restart with");
+    return;
+  }
+  setTimeout(() => {
+    PostMan.PostMessage({ target: state.id, type: "STARTWEBXR", payload });
+  }, 0);
+}
+
+function stopPresentationWatch(): void {
+  presentationWatch.running = false;
+}
+
+/** True once an overlay is configured, i.e. once frames are expected to appear. */
+function expectsPresentation(): boolean {
+  return state.raylibOverlayConfig != null || state.webGpuOverlayConfig != null;
+}
+
+/**
+ * A failed overlay frame is a *rendering* failure, not a session failure: drop
+ * the overlay handle so the next frame rebuilds it, keep the XR tick alive (in
+ * raylib mode the external pacer is driven from this loop, so stopping here
+ * would freeze the whole scene), and back off — retrying at frame rate recreates
+ * the overlay dozens of times a second, which corrupts native state (observed:
+ * `double free or corruption`). Render targets are *not* invalidated here; the
+ * invalid-texture recovery path owns that, and the watchdog escalates to a stack
+ * restart when the overlay cannot be re-established.
+ */
+async function handleOverlayFrameFailure(error: unknown, label: string): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  presentationWatch.repairs += 1;
+  presentationWatch.lastRepairReason = `${label}: ${message}`;
+  presentationWatch.lastRepairAt = Date.now();
+  overlayFrameFailureBackoffMs = Math.min(
+    overlayFrameFailureBackoffMs * 2,
+    MAX_OVERLAY_FRAME_FAILURE_BACKOFF_MS,
+  );
+  LogChannel.error(
+    "webxrv2",
+    `[webxr] ${label} failed: ${message} (retrying in ${overlayFrameFailureBackoffMs} ms)`,
+  );
+  dropRaylibOverlayForRecreate("frame failure");
+  state.host?.signalExternalPacerAdvanced();
+  await wait(overlayFrameFailureBackoffMs);
+}
+
+let overlayFrameFailureBackoffMs = OVERLAY_FRAME_FAILURE_BACKOFF_MS;
+
+/**
+ * Watches what SteamVR actually draws, not what we asked it to draw: a stall in
+ * presented frames restarts the rendering stack, and an overlay the compositor
+ * stopped drawing is re-shown, then rebuilt.
+ */
+function startPresentationWatch(): void {
+  if (presentationWatch.running) {
+    return;
+  }
+  presentationWatch.running = true;
+  presentationWatch.lastUploadedFrames = state.uploadedFrames;
+  presentationWatch.lastAdvanceAt = Date.now();
+  presentationWatch.invisibleSince = 0;
+  presentationWatch.loop = (async () => {
+    try {
+      while (presentationWatch.running) {
+        await wait(PRESENTATION_WATCH_INTERVAL_MS);
+        if (!presentationWatch.running) break;
+        const now = Date.now();
+        // A stopped pump with a live stack means the presentation path died.
+        if (!state.overlayRunning) {
+          if (state.startup == null) break;
+          if (presentationWatch.restarts < MAX_PRESENTATION_RESTARTS) {
+            await restartRenderingStack("overlay pump stopped");
+          } else {
+            presentationWatch.lastRepairReason =
+              "overlay pump stopped; restart budget exhausted";
+            presentationWatch.lastRepairAt = now;
+          }
+          continue;
+        }
+        // Before a runtime is attached nothing is expected to be presented yet.
+        if (!expectsPresentation()) {
+          presentationWatch.lastAdvanceAt = now;
+          presentationWatch.invisibleSince = 0;
+          continue;
+        }
+        // Advancing uploads only move the stall baseline: an overlay can keep
+        // accepting textures while the compositor no longer draws it, which is
+        // the case this watch exists for, so visibility is checked every tick.
+        if (state.uploadedFrames !== presentationWatch.lastUploadedFrames) {
+          presentationWatch.lastUploadedFrames = state.uploadedFrames;
+          presentationWatch.lastAdvanceAt = now;
+        }
+        if (now - presentationWatch.lastAdvanceAt > PRESENTATION_STALL_MS) {
+          presentationWatch.invisibleSince = 0;
+          if (presentationWatch.restarts < MAX_PRESENTATION_RESTARTS) {
+            await restartRenderingStack(
+              `no presented frames for ${now - presentationWatch.lastAdvanceAt} ms`,
+            );
+          } else {
+            presentationWatch.lastRepairReason =
+              "presentation stalled; restart budget exhausted";
+            presentationWatch.lastRepairAt = now;
+          }
+          continue;
+        }
+        const visible = state.raylibOverlay?.isVisible() ?? null;
+        if (visible !== false) {
+          presentationWatch.invisibleSince = 0;
+          continue;
+        }
+        presentationWatch.invisibleSince ||= now;
+        if (now - presentationWatch.invisibleSince >= OVERLAY_INVISIBLE_GRACE_MS) {
+          presentationWatch.invisibleSince = 0;
+          repairOverlayVisibility("overlay invisible to the compositor");
+        }
+      }
+    } finally {
+      presentationWatch.running = false;
+      presentationWatch.loop = null;
+    }
+  })();
+}
 
 /**
  * Rebuild the raylib render targets after a rejected submission.
@@ -684,6 +1011,10 @@ function recoverRaylibOverlayTargets(reason: string): boolean {
       }`,
     );
   }
+  // The output texture handle changes with the rebuild; keep presenting the old
+  // one and SteamVR can keep drawing a texture that no longer exists. Dropping
+  // the overlay makes the next frame create a fresh handle and import.
+  dropRaylibOverlayForRecreate("render target rebuild");
   return false;
 }
 
@@ -776,6 +1107,146 @@ globalThis.addEventListener("unload", () => {
   void state.host?.stop();
 });
 
+/** Extra renderer of this scene: its own process, its own rate, no local scene. */
+type WebXrViewChannel = {
+  label: string;
+  /** The view drives `SETDESKTOPVIEWOFFSET` for the shared viewpoint. */
+  cameraControl: boolean;
+  /** False until a full asset batch has been shipped (see [viewPrimingPayload]). */
+  primed: boolean;
+  /** One payload in flight; further frames are dropped, not queued. */
+  inFlight: boolean;
+  sent: number;
+  acked: number;
+  dropped: number;
+  lastAckAt: number;
+};
+
+type RegisterWebXrViewPayload = {
+  actorId?: string;
+  label?: string;
+  cameraControl?: boolean;
+};
+
+/** True when any registered view drives the shared viewpoint. */
+function hasViewCameraControl(): boolean {
+  for (const view of state.views.values()) {
+    if (view.cameraControl) return true;
+  }
+  return false;
+}
+
+function getWebXrViewsStatus() {
+  return [...state.views.entries()].map(([actorId, view]) => ({
+    actorId,
+    label: view.label,
+    cameraControl: view.cameraControl,
+    sent: view.sent,
+    acked: view.acked,
+    dropped: view.dropped,
+    inFlight: view.inFlight,
+    lastAckAt: view.lastAckAt,
+  }));
+}
+
+/**
+ * Union of every asset batch emitted since start, keyed by asset id.
+ *
+ * Raythree's extractor emits `assets` as a **delta** since its previous call, so
+ * a view that registers later would receive instance lists with no geometry or
+ * material behind them and draw nothing. The union is what the in-worker
+ * renderer's asset cache already holds, and it is what a new view needs before
+ * its first real frame.
+ */
+const viewAssetCache: {
+  geometries: Map<number, GeometryAsset>;
+  materials: Map<number, MaterialAsset>;
+  textures: Map<number, TextureAsset>;
+} = {
+  geometries: new Map(),
+  materials: new Map(),
+  textures: new Map(),
+};
+
+function rememberViewAssets(batch: AssetBatch): void {
+  for (const asset of batch.geometries) viewAssetCache.geometries.set(asset.id, asset);
+  for (const asset of batch.materials) viewAssetCache.materials.set(asset.id, asset);
+  for (const asset of batch.textures) viewAssetCache.textures.set(asset.id, asset);
+}
+
+function cachedViewAssets(): AssetBatch {
+  return {
+    geometries: [...viewAssetCache.geometries.values()],
+    materials: [...viewAssetCache.materials.values()],
+    textures: [...viewAssetCache.textures.values()],
+  };
+}
+
+/**
+ * First frame for a view: the live frame with the whole asset union attached, and
+ * the scene's own background colour (the overlay path keeps its transparent one,
+ * because it composites over the real world).
+ */
+function viewPrimingPayload(
+  base: WebXRRaythreeRenderPayload,
+  background: [number, number, number, number],
+): WebXRRaythreeRenderPayload {
+  const assets = cachedViewAssets();
+  return {
+    frame: base.frame,
+    background,
+    leftEye: { ...base.leftEye, assets },
+    rightEye: { ...base.rightEye, assets },
+    ui: base.ui,
+  };
+}
+
+/**
+ * Hands one extracted frame to each registered view.
+ *
+ * A payload is a snapshot of per-frame buffers that the extractor reuses in
+ * place, so nothing is retained here: a view with a frame in flight simply drops
+ * this one (`dropped`) and receives the next extraction after its ack. At the
+ * pump's rate against a window that renders in a few milliseconds, that is the
+ * same coalescing the old out-of-process overlay relied on, without holding an
+ * aliased payload across frames.
+ */
+function publishRaythreeFrameToViews(
+  payload: WebXRRaythreeRenderPayload,
+  background: [number, number, number, number],
+): void {
+  // Accumulate unconditionally: a view that registers later needs the assets
+  // that were emitted (and consumed by the in-worker renderer) before it existed.
+  rememberViewAssets(payload.leftEye.assets);
+  if (state.views.size === 0) {
+    return;
+  }
+  let priming: WebXRRaythreeRenderPayload | null = null;
+  for (const [actorId, view] of state.views) {
+    if (view.inFlight) {
+      view.dropped += 1;
+      continue;
+    }
+    view.inFlight = true;
+    view.sent += 1;
+    if (!view.primed) {
+      view.primed = true;
+      priming ??= viewPrimingPayload(payload, background);
+      PostMan.PostMessage({
+        target: actorId,
+        type: "WEBXRVIEWFRAME",
+        payload: priming,
+      });
+      continue;
+    }
+    PostMan.PostMessage({
+      target: actorId,
+      type: "WEBXRVIEWFRAME",
+      payload,
+    });
+  }
+}
+
 function getWebXRStatus() {
   const hostStatus = state.host?.getStatus() ?? {
     running: false,
@@ -799,6 +1270,10 @@ function getWebXRStatus() {
     overlayFps: state.overlayFpsCounter.getFps(),
     uploadedFrames: state.uploadedFrames,
     nominalHmdDisplayHz: state.nominalHmdDisplayHz,
+    views: getWebXrViewsStatus(),
+    presentation: getPresentationStatus(),
+    // The scene's keyboard renders in this worker, so its locale is this worker's.
+    keyboardLocale: getKeyboardLocaleInfo(),
     raylib: {
       expected: state.overlayRenderMode === "raylib" ||
         state.overlayRenderMode === "both",
@@ -820,6 +1295,7 @@ function getWebXRStatus() {
 }
 
 async function stopWebXR(): Promise<true> {
+  stopPresentationWatch();
   LogChannel.log("webxrv2", "[webxr] shutdown: stopping controller loop");
   state.controllerRunning = false;
   if (state.controllerLoop) {
@@ -1037,12 +1513,11 @@ function includesWebGpuOverlay(mode: OverlayRenderMode): boolean {
   return mode === "webgpu" || mode === "both";
 }
 
-function buildOverlayKey(
-  baseKey: string | undefined,
-  suffix: string,
-): string | undefined {
-  return baseKey ? `${baseKey}.${suffix}` : undefined;
-}
+/**
+ * Base key suffixes this worker claims, in claim order (see the destructuring in
+ * `initializeOverlay`).
+ */
+const WEBXR_OVERLAY_KEY_BASES = ["webgpu", "raylib"] as const;
 
 function buildOverlayName(
   baseName: string | undefined,
@@ -1055,6 +1530,17 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
   if (!payload?.overlayPointer) {
     return;
   }
+  // Keys are claimed per host process and ghost overlays from dead instances are
+  // swept at creation: two running sessions must never fight over one overlay.
+  const overlayKeys = payload.overlayKey == null
+    ? null
+    : claimWebXrOverlayKeys(
+      WEBXR_OVERLAY_KEY_BASES.map((suffix) => `${payload.overlayKey}.${suffix}`),
+    );
+  // Order matches WEBXR_OVERLAY_KEY_BASES.
+  const webGpuOverlayKey = overlayKeys?.keys[0];
+  const raylibOverlayKey = overlayKeys?.keys[1];
+  const staleOverlayKeys = overlayKeys?.staleKeys ?? [];
 
   const overlayMode = payload.overlayRenderMode ?? "raylib";
 
@@ -1067,13 +1553,14 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
     state.webGpuOverlayGl = overlayGl;
     state.webGpuOverlayConfig = {
       overlayPointer: payload.overlayPointer,
-      overlayKey: buildOverlayKey(payload.overlayKey, "webgpu"),
+      overlayKey: webGpuOverlayKey,
       overlayName: buildOverlayName(payload.overlayName, "WebGPU"),
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
       sortOrder: 10,
       attachToHmd: true,
+      staleKeys: staleOverlayKeys,
     };
   }
 
@@ -1085,13 +1572,14 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
     state.raylibOverlayRaylib = raylibOverlay;
     state.raylibOverlayConfig = {
       overlayPointer: payload.overlayPointer,
-      overlayKey: buildOverlayKey(payload.overlayKey, "raylib"),
+      overlayKey: raylibOverlayKey,
       overlayName,
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
       sortOrder: 20,
       attachToHmd: true,
+      staleKeys: staleOverlayKeys,
     };
     LogChannel.log(
       "webxrv2",
@@ -1183,6 +1671,7 @@ function ensureWebGpuOverlayForFrame(eyeWidth: number, eyeHeight: number) {
     mode: state.webGpuOverlayConfig.overlayMode ?? "quad",
     sortOrder: state.webGpuOverlayConfig.sortOrder,
     attachToHmd: state.webGpuOverlayConfig.attachToHmd,
+    staleKeys: state.webGpuOverlayConfig.staleKeys,
   });
   state.webGpuOverlay = nextOverlay;
 }
@@ -1207,6 +1696,7 @@ function ensureRaylibOverlayForFrame() {
     sortOrder: state.raylibOverlayConfig.sortOrder,
     attachToHmd: state.raylibOverlayConfig.attachToHmd,
     flipVertical: false,
+    staleKeys: state.raylibOverlayConfig.staleKeys,
   });
   state.raylibOverlay = nextOverlay;
 }
@@ -1437,6 +1927,9 @@ async function uploadRaylibShadowFrame() {
   const handlerT0 = performance.now();
   const rt = state.raylibOverlayRaylib.renderRaythreeFrame(payload);
   const renderMs = rt.totalMs;
+  // Ship the same IR the in-worker overlay just rasterized to every registered
+  // view; independent process, independent render rate, no second scene.
+  publishRaythreeFrameToViews(payload, getSceneBackgroundColor(sceneContext.scene));
 
   const openvrT0 = performance.now();
   if (!state.raylibOverlayRaylib.isOutputTextureValid()) {
@@ -1787,17 +2280,13 @@ async function pumpOverlayFrames() {
           state.overlayFpsCounter.mark();
           state.frameMetric.record(performance.now() - frameStartedAt);
           maybeLogOverlayPerf();
+          overlayFrameFailureBackoffMs = OVERLAY_FRAME_FAILURE_BACKOFF_MS;
           await wait(0);
         } else {
           await wait(1);
         }
       } catch (error) {
-        LogChannel.log(
-          "webxrv2",
-          `[webxr] OpenVR-paced Raythree frame failed: ${error}`,
-        );
-        state.overlayRunning = false;
-        throw error;
+        await handleOverlayFrameFailure(error, "OpenVR-paced Raythree frame");
       }
       continue;
     }

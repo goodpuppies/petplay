@@ -100,7 +100,14 @@ const stdoutMirror = mirror(child.stdout, Deno.stdout.writable);
 const stderrMirror = mirror(child.stderr, Deno.stderr.writable);
 const status = await child.status;
 for (const [signal, handler] of installedSignals) Deno.removeSignalListener(signal, handler);
-await Promise.all([stdoutMirror, stderrMirror]);
+// PetPlay's grandchildren (the capture helper, the display overlay host child)
+// inherit its stdout/stderr, so the pipes can stay open after PetPlay itself is
+// gone. Give the mirrors a bounded drain instead of waiting on EOF forever —
+// the launcher must exit when its child does.
+await Promise.race([
+  Promise.all([stdoutMirror, stderrMirror]),
+  new Promise((resolve) => setTimeout(resolve, 2_000)),
+]);
 
 const footer = encoder.encode(
   `[petplay launcher] exited=${new Date().toISOString()} code=${status.code} signal=${
