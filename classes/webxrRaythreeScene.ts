@@ -65,11 +65,11 @@ export class WebXRRaythreeSceneBridge {
     probes?.leftEye.record(performance.now() - t1);
 
     const t2 = performance.now();
-    const rightEye = this.extractor.extract(
-      scene,
-      context.rightCamera as THREE.Camera,
-      eyeOpts,
-    );
+    // Raythree's scene payload is eye-invariant: extraction does no frustum or
+    // layer filtering, and the renderer receives the real per-eye projection
+    // and view matrices separately. Reuse the same instances/lights/assets for
+    // the right eye instead of walking and lowering the whole scene twice.
+    const rightEye = leftEye;
     probes?.rightEye.record(performance.now() - t2);
 
     const t3 = performance.now();

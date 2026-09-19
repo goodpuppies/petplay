@@ -32,6 +32,7 @@ import {
   tryCreateOpenVrOverlayFramePacer,
 } from "./openVrOverlayFramePacing.ts";
 import {
+  type DirectOpenVrControllerPose,
   type DirectOpenVrInputSnapshot,
   DirectOpenVrInputSource,
 } from "./directOpenVrInputSource.ts";
@@ -45,6 +46,11 @@ import {
 } from "npm:@react-three/fiber@10.0.0-alpha.2/webgpu";
 // @ts-ignore no types for vendored JS build output
 import * as iwerModule from "../submodules/threewebxrwebgpudeno/submodules/iwer/build/iwer.module.js";
+
+// External pacer pulses are coalesced by sequence number, not queued. Under VR
+// load the IWER rAF that consumes the latest pulse can legitimately arrive more
+// than 25 ms later; discarding it caused multi-hundred-ms R3F/input stalls.
+const EXTERNAL_PACER_PULSE_MAX_AGE_MS = 100;
 
 type OpenVrPoseActionData = ReturnType<typeof OpenVR.InputPoseActionDataStruct.read>;
 type OpenVrDigitalActionData = ReturnType<typeof OpenVR.InputDigitalActionDataStruct.read>;
@@ -66,8 +72,8 @@ type StartOptions = {
   sessionMode?: "immersive-vr" | "immersive-ar";
   alpha?: boolean;
   wristMenuActor?: string | null;
-  /** PetPlay `displayInstance` actor id — syncs 16:9 display ↔ OpenVR desktop overlay. */
-  displayInstanceActor?: string | null;
+  /** PetPlay display-overlay host actor id — syncs scene displays with presentation overlays. */
+  displayOverlayHostActor?: string | null;
   /**
    * When the OpenVR ghost uses only the Raylib path (`overlayRenderMode: "raylib"`), the WebGPU
    * projection layer does not need a full scene draw — Raythree reads the Three graph and
@@ -852,6 +858,78 @@ function createStructBuffer<T>(byteSize: number): {
   };
 }
 
+/** Neutral OpenVR action payloads for the emulated-controller bridge; mutated in place per tick. */
+function createEmulatedPoseData(): OpenVrPoseActionData {
+  return {
+    bActive: 0,
+    activeOrigin: 0n,
+    pose: {
+      mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
+      vVelocity: { v: [0, 0, 0] },
+      vAngularVelocity: { v: [0, 0, 0] },
+      eTrackingResult: 0,
+      bPoseIsValid: 0,
+      bDeviceIsConnected: 0,
+    },
+  };
+}
+
+function createEmulatedDigitalActionData(): OpenVrDigitalActionData {
+  return {
+    bActive: 0,
+    activeOrigin: 0n,
+    bState: 0,
+    bChanged: 0,
+    fUpdateTime: 0,
+  };
+}
+
+function writeDigitalActionData(
+  target: OpenVrDigitalActionData,
+  controller: DirectOpenVrControllerPose | null,
+  button: "trigger" | "grab",
+): void {
+  target.bActive = controller ? 1 : 0;
+  target.bState = controller?.[button] ?? 0;
+}
+
+/** 3x4 row-major tracking matrix of `quaternion`/`position`, written into `matrix` in place. */
+function writeQuaternionToMatrix3x4(
+  matrix: number[][],
+  quaternion: Float32Array,
+  position: Float32Array,
+): void {
+  const x = quaternion[0]!;
+  const y = quaternion[1]!;
+  const z = quaternion[2]!;
+  const w = quaternion[3]!;
+  const xx = x * x;
+  const yy = y * y;
+  const zz = z * z;
+  const xy = x * y;
+  const xz = x * z;
+  const yz = y * z;
+  const wx = w * x;
+  const wy = w * y;
+  const wz = w * z;
+
+  const r0 = matrix[0]!;
+  r0[0] = 1 - 2 * (yy + zz);
+  r0[1] = 2 * (xy - wz);
+  r0[2] = 2 * (xz + wy);
+  r0[3] = position[0]!;
+  const r1 = matrix[1]!;
+  r1[0] = 2 * (xy + wz);
+  r1[1] = 1 - 2 * (xx + zz);
+  r1[2] = 2 * (yz - wx);
+  r1[3] = position[1]!;
+  const r2 = matrix[2]!;
+  r2[0] = 2 * (xz - wy);
+  r2[1] = 2 * (yz + wx);
+  r2[2] = 1 - 2 * (xx + yy);
+  r2[3] = position[2]!;
+}
+
 export class WebXRHost {
   private running = false;
   private frameCount = 0;
@@ -868,6 +946,22 @@ export class WebXRHost {
   private device: GPUDevice | null = null;
   private overlayUploadFormat: OverlayUploadFormat = "rgba";
   private lastLayerInfo: string | null = null;
+  /**
+   * Reused OpenVR-shaped controller payloads.
+   *
+   * `updateEmulatedControllersFromOpenVr` runs on every XR tick, and its values are consumed
+   * synchronously by {@link updateControllerState} and by `onInProcessControllerFrame`. The objects
+   * are therefore rewritten in place each tick: a consumer that wants to retain them (none does
+   * today — `petplay/webxr.ts` passes `undefined`) must copy first.
+   */
+  private readonly emulatedControllerFrame: ExternalControllerData = [
+    createEmulatedPoseData(),
+    createEmulatedPoseData(),
+    createEmulatedDigitalActionData(),
+    createEmulatedDigitalActionData(),
+    createEmulatedDigitalActionData(),
+    createEmulatedDigitalActionData(),
+  ];
   private latestControllerData: ExternalControllerData | null = null;
   private lastXrCallbackAt = 0;
   private lastHeartbeatAt = 0;
@@ -1403,7 +1497,7 @@ export class WebXRHost {
           React.createElement(NoR3FDefaultRender), // for the test
           React.createElement(WebXRScene, {
             XROrigin,
-            displayInstanceActor: options.displayInstanceActor ?? null,
+            displayOverlayHostActor: options.displayOverlayHostActor ?? null,
             directOpenVrInputSource: this.directOpenVrInputSource,
           }),
         ),
@@ -2045,8 +2139,11 @@ export class WebXRHost {
         const pacerAgeMs = this.externalPacerTimestamp > 0
           ? tickT0 - this.externalPacerTimestamp
           : Number.POSITIVE_INFINITY;
-        if (!hasUnconsumedPacerPulse || pacerAgeMs > 25) {
-          if (pacerAgeMs > 25) {
+        if (
+          !hasUnconsumedPacerPulse ||
+          pacerAgeMs > EXTERNAL_PACER_PULSE_MAX_AGE_MS
+        ) {
+          if (pacerAgeMs > EXTERNAL_PACER_PULSE_MAX_AGE_MS) {
             this.consumedExternalPacerFrameSeq = this.externalPacerFrameSeq;
           }
           return;
@@ -2818,106 +2915,25 @@ export class WebXRHost {
     const snapshot = this.directOpenVrInputSource.getSnapshot();
     const stepDt = this.beginEmulatedControllerDataFrame();
     try {
-      const leftPoseData: OpenVrPoseActionData = snapshot.controllers.left
-        ? {
-          bActive: 1,
-          activeOrigin: 0n,
-          pose: {
-            mDeviceToAbsoluteTracking: {
-              m: this.quaternionToMatrix3x4(
-                snapshot.controllers.left.quaternion,
-                snapshot.controllers.left.position,
-              ),
-            },
-            vVelocity: { v: [0, 0, 0] },
-            vAngularVelocity: { v: [0, 0, 0] },
-            eTrackingResult: 0,
-            bPoseIsValid: 1,
-            bDeviceIsConnected: 1,
-          },
-        }
-        : {
-          bActive: 0,
-          activeOrigin: 0n,
-          pose: {
-            mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
-            vVelocity: { v: [0, 0, 0] },
-            vAngularVelocity: { v: [0, 0, 0] },
-            eTrackingResult: 0,
-            bPoseIsValid: 0,
-            bDeviceIsConnected: 0,
-          },
-        };
-
-      const rightPoseData: OpenVrPoseActionData = snapshot.controllers.right
-        ? {
-          bActive: 1,
-          activeOrigin: 0n,
-          pose: {
-            mDeviceToAbsoluteTracking: {
-              m: this.quaternionToMatrix3x4(
-                snapshot.controllers.right.quaternion,
-                snapshot.controllers.right.position,
-              ),
-            },
-            vVelocity: { v: [0, 0, 0] },
-            vAngularVelocity: { v: [0, 0, 0] },
-            eTrackingResult: 0,
-            bPoseIsValid: 1,
-            bDeviceIsConnected: 1,
-          },
-        }
-        : {
-          bActive: 0,
-          activeOrigin: 0n,
-          pose: {
-            mDeviceToAbsoluteTracking: { m: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]] },
-            vVelocity: { v: [0, 0, 0] },
-            vAngularVelocity: { v: [0, 0, 0] },
-            eTrackingResult: 0,
-            bPoseIsValid: 0,
-            bDeviceIsConnected: 0,
-          },
-        };
-
-      const leftTriggerData: OpenVrDigitalActionData = {
-        bActive: snapshot.controllers.left ? 1 : 0,
-        activeOrigin: 0n,
-        bState: snapshot.controllers.left?.trigger ?? 0,
-        bChanged: 0,
-        fUpdateTime: 0,
-      };
-      const rightTriggerData: OpenVrDigitalActionData = {
-        bActive: snapshot.controllers.right ? 1 : 0,
-        activeOrigin: 0n,
-        bState: snapshot.controllers.right?.trigger ?? 0,
-        bChanged: 0,
-        fUpdateTime: 0,
-      };
-      const leftGrabData: OpenVrDigitalActionData = {
-        bActive: snapshot.controllers.left ? 1 : 0,
-        activeOrigin: 0n,
-        bState: snapshot.controllers.left?.grab ?? 0,
-        bChanged: 0,
-        fUpdateTime: 0,
-      };
-      const rightGrabData: OpenVrDigitalActionData = {
-        bActive: snapshot.controllers.right ? 1 : 0,
-        activeOrigin: 0n,
-        bState: snapshot.controllers.right?.grab ?? 0,
-        bChanged: 0,
-        fUpdateTime: 0,
-      };
-
-      const frameTuple: ExternalControllerData = [
+      // Reused payloads: this runs on every XR tick, and the tuple shape only has to be allocated
+      // once — the values are rewritten below (see `emulatedControllerFrame` for the aliasing note).
+      const [
         leftPoseData,
         rightPoseData,
         leftTriggerData,
         rightTriggerData,
         leftGrabData,
         rightGrabData,
-      ];
-      this.onInProcessControllerFrame?.(frameTuple);
+      ] = this.emulatedControllerFrame;
+
+      this.writeEmulatedPoseData(leftPoseData, snapshot.controllers.left);
+      this.writeEmulatedPoseData(rightPoseData, snapshot.controllers.right);
+      writeDigitalActionData(leftTriggerData, snapshot.controllers.left, "trigger");
+      writeDigitalActionData(rightTriggerData, snapshot.controllers.right, "trigger");
+      writeDigitalActionData(leftGrabData, snapshot.controllers.left, "grab");
+      writeDigitalActionData(rightGrabData, snapshot.controllers.right, "grab");
+
+      this.onInProcessControllerFrame?.(this.emulatedControllerFrame);
 
       this.updateControllerState(
         this.xrDevice.controllers.left,
@@ -2940,34 +2956,26 @@ export class WebXRHost {
     }
   }
 
-  private quaternionToMatrix3x4(
-    quaternion: Float32Array,
-    position: Float32Array,
-  ): [
-    [number, number, number, number],
-    [number, number, number, number],
-    [number, number, number, number],
-  ] {
-    const x = quaternion[0];
-    const y = quaternion[1];
-    const z = quaternion[2];
-    const w = quaternion[3];
-
-    const xx = x * x;
-    const yy = y * y;
-    const zz = z * z;
-    const xy = x * y;
-    const xz = x * z;
-    const yz = y * z;
-    const wx = w * x;
-    const wy = w * y;
-    const wz = w * z;
-
-    return [
-      [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), position[0]],
-      [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), position[1]],
-      [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy), position[2]],
-    ];
+  /** Fills `target` from the live OpenVR snapshot without allocating. */
+  private writeEmulatedPoseData(
+    target: OpenVrPoseActionData,
+    controller: DirectOpenVrInputSnapshot["controllers"]["left"],
+  ): void {
+    const pose = target.pose;
+    if (controller == null) {
+      target.bActive = 0;
+      pose.bPoseIsValid = 0;
+      pose.bDeviceIsConnected = 0;
+      return;
+    }
+    target.bActive = 1;
+    pose.bPoseIsValid = 1;
+    pose.bDeviceIsConnected = 1;
+    writeQuaternionToMatrix3x4(
+      pose.mDeviceToAbsoluteTracking.m,
+      controller.quaternion,
+      controller.position,
+    );
   }
 
   private updateControllerState(
@@ -2986,7 +2994,17 @@ export class WebXRHost {
     const tracking = pose?.mDeviceToAbsoluteTracking?.m;
     const isConnected = Boolean(poseData?.bActive) && Boolean(pose?.bPoseIsValid) &&
       Array.isArray(tracking);
-    controller.connected = isConnected;
+    // These IWER controllers are the stable logical left/right endpoints of the
+    // OpenVR bridge, not mirrors of one particular tracked-device index. VRLink
+    // can briefly invalidate a physical Quest controller pose and assign the
+    // same hand role to one of its temporary `shuttlecock` devices. Toggling
+    // `connected` here makes IWER emit an input-sources remove/add pair; React
+    // then destroys and recreates every ray/grab pointer for that hand in the
+    // middle of a UI interaction. Keep the logical source connected and retain
+    // its last pose through those gaps. Button values are still updated first,
+    // so a missing OpenVR source releases trigger/squeeze rather than leaving a
+    // captured or active UI control stuck down.
+    controller.connected = true;
     controller.updateButtonValue?.("trigger", triggerData?.bState ? 1 : 0);
     controller.updateButtonValue?.("squeeze", grabData?.bState ? 1 : 0);
     if (!isConnected) {

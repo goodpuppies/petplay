@@ -1,4 +1,4 @@
-import { PostalService } from "../submodules/stageforge/mod.ts";
+import { IPCWorker, PostalService } from "../submodules/stageforge/mod.ts";
 import { asyncPrompt, createTemp, destroyTemp, ensuredenodir, wait } from "../classes/utils.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
@@ -36,6 +36,7 @@ async function petplaySharedShutdown(): Promise<void> {
   // The final Deno.exit terminates these already-cleaned, idle workers together.
   const actorIds = [...PostalService.actors.keys()].reverse();
   for (const actorId of actorIds) {
+    const actor = PostalService.actors.get(actorId);
     try {
       console.log(`[petplay] shutting down actor ${actorId}`);
       await postalservice.PostMessage({
@@ -46,6 +47,13 @@ async function petplaySharedShutdown(): Promise<void> {
       console.log(`[petplay] actor shutdown complete ${actorId}`);
     } catch (error) {
       console.warn(`petplay: actor shutdown failed (${actorId}):`, error);
+    }
+    if (actor?.worker instanceof IPCWorker) {
+      actor.worker.terminate();
+      await Promise.race([
+        actor.worker.finished.catch(() => undefined),
+        wait(2_500),
+      ]);
     }
   }
   if (Deno.build.os === "windows") {
@@ -109,13 +117,13 @@ if (devExitAfterArg) {
   setTimeout(() => void petplayDefaultExit(), delayMs);
 }
 
-function isRecoverableDisplayInstanceWorkerError(ev: ErrorEvent): boolean {
+function isRecoverableDisplayOverlayHostWorkerError(ev: ErrorEvent): boolean {
   const message = String(ev.error ?? ev.message ?? "");
   const lower = message.toLowerCase();
-  if (lower.includes('in worker "./displayinstance.ts"')) {
+  if (lower.includes('in worker "./displayoverlayhost.ts"')) {
     return true;
   }
-  if (lower.includes("displayinstance.ts")) {
+  if (lower.includes("displayoverlayhost.ts")) {
     return true;
   }
   if (lower.includes("failed to initialize glfw")) {
@@ -128,7 +136,7 @@ function isRecoverableDisplayInstanceWorkerError(ev: ErrorEvent): boolean {
 }
 
 PostalService.onActorWorkerError = (ev) => {
-  if (isRecoverableDisplayInstanceWorkerError(ev)) {
+  if (isRecoverableDisplayOverlayHostWorkerError(ev)) {
     console.warn("petplay: recoverable worker error ignored:", ev.error ?? ev.message);
     return;
   }
@@ -139,6 +147,7 @@ const stageforgeNetworkingEnabled = isStageforgeNetworkingEnabled();
 const postalservice = stageforgeNetworkingEnabled
   ? await createNetworkedPostalService()
   : new PostalService();
+postalservice.registerWorker("process", IPCWorker);
 
 PostalService.debugMode = false;
 PostalService.performanceLoggingActive = false;

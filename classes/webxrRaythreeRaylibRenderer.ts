@@ -144,6 +144,8 @@ type UiPanelShader = {
   borderSizeLoc: number;
   borderRadiusLoc: number;
   dimensionsLoc: number;
+  hasTextureLoc: number;
+  uvTransformLoc: number;
   depthOffsetLoc: number;
 };
 
@@ -157,6 +159,7 @@ type UiTextShader = {
 
 type UiTextBatchShader = {
   shader: raylibBindings.Shader;
+  mvpLoc: number;
 };
 
 type UiPanelBatchShader = {
@@ -171,14 +174,102 @@ type UiTextMeshCacheEntry = {
   version: number;
 };
 
+type UiTextCpuGeometryCacheEntry = {
+  geometry: MsdfCpuGeometry;
+  version: number;
+};
+
 type DynamicNativeMesh = NativeMesh & {
   vertexCount: number;
 };
 
-const MSDF_ATLAS_PATH = new URL(
-  "../submodules/threewebxrwebgpudeno/vendor/three-msdf-text-utils/demo/fonts/roboto/roboto-regular.png",
-  import.meta.url,
-);
+/**
+ * MSDF atlases by font id, mirroring `MSDF_FONTS` in `msdf-text.tsx`. The three
+ * side bakes glyph UVs against one of these; this is the matching texture.
+ *
+ * Icons are a font here rather than images, so they need no path of their own —
+ * only that the atlas be selectable per text run.
+ */
+const MSDF_ATLAS_PATHS: Record<string, URL> = {
+  roboto: new URL(
+    "../submodules/threewebxrwebgpudeno/vendor/three-msdf-text-utils/demo/fonts/roboto/roboto-regular.png",
+    import.meta.url,
+  ),
+  "material-icons": new URL(
+    "../resources/fonts/material-icons/material-icons.png",
+    import.meta.url,
+  ),
+};
+
+const DEFAULT_MSDF_FONT = "roboto";
+
+/**
+ * Four clip planes that never cut anything.
+ *
+ * The shader tests `dot(worldPos, plane.xyz) + plane.w > 0`, so "never clip" is
+ * a zero normal with a large positive offset — every point is then trivially
+ * inside. Filling this with large *negative* values instead (the obvious guess)
+ * makes the distance negative everywhere and discards the whole quad.
+ */
+const UI_IMAGE_NO_CLIP = new Float32Array([
+  0,
+  0,
+  0,
+  1e6,
+  0,
+  0,
+  0,
+  1e6,
+  0,
+  0,
+  0,
+  1e6,
+  0,
+  0,
+  0,
+  1e6,
+]);
+
+/**
+ * UV scale/offset that makes an image `cover` its panel without distortion.
+ *
+ * The shorter axis is left at 1 and the longer one is scaled down, which crops
+ * rather than letterboxes. `focus` picks which part of the cropped axis
+ * survives — 0.5 centres it, 1 keeps the far edge.
+ */
+function computeCoverUv(
+  imageWidth: number,
+  imageHeight: number,
+  panelWidth: number,
+  panelHeight: number,
+  fit: "cover" | "stretch",
+  focus: [number, number],
+): [number, number, number, number] {
+  if (fit === "stretch" || imageWidth <= 0 || imageHeight <= 0) {
+    return [1, 1, 0, 0];
+  }
+  const imageAspect = imageWidth / imageHeight;
+  const panelAspect = panelWidth / Math.max(panelHeight, 0.0001);
+  // Scale the axis that has surplus, so the other one fills exactly.
+  const scaleX = imageAspect > panelAspect ? panelAspect / imageAspect : 1;
+  const scaleY = imageAspect > panelAspect ? 1 : imageAspect / panelAspect;
+  return [scaleX, scaleY, (1 - scaleX) * focus[0], (1 - scaleY) * focus[1]];
+}
+
+/**
+ * Images available to the UI, by id.
+ *
+ * Only a string id crosses the snapshot boundary — the renderer owns loading
+ * and caching, exactly as it does for the MSDF atlases above. That keeps
+ * pixel data out of the per-frame snapshot entirely.
+ *
+ * A registry covers the static cases (a wallpaper, a logo). Dynamic sources —
+ * album art, window thumbnails — will want a `registerUiTexture(id, pixels)`
+ * companion; deliberately not built until a caller needs it.
+ */
+const UI_TEXTURE_PATHS: Record<string, URL> = {
+  wallpaper: new URL("../resources/ui/wallpaper.png", import.meta.url),
+};
 // Typical msdfgen pxRange=4. Roboto atlas from three-msdf-text-utils was generated with this.
 const MSDF_PX_RANGE = 4;
 
@@ -197,10 +288,17 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly materials = new Map<number, NativeMaterial>();
   private readonly materialRevisions = new Map<number, number>();
   private readonly uiTextMeshes = new Map<string, UiTextMeshCacheEntry>();
+  private readonly uiTextCpuGeometries = new WeakMap<
+    object,
+    UiTextCpuGeometryCacheEntry
+  >();
   private readonly loggedTextGeometryValidation = new Set<string>();
-  private uiMsdfAtlas: raylibBindings.Texture2D | null = null;
-  private uiMsdfAtlasSize: [number, number] = [0, 0];
-  private uiMsdfAtlasLoadFailed = false;
+  private readonly uiTextures = new Map<string, raylibBindings.Texture2D>();
+  private readonly uiTextureSizes = new Map<string, [number, number]>();
+  private readonly uiTextureLoadFailed = new Set<string>();
+  private readonly uiMsdfAtlases = new Map<string, raylibBindings.Texture2D>();
+  private readonly uiMsdfAtlasSizes = new Map<string, [number, number]>();
+  private readonly uiMsdfAtlasLoadFailed = new Set<string>();
   private readonly instanceMatrix = new THREE.Matrix4();
   private readonly worldMatrix = new THREE.Matrix4();
   private readonly sortMatrix = new THREE.Matrix4();
@@ -239,7 +337,13 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly uiPanelBatchShader: UiPanelBatchShader;
   private readonly uiPanelBatchMaterialBytes: Uint8Array;
   private readonly uiPanelBatchMaterial: raylibBindings.Material;
-  private uiTextBatchMesh: DynamicNativeMesh | null = null;
+  private readonly uiTextBatchMeshes = new Map<
+    string,
+    {
+      mesh: DynamicNativeMesh;
+      texts: WebXRRaythreeUiSnapshot["texts"];
+    }
+  >();
   private textBatchPoolPos = new Float32Array(0);
   private textBatchPoolN = new Float32Array(0);
   private textBatchPoolUv = new Float32Array(0);
@@ -329,12 +433,69 @@ export class WebXRRaythreeRaylibRenderer {
     );
   }
 
-  private ensureMsdfAtlas(): raylibBindings.Texture2D | null {
-    if (this.uiMsdfAtlas !== null || this.uiMsdfAtlasLoadFailed) {
-      return this.uiMsdfAtlas;
+  private ensureUiTexture(textureId: string): raylibBindings.Texture2D | null {
+    const existing = this.uiTextures.get(textureId);
+    if (existing !== undefined) {
+      return existing;
+    }
+    if (this.uiTextureLoadFailed.has(textureId)) {
+      return null;
+    }
+    const path = UI_TEXTURE_PATHS[textureId];
+    if (path === undefined) {
+      this.uiTextureLoadFailed.add(textureId);
+      LogChannel.log("webxrv2", `[webxr] unknown ui texture \`${textureId}\``);
+      return null;
     }
     try {
-      const atlasBytes = Deno.readFileSync(MSDF_ATLAS_PATH);
+      const bytes = Deno.readFileSync(path);
+      const image = raylib.H.LoadImageFromMemory(
+        ".png",
+        Deno.UnsafePointer.of(bytes) as Deno.PointerValue<number>,
+        bytes.length,
+      );
+      const texture = raylib.H.LoadTextureFromImage(image);
+      raylib.H.SetTextureFilter(
+        texture,
+        raylibBindings.TextureFilter.TEXTURE_FILTER_BILINEAR,
+      );
+      raylib.H.SetTextureWrap(texture, raylibBindings.TextureWrap.TEXTURE_WRAP_CLAMP);
+      this.uiTextureSizes.set(textureId, [image.width, image.height]);
+      raylib.H.UnloadImage(image);
+      this.uiTextures.set(textureId, texture);
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] ui texture \`${textureId}\` loaded ${image.width}x${image.height}`,
+      );
+      return texture;
+    } catch (error) {
+      this.uiTextureLoadFailed.add(textureId);
+      LogChannel.log(
+        "webxrv2",
+        `[webxr] ui texture \`${textureId}\` load failed: ${String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  private ensureMsdfAtlas(
+    fontId: string = DEFAULT_MSDF_FONT,
+  ): raylibBindings.Texture2D | null {
+    const existing = this.uiMsdfAtlases.get(fontId);
+    if (existing !== undefined) {
+      return existing;
+    }
+    if (this.uiMsdfAtlasLoadFailed.has(fontId)) {
+      return null;
+    }
+    const path = MSDF_ATLAS_PATHS[fontId];
+    if (path === undefined) {
+      this.uiMsdfAtlasLoadFailed.add(fontId);
+      LogChannel.log("webxrv2", `[webxr] unknown msdf font \`${fontId}\``);
+      return null;
+    }
+    try {
+      const atlasBytes = Deno.readFileSync(path);
       const image = raylib.H.LoadImageFromMemory(
         ".png",
         Deno.UnsafePointer.of(atlasBytes) as Deno.PointerValue<number>,
@@ -353,19 +514,19 @@ export class WebXRRaythreeRaylibRenderer {
         texture,
         raylibBindings.TextureWrap.TEXTURE_WRAP_CLAMP,
       );
-      this.uiMsdfAtlasSize = [flippedImage.width, flippedImage.height];
+      this.uiMsdfAtlasSizes.set(fontId, [flippedImage.width, flippedImage.height]);
       raylib.H.UnloadImage(flippedImage);
-      this.uiMsdfAtlas = texture;
+      this.uiMsdfAtlases.set(fontId, texture);
       LogChannel.log(
         "webxrv2",
-        `[webxr] msdf atlas loaded ${flippedImage.width}x${flippedImage.height}`,
+        `[webxr] msdf atlas \`${fontId}\` loaded ${flippedImage.width}x${flippedImage.height}`,
       );
-      return this.uiMsdfAtlas;
+      return texture;
     } catch (error) {
-      this.uiMsdfAtlasLoadFailed = true;
+      this.uiMsdfAtlasLoadFailed.add(fontId);
       LogChannel.log(
         "webxrv2",
-        `[webxr] msdf atlas load failed: ${String(error)}`,
+        `[webxr] msdf atlas \`${fontId}\` load failed: ${String(error)}`,
       );
       return null;
     }
@@ -454,16 +615,24 @@ export class WebXRRaythreeRaylibRenderer {
       "webxrv2",
       "[webxr] raylib scene dispose: UI textures and meshes",
     );
-    if (this.uiMsdfAtlas !== null) {
-      raylib.H.UnloadTexture(this.uiMsdfAtlas);
-      this.uiMsdfAtlas = null;
+    for (const texture of this.uiTextures.values()) {
+      raylib.H.UnloadTexture(texture);
+    }
+    this.uiTextures.clear();
+    this.uiTextureSizes.clear();
+    if (this.uiMsdfAtlases.size > 0) {
+      for (const texture of this.uiMsdfAtlases.values()) {
+        raylib.H.UnloadTexture(texture);
+      }
+      this.uiMsdfAtlases.clear();
+      this.uiMsdfAtlasSizes.clear();
       this.lastBatchedTextAtlasId = 0;
     }
     this.unloadNativeMesh(this.uiPanelMesh);
-    if (this.uiTextBatchMesh !== null) {
-      this.unloadNativeMesh(this.uiTextBatchMesh);
-      this.uiTextBatchMesh = null;
+    for (const entry of this.uiTextBatchMeshes.values()) {
+      this.unloadNativeMesh(entry.mesh);
     }
+    this.uiTextBatchMeshes.clear();
     if (this.uiPanelBatchMesh !== null) {
       this.unloadNativeMesh(this.uiPanelBatchMesh);
       this.uiPanelBatchMesh = null;
@@ -736,6 +905,58 @@ export class WebXRRaythreeRaylibRenderer {
       this.getWorldMatrixViewDepth(right.worldMatrix) -
       this.getWorldMatrixViewDepth(left.worldMatrix)
     );
+
+    // Group by uikit root and draw the roots back to front.
+    //
+    // The UI pass runs with the depth test off, so layering is draw order alone.
+    // uikit's ordering is only meaningful *within* a root: every panel reports
+    // order info 0/0/0/0 and `instanceIndex` is merely the slot uikit allocated,
+    // so two roots at different depths — a keyboard and the wrist overlay —
+    // interleave arbitrarily and the further one can paint over the nearer.
+    // Sorting roots by view depth restores the one guarantee that matters
+    // between them, while uikit's order still decides everything inside one.
+    const rootOrder = new Map<number, { depth: number; count: number }>();
+    for (const panel of panels) {
+      const entry = rootOrder.get(panel.rootIndex) ?? { depth: 0, count: 0 };
+      entry.depth += this.getWorldMatrixViewDepth(panel.worldMatrix);
+      entry.count += 1;
+      rootOrder.set(panel.rootIndex, entry);
+    }
+    for (const text of texts) {
+      // A root may legitimately have text and no panels.
+      if (rootOrder.has(text.rootIndex)) continue;
+      rootOrder.set(text.rootIndex, {
+        depth: this.getWorldMatrixViewDepth(text.worldMatrix),
+        count: 1,
+      });
+    }
+    // Mean depth of a root's panels: they are near-coplanar in practice, so this
+    // is stable, and it avoids one stray element deciding a whole root's layer.
+    const rootIndicesByDepth = [...rootOrder.entries()]
+      .sort((left, right) =>
+        (right[1].depth / Math.max(right[1].count, 1)) -
+        (left[1].depth / Math.max(left[1].count, 1))
+      )
+      .map(([rootIndex]) => rootIndex);
+
+    const panelsByRoot = new Map<number, typeof panels>();
+    for (const panel of panels) {
+      const group = panelsByRoot.get(panel.rootIndex) ?? [];
+      group.push(panel);
+      panelsByRoot.set(panel.rootIndex, group);
+    }
+    const textsByRoot = new Map<number, typeof texts>();
+    for (const text of texts) {
+      const group = textsByRoot.get(text.rootIndex) ?? [];
+      group.push(text);
+      textsByRoot.set(text.rootIndex, group);
+    }
+    const imagesByRoot = new Map<number, WebXRRaythreeUiSnapshot["images"]>();
+    for (const image of ui.images ?? []) {
+      const group = imagesByRoot.get(image.rootIndex) ?? [];
+      group.push(image);
+      imagesByRoot.set(image.rootIndex, group);
+    }
     const t1 = performance.now();
 
     if (
@@ -750,32 +971,98 @@ export class WebXRRaythreeRaylibRenderer {
       );
     }
 
-    const panelBatched = WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED
-      ? null
-      : this.tryDrawUiPanelsBatched(panels, this.uiMvpPV);
+    // Each root is drawn complete — panels, its images, then its text — before
+    // the next one starts. Drawing all panels then all text globally would let a
+    // far root's labels land on a near root's panels.
     let panelDrawn = 0;
-    if (panelBatched === null) {
-      for (const panel of panels) {
-        if (this.drawUiPanel(panel, this.uiMvpPV)) {
-          panelDrawn++;
-        }
-      }
-    } else {
-      panelDrawn = panelBatched;
-    }
-    const t2 = performance.now();
-
-    const textBatched = this.tryDrawUiTextBatched(texts, this.uiMvpPV);
     let textDrawn = 0;
-    if (textBatched === null) {
-      for (const text of texts) {
-        if (this.drawUiText(text, this.uiMvpPV)) {
-          textDrawn++;
+    let panelsMs = 0;
+    let textMs = 0;
+    for (const rootIndex of rootIndicesByDepth) {
+      const rootPanels = panelsByRoot.get(rootIndex) ?? [];
+      const rootImages = imagesByRoot.get(rootIndex) ?? [];
+      const rootTexts = textsByRoot.get(rootIndex) ?? [];
+
+      const panelsStart = performance.now();
+      if (rootImages.length > 0) {
+        // Placing an image in the draw order by sort key does not work: uikit
+        // gives every panel the same order info and layers them by
+        // `instanceIndex`, while `Content` — which an image rides on — reports a
+        // higher elementType and would sort above every panel. There is no key
+        // meaning "just behind this tile's contents".
+        //
+        // What *is* known is geometric: an image fills one panel's rectangle. So
+        // match each image to that panel and draw it immediately afterwards. The
+        // tile's background paints first, the image covers it, and the tile's
+        // children draw on top — exactly what a fill should do.
+        // Keep batching on either side of an image. The previous implementation
+        // disabled batching for the whole root as soon as it contained one
+        // image, turning a wallpaper into dozens of native draw calls per eye.
+        // A batch boundary immediately after the matching panel preserves the
+        // exact same ordering while retaining almost all of the batching win.
+        const pendingImages = rootImages.map((item) => ({ item, placed: false }));
+        let runStart = 0;
+        for (let panelIndex = 0; panelIndex < rootPanels.length; panelIndex++) {
+          const panel = rootPanels[panelIndex]!;
+          const matchingImages = [] as typeof pendingImages;
+          for (const pending of pendingImages) {
+            if (pending.placed || !panelMatchesImage(panel, pending.item)) {
+              continue;
+            }
+            pending.placed = true;
+            matchingImages.push(pending);
+          }
+          if (matchingImages.length === 0) {
+            continue;
+          }
+          panelDrawn += this.drawUiPanelRun(
+            rootPanels.slice(runStart, panelIndex + 1),
+            this.uiMvpPV,
+          );
+          runStart = panelIndex + 1;
+          for (const pending of matchingImages) {
+            this.drawUiImage(pending.item, this.uiMvpPV);
+          }
+        }
+        panelDrawn += this.drawUiPanelRun(rootPanels.slice(runStart), this.uiMvpPV);
+        // An image matching no panel still draws, on top, rather than vanishing
+        // silently — a visible wrong result beats an invisible one.
+        for (const pending of pendingImages) {
+          if (!pending.placed) {
+            this.drawUiImage(pending.item, this.uiMvpPV);
+          }
+        }
+      } else {
+        panelDrawn += this.drawUiPanelRun(rootPanels, this.uiMvpPV);
+      }
+      panelsMs += performance.now() - panelsStart;
+
+      const textStart = performance.now();
+      // One batch per font within the root: a batch binds a single atlas, so
+      // runs from different fonts cannot share one. Grouping keeps batching in
+      // play once icons are on screen.
+      const textsByFont = new Map<string, typeof rootTexts>();
+      for (const text of rootTexts) {
+        const fontId = text.font ?? DEFAULT_MSDF_FONT;
+        const group = textsByFont.get(fontId) ?? [];
+        group.push(text);
+        textsByFont.set(fontId, group);
+      }
+      for (const [fontId, group] of textsByFont) {
+        const textBatched = this.tryDrawUiTextBatched(group, this.uiMvpPV, fontId);
+        if (textBatched === null) {
+          for (const text of group) {
+            if (this.drawUiText(text, this.uiMvpPV)) {
+              textDrawn++;
+            }
+          }
+        } else {
+          textDrawn += textBatched;
         }
       }
-    } else {
-      textDrawn = textBatched;
+      textMs += performance.now() - textStart;
     }
+
     const t3 = performance.now();
 
     if (ui.texts.length > 0 && !this.loggedTextCounts.has(ui.texts.length)) {
@@ -785,13 +1072,36 @@ export class WebXRRaythreeRaylibRenderer {
 
     return {
       sortPrepMs: t1 - t0,
-      panelsMs: t2 - t1,
-      textMs: t3 - t2,
+      panelsMs,
+      textMs,
       panelCount: ui.panels.length,
       textCount: ui.texts.length,
       panelDrawn,
       textDrawn,
     };
+  }
+
+  /** Draw a contiguous panel-order run as one batch, with a safe per-panel fallback. */
+  private drawUiPanelRun(
+    panels: WebXRRaythreeUiSnapshot["panels"],
+    projView: THREE.Matrix4,
+  ): number {
+    if (panels.length === 0) {
+      return 0;
+    }
+    const batched = WEBXR_RAYTHREE_UI_PANEL_FORCE_UNBATCHED
+      ? null
+      : this.tryDrawUiPanelsBatched(panels, projView);
+    if (batched !== null) {
+      return batched;
+    }
+    let drawn = 0;
+    for (const panel of panels) {
+      if (this.drawUiPanel(panel, projView)) {
+        drawn++;
+      }
+    }
+    return drawn;
   }
 
   private setUiShaderMvp(
@@ -881,6 +1191,9 @@ export class WebXRRaythreeRaylibRenderer {
       this.uiPanelShader.borderRadiusLoc,
       unpackUiBorderRadius(panel.data[8] ?? 0),
     );
+    // Shader uniforms persist between draws, so an ordinary panel has to clear
+    // the flag or it would inherit the previous image's texture as its fill.
+    setShaderFloat(this.uiPanelShader.shader, this.uiPanelShader.hasTextureLoc, 0);
     setShaderVec2(
       this.uiPanelShader.shader,
       this.uiPanelShader.dimensionsLoc,
@@ -916,6 +1229,107 @@ export class WebXRRaythreeRaylibRenderer {
     return true;
   }
 
+  /**
+   * Draw one image as a rounded panel fill.
+   *
+   * Deliberately shares `uiPanelShader` with panels rather than having its own:
+   * the corner SDF, border blend and clip are then literally the same code, so
+   * an image's corner cannot diverge from a panel's as either evolves.
+   *
+   * @returns `true` if a quad was submitted.
+   */
+  private drawUiImage(
+    image: WebXRRaythreeUiSnapshot["images"][number],
+    projView: THREE.Matrix4,
+  ): boolean {
+    const opacity = image.opacity ?? 1;
+    if (opacity <= 0) {
+      return false;
+    }
+    const texture = this.ensureUiTexture(image.texture);
+    if (texture === null) {
+      return false;
+    }
+    const size = this.uiTextureSizes.get(image.texture) ?? [1, 1];
+
+    const albedoMap = readMaterialMap(
+      this.uiMaterialBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+    );
+    writeMaterialMap(
+      this.uiMaterialBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+      { ...albedoMap, texture, color: raylib.WHITE },
+    );
+
+    const radius = image.borderRadius ?? [0, 0, 0, 0];
+    setShaderVec4(this.uiPanelShader.shader, this.uiPanelShader.backgroundColorLoc, [
+      1,
+      1,
+      1,
+      opacity,
+    ]);
+    setShaderVec4(this.uiPanelShader.shader, this.uiPanelShader.borderColorLoc, [0, 0, 0, 0]);
+    setShaderVec4(this.uiPanelShader.shader, this.uiPanelShader.borderSizeLoc, [0, 0, 0, 0]);
+    setShaderVec4(this.uiPanelShader.shader, this.uiPanelShader.borderRadiusLoc, [
+      radius[0] / image.height,
+      radius[1] / image.height,
+      radius[2] / image.height,
+      radius[3] / image.height,
+    ]);
+    setShaderVec2(
+      this.uiPanelShader.shader,
+      this.uiPanelShader.dimensionsLoc,
+      image.width,
+      image.height,
+    );
+    setShaderFloat(this.uiPanelShader.shader, this.uiPanelShader.hasTextureLoc, 1);
+    setShaderVec4(
+      this.uiPanelShader.shader,
+      this.uiPanelShader.uvTransformLoc,
+      computeCoverUv(
+        size[0],
+        size[1],
+        image.width,
+        image.height,
+        image.fit ?? "cover",
+        image.focus ?? [0.5, 0.5],
+      ),
+    );
+
+    setShaderFloat(this.uiPanelShader.shader, this.uiPanelShader.depthOffsetLoc, 0);
+
+    // `Content` has already scaled the unit quad onto the laid-out box, so the
+    // world matrix is used as-is; applying width/height again would square it.
+    const world = image.worldMatrix;
+
+    if (this.uiPanelShader.worldLoc >= 0) {
+      raylib.H.SetShaderValueMatrix(
+        this.uiPanelShader.shader,
+        this.uiPanelShader.worldLoc,
+        this.matrixForDraw(world),
+      );
+    }
+    if (this.uiPanelShader.clippingLoc >= 0) {
+      // Images are not scroll-clipped yet, so use planes that never cut. The
+      // uniform persists between draws, so leaving it unset would inherit the
+      // previous panel's clip rect and silently erase the image.
+      raylib.H.SetShaderValueMatrix(
+        this.uiPanelShader.shader,
+        this.uiPanelShader.clippingLoc,
+        this.matrixForDraw(UI_IMAGE_NO_CLIP),
+      );
+    }
+    this.setUiShaderMvp(
+      this.uiPanelShader.shader,
+      this.uiPanelShader.mvpLoc,
+      projView,
+      world,
+    );
+    this.drawUiQuad(world);
+    return true;
+  }
+
   private drawUiQuad(
     worldMatrix: ArrayLike<number>,
   ): void {
@@ -934,7 +1348,8 @@ export class WebXRRaythreeRaylibRenderer {
     if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) {
       return false;
     }
-    const atlas = this.ensureMsdfAtlas();
+    const fontId = text.font ?? DEFAULT_MSDF_FONT;
+    const atlas = this.ensureMsdfAtlas(fontId);
     if (atlas === null) {
       return false;
     }
@@ -953,10 +1368,14 @@ export class WebXRRaythreeRaylibRenderer {
       { ...albedoMap, texture: atlas, color: raylib.WHITE },
     );
 
+    const atlasSize = this.uiMsdfAtlasSizes.get(fontId) ?? [0, 0];
+
+    // Same working-space -> sRGB conversion as `toShaderColor`; text color comes
+    // from the same uikit/THREE.Color origin as panel color.
     setShaderVec4(this.uiTextShader.shader, this.uiTextShader.tintLoc, [
-      text.color[0],
-      text.color[1],
-      text.color[2],
+      linearToSrgbChannel(text.color[0]),
+      linearToSrgbChannel(text.color[1]),
+      linearToSrgbChannel(text.color[2]),
       text.color[3],
     ]);
     setShaderFloat(
@@ -967,8 +1386,8 @@ export class WebXRRaythreeRaylibRenderer {
     setShaderVec2(
       this.uiTextShader.shader,
       this.uiTextShader.atlasSizeLoc,
-      this.uiMsdfAtlasSize[0],
-      this.uiMsdfAtlasSize[1],
+      atlasSize[0],
+      atlasSize[1],
     );
 
     this.setUiShaderMvp(
@@ -1454,8 +1873,9 @@ export class WebXRRaythreeRaylibRenderer {
   private tryDrawUiTextBatched(
     texts: WebXRRaythreeUiSnapshot["texts"],
     projView: THREE.Matrix4,
+    fontId: string = DEFAULT_MSDF_FONT,
   ): number | null {
-    const atlas = this.ensureMsdfAtlas();
+    const atlas = this.ensureMsdfAtlas(fontId);
     if (atlas === null) {
       return null;
     }
@@ -1475,95 +1895,146 @@ export class WebXRRaythreeRaylibRenderer {
       );
       this.lastBatchedTextAtlasId = atlas.id;
     }
-    const work: Array<{
-      g: MsdfCpuGeometry;
-      m: THREE.Matrix4;
-      color: [number, number, number, number];
-    }> = [];
+    let totalV = 0;
+    let drawnCount = 0;
     for (const t of texts) {
       if (t.text.length === 0 || t.color[3] <= 0 || t.geometry == null) {
         continue;
       }
-      let g = buildMsdfGeometryCpu(
-        t.geometry.positions,
-        t.geometry.uvs,
-        t.geometry.indices,
-        t.text,
-      );
+      const g = this.getBatchedUiTextGeometry(t);
       if (g == null) {
         continue;
       }
-      if (!g.expanded) {
-        const ex = expandIndexedMsdfTriangles(
-          g.positions3D,
-          g.uvs,
-          g.indices!,
-        );
-        g = {
-          ...g,
-          ...ex,
-          expanded: true,
-          indices: null,
-          triangleCount: ex.vertexCount / 3,
-        };
-      }
-      this.uiMvpW.fromArray(t.worldMatrix as unknown as number[]);
-      this.uiMvp.copy(projView).multiply(this.uiMvpW);
-      work.push({ g, m: this.uiMvp.clone(), color: t.color });
+      totalV += g.vertexCount;
+      drawnCount++;
     }
-    if (work.length === 0) {
+    if (drawnCount === 0) {
       return 0;
-    }
-    let totalV = 0;
-    for (const w of work) {
-      totalV += w.g.vertexCount;
     }
     if (totalV > 500000) {
       return null;
     }
+    const batchKey = `${texts[0]?.rootIndex ?? -1}:${fontId}`;
+    const cached = this.uiTextBatchMeshes.get(batchKey);
+    const sameSnapshot = cached !== undefined &&
+      cached.mesh.vertexCount === totalV &&
+      cached.texts.length === texts.length &&
+      texts.every((text, index) => cached.texts[index] === text);
+    if (cached !== undefined && sameSnapshot) {
+      if (this.uiTextBatchShader.mvpLoc >= 0) {
+        raylib.H.SetShaderValueMatrix(
+          this.uiTextBatchShader.shader,
+          this.uiTextBatchShader.mvpLoc,
+          this.matrixForDraw(projView.elements as unknown as number[]),
+        );
+      }
+      raylib.H.DrawMesh(
+        cached.mesh.mesh,
+        this.uiTextBatchMaterial,
+        this.matrixForDraw(this.identityMatrix16),
+      );
+      return drawnCount;
+    }
     this.ensureTextBatchPool(totalV);
     let wx = 0;
-    for (const it of work) {
-      for (let i = 0; i < it.g.vertexCount; i++) {
+    for (const t of texts) {
+      if (t.text.length === 0 || t.color[3] <= 0 || t.geometry == null) {
+        continue;
+      }
+      const g = this.getBatchedUiTextGeometry(t);
+      if (g == null) {
+        continue;
+      }
+      this.uiMvpW.fromArray(t.worldMatrix as unknown as number[]);
+      for (let i = 0; i < g.vertexCount; i++) {
         this.clipV4.set(
-          it.g.positions3D[i * 3]!,
-          it.g.positions3D[i * 3 + 1]!,
-          it.g.positions3D[i * 3 + 2]!,
+          g.positions3D[i * 3]!,
+          g.positions3D[i * 3 + 1]!,
+          g.positions3D[i * 3 + 2]!,
           1,
         );
-        this.clipV4.applyMatrix4(it.m);
+        this.clipV4.applyMatrix4(this.uiMvpW);
         const o3 = wx * 3;
         this.textBatchPoolPos[o3] = this.clipV4.x;
         this.textBatchPoolPos[o3 + 1] = this.clipV4.y;
         this.textBatchPoolPos[o3 + 2] = this.clipV4.z;
-        this.textBatchPoolN[o3] = this.clipV4.w;
+        this.textBatchPoolN[o3] = 0;
         this.textBatchPoolN[o3 + 1] = 0;
         this.textBatchPoolN[o3 + 2] = 0;
         const o2 = wx * 2;
-        this.textBatchPoolUv[o2] = it.g.uvs[i * 2]!;
-        this.textBatchPoolUv[o2 + 1] = it.g.uvs[i * 2 + 1]!;
+        this.textBatchPoolUv[o2] = g.uvs[i * 2]!;
+        this.textBatchPoolUv[o2 + 1] = g.uvs[i * 2 + 1]!;
         const o4 = wx * 4;
-        this.textBatchPoolC[o4] = Math.round(it.color[0] * 255);
-        this.textBatchPoolC[o4 + 1] = Math.round(it.color[1] * 255);
-        this.textBatchPoolC[o4 + 2] = Math.round(it.color[2] * 255);
-        this.textBatchPoolC[o4 + 3] = Math.round(it.color[3] * 255);
+        this.textBatchPoolC[o4] = Math.round(t.color[0] * 255);
+        this.textBatchPoolC[o4 + 1] = Math.round(t.color[1] * 255);
+        this.textBatchPoolC[o4 + 2] = Math.round(t.color[2] * 255);
+        this.textBatchPoolC[o4 + 3] = Math.round(t.color[3] * 255);
         wx++;
       }
     }
-    this.uiTextBatchMesh = this.updateOrCreateDynamicMesh(
-      this.uiTextBatchMesh,
+    const mesh = this.updateOrCreateDynamicMesh(
+      cached?.mesh ?? null,
       totalV,
       this.textBatchPoolPos,
       this.textBatchPoolUv,
       this.textBatchPoolN,
       this.textBatchPoolC,
     );
+    this.uiTextBatchMeshes.set(batchKey, { mesh, texts });
+    if (this.uiTextBatchShader.mvpLoc >= 0) {
+      raylib.H.SetShaderValueMatrix(
+        this.uiTextBatchShader.shader,
+        this.uiTextBatchShader.mvpLoc,
+        this.matrixForDraw(projView.elements as unknown as number[]),
+      );
+    }
     raylib.H.DrawMesh(
-      this.uiTextBatchMesh.mesh,
+      mesh.mesh,
       this.uiTextBatchMaterial,
       this.matrixForDraw(this.identityMatrix16),
     );
-    return work.length;
+    return drawnCount;
+  }
+
+  private getBatchedUiTextGeometry(
+    text: WebXRRaythreeUiSnapshot["texts"][number],
+  ): MsdfCpuGeometry | null {
+    const source = text.geometry;
+    if (source == null) {
+      return null;
+    }
+    const cached = this.uiTextCpuGeometries.get(source);
+    if (cached?.version === source.version) {
+      return cached.geometry;
+    }
+    let geometry = buildMsdfGeometryCpu(
+      source.positions,
+      source.uvs,
+      source.indices,
+      text.text,
+    );
+    if (geometry == null) {
+      return null;
+    }
+    if (!geometry.expanded) {
+      const expanded = expandIndexedMsdfTriangles(
+        geometry.positions3D,
+        geometry.uvs,
+        geometry.indices!,
+      );
+      geometry = {
+        ...geometry,
+        ...expanded,
+        expanded: true,
+        indices: null,
+        triangleCount: expanded.vertexCount / 3,
+      };
+    }
+    this.uiTextCpuGeometries.set(source, {
+      geometry,
+      version: source.version,
+    });
+    return geometry;
   }
 
   private updateOrCreateDynamicMesh(
@@ -1739,6 +2210,8 @@ function createUiPanelShader(): UiPanelShader {
     borderSizeLoc: raylib.H.GetShaderLocation(shader, "uBorderSize"),
     borderRadiusLoc: raylib.H.GetShaderLocation(shader, "uBorderRadius"),
     dimensionsLoc: raylib.H.GetShaderLocation(shader, "uDimensions"),
+    hasTextureLoc: raylib.H.GetShaderLocation(shader, "uHasTexture"),
+    uvTransformLoc: raylib.H.GetShaderLocation(shader, "uUvTransform"),
     depthOffsetLoc: raylib.H.GetShaderLocation(shader, "uDepthOffset"),
   };
 }
@@ -1762,7 +2235,10 @@ function createUiTextBatchShader(): UiTextBatchShader {
     UI_TEXT_BATCH_VERTEX_SHADER,
     UI_TEXT_BATCH_FRAGMENT_SHADER,
   );
-  return { shader };
+  return {
+    shader,
+    mvpLoc: raylib.H.GetShaderLocation(shader, "mvp"),
+  };
 }
 
 function createUiPanelBatchShader(): UiPanelBatchShader {
@@ -1957,15 +2433,72 @@ function unpackUiBorderRadius(
   ].map((value) => value * 0.01) as [number, number, number, number];
 }
 
+/**
+ * uikit colors originate as `THREE.Color`, so they arrive in Three's **working**
+ * space (linear-sRGB while `ColorManagement` is enabled) rather than as the
+ * authored sRGB value. Writing them straight to the framebuffer renders every
+ * surface far too dark and shifts saturated hues — `#ffc300` reaches the screen
+ * as `#ff8b00`.
+ *
+ * raythree converts on the way out of extraction so its IR is sRGB-encoded
+ * (see `MaterialAsset.baseColor`); the uikit snapshot bypasses raythree, so it
+ * has to be converted here to keep the two paths on the same contract. Every
+ * shader then just writes the color it is handed.
+ *
+ * No-op when `ColorManagement` is disabled, since the value is already sRGB.
+ */
+function linearToSrgbChannel(value: number): number {
+  if (!THREE.ColorManagement.enabled) return value;
+  return value <= 0.0031308 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - 0.055;
+}
+
 function toShaderColor(
   color: [number, number, number, number],
 ): [number, number, number, number] {
   return [
-    color[0] / 255,
-    color[1] / 255,
-    color[2] / 255,
+    linearToSrgbChannel(color[0] / 255),
+    linearToSrgbChannel(color[1] / 255),
+    linearToSrgbChannel(color[2] / 255),
+    // Alpha is a coverage weight, not light: it must not be transfer-encoded.
     color[3] / 255,
   ];
+}
+
+/**
+ * Does this panel occupy the same rectangle as this image?
+ *
+ * Used to place an image directly after the panel it fills in the draw order.
+ * Both are compared in world space: the image's `Content` box is laid out to the
+ * same rect as the panel, so their translations coincide and their extents match
+ * once the panel's px size is scaled by the shared px-to-world factor.
+ */
+function panelMatchesImage(
+  panel: WebXRRaythreeUiSnapshot["panels"][number],
+  image: WebXRRaythreeUiSnapshot["images"][number],
+): boolean {
+  const panelWidth = Number(panel.data[14] ?? 0);
+  const panelHeight = Number(panel.data[15] ?? 0);
+  if (panelWidth <= 0 || panelHeight <= 0) {
+    return false;
+  }
+  // Same box in px, within a pixel of rounding.
+  if (
+    Math.abs(panelWidth - image.width) > 1 ||
+    Math.abs(panelHeight - image.height) > 1
+  ) {
+    return false;
+  }
+  // ...and in the same place. The tolerance is a fraction of the panel's own
+  // world size, so it scales with the UI rather than assuming a unit system.
+  const scale = Math.hypot(
+    image.worldMatrix[0] ?? 0,
+    image.worldMatrix[1] ?? 0,
+    image.worldMatrix[2] ?? 0,
+  );
+  const tolerance = Math.max(scale * 0.05, 1e-4);
+  return Math.abs((panel.worldMatrix[12] ?? 0) - (image.worldMatrix[12] ?? 0)) < tolerance &&
+    Math.abs((panel.worldMatrix[13] ?? 0) - (image.worldMatrix[13] ?? 0)) < tolerance &&
+    Math.abs((panel.worldMatrix[14] ?? 0) - (image.worldMatrix[14] ?? 0)) < tolerance;
 }
 
 function compareUiOrderInfo(
@@ -3031,6 +3564,14 @@ uniform vec4 uBorderSize;
 uniform vec4 uBorderRadius;
 uniform vec2 uDimensions;
 uniform float uDepthOffset;
+// Optional image fill. With uHasTexture at 0 this shader behaves exactly as it
+// did before, so panels and images share one rounded-rect/border/clip path and
+// an image's corners cannot drift from a panel's.
+uniform sampler2D texture0;
+uniform float uHasTexture;
+// xy = uv scale, zw = uv offset. Computed CPU-side so the image can cover its
+// panel -- keeping its aspect ratio -- instead of stretching to fit.
+uniform vec4 uUvTransform;
 
 float min4(vec4 value) {
   vec2 tmp = min(value.xy, value.zw);
@@ -3150,6 +3691,13 @@ void main() {
   }
 
   vec3 mainColor = uBackgroundColor.rgb;
+  if (uHasTexture > 0.5) {
+    // uvFlipped exists for the SDF's coordinate convention; sampling wants the
+    // raw uv, since raylib uploads PNG rows top-down. Using the flipped one
+    // mirrors the image vertically. (No backticks in here: this whole shader is
+    // a JS template literal and one would terminate it.)
+    mainColor = texture(texture0, fragUv * uUvTransform.xy + uUvTransform.zw).rgb;
+  }
   float borderMix = uBorderColor.a / max(fullBorderOpacity, 0.001);
   vec3 rgb = mix(mix(mainColor, uBorderColor.rgb, borderMix), mainColor, transition);
   gl_FragDepth = max(0.0, gl_FragCoord.z - uDepthOffset);
@@ -3198,9 +3746,10 @@ in vec2 vertexTexCoord;
 in vec4 vertexColor;
 out vec2 fragUv;
 out vec4 fragTint;
+uniform mat4 mvp;
 void main() {
   fragUv = vertexTexCoord;
-  gl_Position = vec4(vertexPosition.xy, vertexPosition.z, vertexNormal.x);
+  gl_Position = mvp * vec4(vertexPosition, 1.0);
   // Mesh u8 colors are already normalized 0-1 in the pipe; do not divide by 255 again.
   fragTint = vertexColor;
 }

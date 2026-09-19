@@ -13,7 +13,11 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 
 const MAX_VSYNC_POLLS = 2_000_000;
 const DEFAULT_VSYNC_SPIN_TAIL_MS = 1.0;
-const MAX_VSYNC_COARSE_YIELD_MS = 4.0;
+// A 72 Hz headset has a 13.9 ms frame. Capping the coarse yield at 4 ms meant
+// that finishing early in a frame skipped the yield entirely and hammered
+// GetTimeSinceLastVsync through FFI for most of the remaining interval. Keep a
+// generous corruption guard while allowing a complete ordinary HMD interval.
+const MAX_VSYNC_COARSE_YIELD_MS = 50.0;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

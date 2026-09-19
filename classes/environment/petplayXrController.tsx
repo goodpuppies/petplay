@@ -68,6 +68,15 @@ function updateHudRayModel(
   // `useRayPointer` only records intersections from pointer-event targets. This
   // therefore means an actual interactable is under the controller ray, rather
   // than merely any visible scene geometry.
+  // A miss resolves to the shared void object at distance 1e7. Hide the beam:
+  // drawing that literally scales the mesh to 10,000 km, which explodes the
+  // raythree extraction matrices and the HUD draw on exactly the laser-off
+  // frame. Invisible objects are skipped by traverseVisible, so hiding also
+  // removes the spike instead of just shrinking it.
+  if (intersection?.object?.isVoidObject === true) {
+    mesh.visible = false;
+    return;
+  }
   const length = intersection?.distance;
   if (length == null || !Number.isFinite(length) || length <= 0) {
     mesh.visible = false;

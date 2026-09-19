@@ -29,7 +29,7 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   position?: [number, number, number];
   rotation?: [number, number, number];
   /** Optional actor id for future overlay / bridge correlation. */
-  displayInstanceActor?: string | null;
+  displayOverlayHostActor?: string | null;
   virtualDisplayId?: string;
   workspaceCrop?: WorkspaceRect;
   virtualDisplayName?: string;
@@ -67,14 +67,14 @@ function hmd34ApproxEqual(
 
 /**
  * 16:9 wireframe display frame with XR handle: move/rotate and uniform scale (aspect preserved).
- * When `displayInstanceActor` is set, the OpenVR desktop overlay actor is kept aligned with
+ * When `displayOverlayHostActor` is set, the OpenVR desktop overlay actor is kept aligned with
  * this transform and world width (meters) each frame.
  */
 export function DisplayInstance(
   {
     position,
     rotation,
-    displayInstanceActor,
+    displayOverlayHostActor,
     virtualDisplayId,
     workspaceCrop,
     virtualDisplayName,
@@ -96,7 +96,8 @@ export function DisplayInstance(
   const rigidWorld = useRef(new THREE.Matrix4());
   const lastSentHmd = useRef<ReturnType<typeof hmd34FromColumnMajor4x4> | null>(null);
   const lastSentWidth = useRef<number | null>(null);
-  const lastSentCrop = useRef<string | null>(null);
+  /** Last crop sent to the overlay host, compared field-wise to avoid a per-frame JSON.stringify. */
+  const lastSentCrop = useRef<WorkspaceRect | null>(null);
 
   const height = frameProps.height ?? DEFAULT_DISPLAY_HEIGHT;
   const localHalfW = 0.5 * height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT;
@@ -104,21 +105,21 @@ export function DisplayInstance(
   const displaySyncFrameOpts = React.useMemo<UseFrameNextOptions>(
     () => ({
       id: `petplay-display-openvr-${virtualDisplayId ?? "legacy"}`,
-      enabled: displayInstanceActor != null,
+      enabled: displayOverlayHostActor != null,
       phase: "finish",
       // No `fps` / `drop`: a 60Hz cap (and `drop: true` under load) only re-evaluated this pose
       // 60×/s while XR sim can run 75–200+ Hz, which beats with the HMD/overlay and looks like
       // micro judder. Matrix equality below still limits cross-actor traffic when the pose is flat.
     }),
-    [displayInstanceActor, virtualDisplayId],
+    [displayOverlayHostActor, virtualDisplayId],
   );
 
   React.useEffect(() => {
-    if (!displayInstanceActor || !virtualDisplayId) return;
+    if (!displayOverlayHostActor || !virtualDisplayId) return;
     return () => {
       try {
         PostMan.PostMessage({
-          target: displayInstanceActor,
+          target: displayOverlayHostActor,
           type: "REMOVEVIRTUALDISPLAY",
           payload: { id: virtualDisplayId },
         });
@@ -126,18 +127,21 @@ export function DisplayInstance(
         // Actor may already be shutting down.
       }
     };
-  }, [displayInstanceActor, virtualDisplayId]);
+  }, [displayOverlayHostActor, virtualDisplayId]);
 
   useFrame(() => {
-    if (displayInstanceActor == null) {
+    if (displayOverlayHostActor == null) {
       return;
     }
-    const targetActor = displayInstanceActor;
+    const targetActor = displayOverlayHostActor;
     const obj = handleRef.current;
     if (obj == null) {
       return;
     }
-    obj.updateWorldMatrix(true, true);
+    // `false` for children: the display's own pose is all this job needs, and the attached
+    // keyboard/keycaps would otherwise have their whole subtree re-composed every frame while the
+    // r3f/raylib paths already update world matrices for the frame.
+    obj.updateWorldMatrix(true, false);
     // `SetOverlayWidthInMeters` already encodes the physical size. OpenVR expects a
     // rigid 3×4 (rotation + translation); baking scale into 3×3 as well would double-apply
     // size together with the width we send.
@@ -169,19 +173,24 @@ export function DisplayInstance(
     p1.current.applyMatrix4(obj.matrixWorld);
     const widthMeters = p0.current.distanceTo(p1.current);
 
-    const cropKey = workspaceCrop ? JSON.stringify(workspaceCrop) : null;
+    const lastCrop = lastSentCrop.current;
+    const cropUnchanged = workspaceCrop == null ? lastCrop == null : lastCrop != null &&
+      lastCrop.x === workspaceCrop.x &&
+      lastCrop.y === workspaceCrop.y &&
+      lastCrop.width === workspaceCrop.width &&
+      lastCrop.height === workspaceCrop.height;
     if (lastSentHmd.current && lastSentWidth.current !== null) {
       if (
         hmd34ApproxEqual(hmd, lastSentHmd.current) &&
         Math.abs(lastSentWidth.current - widthMeters) < 0.0001 &&
-        lastSentCrop.current === cropKey
+        cropUnchanged
       ) {
         return;
       }
     }
     lastSentHmd.current = hmd;
     lastSentWidth.current = widthMeters;
-    lastSentCrop.current = cropKey;
+    lastSentCrop.current = workspaceCrop ? { ...workspaceCrop } : null;
     try {
       PostMan.PostMessage(
         virtualDisplayId && workspaceCrop
@@ -214,7 +223,7 @@ export function DisplayInstance(
       userData={{
         displayInstance: true,
         aspect: "16:9",
-        displayInstanceActor: displayInstanceActor ?? null,
+        displayOverlayHostActor: displayOverlayHostActor ?? null,
       }}
     >
       <DisplayInstanceFrame

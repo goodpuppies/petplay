@@ -17,6 +17,7 @@ import {
   releaseWindowsSyntheticKeyboardState,
   releaseWindowsSyntheticKeyboardStateWithKm,
 } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
+import { runPendingScreenCapture } from "../classes/environment/screenCapture.ts";
 
 export type RaylibR3FViewerControlsStore = ReturnType<typeof createScreenCameraStore>;
 
@@ -665,6 +666,9 @@ export async function runRaylibR3FViewerApp(
       } finally {
         raylib.EndDrawing();
       }
+      // After EndDrawing: the frame is complete and no draw is in flight, which
+      // is the only point where reading the framebuffer is safe.
+      runPendingScreenCapture();
 
       await wait(1);
     }

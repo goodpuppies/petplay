@@ -14,6 +14,7 @@ import type {
   ModifierSnapshot,
 } from "./types.ts";
 import { keyTextColor, tokenBackground, tokenBorderColor } from "./theme.ts";
+import { COLOR } from "../ui/tokens.ts";
 import {
   getMainGroupRows,
   isModifierLatchedVisual,
@@ -219,8 +220,22 @@ export const DEFAULT_KEYBOARD_JSON_URL = new URL(
   import.meta.url,
 );
 export const DEFAULT_KEYBOARD_PIXEL_SIZE = 0.00095;
-/** Tray behind key groups — lighter than a pure dark panel for AMOLED legibility. */
-export const DEFAULT_KEYBOARD_COLUMN_BACKGROUND = "#2c3540";
+/**
+ * Tray behind the key groups. Pure black, the same ground the wrist overlay and
+ * the contextual menu sit on, so the keyboard reads as part of one system
+ * rather than a separate widget.
+ */
+export const DEFAULT_KEYBOARD_COLUMN_BACKGROUND = COLOR.ground;
+
+/**
+ * Radius of a key cap, and of the tray that holds them.
+ *
+ * Concentric, the same rule the rest of the UI follows: a child's radius is its
+ * parent's minus the inset between them, so the band between the two curves
+ * stays a constant width. The tray's inset is its own padding, below.
+ */
+const KEY_RADIUS = 12;
+const TRAY_PADDING_EXTRA = 2;
 
 const initialMods: ModifierSnapshot = {
   shift: false,
@@ -256,8 +271,11 @@ export type KeyCapChromeProps =
 
 /**
  * Visual-only key cap: colors and typography shell (no pointer handlers).
+ *
+ * Memoized: parents re-render on unrelated hover/selection changes, and this key cap owns an
+ * expensive effect (Box3 + `spherecast` closure) that must not re-run per parent render.
  */
-export function KeyCapChrome(
+export const KeyCapChrome = React.memo(function KeyCapChrome(
   {
     face,
     minWidth,
@@ -402,9 +420,9 @@ export function KeyCapChrome(
         minHeight={minHeight}
         backgroundColor={fill}
         backgroundOpacity={1}
-        borderWidth={pressedVisual ? 2 : 1}
+        borderWidth={pressedVisual ? 3 : 0}
         borderColor={borderC}
-        borderRadius={5}
+        borderRadius={KEY_RADIUS}
         padding={4}
         alignItems="center"
         justifyContent="center"
@@ -428,7 +446,7 @@ export function KeyCapChrome(
       </Container>
     </Container>
   );
-}
+});
 
 export type KeyboardRowViewProps = {
   faces: (NormalizedKeyFace | { spacer: true; width: number; height: number })[];
@@ -507,11 +525,11 @@ export function KeyboardColumnShell(
     <Container
       pixelSize={pixelSize}
       backgroundColor={background}
-      backgroundOpacity={0.97}
-      borderColor="#3d4d5c"
-      borderWidth={1}
-      borderRadius={10}
-      padding={keyGroupsPadding + 2}
+      backgroundOpacity={1}
+      borderWidth={0}
+      // Concentric with the caps it holds: key radius plus this tray's padding.
+      borderRadius={KEY_RADIUS + keyGroupsPadding + TRAY_PADDING_EXTRA}
+      padding={keyGroupsPadding + TRAY_PADDING_EXTRA}
       flexDirection="column"
     >
       {children}
@@ -579,9 +597,13 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       };
     }, [path, preloadedLayout]);
 
-    const sink: KeyboardSink = onKey ?? ((ev) => {
-      console.log("[keyboard]", ev);
-    });
+    const sink: KeyboardSink = useMemo(
+      () =>
+        onKey ?? ((ev) => {
+          console.log("[keyboard]", ev);
+        }),
+      [onKey],
+    );
     const spatialAudio = useSpatialAudio();
 
     const emit = useCallback(
@@ -692,15 +714,21 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       [emit, mods, spatialAudio],
     );
 
-    if (raw == null) {
+    // Parsing the layout allocates a fresh face object per key cell. Doing it during render gave
+    // every key a new `face` identity on every render of this component, which invalidated the
+    // per-key `KeyCapChrome` effect (Box3 + spherecast closure rebuild) and defeated memoization
+    // for all 74 caps — including re-renders triggered by unrelated hover/selection changes.
+    const layoutRows = useMemo(
+      () => (raw == null ? null : getMainGroupRows(raw, layoutFormat)),
+      [raw, layoutFormat],
+    );
+
+    if (layoutRows == null) {
       return null;
     }
 
     const { keyWidth, keyPadding, keyGroupsPadding, mainRows, navRows, numpadRows, rowH } =
-      getMainGroupRows(
-        raw,
-        layoutFormat,
-      );
+      layoutRows;
 
     const makeColumn = (rows: RowItem[][], columnId: string) => {
       // Avoid flex `gap` in the column: same “white gap quads” issue as `gapColumn` on rows.

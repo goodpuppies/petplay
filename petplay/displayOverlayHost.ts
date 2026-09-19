@@ -17,9 +17,11 @@ import {
   setOverlayTransformAbsolute,
 } from "../classes/openvrTransform.ts";
 import { matrixEquals } from "../classes/matrixutils.ts";
+import { isLayoutVisibilityAction } from "../classes/environment/wristMenu/types.ts";
+import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
 
 const state = actorState({
-  name: "display_instance",
+  name: "display_overlay_host",
   overlayClass: null as OpenVR.IVROverlay | null,
   overlayHandle: 0n,
   cursorWorkspacePosition: null as { x: number; y: number } | null,
@@ -43,13 +45,13 @@ const state = actorState({
   captureFrameWidth: 1,
   captureFrameHeight: 1,
   lastStartConfig: null as StartDesktopPayload | null,
-  overlayPointer: null as bigint | null,
   restartTimerId: null as ReturnType<typeof setTimeout> | null,
   visible: false,
   shuttingDown: false,
 });
 
 let warmCapturePromise: Promise<ScreenCapturer> | null = null;
+const openVrRuntime = new OpenVrRuntime("Display overlay host OpenVR");
 
 const START_DESKTOP_MAX_ATTEMPTS = 4;
 const START_DESKTOP_RETRY_WAIT_MS = 450;
@@ -117,10 +119,11 @@ new PostMan(
   {
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
+      initializeDisplayOverlayOpenVr();
       void ensureWarmScreenCapturer().catch((error) => {
         LogChannel.error(
           "actor",
-          `[displayInstance] startup screen capture failed: ${
+          `[displayOverlayHost] startup screen capture failed: ${
             error instanceof Error ? error.message : error
           }`,
         );
@@ -128,14 +131,14 @@ new PostMan(
     },
     __SHUTDOWN__: async (_payload: unknown) => {
       state.shuttingDown = true;
-      await stopDisplayInstance();
+      await stopDisplayOverlayHost();
+      releaseDisplayOverlayOpenVr();
     },
     __HEALTH__: (_payload: unknown) => {
-      return getDisplayInstanceStatus();
+      return getDisplayOverlayHostStatus();
     },
     __SNAPSHOT__: (_payload: unknown) => {
       return {
-        overlayPointer: state.overlayPointer,
         startConfig: state.lastStartConfig,
         visible: state.visible,
       };
@@ -149,18 +152,10 @@ new PostMan(
     },
     __RESTORE__: (
       payload: {
-        overlayPointer?: bigint | null;
         startConfig?: StartDesktopPayload | null;
         visible?: boolean;
       } | null,
     ) => {
-      if (payload?.overlayPointer != null) {
-        PostMan.PostMessage({
-          target: state.id,
-          type: "INITOVROVERLAY",
-          payload: payload.overlayPointer,
-        });
-      }
       if (payload?.startConfig) {
         state.lastStartConfig = payload.startConfig;
         state.visible = payload.visible ?? false;
@@ -176,21 +171,15 @@ new PostMan(
       }
       return true;
     },
-    INITOVROVERLAY: (payload: bigint) => {
-      state.overlayPointer = payload;
-      const systemPtr = Deno.UnsafePointer.create(payload);
-      state.overlayClass = new OpenVR.IVROverlay(systemPtr);
-      LogChannel.log("actor", `[displayInstance] IVROverlay ready (${state.id})`);
-    },
     STARTDESKTOP: (payload: StartDesktopPayload) => {
       if (!state.overlayClass) {
-        throw new Error("Call INITOVROVERLAY before STARTDESKTOP");
+        throw new Error("Display overlay host OpenVR runtime is not initialized");
       }
       state.lastStartConfig = payload;
       void startDesktopWithRetry(payload).catch((error) => {
         LogChannel.error(
           "actor",
-          `[displayInstance] STARTDESKTOP unhandled failure: ${
+          `[displayOverlayHost] STARTDESKTOP unhandled failure: ${
             error instanceof Error ? error.message : error
           }`,
         );
@@ -203,12 +192,12 @@ new PostMan(
       // the helper is running at the default rate. Without this the configured
       // fps only moved the present-side gate and could never exceed it.
       void applyCaptureFps(clampCaptureFps(payload.captureFps));
-      return getDisplayInstanceStatus();
+      return getDisplayOverlayHostStatus();
     },
     WRIST_MENU_ACTION: (
       payload: { id: string; active: boolean },
     ) => {
-      if (payload.id !== "layers") return getDisplayInstanceStatus();
+      if (!isLayoutVisibilityAction(payload.id)) return getDisplayOverlayHostStatus();
       state.visible = payload.active;
       if (!payload.active) {
         if (state.overlayClass) {
@@ -216,7 +205,7 @@ new PostMan(
             state.overlayClass.HideOverlay(entry.handle);
           }
         }
-        return getDisplayInstanceStatus();
+        return getDisplayOverlayHostStatus();
       }
       if (state.overlayClass && virtualOverlays.size > 0) {
         for (const entry of virtualOverlays.values()) {
@@ -225,7 +214,7 @@ new PostMan(
       } else if (state.lastStartConfig) {
         void startDesktopWithRetry(state.lastStartConfig);
       }
-      return getDisplayInstanceStatus();
+      return getDisplayOverlayHostStatus();
     },
     SYNCDISPLAYPOSE: (sync: SyncDisplayPosePayload) => {
       if (!state.overlayClass || !state.overlayHandle) return;
@@ -243,7 +232,7 @@ new PostMan(
         if (wErr !== OpenVR.OverlayError.VROverlayError_None) {
           LogChannel.log(
             "actor",
-            `[displayInstance] SetOverlayWidthInMeters: ${OpenVR.OverlayError[wErr]}`,
+            `[displayOverlayHost] SetOverlayWidthInMeters: ${OpenVR.OverlayError[wErr]}`,
           );
         }
         state.lastWidthMeters = sync.widthMeters;
@@ -310,7 +299,7 @@ new PostMan(
         if (error !== OpenVR.OverlayError.VROverlayError_None) {
           LogChannel.log(
             "actor",
-            `[displayInstance] SetOverlayTexture(${entry.id}): ${OpenVR.OverlayError[error]}`,
+            `[displayOverlayHost] SetOverlayTexture(${entry.id}): ${OpenVR.OverlayError[error]}`,
           );
         }
       }
@@ -323,13 +312,35 @@ new PostMan(
       setTransformSafe(payload);
     },
     STOP: async () => {
-      await stopDisplayInstance();
+      await stopDisplayOverlayHost();
       return true;
     },
   } as const,
 );
 
-function getDisplayInstanceStatus() {
+function initializeDisplayOverlayOpenVr(): void {
+  const pointers = openVrRuntime.initialize({
+    overlay: "required",
+    identity: {
+      appKey: "petplay.display-overlay-host",
+      name: "PetPlay Display Overlay Host",
+    },
+  });
+  if (!pointers.overlay) throw new Error("Display overlay host IVROverlay unavailable");
+  state.overlayClass = new OpenVR.IVROverlay(pointers.overlay);
+  LogChannel.log("actor", `[displayOverlayHost] process-local IVROverlay ready (${state.id})`);
+}
+
+function releaseDisplayOverlayOpenVr(): void {
+  state.overlayClass = null;
+  if (Deno.build.os === "linux") {
+    openVrRuntime.deferReleaseToProcessExit();
+  } else {
+    openVrRuntime.shutdown();
+  }
+}
+
+function getDisplayOverlayHostStatus() {
   return {
     running: state.isRunning,
     starting: state.isStarting,
@@ -389,7 +400,7 @@ async function stopStaleScreenStreamer(): Promise<void> {
   } catch (error) {
     LogChannel.log(
       "actor",
-      `[displayInstance] stale capture cleanup skipped: ${
+      `[displayOverlayHost] stale capture cleanup skipped: ${
         error instanceof Error ? error.message : error
       }`,
     );
@@ -419,7 +430,7 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
       warmCapturePromise = null;
       if (state.shuttingDown) return;
       const message = `screen-streamer exited (code=${status.code}, success=${status.success})`;
-      LogChannel.error("actor", `[displayInstance] ${message}; restarting warm capture`);
+      LogChannel.error("actor", `[displayOverlayHost] ${message}; restarting warm capture`);
       state.lastStartError = message;
       void capturer.dispose().finally(() => ensureWarmScreenCapturer());
     },
@@ -439,7 +450,7 @@ async function applyCaptureFps(fps: number): Promise<void> {
   if (capturer == null || capturer.getFps() === fps) return;
   LogChannel.log(
     "actor",
-    `[displayInstance] restarting screen capture at ${fps} fps (was ${capturer.getFps()})`,
+    `[displayOverlayHost] restarting screen capture at ${fps} fps (was ${capturer.getFps()})`,
   );
   state.screenCapturer = null;
   warmCapturePromise = null;
@@ -448,7 +459,7 @@ async function applyCaptureFps(fps: number): Promise<void> {
   } catch (error) {
     LogChannel.error(
       "actor",
-      `[displayInstance] capture restart dispose failed: ${
+      `[displayOverlayHost] capture restart dispose failed: ${
         error instanceof Error ? error.message : error
       }`,
     );
@@ -463,7 +474,7 @@ async function ensureWarmScreenCapturer(): Promise<ScreenCapturer> {
     await stopStaleScreenStreamer();
     const capturer = await initScreenCapturer(state.captureFps);
     state.screenCapturer = capturer;
-    LogChannel.log("actor", "[displayInstance] screen capture warmed at actor startup");
+    LogChannel.log("actor", "[displayOverlayHost] screen capture warmed at actor startup");
     return capturer;
   })();
   try {
@@ -495,7 +506,7 @@ function textureBoundsForCrop(crop: WorkspaceCrop): OpenVR.TextureBounds {
 
 function createVirtualOverlayHandle(sync: SyncVirtualDisplayPayload): bigint {
   const overlay = state.overlayClass!;
-  const baseKey = state.lastStartConfig?.overlayKey ?? "petplay.displayInstance.desktop";
+  const baseKey = state.lastStartConfig?.overlayKey ?? "petplay.displayOverlayHost.desktop";
   const key = `${baseKey}.${sync.id}`;
   const createHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
   let err = overlay.CreateOverlay(key, sync.name ?? sync.id, createHandlePtr);
@@ -596,7 +607,7 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
     entry = { ...sync, handle };
     virtualOverlays.set(sync.id, entry);
     console.log(
-      `[displayInstance] virtual overlay ${sync.id} handle=${handle} crop=${
+      `[displayOverlayHost] virtual overlay ${sync.id} handle=${handle} crop=${
         JSON.stringify(sync.crop)
       }`,
     );
@@ -609,7 +620,7 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
     Object.assign(entry, sync);
     if (cropChanged) {
       console.log(
-        `[displayInstance] virtual overlay ${sync.id} crop updated=${JSON.stringify(sync.crop)}`,
+        `[displayOverlayHost] virtual overlay ${sync.id} crop updated=${JSON.stringify(sync.crop)}`,
       );
     }
   }
@@ -620,7 +631,9 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
   if (aspectError !== OpenVR.OverlayError.VROverlayError_None) {
     LogChannel.log(
       "actor",
-      `[displayInstance] SetOverlayTexelAspect(${entry.id}): ${OpenVR.OverlayError[aspectError]}`,
+      `[displayOverlayHost] SetOverlayTexelAspect(${entry.id}): ${
+        OpenVR.OverlayError[aspectError]
+      }`,
     );
   }
   setVirtualOverlayMouseScale(entry);
@@ -651,7 +664,7 @@ function setVirtualOverlayMouseScale(entry: VirtualOverlay): void {
   if (error !== OpenVR.OverlayError.VROverlayError_None) {
     LogChannel.log(
       "actor",
-      `[displayInstance] SetOverlayMouseScale(${entry.id}): ${OpenVR.OverlayError[error]}`,
+      `[displayOverlayHost] SetOverlayMouseScale(${entry.id}): ${OpenVR.OverlayError[error]}`,
     );
   }
 }
@@ -711,7 +724,7 @@ async function stopDesktopOverlay(): Promise<void> {
     } catch (error) {
       LogChannel.log(
         "actor",
-        `[displayInstance] gl cleanup failed: ${error instanceof Error ? error.message : error}`,
+        `[displayOverlayHost] gl cleanup failed: ${error instanceof Error ? error.message : error}`,
       );
     }
     state.glManager = null;
@@ -729,7 +742,7 @@ async function stopDesktopOverlay(): Promise<void> {
   state.visible = false;
 }
 
-async function stopDisplayInstance(): Promise<void> {
+async function stopDisplayOverlayHost(): Promise<void> {
   clearDeferredStartRetry();
   state.lastStartConfig = null;
   await stopDesktopOverlay();
@@ -741,7 +754,7 @@ async function stopDisplayInstance(): Promise<void> {
 
 async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void> {
   if (state.isStarting) {
-    LogChannel.log("actor", "[displayInstance] STARTDESKTOP ignored (already starting)");
+    LogChannel.log("actor", "[displayOverlayHost] STARTDESKTOP ignored (already starting)");
     return;
   }
   state.isStarting = true;
@@ -764,7 +777,7 @@ async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void>
         if (attempt < START_DESKTOP_MAX_ATTEMPTS) {
           LogChannel.log(
             "actor",
-            `[displayInstance] STARTDESKTOP attempt ${attempt} failed, retrying: ${
+            `[displayOverlayHost] STARTDESKTOP attempt ${attempt} failed, retrying: ${
               error instanceof Error ? error.message : error
             }`,
           );
@@ -779,7 +792,7 @@ async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void>
     state.lastStartError = error instanceof Error ? error.message : String(error);
     LogChannel.error(
       "actor",
-      `[displayInstance] STARTDESKTOP failed: ${error instanceof Error ? error.message : error}`,
+      `[displayOverlayHost] STARTDESKTOP failed: ${error instanceof Error ? error.message : error}`,
     );
     scheduleDeferredStartRetry(config);
   } finally {
@@ -806,7 +819,7 @@ function scheduleDeferredStartRetry(config: StartDesktopPayload): void {
     const retryConfig = state.lastStartConfig ?? config;
     void startDesktopWithRetry(retryConfig);
   }, START_DESKTOP_DEFERRED_RETRY_MS);
-  LogChannel.log("actor", "[displayInstance] scheduled deferred STARTDESKTOP retry");
+  LogChannel.log("actor", "[displayOverlayHost] scheduled deferred STARTDESKTOP retry");
 }
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
@@ -844,7 +857,7 @@ async function deskCapLoop(
     if (!isUploadableBgraFrame(frame.data, frame.width, frame.height)) {
       LogChannel.error(
         "actor",
-        `[displayInstance] skipped invalid capture frame ${frame.width}x${frame.height} (${frame.data.byteLength} bytes)`,
+        `[displayOverlayHost] skipped invalid capture frame ${frame.width}x${frame.height} (${frame.data.byteLength} bytes)`,
       );
       continue;
     }
@@ -868,7 +881,7 @@ async function deskCapLoop(
   if (!continuous) {
     state.isRunning = false;
   }
-  LogChannel.log("actor", `[displayInstance] screen capture loop ended (frames: ${frameCount})`);
+  LogChannel.log("actor", `[displayOverlayHost] screen capture loop ended (frames: ${frameCount})`);
 }
 
 async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
@@ -912,7 +925,7 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
       throw new Error(`RecreateOverlay: ${OpenVR.OverlayError[err]}`);
     }
     overlayHandle = new Deno.UnsafePointerView(createHandlePtr).getBigUint64();
-    LogChannel.log("actor", `[displayInstance] replaced stale overlay key ${overlayKey}`);
+    LogChannel.log("actor", `[displayOverlayHost] replaced stale overlay key ${overlayKey}`);
   } else {
     throw new Error(`CreateOverlay: ${OpenVR.OverlayError[err]}`);
   }
@@ -944,7 +957,7 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
     if (im !== OpenVR.OverlayError.VROverlayError_None) {
       LogChannel.log(
         "actor",
-        `[displayInstance] SetOverlayInputMethod: ${OpenVR.OverlayError[im]}`,
+        `[displayOverlayHost] SetOverlayInputMethod: ${OpenVR.OverlayError[im]}`,
       );
     }
   }
@@ -976,7 +989,7 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
     await ensureWarmScreenCapturer();
     void deskCapLoop(overlay, textureStructPtr).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      LogChannel.error("actor", `[displayInstance] screen capture loop failed: ${message}`);
+      LogChannel.error("actor", `[displayOverlayHost] screen capture loop failed: ${message}`);
       void stopDesktopOverlay().then(() => {
         state.lastStartError = message;
         scheduleDeferredStartRetry(config);
@@ -985,13 +998,13 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   } else {
     LogChannel.log(
       "actor",
-      "[displayInstance] overlay up without local capture; use SETFRAMEDATA for texture",
+      "[displayOverlayHost] overlay up without local capture; use SETFRAMEDATA for texture",
     );
   }
 
   LogChannel.log(
     "actor",
-    `[displayInstance] desktop overlay started key=${overlayKey} handle=${overlayHandle}`,
+    `[displayOverlayHost] desktop overlay started key=${overlayKey} handle=${overlayHandle}`,
   );
 }
 

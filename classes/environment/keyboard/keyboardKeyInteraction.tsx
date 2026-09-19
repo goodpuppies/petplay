@@ -107,8 +107,11 @@ export type InteractiveKeyCapProps = {
 
 /**
  * One key: press feedback; primary legend + optional secondary (e.g. JIS kana) from `face`.
+ *
+ * Memoized: the 74 caps must not re-render when an unrelated part of the spatial graph updates
+ * (hover, selection, another node's transform commit).
  */
-export function InteractiveKeyCap(
+export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
   {
     face,
     minWidth,
@@ -231,6 +234,14 @@ export function InteractiveKeyCap(
       pressedVisual={litSurface}
       onPointerOver={(e) => {
         if (!isTriggerLikePointer(e)) return;
+        // Keycaps sit 4-deep in row/column/group containers. The pointer
+        // system bubbles over/out to every ancestor, and each level runs
+        // hovered-list signal updates + layout reads. Stop it at the cap.
+        e.stopPropagation();
+        // A re-enter mid-release must win over the 200ms ease-out loop, or
+        // the loop eases the pressed visual away under a hovering laser.
+        cancelReleaseRaf();
+        if (hoveredRef.current) return;
         hoveredRef.current = true;
         applyCurrentVisual();
       }}
@@ -247,14 +258,16 @@ export function InteractiveKeyCap(
         onActivate(face, (e.object as unknown as THREE.Object3D | undefined) ?? null, worldPoint);
         updateDepressVisual(1);
       }}
-      onPointerUp={(e) => {
-        if (!isTriggerLikePointer(e)) return;
-        beginRelease();
-      }}
       onPointerOut={(e) => {
         if (!isTriggerLikePointer(e)) return;
+        e.stopPropagation();
+        if (!hoveredRef.current && depressRef.current <= 0) return;
         hoveredRef.current = false;
         applyCurrentVisual();
+        beginRelease();
+      }}
+      onPointerUp={(e) => {
+        if (!isTriggerLikePointer(e)) return;
         beginRelease();
       }}
     >
@@ -294,4 +307,4 @@ export function InteractiveKeyCap(
       </Container>
     </KeyCapChrome>
   );
-}
+});

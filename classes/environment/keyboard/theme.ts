@@ -1,53 +1,68 @@
+import { COLOR } from "../ui/tokens.ts";
 import type { NormalizedKeyFace } from "./types.ts";
 
 export type KeyboardColorToken = NormalizedKeyFace["colorToken"];
 
 /**
- * petplay uikit: maps keyboard `color` / `highlightColor` JSON tokens to webgpu-uikit `Container` colors.
+ * Keyboard colours, on the overlay design system.
  *
- * Idle caps use **lighter mid-greys** (closer to how XS often reads in-headset) so key legends stay
- * legible on **AMOLED** (near-black UIs can crush; soft borders are used instead of ink-black edges).
- * Pressed caps jump to a **near-white** surface so feedback stays obvious.
+ * The keyboard reads as one more panel in that system: a black tray with grey
+ * key tiles on it, the same ground/tile relationship the wrist overlay and the
+ * contextual menu use. Keys sit directly on the black tray, so they are
+ * top-level elements and take the tile shape rather than the circle one.
+ *
+ * **Every key is the same grey.** An earlier pass drew modifiers as outlines to
+ * separate them from letter keys without spending a value step; on a surface
+ * this dense that produced a field of competing rectangles rather than a
+ * keyboard. A key's role is already legible from its size, position and legend,
+ * so colour does not need to carry it — leaving colour free to mean one thing
+ * only, which is the point below.
+ *
+ * **Pressed is the accent.** Accent means "this is on" everywhere else in the
+ * UI, and a held key is exactly that, so a pressed cap is yellow with black
+ * ink. Against a uniform grey field it is also the only thing that changes,
+ * which is what makes key feedback readable at a glance.
  */
 export const KEYBOARD_THEME = {
   default: {
-    background: "#6b7380",
-    border: "#3d444d",
+    background: COLOR.tile,
+    border: COLOR.tile,
   },
+  /** Modifier and wide keys: identical to a letter key. See above. */
   dark: {
-    /* Slightly dimmer than default — mod / wide keys, still a readable grey, not a “sink hole”. */
-    background: "#525a66",
-    border: "#2f353d",
+    background: COLOR.tile,
+    border: COLOR.tile,
   },
   error: {
-    background: "#c64e46",
-    border: "#7a2a24",
+    background: COLOR.danger,
+    border: COLOR.danger,
   },
+  /** No accent: a key is not "on" merely because it confirms something. */
   confirm: {
-    background: "#35a65a",
-    border: "#1d5a33",
+    background: COLOR.tile,
+    border: COLOR.tile,
   },
   /** Filled in `tokenBackground` / `tokenBorderColor` when `pressed` is true. */
   pressed: {
-    default: { background: "#e4e6ea", border: "#6a737e" },
-    dark: { background: "#d6dadf", border: "#5a626c" },
-    error: { background: "#f0b4ae", border: "#8a3a32" },
-    confirm: { background: "#8fe0a5", border: "#2e7a45" },
+    default: { background: COLOR.accent, border: COLOR.accent },
+    dark: { background: COLOR.accent, border: COLOR.accent },
+    error: { background: COLOR.dangerBright, border: COLOR.dangerBright },
+    confirm: { background: COLOR.accent, border: COLOR.accent },
   },
 } as const;
 
 const KEY_TEXT_COLORS: Record<KeyboardColorToken, string> = {
-  default: "#ffffff",
-  dark: "#f7f8fa",
-  error: "#ffffff",
-  confirm: "#ffffff",
+  default: COLOR.ink,
+  dark: COLOR.ink,
+  error: COLOR.onDanger,
+  confirm: COLOR.ink,
 };
 
 const KEY_TEXT_COLORS_PRESSED: Record<KeyboardColorToken, string> = {
-  default: "#0f0f0f",
-  dark: "#0a0b0c",
-  error: "#1a0a0a",
-  confirm: "#081208",
+  default: COLOR.onAccent,
+  dark: COLOR.onAccent,
+  error: COLOR.onDanger,
+  confirm: COLOR.onAccent,
 };
 
 /**

@@ -69,6 +69,15 @@ export function setVrcLegacyOriginDebugMatrix(matrix: Matrix34Tuple | null): voi
     : null;
 }
 
+/**
+ * Live snapshot for per-frame consumers (the overlay's debug visuals read it inside `useFrame`).
+ * The returned object is the module's own state — do not retain or mutate it; use
+ * {@link getVrcCameraDebugSnapshot} for a detached copy.
+ */
+export function readVrcCameraDebugSnapshot(): Readonly<VrcCameraDebugSnapshot> {
+  return snapshot;
+}
+
 export function getVrcCameraDebugSnapshot(): VrcCameraDebugSnapshot {
   return {
     cameraPose: snapshot.cameraPose

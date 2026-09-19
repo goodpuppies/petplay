@@ -57,3 +57,37 @@ workspace stream rather than separate portal captures.
 Stageforge networking and its Iroh worker wrapper are disabled by default, so local actors use
 native Deno workers. To connect to the Stageforge signaling server, use `deno task dev:network`,
 pass `--stageforge-networking` to a launch, or set `PETPLAY_STAGEFORGE_NETWORKING=1`.
+
+### Overlay performance workflow
+
+`deno task overlay:perf` measures the overlay's per-frame CPU from inside the `webxr` actor through
+the agent REPL. It launches a windowless run (`--novr --agent-repl`), drives synthetic controllers
+through the production input path (IWER → `@pmndrs/xr` pointers → `@pmndrs/handle` → r3f), and
+prints one row per interaction scenario:
+
+```bash
+deno task overlay:perf                                  # idle, hover, trigger, drag, sweep, scroll
+deno task overlay:perf -- --scenario=hover,drag          # subset; `none` measures without input
+deno task overlay:perf -- --seconds=6                    # seconds per scenario
+deno task overlay:perf -- --profile                      # + V8 CPU profile of the worker
+deno task overlay:perf -- --json                         # machine-readable report
+deno task overlay:perf -- --attach --scenario=none --seconds=30   # watch your own running session
+```
+
+Use `--attach` against a session you already have open — including a headset run (`deno task dev`),
+where `--scenario=none` observes your own hands without installing synthetic input (a live IVRInput
+session refuses synthesized controllers outright). `r3f avg` is the r3f `advance()` cost per frame
+(`useFrame` jobs + pointer raycasting) as reported by `WebXRHost`, `r3f max` the worst single frame
+in the phase, and `ovl fps` appears once the raylib overlay is presenting.
+
+Both halves of the workflow are in `utils/`: `overlay-perf.ts` (launch/attach, REPL transport,
+report and profile analysis) and `overlay-perf-harness.ts` (runs inside the `webxr` worker:
+synthetic input, scenarios, metric sampling, optional profile capture). The same `--eval` workflow
+is available by hand against `http://127.0.0.1:3987`; see `petplay/agentRepl.ts` for the endpoints
+and `utils/overlay-perf.ts` for how it drives them. Useful live signals while doing this in VR:
+`--webxr-frame-logs` (`[PERF]` / `[FPS]` lines), `--webxr-r3f-job-logs` (per-scheduler-job cost) and
+`--webxr-cpu-profile=<path>` (V8 profile written by the `webxr` worker itself).
+
+A perf run never touches your saved spatial layout: launched runs are pointed at
+`tmp/overlay-perf-layout.json`, and the harness snapshots and restores the layout file when
+scenarios run against a session it did not launch.

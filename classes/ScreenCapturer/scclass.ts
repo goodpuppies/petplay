@@ -36,8 +36,13 @@ export interface ScreenCapturerOptions {
 
 //#endregion
 
-/** Default desktop capture rate. The helper is frame-rate driven, not damage driven. */
-export const DEFAULT_CAPTURE_FPS = 60;
+/**
+ * Default desktop capture rate. The helper is frame-rate driven, not damage
+ * driven, and 60 fps consumed roughly twice the capture/host CPU of 30 fps in
+ * a live VRChat + SteamVR trace. Keep the explicit `--screen-capture-fps` flag
+ * for users who prefer capture smoothness over compositor headroom.
+ */
+export const DEFAULT_CAPTURE_FPS = 30;
 
 /**
  * The helper clamps `--fps` to 1..240 itself; mirror that here so a configured

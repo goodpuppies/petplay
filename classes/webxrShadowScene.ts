@@ -85,17 +85,40 @@ export function updateShadowSceneMesh(
     return;
   }
 
-  shadowSceneState.meshes[index] = {
-    ...existing,
-    ...update,
-    position: update.position ? [...update.position] as [number, number, number] : existing.position,
-    rotation: update.rotation ? [...update.rotation] as [number, number, number] : existing.rotation,
-    scale: update.scale ? [...update.scale] as [number, number, number] : existing.scale,
-    color: update.color ? [...update.color] as [number, number, number, number] : existing.color,
-    wireColor: update.wireColor
-      ? [...update.wireColor] as [number, number, number, number]
-      : existing.wireColor,
-  };
+  // Mutated in place: the overlay mirror calls this every frame, and consumers read a copy via
+  // `getWebXRShadowSceneSnapshot`, so rebuilding the mesh object graph per frame only fed the GC.
+  const position = existing.position;
+  if (update.position) {
+    position[0] = update.position[0];
+    position[1] = update.position[1];
+    position[2] = update.position[2];
+  }
+  const rotation = existing.rotation;
+  if (update.rotation) {
+    rotation[0] = update.rotation[0];
+    rotation[1] = update.rotation[1];
+    rotation[2] = update.rotation[2];
+  }
+  const scale = existing.scale;
+  if (update.scale) {
+    scale[0] = update.scale[0];
+    scale[1] = update.scale[1];
+    scale[2] = update.scale[2];
+  }
+  const color = existing.color;
+  if (update.color) {
+    color[0] = update.color[0];
+    color[1] = update.color[1];
+    color[2] = update.color[2];
+    color[3] = update.color[3];
+  }
+  if (update.wireColor) {
+    const wireColor = existing.wireColor ?? (existing.wireColor = [0, 0, 0, 0]);
+    wireColor[0] = update.wireColor[0];
+    wireColor[1] = update.wireColor[1];
+    wireColor[2] = update.wireColor[2];
+    wireColor[3] = update.wireColor[3];
+  }
 }
 
 // --- VRChat origin tracking ---------------------------------------------

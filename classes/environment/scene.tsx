@@ -10,7 +10,7 @@ import {
   useThree,
 } from "@react-three/fiber/webgpu";
 import { updateShadowSceneMesh } from "../webxrShadowScene.ts";
-import { getVrcCameraDebugSnapshot } from "../vrcCameraDebugState.ts";
+import { readVrcCameraDebugSnapshot } from "../vrcCameraDebugState.ts";
 import { BoxLineGeometry } from "three/addons/geometries/BoxLineGeometry.js";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
 import {
@@ -111,7 +111,7 @@ declare module "@react-three/fiber/webgpu" {
 
 type WebXRSceneProps = {
   XROrigin: React.ComponentType;
-  displayInstanceActor?: string | null;
+  displayOverlayHostActor?: string | null;
   directOpenVrInputSource?: DirectOpenVrInputSource;
 };
 
@@ -225,7 +225,7 @@ function VrcCameraDebugVisuals() {
   );
 
   useFrame(() => {
-    const snapshot = getVrcCameraDebugSnapshot();
+    const snapshot = readVrcCameraDebugSnapshot();
     const pose = snapshot.relativeCameraPose;
 
     if (pose) {
@@ -367,6 +367,20 @@ function CommonOverlayChords({
   const direction = React.useMemo(() => new THREE.Vector3(), []);
   const quaternion = React.useMemo(() => new THREE.Quaternion(), []);
   const scrollAccumulator = React.useRef(0);
+  // The scroll chord only cares about the flat display proxy surfaces. The
+  // joystick handler runs every XR tick, so raycast those directly instead of
+  // the whole 600-node scene (0.8–1.2ms → ~0.005ms measured live).
+  // Refresh on graph changes: displays are added/deleted by user action and
+  // the proxy meshes mount/unmount with them.
+  const scrollSurfaces = React.useMemo(() => {
+    const found: THREE.Object3D[] = [];
+    scene.traverse((object) => {
+      if (object.userData.displayInstanceRayHitSurface === true) {
+        found.push(object);
+      }
+    });
+    return found;
+  }, [scene, graph]);
 
   useFrame((_state, delta) => {
     const right = inputSource?.getSnapshot().controllers.right;
@@ -377,16 +391,9 @@ function CommonOverlayChords({
     const axis = Math.abs(right.joystick[1]) > 0.2 ? right.joystick[1] : 0;
     origin.fromArray(right.position);
     quaternion.fromArray(right.quaternion);
-    direction.set(0, 0, -1).applyQuaternion(quaternion).normalize();
-    raycaster.set(origin, direction);
-    const hit = raycaster.intersectObject(scene, true).find((intersection) =>
-      intersection.object.userData.displayInstanceRayHitSurface === true
-    );
-    let displayObject = hit?.object ?? null;
-    while (displayObject && displayObject.userData.spatialKind !== "display") {
-      displayObject = displayObject.parent;
-    }
-    const pointedId = displayObject?.userData.spatialElementId as string | undefined;
+    // Push/pull needs the nearest live handle pointer, not a surface hit, and the scroll chord
+    // needs a non-zero axis. Both early-outs run before the raycast so an idle controller costs
+    // nothing here.
     if (right.grab > 0.5) {
       let closestStore: HandleStore<unknown> | undefined;
       let closestPointerId: number | undefined;
@@ -416,6 +423,16 @@ function CommonOverlayChords({
       scrollAccumulator.current = 0;
       return;
     }
+    direction.set(0, 0, -1).applyQuaternion(quaternion).normalize();
+    raycaster.set(origin, direction);
+    const hit = raycaster.intersectObjects(scrollSurfaces, false).find((intersection) =>
+      intersection.object.userData.displayInstanceRayHitSurface === true
+    );
+    let displayObject = hit?.object ?? null;
+    while (displayObject && displayObject.userData.spatialKind !== "display") {
+      displayObject = displayObject.parent;
+    }
+    const pointedId = displayObject?.userData.spatialElementId as string | undefined;
     if (!hit?.uv || !pointedId) return;
     scrollAccumulator.current += Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND * delta;
     const clicks = Math.floor(scrollAccumulator.current);
@@ -436,12 +453,12 @@ function CommonOverlayChords({
 }
 
 function WindowLayer({
-  displayInstanceActor,
+  displayOverlayHostActor,
   onMouse,
   onKey,
   directOpenVrInputSource,
 }: {
-  displayInstanceActor: string | null;
+  displayOverlayHostActor: string | null;
   onMouse: DisplayMouseSink;
   onKey: KeyboardSink;
   directOpenVrInputSource?: DirectOpenVrInputSource;
@@ -601,7 +618,7 @@ function WindowLayer({
             onSelectNode={setSelectedNodeId}
             handleStores={handleStores}
             directOpenVrInputSource={directOpenVrInputSource}
-            displayInstanceActor={displayInstanceActor}
+            displayOverlayHostActor={displayOverlayHostActor}
             onMouse={onMouse}
             onKey={onKey}
           />
@@ -619,7 +636,7 @@ type SpatialGraphViewProps = {
   onSelectNode: (nodeId: string) => void;
   handleStores: Map<string, HandleStore<unknown>>;
   directOpenVrInputSource?: DirectOpenVrInputSource;
-  displayInstanceActor: string | null;
+  displayOverlayHostActor: string | null;
   onMouse: DisplayMouseSink;
   onKey: KeyboardSink;
 };
@@ -680,6 +697,9 @@ function useScaleToDelete(
       }
 
       (baseOptions.apply ?? defaultApply)(state, target);
+      // Two-pointer scale only: a single squeeze-grab never arms delete, and
+      // the armed flag (a React state → full subtree re-render + uikit text
+      // rebuild) only flips on the arm/disarm edges, not during the grab.
       if (!state.last && state.current.pointerAmount >= 2) {
         sawTwoPointerScaleRef.current = true;
       }
@@ -754,7 +774,7 @@ function DisplaySpatialNodeView({
   onSelectNode,
   handleStores,
   directOpenVrInputSource,
-  displayInstanceActor,
+  displayOverlayHostActor,
   onMouse,
   onKey,
   manipulationTargetRef,
@@ -793,7 +813,7 @@ function DisplaySpatialNodeView({
   const children = getSpatialChildren(graph, node.id);
   const attachmentRole = getDisplayAttachmentRole(graph, node.id);
   const outputConnected = node.workspaceOutputId != null && node.workspaceOutputConnected !== false;
-  const activeDisplayInstanceActor = outputConnected ? displayInstanceActor : null;
+  const activeDisplayOverlayHostActor = outputConnected ? displayOverlayHostActor : null;
   const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
   const mouseButtonForPointer = React.useCallback((event: PenPointerEvent) => {
     const handedness = (event.pointerState as { inputSource?: { handedness?: XRHandedness } })
@@ -816,7 +836,8 @@ function DisplaySpatialNodeView({
       actions.push({
         id: "add-display",
         label: "Add display",
-        tone: "accent",
+        // No accent: the accent means "this state is on", and adding a display
+        // is an action with no state behind it.
         run: () =>
           setGraph((current) =>
             spawnHingedDisplayWithAutomaticOutput(current, node.id, workspaceOutputs)
@@ -826,7 +847,11 @@ function DisplaySpatialNodeView({
     if (node.parentId != null || attachmentRole === "parent") {
       actions.push({
         id: "detach",
-        label: "Detach",
+        label: "Linked — detach",
+        // Accent because this reports a state: the button only exists while the
+        // node is attached, so a lit button means "linked" and pressing it
+        // unlinks — the same on/off reading as the wrist panel's mode buttons.
+        tone: "accent",
         run: () => setGraph((current) => detachDisplayHierarchy(current, node.id)),
       });
     }
@@ -863,26 +888,25 @@ function DisplaySpatialNodeView({
     >
       {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
       <DisplayInstance
-        displayInstanceActor={activeDisplayInstanceActor}
+        displayOverlayHostActor={activeDisplayOverlayHostActor}
         virtualDisplayId={node.id}
         virtualDisplayName={node.workspaceOutputName ?? `PetPlay ${node.id}`}
         workspaceCrop={workspaceCrop}
-        onMouse={activeDisplayInstanceActor != null ? croppedMouseSink : undefined}
+        onMouse={activeDisplayOverlayHostActor != null ? croppedMouseSink : undefined}
         mouseButtonForPointer={mouseButtonForPointer}
-        rayHitSurface={activeDisplayInstanceActor != null}
-        shellRayPickable={activeDisplayInstanceActor == null}
+        rayHitSurface={activeDisplayOverlayHostActor != null}
+        shellRayPickable={activeDisplayOverlayHostActor == null}
         manipulationTargetRef={targetRef}
         manipulationOptions={deletion.options}
         manipulationStoreRef={setManipulationStore}
         onSpatialFocus={selectNode}
         onSpatialHoverChange={setHovered}
       >
-        {hovered && attachmentRole != null && (
-          <SpatialHierarchyIndicator
-            role={attachmentRole}
-            position={[0, DEFAULT_DISPLAY_HEIGHT * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
-          />
-        )}
+        <SpatialHierarchyIndicator
+          role={attachmentRole ?? "solo"}
+          position={[0, DEFAULT_DISPLAY_HEIGHT * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
+          visible={hovered && attachmentRole != null}
+        />
         {selectedNodeId === node.id && (
           <SpatialContextToolbar
             title={node.workspaceOutputName ?? `Display ${node.ordinal}`}
@@ -930,7 +954,7 @@ function DisplaySpatialNodeView({
           onSelectNode={onSelectNode}
           handleStores={handleStores}
           directOpenVrInputSource={directOpenVrInputSource}
-          displayInstanceActor={displayInstanceActor}
+          displayOverlayHostActor={displayOverlayHostActor}
           onMouse={onMouse}
           onKey={onKey}
         />
@@ -948,7 +972,7 @@ function KeyboardSpatialNodeView({
   onSelectNode,
   handleStores,
   directOpenVrInputSource,
-  displayInstanceActor,
+  displayOverlayHostActor,
   onMouse,
   onKey,
   manipulationTargetRef,
@@ -999,7 +1023,9 @@ function KeyboardSpatialNodeView({
     if (node.parentId != null) {
       actions.push({
         id: "detach",
-        label: "Detach",
+        label: "Linked — detach",
+        // See the display toolbar: accent reports the attached state.
+        tone: "accent",
         run: () => setGraph((current) => detachFromParent(current, node.id)),
       });
     }
@@ -1057,7 +1083,7 @@ function KeyboardSpatialNodeView({
           onSelectNode={onSelectNode}
           handleStores={handleStores}
           directOpenVrInputSource={directOpenVrInputSource}
-          displayInstanceActor={displayInstanceActor}
+          displayOverlayHostActor={displayOverlayHostActor}
           onMouse={onMouse}
           onKey={onKey}
         />
@@ -1066,13 +1092,21 @@ function KeyboardSpatialNodeView({
   );
 }
 
-function SpatialAttachmentView(props: SpatialNodeViewProps) {
-  const { node } = props;
-  if (node.kind === "control") {
-    return <SpatialNodeView {...props} />;
-  }
-  return <AttachedSpatialNodeView {...props} node={node} />;
-}
+/**
+ * Memoized: a spatial subtree (e.g. a display with a hinged keyboard) is re-created by its parent's
+ * render, and the parent re-renders on hover/selection changes that leave the child's props — the
+ * graph, the handle stores, the sinks — untouched. Without this, moving the laser over a display
+ * re-rendered its attached keyboard's ~74 key caps.
+ */
+const SpatialAttachmentView = React.memo(
+  function SpatialAttachmentView(props: SpatialNodeViewProps) {
+    const { node } = props;
+    if (node.kind === "control") {
+      return <SpatialNodeView {...props} />;
+    }
+    return <AttachedSpatialNodeView {...props} node={node} />;
+  },
+);
 
 function AttachedSpatialNodeView(
   props: SpatialNodeViewProps & {
@@ -1398,7 +1432,7 @@ function SpatialControlGlyph({ action }: { action: ControlSpatialNode["action"] 
 export function WebXRScene(
   {
     XROrigin: _XROrigin,
-    displayInstanceActor = null,
+    displayOverlayHostActor = null,
     directOpenVrInputSource,
   }: WebXRSceneProps,
 ) {
@@ -1406,17 +1440,17 @@ export function WebXRScene(
   const accentRef = useRef<THREE.Mesh>(null!);
   const displayMouseSink = React.useMemo(
     () =>
-      Deno.build.os === "linux" && displayInstanceActor
-        ? createLinuxMouseSink(displayInstanceActor)
+      Deno.build.os === "linux" && displayOverlayHostActor
+        ? createLinuxMouseSink(displayOverlayHostActor)
         : windowsSystemDisplayMouseSink,
-    [displayInstanceActor],
+    [displayOverlayHostActor],
   );
   const keyboardSink = React.useMemo(
     () =>
-      Deno.build.os === "linux" && displayInstanceActor
-        ? createLinuxKeyboardSink(displayInstanceActor)
+      Deno.build.os === "linux" && displayOverlayHostActor
+        ? createLinuxKeyboardSink(displayOverlayHostActor)
         : windowsSystemKeyboardSink,
-    [displayInstanceActor],
+    [displayOverlayHostActor],
   );
 
   // R3F v10: keep mesh animation on the default `update` phase. Memoize options
@@ -1440,15 +1474,22 @@ export function WebXRScene(
     }),
     [],
   );
+  // Static parts of the mirror description are hoisted: the job runs at 60Hz and
+  // `updateShadowSceneMesh` now copies these arrays element-wise instead of retaining them.
+  const shadowMirrorScratch = React.useMemo(
+    () => ({
+      kind: "torus" as const,
+      position: [0, 1.45, -1.8] as [number, number, number],
+      rotation: [0, 0, 0] as [number, number, number],
+      scale: [1, 1, 1] as [number, number, number],
+      color: [255, 139, 61, 255] as [number, number, number, number],
+      wireColor: [255, 196, 148, 255] as [number, number, number, number],
+    }),
+    [],
+  );
   useFrame(() => {
-    updateShadowSceneMesh(0, {
-      kind: "torus",
-      position: [0, 1.45, -1.8],
-      rotation: [0, accentRef.current.rotation.y, 0],
-      scale: [1, 1, 1],
-      color: [255, 139, 61, 255],
-      wireColor: [255, 196, 148, 255],
-    });
+    shadowMirrorScratch.rotation[1] = accentRef.current.rotation.y;
+    updateShadowSceneMesh(0, shadowMirrorScratch);
   }, shadowMirrorOpts);
 
   const roomLineColor = React.useMemo(() => new THREE.Color(0xbcbcbc), []);
@@ -1470,7 +1511,7 @@ export function WebXRScene(
       {/* <RoomWireBox color={roomLineColor} /> */}
 
       <WindowLayer
-        displayInstanceActor={displayInstanceActor}
+        displayOverlayHostActor={displayOverlayHostActor}
         onMouse={displayMouseSink}
         onKey={keyboardSink}
         directOpenVrInputSource={directOpenVrInputSource}

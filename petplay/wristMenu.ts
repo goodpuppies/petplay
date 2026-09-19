@@ -15,10 +15,9 @@ type WristMenuActionPayload = {
 
 const state = actorState({
   name: "wrist_menu",
-  layersActive: false,
-  musicActive: false,
-  signalActive: false,
-  desktopOverlayActor: null as string | null,
+  layoutActive: false,
+  editActive: false,
+  displayOverlayHostActor: null as string | null,
 });
 
 new PostMan(
@@ -29,19 +28,18 @@ new PostMan(
     },
     GETWRISTMENUSTATE: (_payload: void) => getSnapshot(),
     SETWRISTMENUSTATE: (payload: SetWristMenuStatePayload) => {
-      state.layersActive = payload.layersActive ?? state.layersActive;
-      state.musicActive = payload.musicActive ?? state.musicActive;
-      state.signalActive = payload.signalActive ?? state.signalActive;
+      state.layoutActive = payload.layoutActive ?? state.layoutActive;
+      state.editActive = payload.editActive ?? state.editActive;
       return getSnapshot();
     },
-    SETDESKTOPOVERLAYACTOR: (payload: string | null) => {
-      state.desktopOverlayActor = payload;
+    SETDISPLAYOVERLAYHOSTACTOR: (payload: string | null) => {
+      state.displayOverlayHostActor = payload;
       return getSnapshot();
     },
     TOGGLEWRISTMENUACTION: (payload: WristMenuButtonId) => {
       const active = toggle(payload);
       const snapshot = getSnapshot();
-      notifyDesktopOverlay({
+      notifyDisplayOverlayHost({
         id: payload,
         active,
         state: snapshot,
@@ -53,37 +51,33 @@ new PostMan(
 
 function getSnapshot(): WristMenuStateSnapshot {
   return {
-    layersActive: state.layersActive,
-    musicActive: state.musicActive,
-    signalActive: state.signalActive,
+    layoutActive: state.layoutActive,
+    editActive: state.editActive,
   };
 }
 
 function toggle(id: WristMenuButtonId): boolean {
   switch (id) {
-    case "layers":
-      state.layersActive = !state.layersActive;
-      return state.layersActive;
-    case "music":
-      state.musicActive = !state.musicActive;
-      return state.musicActive;
-    case "signal":
-      state.signalActive = !state.signalActive;
-      return state.signalActive;
+    case "layout":
+      state.layoutActive = !state.layoutActive;
+      return state.layoutActive;
+    case "edit":
+      state.editActive = !state.editActive;
+      return state.editActive;
   }
 }
 
-function notifyDesktopOverlay(payload: WristMenuActionPayload) {
-  if (!state.desktopOverlayActor) {
+function notifyDisplayOverlayHost(payload: WristMenuActionPayload) {
+  if (!state.displayOverlayHostActor) {
     return;
   }
   try {
     PostMan.PostMessage({
-      target: state.desktopOverlayActor,
+      target: state.displayOverlayHostActor,
       type: "WRIST_MENU_ACTION",
       payload,
     });
   } catch (error) {
-    LogChannel.log("actor", `[wristMenu] desktop overlay notify failed: ${error}`);
+    LogChannel.log("actor", `[wristMenu] display overlay host notify failed: ${error}`);
   }
 }

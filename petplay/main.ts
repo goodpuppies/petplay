@@ -43,6 +43,15 @@ function getDesktopControlEnabled(): boolean {
   return Deno.args.includes("--desktop");
 }
 
+/**
+ * Spawns the agent REPL actor in every launch mode, so a dev/tooling run can be driven over HTTP
+ * without also starting the desktop-control window (`--desktop` implies it as before).
+ * See `utils/overlay-perf.ts`.
+ */
+function getAgentReplEnabled(): boolean {
+  return Deno.args.includes("--agent-repl");
+}
+
 function getScreenCaptureFps(): number {
   const raw = Deno.args
     .find((a) => a.startsWith("--screen-capture-fps="))
@@ -201,8 +210,12 @@ async function continueOpenVrScene(
   //const osc = await PostMan.create("./OSC.ts", import.meta.url);
   console.log("[petplay boot] creating wrist-menu actor");
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
-  console.log("[petplay boot] creating display-instance actor");
-  const displayInstance = await PostMan.create("./displayInstance.ts", import.meta.url);
+  console.log("[petplay boot] creating display-overlay host actor");
+  const displayOverlayHost = await PostMan.create(
+    "./displayOverlayHost.ts",
+    import.meta.url,
+    { worker: "process" },
+  );
   console.log("[petplay boot] creating WebXR actor");
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
   console.log("[petplay boot] creating Agent REPL actor");
@@ -219,7 +232,7 @@ async function continueOpenVrScene(
     origin: resolveActorId(origin),
     cameraOrigin: resolveActorId(cameraOrigin),
     wristMenu: resolveActorId(wristMenu),
-    displayInstance: resolveActorId(displayInstance),
+    displayOverlayHost: resolveActorId(displayOverlayHost),
     webxr: resolveActorId(webxr),
     agentRepl: resolveActorId(agentRepl),
     ...(desktopControl ? { desktopControl: resolveActorId(desktopControl) } : {}),
@@ -243,7 +256,7 @@ async function continueOpenVrScene(
   const compositorPtr = await ivr.GETCOMPOSITORPTR();
 
   PostMan.PostMessage({
-    target: [origin, displayInstance],
+    target: origin,
     type: "INITOVROVERLAY",
     payload: ivroverlay,
   });
@@ -261,7 +274,7 @@ async function continueOpenVrScene(
       vrSystemPointer: ivrsystem,
       controllerActor: null,
       wristMenuActor: wristMenu,
-      displayInstanceActor: displayInstance,
+      displayOverlayHostActor: displayOverlayHost,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,
@@ -281,7 +294,7 @@ async function continueOpenVrScene(
     },
   });
   const desktopOverlayConfig = {
-    overlayKey: "petplay.displayInstance.desktop",
+    overlayKey: "petplay.displayOverlayHost.desktop",
     displayName: "PetPlay display",
     runScreenCapture: true,
     captureFrameLimit: 0,
@@ -290,21 +303,21 @@ async function continueOpenVrScene(
     enableMouseInput: true,
   };
   PostMan.PostMessage({
-    target: displayInstance,
+    target: displayOverlayHost,
     type: "CONFIGUREDESKTOP",
     payload: desktopOverlayConfig,
   });
   if (Deno.args.includes("--dev-start-desktop-overlay")) {
     PostMan.PostMessage({
-      target: displayInstance,
+      target: displayOverlayHost,
       type: "STARTDESKTOP",
       payload: desktopOverlayConfig,
     });
   }
   PostMan.PostMessage({
     target: wristMenu,
-    type: "SETDESKTOPOVERLAYACTOR",
-    payload: resolveActorId(displayInstance),
+    type: "SETDISPLAYOVERLAYHOSTACTOR",
+    payload: resolveActorId(displayOverlayHost),
   });
 
   /* PostMan.PostMessage({
@@ -343,7 +356,7 @@ async function continueOpenVrScene(
       type: "STARTDESKTOPCONTROL",
       payload: {
         wristMenuActor: actorRegistry.wristMenu,
-        displayInstanceActor: null,
+        displayOverlayHostActor: null,
         webxrTarget: "webxr",
       },
     });
@@ -387,7 +400,7 @@ async function createNoOpenVrScene() {
   const cameraOrigin = desktopControlEnabled
     ? await PostMan.create("./VRCOriginCamera.ts", import.meta.url)
     : null;
-  const agentRepl = desktopControlEnabled
+  const agentRepl = desktopControlEnabled || getAgentReplEnabled()
     ? await PostMan.create("./agentRepl.ts", import.meta.url)
     : null;
   const desktopControl = desktopControlEnabled
@@ -421,7 +434,7 @@ async function createNoOpenVrScene() {
       vrSystemPointer: null,
       controllerActor: null,
       wristMenuActor: wristMenu,
-      displayInstanceActor: null,
+      displayOverlayHostActor: null,
       overlayRenderMode: "raylib" as OverlayRenderMode,
       nativeRaylibDebug: false,
       nativeRaylibDebugWithHost: false,
@@ -463,7 +476,7 @@ async function createNoOpenVrScene() {
       type: "STARTDESKTOPCONTROL",
       payload: {
         wristMenuActor: actorRegistry.wristMenu,
-        displayInstanceActor: null,
+        displayOverlayHostActor: null,
         webxrTarget: "webxr",
       },
     });

@@ -42,6 +42,11 @@ export type GrabBoxProps = {
   shellRayPickable?: boolean;
   /** Include the invisible interaction hull. Use `false` for purely visual/edit hints. */
   interactionHull?: boolean;
+  interactionHullFilter?: (
+    pointerId: number,
+    pointerType: string,
+    pointerState: unknown,
+  ) => boolean;
   /** Draw the wireframe chrome. The invisible interaction hull remains active. */
   visibleChrome?: boolean;
   /**
@@ -78,6 +83,7 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     wireframeMode = "edges",
     shellRayPickable = true,
     interactionHull = true,
+    interactionHullFilter,
     visibleChrome = true,
     grabbable = true,
     manipulationTargetRef,
@@ -130,17 +136,37 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
       // This hull exists solely for squeeze-grab. Explicitly allow that one
       // pointer type so trigger rays always continue to the inner flat/key
       // surface instead of ending at the box depth.
-      pointerEventsType: { allow: "grab" },
+      pointerEventsType: interactionHullFilter == null
+        ? { allow: "grab" }
+        : (pointerId: number, pointerType: string, pointerState: unknown) =>
+          pointerType === "grab" && interactionHullFilter(pointerId, pointerType, pointerState),
     } as Record<string, unknown>)
     : {};
+
+  // Hover enter/leave fires per laser sweep, including the laser-off edge.
+  // Guard with a ref so repeat enters don't re-invoke the callback: parents
+  // wire this straight to React state (DisplaySpatialNodeView `setHovered`),
+  // and a redundant setState burns a full subtree re-render + uikit text
+  // rebuild on every pointermove that happens to re-enter.
+  const hoveredRef = useRef(false);
+  const handleHoverEnter = useCallback(() => {
+    if (hoveredRef.current) return;
+    hoveredRef.current = true;
+    onSpatialHoverChange?.(true);
+  }, [onSpatialHoverChange]);
+  const handleHoverLeave = useCallback(() => {
+    if (!hoveredRef.current) return;
+    hoveredRef.current = false;
+    onSpatialHoverChange?.(false);
+  }, [onSpatialHoverChange]);
 
   const box = (
     <group
       ref={boxRef}
       onWheel={handleWheel}
       onPointerOver={onSpatialFocus}
-      onPointerEnter={() => onSpatialHoverChange?.(true)}
-      onPointerLeave={() => onSpatialHoverChange?.(false)}
+      onPointerEnter={handleHoverEnter}
+      onPointerLeave={handleHoverLeave}
       userData={{ ...userData, grabbox: true, grabboxSize: [width, height, depth] as const }}
     >
       {wireframeMode === "edges" && edgeGeometry != null

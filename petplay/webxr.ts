@@ -44,8 +44,35 @@ import {
   type Vec3Tuple,
   type VrcCameraDebugPose,
 } from "../classes/vrcCameraDebugState.ts";
+import { captureDenoCpuProfile } from "../classes/denoCpuProfile.ts";
 
 const WEBXR_SHUTDOWN_TIMEOUT_MS = 2_000;
+
+function readPositiveProfileNumber(name: string, fallback: number): number {
+  const raw = Deno.args.find((arg) => arg.startsWith(`--${name}=`))?.split("=", 2)[1];
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+const raylibMaxFps = Math.min(
+  240,
+  readPositiveProfileNumber("webxr-raylib-max-fps", 0),
+);
+
+const webxrCpuProfilePath = Deno.args.find((arg) => arg.startsWith("--webxr-cpu-profile="))?.split(
+  "=",
+  2,
+)[1];
+if (webxrCpuProfilePath) {
+  void captureDenoCpuProfile({
+    path: webxrCpuProfilePath,
+    delayMs: readPositiveProfileNumber("webxr-cpu-profile-delay-ms", 15_000),
+    durationMs: readPositiveProfileNumber("webxr-cpu-profile-duration-ms", 15_000),
+    log: (message) => LogChannel.log("webxrv2", `[webxr] ${message}`),
+  }).catch((error) => {
+    LogChannel.log("webxrv2", `[webxr] CPU profile failed: ${String(error)}`);
+  });
+}
 
 async function waitForWebXrShutdown(
   label: string,
@@ -128,7 +155,7 @@ type StartWebXRPayload = {
   vrSystemPointer?: number | bigint | null;
   controllerActor?: string | null;
   wristMenuActor?: string | null;
-  displayInstanceActor?: string | null;
+  displayOverlayHostActor?: string | null;
   sessionMode?: SupportedSessionMode;
   alpha?: boolean;
   overlayKey?: string;
@@ -193,6 +220,7 @@ const state = actorState({
   raylibShadowNoSourceLogged: false,
   raylibShadowNoSceneLogged: false,
   raylibOpenVrPacedLastStatusLogAt: 0,
+  raylibLastRenderedAt: 0,
   webGpuOverlayConfig: null as OverlayConfig | null,
   raylibOverlayConfig: null as OverlayConfig | null,
   overlayRenderMode: "raylib" as OverlayRenderMode,
@@ -532,7 +560,7 @@ new PostMan(
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             vrInputPointer: payload?.vrInputPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
-            displayInstanceActor: payload?.displayInstanceActor,
+            displayOverlayHostActor: payload?.displayOverlayHostActor,
             sessionMode: payload?.sessionMode,
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
@@ -1297,6 +1325,9 @@ async function uploadWebGpuSceneFrame() {
 function shouldSignalHostFromRaylibPace(
   pace: ReturnType<OpenVrOverlayFramePacer["getLastPaceResult"]>,
 ): boolean {
+  if (raylibMaxFps > 0) {
+    return pace.ok;
+  }
   return pace.ok && pace.waitedForVsync && pace.skippedDisplayFrames === 0;
 }
 
@@ -1738,12 +1769,20 @@ async function pumpOverlayFrames() {
           );
           state.raylibOpenVrPacedRaythreeLogged = true;
         }
+        if (raylibMaxFps > 0 && state.raylibLastRenderedAt > 0) {
+          const remainingMs = 1000 / raylibMaxFps -
+            (performance.now() - state.raylibLastRenderedAt);
+          if (remainingMs > 0.5) {
+            await wait(remainingMs);
+          }
+        }
         const frameStartedAt = performance.now();
         let rendered = await uploadRaylibShadowFrame();
         if (!rendered && state.overlayRunning) {
           rendered = await uploadNativeRaylibDebugFrame();
         }
         if (rendered) {
+          state.raylibLastRenderedAt = frameStartedAt;
           state.uploadedFrames++;
           state.overlayFpsCounter.mark();
           state.frameMetric.record(performance.now() - frameStartedAt);

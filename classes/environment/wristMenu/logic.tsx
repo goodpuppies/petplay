@@ -19,6 +19,7 @@ import {
   useWorkspaceLayoutSnapshot,
 } from "../workspaceLayoutStore.ts";
 import { GrabBox } from "../grabbox.tsx";
+import { isPointerBlockedByHost } from "./pointerFilter.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -33,7 +34,20 @@ const CONTROLLER_UI_ROTATION: [number, number, number] = [
   -0.5691113573725565,
   -1.1867850376947444,
 ];
-const CONTROLLER_UI_SCALE: [number, number, number] = [0.47, 0.47, 0.47];
+/**
+ * Wrist-mounted scale in XR.
+ *
+ * The panel is 528px square at `pixelSize` 0.001, so it measures `0.528 * scale`
+ * metres on a side — 0.235 puts it at about 12.4cm, roughly a large watch face.
+ * Half what it was: the previous 0.47 (~25cm) was sized against the desktop
+ * preview, where the panel is head-locked at arm's length rather than strapped
+ * to a wrist you have to look down at.
+ *
+ * The desktop HUD passes its own transform (see `desktopControlSurface.tsx`),
+ * so this value only affects XR.
+ */
+const CONTROLLER_UI_SCALE: [number, number, number] = [0.235, 0.235, 0.235];
+const WRIST_MENU_POINTER_EVENTS_ORDER = 100;
 
 export type WristMenuTransform = {
   position?: [number, number, number];
@@ -47,36 +61,30 @@ export type WristMenuPanelProps = {
    * pointers from the *other* hand; the host hand’s ray/grip does not see this UI.
    */
   hostHandedness?: "left" | "right";
+  /**
+   * Is this panel mounted on a controller? When it is, that controller must
+   * never be able to interact with it — see {@link isPointerBlockedByHost}.
+   * Defaults to whether a handedness was supplied.
+   */
+  attachedToController?: boolean;
   transform?: WristMenuTransform;
   actorId?: string | null;
   initialState?: Partial<WristMenuStateSnapshot>;
 };
 
-function wristMenuPointerEventsForHost(
-  host: "left" | "right",
+function wristMenuPointerEvents(
+  host: "left" | "right" | undefined,
+  attached: boolean,
 ): AllowedPointerEventsType {
-  return (_id, _pointerType, st) => !isPointerStateFromHostHand(st, host);
-}
-
-function isPointerStateFromHostHand(
-  pointerState: unknown,
-  host: "left" | "right",
-): boolean {
-  if (
-    pointerState == null || typeof pointerState !== "object" || !("inputSource" in pointerState)
-  ) {
-    return false;
-  }
-  const h = (pointerState as { inputSource?: { handedness?: XRHandedness } }).inputSource
-    ?.handedness;
-  return h === host;
+  return (_id, pointerType, st) => !isPointerBlockedByHost(pointerType, st, host, attached);
 }
 
 function isPointerEventFromHostHand(
   event: PenPointerEvent,
   host: "left" | "right" | undefined,
+  attached: boolean,
 ): boolean {
-  return host != null && isPointerStateFromHostHand(event.pointerState, host);
+  return isPointerBlockedByHost(event.pointerType, event.pointerState, host, attached);
 }
 
 function formatClock(date: Date) {
@@ -106,21 +114,28 @@ function formatElapsed(startedAt: number, now: number) {
 function toStateSnapshot(
   value: Partial<WristMenuStateSnapshot> | null | undefined,
 ): WristMenuStateSnapshot {
+  const layoutActive = value?.layoutActive ?? false;
   return {
-    layersActive: value?.layersActive ?? false,
-    musicActive: value?.musicActive ?? false,
-    signalActive: value?.signalActive ?? false,
+    layoutActive,
+    // Enforced on the way in too: a stored state from before edit was gated (or
+    // a hand-written one over the REPL) must not produce edit-without-layout.
+    editActive: layoutActive && (value?.editActive ?? false),
   };
 }
 
 function applyToggle(state: WristMenuStateSnapshot, id: WristMenuButtonId): WristMenuStateSnapshot {
   switch (id) {
-    case "layers":
-      return { ...state, layersActive: !state.layersActive };
-    case "music":
-      return { ...state, musicActive: !state.musicActive };
-    case "signal":
-      return { ...state, signalActive: !state.signalActive };
+    case "layout": {
+      // Edit mode adds manipulation *on top of* layout mode, so it cannot
+      // outlive it: hiding the spatial layer hides what edit mode acts on.
+      const layoutActive = !state.layoutActive;
+      return { layoutActive, editActive: layoutActive && state.editActive };
+    }
+    case "edit":
+      // Only meaningful while layout is on. The button is disabled otherwise;
+      // this guard keeps that true regardless of who calls it.
+      if (!state.layoutActive) return state;
+      return { ...state, editActive: !state.editActive };
   }
 }
 
@@ -185,11 +200,15 @@ async function requestDesktopActor<T>(
 }
 
 export function WristMenuPanel(
-  { hostHandedness, transform, actorId, initialState }: WristMenuPanelProps,
+  { hostHandedness, transform, actorId, initialState, attachedToController }: WristMenuPanelProps,
 ) {
-  const menuPointerType = hostHandedness != null
-    ? wristMenuPointerEventsForHost(hostHandedness)
-    : "all" satisfies AllowedPointerEventsType;
+  // Controller-mounted whenever it is rendered from `WristMenuControllerHud`,
+  // which is the only caller that has a host controller. Passed explicitly
+  // rather than inferred from `hostHandedness != null`, because a runtime that
+  // reports handedness as "none" would otherwise read as "not attached" and
+  // turn the guard off exactly when it is needed.
+  const attached = attachedToController ?? hostHandedness != null;
+  const menuPointerType = wristMenuPointerEvents(hostHandedness, attached);
   const startedAt = useRef(performance.now());
   const [buttonState, setButtonState] = useState(() => toStateSnapshot(initialState));
   const [now, setNow] = useState(() => Date.now());
@@ -217,18 +236,18 @@ export function WristMenuPanel(
   }, [actorId, initialState]);
 
   useEffect(() => {
-    setToolEditMode(buttonState.musicActive);
+    setToolEditMode(buttonState.editActive);
     return () => {
       setToolEditMode(false);
     };
-  }, [buttonState.musicActive]);
+  }, [buttonState.editActive]);
 
   useEffect(() => {
-    setWindowLayerVisible(buttonState.layersActive);
+    setWindowLayerVisible(buttonState.layoutActive);
     return () => {
       setWindowLayerVisible(false);
     };
-  }, [buttonState.layersActive]);
+  }, [buttonState.layoutActive]);
 
   const handleToggle = useCallback((id: WristMenuButtonId) => {
     if (!actorId) {
@@ -243,7 +262,14 @@ export function WristMenuPanel(
     });
   }, [actorId]);
 
-  const currentDate = new Date(now);
+  const currentDate = React.useMemo(() => new Date(now), [now]);
+  const clockLabel = React.useMemo(() => formatClock(currentDate), [currentDate]);
+  const dateLabel = React.useMemo(() => formatDate(currentDate), [currentDate]);
+  const elapsedLabel = React.useMemo(
+    () => formatElapsed(startedAt.current, now),
+    // `startedAt` is a stable ref; only the tick matters.
+    [now],
+  );
   const position = transform?.position ?? CONTROLLER_UI_POSITION;
   const rotation = transform?.rotation ?? CONTROLLER_UI_ROTATION;
   const scale = transform?.scale ?? CONTROLLER_UI_SCALE;
@@ -254,23 +280,26 @@ export function WristMenuPanel(
       rotation={rotation}
       scale={scale}
       userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}
+      {...({ pointerEventsOrder: WRIST_MENU_POINTER_EVENTS_ORDER } as Record<string, unknown>)}
     >
       <GrabBox
-        width={0.48}
-        height={0.42}
+        width={0.528}
+        height={0.528}
         depth={0.04}
         visibleChrome={false}
         shellRayPickable={false}
+        interactionHullFilter={(_id, pointerType, pointerState) =>
+          !isPointerBlockedByHost(pointerType, pointerState, hostHandedness, attached)}
         grabFilter={(e: PenPointerEvent) =>
-          e.pointerType !== "poker" && !isPointerEventFromHostHand(e, hostHandedness)}
+          e.pointerType !== "poker" &&
+          !isPointerEventFromHostHand(e, hostHandedness, attached)}
       >
         <WristMenuUi
-          clock={formatClock(currentDate)}
-          dateLabel={formatDate(currentDate)}
-          elapsed={formatElapsed(startedAt.current, now)}
-          layersActive={buttonState.layersActive}
-          musicActive={buttonState.musicActive}
-          signalActive={buttonState.signalActive}
+          clock={clockLabel}
+          dateLabel={dateLabel}
+          elapsed={elapsedLabel}
+          layoutActive={buttonState.layoutActive}
+          editActive={buttonState.editActive}
           onToggle={handleToggle}
           workspaceLayout={workspaceLayout}
           onAssignOutput={assignWorkspaceLayoutOutput}
@@ -297,7 +326,11 @@ export function WristMenuControllerHud({ actorId }: { actorId?: string | null })
         }}
       />
       <XRSpace space="grip-space">
-        <WristMenuPanel hostHandedness={hostHandedness} actorId={actorId} />
+        <WristMenuPanel
+          hostHandedness={hostHandedness}
+          attachedToController
+          actorId={actorId}
+        />
       </XRSpace>
     </>
   );

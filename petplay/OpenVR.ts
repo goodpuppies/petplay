@@ -1,9 +1,6 @@
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
-import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
-import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
-import { getOpenVrLibraryPath } from "../classes/nativeLibraryPaths.ts";
+import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
 
 const state = actorState({
   name: "openvr",
@@ -15,6 +12,8 @@ const state = actorState({
   inputPTR: null as Deno.PointerValue | null,
   renderModelsPTR: null as Deno.PointerValue | null,
 });
+
+const runtime = new OpenVrRuntime("PetPlay OpenVR");
 
 export const api = {
   __INIT__: (_payload: null) => {
@@ -83,111 +82,26 @@ export const api = {
 new PostMan(state, api);
 
 function initializeOpenVR() {
-  console.log("[petplay boot] OpenVR: loading bindings");
-  const success = OpenVR.initializeOpenVR(
-    getOpenVrLibraryPath(),
-  );
-  if (!success) throw new Error("failed to initialize openvr");
-  console.log("[petplay boot] OpenVR: calling VR_InitInternal");
-
-  const initErrorPtr = P.Int32P<OpenVR.InitError>();
-
-  OpenVR.VR_InitInternal(
-    initErrorPtr,
-    OpenVR.ApplicationType.VRApplication_Overlay,
-  );
-  const initError = new Deno.UnsafePointerView(initErrorPtr).getInt32();
-  console.log(
-    `[petplay boot] OpenVR: VR_InitInternal returned ${OpenVR.InitError[initError]}`,
-  );
-
-  if (initError !== OpenVR.InitError.VRInitError_None) {
-    throw new Error(
-      `Failed to initialize OpenVR: ${OpenVR.InitError[initError]}`,
-    );
-  }
-
-  const systemPtr = OpenVR.VR_GetGenericInterface(
-    stringToPointer(OpenVR.IVRSystem_Version),
-    initErrorPtr,
-  );
-  const interfaceError1 = new Deno.UnsafePointerView(initErrorPtr).getInt32();
-  if (interfaceError1 !== OpenVR.InitError.VRInitError_None) {
-    throw new Error(
-      `Failed to get IVRSystem interface: ${OpenVR.InitError[interfaceError1]}`,
-    );
-  }
-  console.log("[petplay boot] OpenVR: IVRSystem interface acquired");
-
-  const compositorPtr = OpenVR.VR_GetGenericInterface(
-    stringToPointer(OpenVR.IVRCompositor_Version),
-    initErrorPtr,
-  );
-  const interfaceErrorComp = new Deno.UnsafePointerView(initErrorPtr)
-    .getInt32();
-  if (interfaceErrorComp !== OpenVR.InitError.VRInitError_None) {
-    LogChannel.log(
-      "actor",
-      `OpenVR: IVRCompositor not available (overlay frame pacing will skip CanRenderScene): ${
-        OpenVR.InitError[interfaceErrorComp]
-      }`,
-    );
-  }
-
-  const overlayPtr = OpenVR.VR_GetGenericInterface(
-    stringToPointer(OpenVR.IVROverlay_Version),
-    initErrorPtr,
-  );
-  {
-    const err = new Deno.UnsafePointerView(initErrorPtr).getInt32();
-    if (err !== OpenVR.InitError.VRInitError_None) {
-      throw new Error(`Failed to get IVROverlay: ${OpenVR.InitError[err]}`);
-    }
-  }
-  const inputPtr = OpenVR.VR_GetGenericInterface(
-    stringToPointer(OpenVR.IVRInput_Version),
-    initErrorPtr,
-  );
-  {
-    const err = new Deno.UnsafePointerView(initErrorPtr).getInt32();
-    if (err !== OpenVR.InitError.VRInitError_None) {
-      throw new Error(`Failed to get IVRInput: ${OpenVR.InitError[err]}`);
-    }
-  }
-  const renderModelsPtr = OpenVR.VR_GetGenericInterface(
-    stringToPointer(OpenVR.IVRRenderModels_Version),
-    initErrorPtr,
-  );
-  {
-    const err = new Deno.UnsafePointerView(initErrorPtr).getInt32();
-    if (err !== OpenVR.InitError.VRInitError_None) {
-      throw new Error(`Failed to get IVRRenderModels: ${OpenVR.InitError[err]}`);
-    }
-  }
-
-  state.vrSystemPTR = systemPtr;
-  state.compositorPTR = interfaceErrorComp === OpenVR.InitError.VRInitError_None
-    ? compositorPtr
-    : null;
-  state.overlayPTR = overlayPtr;
-  state.inputPTR = inputPtr;
-  state.renderModelsPTR = renderModelsPtr;
-
-  LogChannel.log(
-    "actor",
-    "OpenVR initialized and IVRSystem interface acquired.",
-  );
+  const pointers = runtime.initialize({
+    system: "required",
+    compositor: "optional",
+    overlay: "required",
+    input: "required",
+    renderModels: "required",
+  });
+  state.vrSystemPTR = pointers.system;
+  state.compositorPTR = pointers.compositor;
+  state.overlayPTR = pointers.overlay;
+  state.inputPTR = pointers.input;
+  state.renderModelsPTR = pointers.renderModels;
 }
 
 function shutdownOpenVR() {
-  if (OpenVR.isInitialized()) {
-    OpenVR.VR_ShutdownInternal();
-  }
+  runtime.shutdown();
   state.vrSystemPTR = null;
   state.compositorPTR = null;
   state.overlayPTR = null;
   state.inputPTR = null;
   state.renderModelsPTR = null;
-  OpenVR.closeOpenVR();
-  LogChannel.log("actor", "OpenVR shutdown complete and library closed.");
+  LogChannel.log("actor", "OpenVR actor shutdown complete.");
 }
