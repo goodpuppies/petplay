@@ -7,7 +7,15 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: dist/petplay.exe
+          - os: ubuntu-latest
+            artifact: dist/petplay
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -38,4 +46,4 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: petplay.exe
+          files: ${{ matrix.artifact }}

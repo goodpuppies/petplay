@@ -3,6 +3,7 @@ import React from "react";
 import { useFrame, useThree } from "@react-three/fiber/webgpu";
 import * as THREE from "three/webgpu";
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { childProcessArgs } from "../classes/childModule.ts";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
 import { WebXRScene } from "../classes/environment/scene.tsx";
 import { VREnvironmentPlaceholder } from "../classes/environment/vrEnvironmentPlaceholder.tsx";
@@ -180,18 +181,13 @@ function startDesktopControlChild(): void {
   state.lastError = null;
   state.running = true;
   const command = new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "-A",
-      "--unstable-webgpu",
-      "--env-file",
-      "petplay/desktopControlSurface.tsx",
+    args: childProcessArgs(new URL("./desktopControlSurface.tsx", import.meta.url), [
       CHILD_ARG,
       `--title=${DEFAULT_TITLE}`,
       `--webxr-target=${state.webxrTarget ?? "webxr"}`,
       `--wrist-menu-actor=${state.wristMenuActor ?? ""}`,
       `--display-overlay-host-actor=${state.displayOverlayHostActor ?? ""}`,
-    ],
+    ]),
     cwd: Deno.cwd(),
     stdin: "null",
     stdout: "inherit",
@@ -289,7 +285,10 @@ function startCaptureServer(): void {
   }
 }
 
-if (import.meta.main && IS_CHILD) {
+// A checkout spawns this module directly, so `import.meta.main` holds there; a compiled build
+// dispatches it into this process instead, where it does not. `IS_CHILD` alone decides which
+// process this is — only the spawned child is ever handed the argument.
+if (IS_CHILD) {
   startCaptureServer();
   startDesktopControl({
     webxrTarget: getStringArg("webxr-target", "webxr"),

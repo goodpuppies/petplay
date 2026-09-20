@@ -52,10 +52,24 @@ graph TD
 
 | Process | Runs | Why it is separate |
 | --- | --- | --- |
-| host (`petplay/petplay.ts`) | `PostalService`, every thread worker | one registry, one crash hook, one teardown order (`petplay/petplay.ts:32-88`) |
+| host (`petplay/petplay.ts`) | `PostalService`, every thread worker | one registry, one crash hook, one teardown order (`petplay/petplayServer.ts:41-110`) |
 | `displayOverlayHost` child | its own `OpenVrRuntime`, GL manager, screen capture | a second OpenVR client runtime plus GL state that must not share the host's (`petplay/main.ts` creates it with `{ worker: "process" }`) |
 | desktop control child | raylib window, its own r3f scene, capture HTTP endpoint on 3988 | raylib/GL window ownership; the parent actor only supervises it (`petplay/desktopControlSurface.tsx:174-215`) |
 | `petplay-screen-streamer` | portal/WGC capture, injects input | Rust helper; started and restarted by `ScreenCapturer` (`classes/ScreenCapturer/scclass.ts:211-225`) |
+
+A child process is the same program, started two ways. In a checkout the parent runs it through the
+Deno CLI (`deno run -A … <script>`); a compiled build has no CLI to run a module with, so it re-execs
+its own binary with `--petplay-run-module=<href>` plus the child's arguments and imports the module
+out of its embedded snapshot (`classes/childModule.ts`, which also keeps the two forms' argv
+identical). `IPCWorker` receives that launcher at boot (`setWorkerChildArgs`,
+`petplay/petplayServer.ts:220`), so `{ worker: "process" }` actors take the same path either way — as
+does the desktop control child. Everything a child loads by URL has to be embedded as files, which is
+why `utils/build.ts` includes `petplay/`, `classes/` and stageforge.
+
+The entry itself is therefore a dispatcher: `petplay/petplay.ts` either runs the dispatched module —
+which owns the process from there, event loop and all — or hands control to
+`startPetplayServer` in `petplay/petplayServer.ts`. The split is a module boundary rather than an
+early exit because a module cannot skip the rest of its own top level.
 
 The OpenVR actors are **threads by necessity**: `hmd`, `VRCOrigin` and `webxr` receive raw OpenVR
 interface pointers and build their own vtable wrappers from them, so they must share the host's

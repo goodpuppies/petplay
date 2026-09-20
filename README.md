@@ -9,7 +9,7 @@ split, and the supervision state machine — is in [docs/ARCHITECTURE.md](docs/A
 
 [![Demo](https://img.youtube.com/vi/2hV8siAFJfI/0.jpg)](https://www.youtube.com/watch?v=2hV8siAFJfI)
 
-Reqs: Npm, Deno, SteamVR, probably windows, optionally vscode
+Reqs: Npm, Deno, SteamVR, Windows or Linux, optionally vscode
 
 Clone: `git clone -v --recurse-submodules --progress "https://github.com/goodpuppies/petplay.git"`
 
@@ -21,6 +21,26 @@ Setup:
 Usage:
 
 1. `deno run dev`
+
+### Building a release binary
+
+```bash
+deno run -A utils/preconf.ts
+deno install --allow-import
+deno task build          # -> dist/petplay.exe on Windows, dist/petplay on Linux
+```
+
+`utils/build.ts` wraps `deno compile` and branches only where Deno itself does not: `--icon` is
+Windows-only (it is rejected outright on Linux), and `dist/` keeps the output clear of the
+`petplay/` source directory on the OSes where the binary carries no extension. The compiled
+launcher boots straight into `dev`, so runtime flags still apply — `./dist/petplay --novr`,
+`./dist/petplay --novr --desktop`, and so on. It is compiled with `--env-file`, so run it from a
+directory with the `.env` it should use.
+
+Child processes work the same as from a checkout: a compiled build has no Deno CLI to run a module
+with, so it re-execs its own binary and imports the child module out of its embedded snapshot
+(`classes/childModule.ts`), keeping the desktop control surface, the decoupled view and the display
+overlay host identical in both forms.
 
 ### Linux / SteamVR
 
