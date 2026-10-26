@@ -577,6 +577,36 @@ Deno.test("recenter puts the primary display in front of the head and keeps the 
   );
 });
 
+Deno.test("recenter stands a tipped-over primary display back up", () => {
+  // Tipped about 112 degrees back and rolled: the panel faces up and away from the head.
+  const tipped = commitNodeTransform(createInitialSpatialGraph(), "display-1", {
+    position: [-2.3, 1.3, 1.6],
+    rotation: [1.96, 0.04, 1.27],
+    scale: [1, 1, 1],
+  });
+  const recentered = recenterSpatialRoots(tipped, [0, 1.6, 0], 0, [0, -0.08, -1.35]);
+  const primary = worldPointOf(recentered, "display-1", [0, 0, 0]);
+  const facing = worldPointOf(recentered, "display-1", [0, 0, -1]).sub(primary);
+  const panelUp = worldPointOf(recentered, "display-1", [0, 1, 0]).sub(primary);
+  assert(Math.abs(facing.x) < 1e-6, `facing ${facing.toArray()}`);
+  assert(facing.z < -Math.cos(Math.PI / 6) + 1e-6, `faces the head: ${facing.toArray()}`);
+  assert(panelUp.y > Math.cos(Math.PI / 6) - 1e-6, `stands upright: ${panelUp.toArray()}`);
+
+  // A small deliberate tilt survives.
+  const leaned = commitNodeTransform(createInitialSpatialGraph(), "display-1", {
+    position: [0, 1.5, -1],
+    rotation: [-0.2, 0, 0],
+    scale: [1, 1, 1],
+  });
+  const kept = recenterSpatialRoots(leaned, [0, 1.6, 0], 0, [0, -0.08, -1.35]);
+  const keptRotation = kept.nodes["display-1"]?.localTransform.rotation;
+  assert(
+    keptRotation != null && Math.abs(keptRotation[0] + 0.2) < 1e-6 &&
+      Math.abs(keptRotation[1]) < 1e-6 && Math.abs(keptRotation[2]) < 1e-6,
+    `tilt kept: ${keptRotation}`,
+  );
+});
+
 Deno.test("recenter brings a lost keyboard back under the primary display", () => {
   let graph = detachFromParent(createInitialSpatialGraph(), "keyboard");
   graph = commitNodeTransform(graph, "keyboard", {

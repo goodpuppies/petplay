@@ -645,9 +645,14 @@ export function commitNodeTransform(
 /**
  * Recenter: move the whole layout rigidly so the primary display (lowest-ordinal root display)
  * sits at `offset` in front of the head, facing it. Only yaw is taken from the head, so looking
- * down at the wrist while recentering does not tilt every display. Every root moves by the same
- * transform, which keeps the arrangement between separate roots; children follow their parents.
+ * down at the wrist while recentering does not tilt every display. The primary also stands back
+ * up: its roll goes and its tilt is kept only up to `RECENTER_MAX_TILT`, so a display that was
+ * tipped over or turned away comes back readable. Every root moves by the same transform, which
+ * keeps the arrangement between separate roots; children follow their parents.
  */
+/** The most forward or backward tilt Recenter keeps on the primary display. */
+const RECENTER_MAX_TILT = Math.PI / 6;
+
 export function recenterSpatialRoots(
   current: SpatialGraph,
   headPosition: [number, number, number],
@@ -664,17 +669,24 @@ export function recenterSpatialRoots(
   if (primary == null) return current;
 
   const up = new THREE.Vector3(0, 1, 0);
-  const yawOf = (rotation: [number, number, number]) => {
-    const forward = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(...rotation, "XYZ"));
-    return Math.atan2(-forward.x, -forward.z);
-  };
   const primaryPosition = new THREE.Vector3(...primary.localTransform.position);
   const target = new THREE.Vector3(...offset).applyAxisAngle(up, headYaw)
     .add(new THREE.Vector3(...headPosition));
-  const turn = new THREE.Quaternion().setFromAxisAngle(
-    up,
-    headYaw - yawOf(primary.localTransform.rotation),
+  const primaryRotation = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(...primary.localTransform.rotation, "XYZ"),
   );
+  // YXZ splits the pose into yaw, then tilt, then roll. A display tipped past vertical reads as
+  // a tilt under 90 degrees with yaw and roll flipped, so it still comes back facing the head.
+  const tilt = new THREE.Euler().setFromQuaternion(primaryRotation, "YXZ").x;
+  const upright = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(
+      Math.max(-RECENTER_MAX_TILT, Math.min(RECENTER_MAX_TILT, tilt)),
+      headYaw,
+      0,
+      "YXZ",
+    ),
+  );
+  const turn = upright.multiply(primaryRotation.invert());
 
   const graph = cloneGraph(current);
   for (const node of roots) {
