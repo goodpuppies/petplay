@@ -1400,7 +1400,32 @@ function publishVrcCameraStatus(): void {
 function setVrcCameraLive(on: boolean): void {
   if (on) vrcCameraTracker.beginLiveCalibration();
   else vrcCameraTracker.endLiveCalibration();
+  syncVrcControllerRecorder();
   publishVrcCameraStatus();
+}
+/**
+ * While live calibration runs, record the controllers about every frame so each OSC camera pose
+ * can be paired with them at the moment it arrived (`ControllerPoseHistory`).
+ */
+let vrcControllerRecorder: ReturnType<typeof setInterval> | null = null;
+function recordVrcControllers(): void {
+  const inputs = state.host?.getDirectOpenVrInputs();
+  vrcCameraTracker.recordControllers({
+    left: trackedPose(inputs?.controllers.left ?? null),
+    right: trackedPose(inputs?.controllers.right ?? null),
+  });
+}
+function syncVrcControllerRecorder(): void {
+  const live = vrcCameraTracker.status().live;
+  if (live && vrcControllerRecorder == null) {
+    vrcControllerRecorder = setInterval(() => {
+      if (!vrcCameraTracker.status().live) syncVrcControllerRecorder();
+      else recordVrcControllers();
+    }, 8);
+  } else if (!live && vrcControllerRecorder != null) {
+    clearInterval(vrcControllerRecorder);
+    vrcControllerRecorder = null;
+  }
 }
 vrcCameraStore.setControls({
   setLive: setVrcCameraLive,
@@ -1427,10 +1452,13 @@ publishVrcCameraStatus();
 
 function trackVrcCameraPose(pose: VrcCameraDebugPose): void {
   const inputs = state.host?.getDirectOpenVrInputs();
-  const result = vrcCameraTracker.onWorldPose(pose, {
+  const controllers = {
     left: trackedPose(inputs?.controllers.left ?? null),
     right: trackedPose(inputs?.controllers.right ?? null),
-  });
+  };
+  // Extends the history to now, so it covers the moment the pose arrived.
+  vrcCameraTracker.recordControllers(controllers);
+  const result = vrcCameraTracker.onWorldPose(pose, controllers, Date.now(), pose.receivedAt);
   if (result) reportVrcCameraCalibration(result.calibration);
   if (result || Date.now() - vrcCameraPublishedAt >= 250) publishVrcCameraStatus();
 }

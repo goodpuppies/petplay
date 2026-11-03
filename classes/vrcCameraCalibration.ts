@@ -485,8 +485,75 @@ export type VrcCameraSolver = (
 
 const LIVE_MAX_SAMPLES = 300;
 const LIVE_SOLVE_INTERVAL_MS = 500;
+/** First live fit. Below this the solve is too easily degenerate. */
+const LIVE_FIRST_FIT_SAMPLES = 12;
+/** The held hand must have moved this far (bounding-box diagonal) before a fit is shown. */
+const LIVE_MIN_HAND_SPREAD_METERS = 0.15;
 const LIVE_TRUSTED_SAMPLES = 24;
 const LIVE_TRUSTED_RMS_METERS = 0.02;
+/**
+ * Paused this long while the camera keeps moving means the reference fit no longer describes the
+ * world (VRChat changed worlds, or the playspace moved), not a hand away from the camera: start over.
+ */
+const LIVE_STALE_REFERENCE_MS = 3000;
+/** ...and over at least this many camera poses that moved (a parked camera sends none). */
+const LIVE_STALE_REFERENCE_MOVES = 30;
+/**
+ * Live sampling gate. A replay of a real calibration (2026-10-31: hand at a median 0.54 m/s,
+ * 100 deg/s) passed 0.9 samples/s at 0.2 m/s and 45 deg/s. At 0.4 and 90, paired with the
+ * controller at VRChat's receive time, it passed about 2x as many with the same scale and yaw
+ * and 0.7-0.9 cm rms. Faster gates drifted in scale: VRChat smooths the camera, so its lag grows
+ * with speed.
+ */
+const LIVE_MAX_SPEED_METERS_PER_SECOND = 0.4;
+const LIVE_MAX_ANGULAR_DEG_PER_SECOND = 90;
+const CONTROLLER_HISTORY_MS = 1500;
+
+/**
+ * Recent controller poses, so an OSC camera pose can be paired with the controllers at the moment
+ * VRChat's packet arrived rather than when the webxr worker got to it (frames and stalls later).
+ */
+export class ControllerPoseHistory {
+  private readonly entries: { at: number; left: TrackedPose | null; right: TrackedPose | null }[] =
+    [];
+
+  push(at: number, left: TrackedPose | null, right: TrackedPose | null): void {
+    const last = this.entries.at(-1);
+    if (last && at <= last.at) return;
+    this.entries.push({ at, left: clonePose(left), right: clonePose(right) });
+    while (this.entries.length > 2 && at - this.entries[0].at > CONTROLLER_HISTORY_MS) {
+      this.entries.shift();
+    }
+  }
+
+  clear(): void {
+    this.entries.length = 0;
+  }
+
+  /** Both controllers interpolated at `at`, or null when the history does not cover it. */
+  at(at: number): { left: TrackedPose | null; right: TrackedPose | null } | null {
+    const entries = this.entries;
+    if (entries.length < 2 || at < entries[0].at || at > entries.at(-1)!.at) return null;
+    let hi = entries.findIndex((entry) => entry.at >= at);
+    if (hi <= 0) hi = 1;
+    const a = entries[hi - 1], b = entries[hi];
+    // A gap this long is a stall, not motion worth interpolating across.
+    if (b.at - a.at > 100) return null;
+    const f = b.at === a.at ? 0 : (at - a.at) / (b.at - a.at);
+    return { left: lerpPose(a.left, b.left, f), right: lerpPose(a.right, b.right, f) };
+  }
+}
+
+function lerpPose(a: TrackedPose | null, b: TrackedPose | null, f: number): TrackedPose | null {
+  if (a == null || b == null) return clonePose(b ?? a);
+  const sign = a.quaternion.reduce((sum, v, i) => sum + v * b.quaternion[i], 0) < 0 ? -1 : 1;
+  const q = a.quaternion.map((v, i) => v + (sign * b.quaternion[i] - v) * f);
+  const n = Math.hypot(...q) || 1;
+  return {
+    position: a.position.map((v, i) => v + (b.position[i] - v) * f) as Vec3,
+    quaternion: q.map((v) => v / n) as Quat,
+  };
+}
 
 /**
  * Scene-side state for the VRC camera view: the latest world pose from OSC, the active
@@ -519,6 +586,9 @@ export class VrcCameraTracker {
   /** Bumped by every begin/end, so a solve finishing after the switch changed is ignored. */
   private liveGeneration = 0;
   private solving = false;
+  private pausedSince: number | null = null;
+  private pausedMoves = 0;
+  private readonly controllerHistory = new ControllerPoseHistory();
   private sampleRevision = 0;
   private solvedRevision = -1;
   private lastSolveAt = 0;
@@ -545,13 +615,15 @@ export class VrcCameraTracker {
   beginLiveCalibration(): void {
     this.calibrator = new VrcCameraCalibrator({
       maxSamples: LIVE_MAX_SAMPLES,
-      maxSpeedMetersPerSecond: 0.2,
-      maxAngularDegPerSecond: 45,
+      maxSpeedMetersPerSecond: LIVE_MAX_SPEED_METERS_PER_SECOND,
+      maxAngularDegPerSecond: LIVE_MAX_ANGULAR_DEG_PER_SECOND,
       minSampleDistanceMeters: 0.02,
       minSampleAngleDeg: 4,
     });
     this.calibrationEndsAt = Infinity;
     this.live = true;
+    this.pausedSince = null;
+    this.pausedMoves = 0;
     this.liveFit = null;
     this.referenceFit = null;
     this.referenceWorlds = [];
@@ -577,8 +649,18 @@ export class VrcCameraTracker {
     return this.calibration;
   }
 
+  /** While live, the webxr actor records the controllers every frame (see `ControllerPoseHistory`). */
+  recordControllers(
+    controllers: { left: TrackedPose | null; right: TrackedPose | null },
+    now = Date.now(),
+  ): void {
+    if (this.live) this.controllerHistory.push(now, controllers.left, controllers.right);
+  }
+
   private endLive(): void {
     if (!this.live) return;
+    this.controllerHistory.clear();
+    this.pausedSince = null;
     this.live = false;
     this.liveFit = null;
     this.referenceFit = null;
@@ -609,7 +691,16 @@ export class VrcCameraTracker {
     pose: VrcWorldCameraPose,
     controllers: { left: TrackedPose | null; right: TrackedPose | null },
     now = Date.now(),
+    /** When the OSC actor received the pose; pairs it with the controllers at that moment. */
+    receivedAt?: number,
   ): { finished: true; calibration: VrcCameraCalibration | null } | null {
+    if (this.live && receivedAt != null) {
+      const then = this.controllerHistory.at(receivedAt);
+      if (then) {
+        controllers = then;
+        now = receivedAt;
+      }
+    }
     const next = unityPoseToRightHanded(pose);
     if (this.worldPose == null || distance(this.worldPose.position, next.position) > 0.001) {
       this.worldPoseMovedAt = now;
@@ -632,7 +723,21 @@ export class VrcCameraTracker {
           world: this.worldPose.position,
           controller: held,
         }) > tolerance);
-    if (this.samplingPaused) this.rejectedSamples++;
+    if (this.samplingPaused) {
+      this.rejectedSamples++;
+      this.pausedSince ??= now;
+      if (this.worldPoseMovedAt === now) this.pausedMoves++;
+      if (
+        this.live && now - this.pausedSince > LIVE_STALE_REFERENCE_MS &&
+        this.pausedMoves >= LIVE_STALE_REFERENCE_MOVES
+      ) {
+        this.restartLive();
+        return null;
+      }
+    } else {
+      this.pausedSince = null;
+      this.pausedMoves = 0;
+    }
     if (
       calibrator.add(now, this.worldPose, controllers.left, controllers.right, {
         accept: !this.samplingPaused,
@@ -654,7 +759,7 @@ export class VrcCameraTracker {
   private maybeSolveLive(now: number): void {
     const calibrator = this.calibrator;
     if (this.solving || calibrator == null) return;
-    if (calibrator.samples.length < LIVE_TRUSTED_SAMPLES) return;
+    if (calibrator.samples.length < LIVE_FIRST_FIT_SAMPLES) return;
     if (this.sampleRevision === this.solvedRevision) return;
     if (now - this.lastSolveAt < LIVE_SOLVE_INTERVAL_MS) return;
     const generation = this.liveGeneration;
@@ -766,8 +871,8 @@ export class VrcCameraTracker {
     this.captureHand = best.hand;
     this.calibrator = new VrcCameraCalibrator({
       maxSamples: LIVE_MAX_SAMPLES,
-      maxSpeedMetersPerSecond: 0.2,
-      maxAngularDegPerSecond: 45,
+      maxSpeedMetersPerSecond: LIVE_MAX_SPEED_METERS_PER_SECOND,
+      maxAngularDegPerSecond: LIVE_MAX_ANGULAR_DEG_PER_SECOND,
       minSampleDistanceMeters: 0.02,
       minSampleAngleDeg: 4,
     });
@@ -778,11 +883,43 @@ export class VrcCameraTracker {
     this.liveGeneration++;
   }
 
+  /**
+   * Drops a reference fit that stopped describing the world (see `LIVE_STALE_REFERENCE_MS`) and
+   * collects from scratch, staying live. Counters keep running so the page shows the history.
+   */
+  private restartLive(): void {
+    const { rejectedSamples, acceptedSamples } = this;
+    this.beginLiveCalibration();
+    this.rejectedSamples = rejectedSamples;
+    this.acceptedSamples = acceptedSamples;
+    this.lastError = "camera no longer matched the fit (world changed?); calibrating again";
+  }
+
   /** Do not trade an aligned camera for a low-error fit of unrelated/released-hand motion. */
   private acceptLiveFit(fit: VrcCameraCalibration): boolean {
-    if (fit.samples < LIVE_TRUSTED_SAMPLES) return false;
+    if (fit.samples < LIVE_FIRST_FIT_SAMPLES) return false;
+    // Too little hand movement fits anything, often with the wrong (still) hand.
+    const held = (this.calibrator?.samples ?? []).map((sample) => sample[fit.hand]?.position)
+      .filter((position): position is Vec3 => position != null);
+    if (held.length === 0) return false;
+    const extent = [0, 1, 2].map((axis) =>
+      Math.max(...held.map((p) => p[axis])) - Math.min(...held.map((p) => p[axis]))
+    );
+    if (Math.hypot(...extent) < LIVE_MIN_HAND_SPREAD_METERS) return false;
     const previous = this.liveFit;
-    if (previous && fit.rmsErrorMeters > previous.rmsErrorMeters) return false;
+    // A fit from fewer than LIVE_TRUSTED_SAMPLES is provisional: it shows progress early, but its
+    // error is deceptively low, so the first trusted-size fit replaces it whatever its error. It
+    // never replaces a trusted fit (a new grip collects from few samples again), so between
+    // trusted fits the best error never regresses.
+    if (
+      previous != null && previous.samples >= LIVE_TRUSTED_SAMPLES &&
+      fit.samples < LIVE_TRUSTED_SAMPLES
+    ) return false;
+    const replacesProvisional = previous != null && previous.samples < LIVE_TRUSTED_SAMPLES &&
+      fit.samples >= LIVE_TRUSTED_SAMPLES;
+    if (previous && !replacesProvisional && fit.rmsErrorMeters > previous.rmsErrorMeters) {
+      return false;
+    }
     const reference = this.referenceFit;
     if (!reference) return true;
     if (fit.hand !== (this.captureHand ?? reference.hand)) return false;
