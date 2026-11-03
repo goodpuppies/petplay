@@ -334,6 +334,12 @@ const state = actorState({
   /** FNV hash of L/R 3×4 at previous XR rAF (for `controller-stale` pose-dup). */
   lastRafControllerPoseHash: null as number | null,
   overlayRunning: false,
+  /**
+   * `stopWebXR` is tearing the stack down (hot reload, watchdog restart, shutdown). The overlay
+   * loop stops before the overlay is cleaned up, which is what main's supervisor reads as a
+   * killed SteamVR; this tells it apart.
+   */
+  stopping: false,
   lastUploadedHostFrameCount: -1,
   /** Host frame last extracted for views when no OpenVR overlay exists (`--novr`). */
   lastViewOnlyHostFrameCount: -1,
@@ -1643,6 +1649,7 @@ function getWebXRStatus() {
       rendererReady: state.raylibOverlayRaylib != null,
       pacerReady: state.nativeRaylibPacer != null,
       running: state.overlayRunning,
+      stopping: state.stopping,
       lastStatusLogAt: state.raylibOpenVrPacedLastStatusLogAt,
     },
     webgpu: {
@@ -1679,6 +1686,8 @@ function startBatteryPoll(): void {
 }
 
 async function stopWebXR(): Promise<true> {
+  // Left set on the early returns below: the worker is terminated after them.
+  state.stopping = true;
   vrcCameraTracker.clearCalibration();
   vrcCameraSolver.dispose();
   publishVrcCameraStatus();
@@ -1807,6 +1816,7 @@ async function stopWebXR(): Promise<true> {
   state.raylibOvrUiPanelDrawnMetric.reset();
   state.raylibOvrUiTextDrawnMetric.reset();
   state.nominalHmdDisplayHz = null;
+  state.stopping = false;
   return true;
 }
 

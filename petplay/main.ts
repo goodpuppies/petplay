@@ -285,7 +285,7 @@ type OpenVrStatus = {
 
 type WebXrOverlayStatus = {
   uploadedFrames?: number;
-  raylib?: { expected?: boolean; overlayReady?: boolean; running?: boolean };
+  raylib?: { expected?: boolean; overlayReady?: boolean; running?: boolean; stopping?: boolean };
 };
 
 const OPENVR_DETACHED_POLL_MS = 3_000;
@@ -1019,14 +1019,16 @@ async function openVrLossReason(
     }
   }
   // A hard SteamVR kill delivers no event; the stalled overlay pump is the
-  // first thing that notices.
+  // first thing that notices. A webxr worker that is stopping (hot reload, watchdog restart) also
+  // has a ready overlay with no pump for a moment; that used to exit the whole server.
   if (Date.now() - attachment.attachedAt > OPENVR_OVERLAY_GRACE_MS) {
     const status = await queryWebXrStatus(actors.webxr);
     const raylib = status?.raylib;
     const uploaded = status?.uploadedFrames ?? 0;
     if (
       raylib?.expected === true && raylib.overlayReady === true &&
-      raylib.running !== true && uploaded > attachment.uploadedFramesAtAttach
+      raylib.running !== true && raylib.stopping !== true &&
+      uploaded > attachment.uploadedFramesAtAttach
     ) {
       return "overlay pump stopped";
     }
