@@ -1,0 +1,25 @@
+{
+  "name": "beyond75",
+  "description": "BSB-like workload: 2026-10-18 local BSB logs report 3562x3562 recommended, 75 Hz; 2544 native input per eye. Symmetric synthetic optics, not an optical emulator.",
+  "evidence": {
+    "driverRecommendedPerEye": [
+      3562,
+      3562
+    ],
+    "runtimeRecommendedPerEye": [
+      3560,
+      3560
+    ],
+    "refreshHz": 75,
+    "source": "Local vrcompositor.txt and vrserver.txt, 2026-10-18 17:25"
+  },
+  "driver_petplay": {
+    "renderWidth": 3562,
+    "renderHeight": 3562,
+    "displayEyeWidth": 2544,
+    "displayEyeHeight": 2544,
+    "refreshHz": 75,
+    "ipdMeters": 0.068,
+    "maxSwapchainMiB": 4096
+  }
+}

@@ -21,11 +21,11 @@ export async function message<T = any>(
 }
 
 /** Runs `code` inside an actor's worker (`state`, `host`, `THREE`, `PostMan`, `moduleUrl` in scope). */
-export async function evalIn(target: string, code: string): Promise<string> {
+export async function evalIn(target: string, code: string, timeoutMs = 5000): Promise<string> {
   const response = await fetch(`${base()}/eval`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ target, code }),
+    body: JSON.stringify({ target, code, timeoutMs }),
   });
   const body = await response.json();
   if (!body.ok || body.result?.ok === false) {
@@ -49,6 +49,18 @@ export async function supervisorPhase(): Promise<string | null> {
     return status?.details?.phase ?? null;
   } catch {
     return null;
+  }
+}
+
+/** An attached OpenVR supervisor can coexist with a failed scene/input startup. */
+export async function sceneReady(): Promise<boolean> {
+  try {
+    return await evalIn(
+      "webxr",
+      "Boolean(host?.running && host?.rootStore?.getState()?.scene && host?.getStatus().frameCount > 0 && host?.directOpenVrInputSource?.inputReady)",
+    ) === "true";
+  } catch {
+    return false;
   }
 }
 

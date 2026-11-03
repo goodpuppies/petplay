@@ -10,8 +10,8 @@
  *
  * `down` reverses it; the lab restores the SteamVR settings it changed when it exits.
  */
-import { dirname, fromFileUrl, join } from "@std/path";
-import { health, supervisorPhase } from "./petplay.ts";
+import { dirname, fromFileUrl, join, resolve } from "@std/path";
+import { health, sceneReady, supervisorPhase } from "./petplay.ts";
 import * as vrchat from "./vrchat.ts";
 import { desktopEnv, pidsMatching, pidsNamed, sleep, waitFor } from "./util.ts";
 
@@ -21,7 +21,17 @@ const STATE_PATH = join(LOG_DIR, "state.json");
 const LAB_RESTORE = join(ROOT, "logs", "ovrdriver-lab", "restore.json");
 const CONFIG = `${Deno.env.get("HOME")}/.config/petplay`;
 
-type StackState = { petplayPid?: number; startedAt?: string };
+type StackState = { petplayPid?: number; petplayStartTicks?: string; startedAt?: string };
+
+/** Distinguish an owned compiled/source server from a later process reusing its PID. */
+function processStartTicks(pid: number): string | null {
+  try {
+    const fields = Deno.readTextFileSync(`/proc/${pid}/stat`).split(") ").at(-1)!.split(" ");
+    return fields[0] === "Z" ? null : fields[19] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function readState(): StackState {
   try {
@@ -45,6 +55,7 @@ function spawnLogged(
   args: string[],
   log: string,
   env: Record<string, string> = {},
+  cwd = ROOT,
 ): number {
   Deno.mkdirSync(LOG_DIR, { recursive: true });
   const child = new Deno.Command("setsid", {
@@ -57,7 +68,7 @@ function spawnLogged(
       command,
       ...args,
     ],
-    cwd: ROOT,
+    cwd,
     env: { ...desktopEnv(), ...env },
     stdin: "null",
     stdout: "null",
@@ -82,12 +93,35 @@ export type UpOptions = {
   vrchat?: boolean;
   /** Driver-direct backend, for `vrlab eye` (default on). */
   eyeCapture?: boolean;
+  displayProfile?: "lab" | "beyond75";
+  /** Exact compiled executable; omit for the source development runner. */
+  executable?: string;
   log?: (line: string) => void;
 };
 
 export async function up(options: UpOptions = {}): Promise<void> {
   const log = options.log ?? console.log;
   const state = readState();
+  const executable = options.executable ? resolve(options.executable) : null;
+  if (executable && !(await Deno.stat(executable)).isFile) {
+    throw new Error("Release executable must be a file");
+  }
+  if (options.displayProfile && !["lab", "beyond75"].includes(options.displayProfile)) {
+    throw new Error("Unknown display profile");
+  }
+  if (labRunning() && options.displayProfile === "beyond75") {
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        `${Deno.env.get("HOME")}/.local/share/Steam/config/steamvr.vrsettings`,
+      ),
+    );
+    if (
+      settings.driver_petplay?.renderWidth !== 3562 || settings.driver_petplay?.refreshHz !== 75
+    ) throw new Error("Existing lab does not use beyond75; stop it before changing profiles");
+  }
+  if (executable && await health() != null) {
+    throw new Error("PetPlay is already running; stop it before selecting a release executable");
+  }
   if (!labRunning()) {
     if (steamVrRunning()) {
       throw new Error("SteamVR is already running outside a lab; quit it first");
@@ -103,10 +137,13 @@ export async function up(options: UpOptions = {}): Promise<void> {
       "run",
       "--direct-server",
       "--x11-compositor",
+      "--guard-monitor",
       "--touch-controllers",
       // Driver-direct: the driver owns every layer's images, so `vrlab eye` can read back what
       // the synthetic headset is shown, VRChat and overlays alike.
       ...(options.eyeCapture === false ? [] : ["--driver-direct"]),
+      "--display-profile",
+      options.displayProfile ?? "lab",
       "--seconds",
       String(options.seconds ?? 3600),
     ], "lab.log");
@@ -147,22 +184,47 @@ export async function up(options: UpOptions = {}): Promise<void> {
       }
     }
     log(`starting PetPlay (${options.realConfig ? "real" : "scratch"} layout and settings)`);
+    const releaseDirectory = join(ROOT, "_scratch", "perf", "release-session");
+    if (executable) {
+      await Deno.mkdir(releaseDirectory, { recursive: true });
+      const bytes = await Deno.readFile(executable);
+      const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((v) =>
+        v.toString(16).padStart(2, "0")
+      ).join("");
+      await Deno.writeTextFile(
+        join(releaseDirectory, "artifact.json"),
+        JSON.stringify(
+          {
+            executable,
+            sha256,
+            started: new Date().toISOString(),
+            displayProfile: options.displayProfile ?? "lab",
+          },
+          null,
+          2,
+        ),
+      );
+    }
     state.petplayPid = spawnLogged(
-      "deno",
+      executable ?? "deno",
       [
-        "run",
-        "-A",
-        "--unstable-webgpu",
-        "--env-file",
-        "--no-check",
-        "petplay/petplay.ts",
-        "dev",
+        ...(executable ? [] : [
+          "run",
+          "-A",
+          "--unstable-webgpu",
+          "--env-file",
+          "--no-check",
+          "petplay/petplay.ts",
+          "dev",
+        ]),
         "--agent-repl",
         "--openvr-reattach",
       ],
       "petplay.log",
       env,
+      executable ? releaseDirectory : ROOT,
     );
+    state.petplayStartTicks = processStartTicks(state.petplayPid) ?? undefined;
     state.startedAt = new Date().toISOString();
     writeState(state);
     await waitFor("the PetPlay agent REPL", health, 90_000, 1_000);
@@ -174,9 +236,25 @@ export async function up(options: UpOptions = {}): Promise<void> {
     1_000,
   );
   log("PetPlay attached");
+  await waitFor("PetPlay's running scene and native input", sceneReady, 45_000, 500);
   if (options.vrchat !== false) {
     log("launching VRChat");
-    log(`VRChat in a world (${await vrchat.launch()})`);
+    const mode = await vrchat.launch();
+    if (mode === "desktop") {
+      throw new Error(
+        "VRChat entered desktop mode: SteamVR startup/session failed; this is not a valid VR test run",
+      );
+    }
+    if (
+      !steamVrRunning() || pidsNamed("vrcompositor").length === 0 ||
+      await supervisorPhase() !== "attached"
+    ) {
+      throw new Error(
+        "SteamVR or PetPlay attachment was lost during VRChat startup; discard this attempt",
+      );
+    }
+    log(`VRChat in a world (${mode})`);
+    await waitFor("PetPlay scene/input after VRChat startup", sceneReady, 15_000, 500);
   }
 }
 
@@ -195,7 +273,24 @@ export async function down(
   }
   const state = readState();
   const servers = pidsMatching("petplay/petplay.ts", "dev");
-  const ours = state.petplayPid != null && servers.includes(state.petplayPid);
+  // Compiled PetPlay rewrites argv[0] to ppvr. Detect its executable and explicit
+  // server flag rather than depending on a source pathname in the command line.
+  for (const entry of Deno.readDirSync("/proc")) {
+    if (!/^\d+$/.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    try {
+      const executable = Deno.readLinkSync(`/proc/${pid}/exe`).split("/").at(-1)!;
+      const argv = Deno.readTextFileSync(`/proc/${pid}/cmdline`).split("\0");
+      if (
+        /^petplay(?:[-.]|$)/.test(executable) && argv.includes("--agent-repl") &&
+        processStartTicks(pid)
+      ) servers.push(pid);
+    } catch { /* Process exited. */ }
+  }
+  const ours = state.petplayPid != null &&
+    (state.petplayStartTicks
+      ? processStartTicks(state.petplayPid) === state.petplayStartTicks
+      : servers.includes(state.petplayPid));
   if (servers.length > 0 && labRunning() && !ours && !options.stopPetplay) {
     throw new Error(
       `a PetPlay server this stack did not start is attached to the lab (pid ${
@@ -214,11 +309,12 @@ export async function down(
     }
     await waitFor(
       "PetPlay to exit",
-      () => !pidsMatching("petplay/petplay.ts", "dev").includes(pid),
+      () => processStartTicks(pid) == null,
       30_000,
-    ).catch(() => {});
+    );
   }
   delete state.petplayPid;
+  delete state.petplayStartTicks;
   writeState(state);
   for (const pid of pidsMatching("petplay-ovrdriver-lab-probe.ts")) Deno.kill(pid, "SIGTERM");
   for (const pid of pidsMatching("petplay-ovrdriver-lab.py", "run")) {

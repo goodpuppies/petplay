@@ -80,7 +80,9 @@ def running():
 
 
 def stop():
-    for name in ('steamvr_room_se', 'vrstartup', 'vrmonitor', 'vrserver', 'vrcompositor'):
+    # Let vrserver coordinate clients and shared-image release before terminating
+    # vrcompositor. Simultaneous SIGTERM can strand resource-release IPC.
+    for name in ('steamvr_room_se', 'vrstartup', 'vrmonitor', 'vrserver'):
         for pid in pids(name):
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -89,6 +91,19 @@ def stop():
     deadline = time.monotonic() + 15
     while running() and time.monotonic() < deadline:
         time.sleep(.2)
+    if not running():
+        return
+    # A compositor left after the server has exited cannot service a session.
+    # Keep the failed-stop backup if the server itself remains alive.
+    if not pids('vrserver'):
+        for pid in pids('vrcompositor'):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 5
+        while running() and time.monotonic() < deadline:
+            time.sleep(.2)
     if running():
         raise RuntimeError(f'SteamVR still running; leave synthetic configuration in place: {running()}')
 
@@ -120,7 +135,7 @@ def restore():
     print('Restored original settings and external-driver registrations; SteamVR remains off', flush=True)
 
 
-def prepare(direct_server=False, disable_async=False, driver_direct=False, real_hmd=False, touch_controllers=False):
+def prepare(direct_server=False, disable_async=False, driver_direct=False, real_hmd=False, touch_controllers=False, display_profile=None):
     # Touch emulation lets applications' shipped Touch bindings drive the synthetic hands.
     controller_type = 'oculus_touch' if touch_controllers else 'petplay_synthetic'
     if running():
@@ -176,6 +191,14 @@ def prepare(direct_server=False, disable_async=False, driver_direct=False, real_
                                                 turnOffScreensTimeout=3600.0,
                                                 turnOffControllersTimeout=3600.0)
         settings.setdefault('driver_petplay', {}).update(enable=True, syntheticHmd=True, syntheticControllers=True, driverDirect=driver_direct, socketDirectory=str(SESSION / 'ipc'), syntheticControllerType=controller_type)
+        for key in ('renderWidth', 'renderHeight', 'displayEyeWidth', 'displayEyeHeight',
+                    'refreshHz', 'ipdMeters', 'maxSwapchainMiB'):
+            settings['driver_petplay'].pop(key, None)
+        if display_profile:
+            settings['driver_petplay'].update(display_profile['driver_petplay'])
+            vr.update(supersampleManualOverride=True, supersampleScale=1.0,
+                      maxRecommendedResolution=8192, renderTargetMultiplier=1.0)
+            atomic_write(SESSION / 'display-profile.json', (json.dumps(display_profile, indent=2) + '\n').encode())
         # Explicitly disable every bundled physical/remote driver, in addition to forcedDriver.
         runtime = Path(json.loads(PATHS.read_text())['runtime'][0])
         for folder in (runtime / 'drivers').iterdir():
@@ -219,6 +242,7 @@ def main():
     parser.add_argument('action', choices=('run', 'recover'))
     parser.add_argument('--real-hmd', action='store_true', help='Keep physical headset/display configuration; add only synthetic controllers')
     parser.add_argument('--x11-compositor', action='store_true', help='Retry a failed compositor under X11 without Wayland display variables')
+    parser.add_argument('--guard-monitor', action='store_true', help='Start an owned monitor with -nokillprocess before later Steam launches can start a destructive monitor')
     parser.add_argument('--disable-fixes', action='store_true', help='Disable the existing SteamVR fixes layer for this compositor experiment only')
     parser.add_argument('--direct-server', action='store_true', help='Launch vrserver under vrenv directly, then X11 compositor; avoid the initial Wayland crash and autostart clients')
     parser.add_argument('--driver-direct', action='store_true', help='Use experimental real-buffer driver-direct backend instead of DisplayRedirect')
@@ -226,13 +250,28 @@ def main():
     parser.add_argument('--renderdoc-layer', type=Path, help='Private RenderDoc implicit-layer directory for the X11 retry only')
     parser.add_argument('--capture-layer', action='store_true', help='Enable the optional pure Zig producer-side readback layer for this compositor only')
     parser.add_argument('--touch-controllers', action='store_true', help='Present the synthetic controllers as Oculus Touch so applications use their own Touch bindings')
+    parser.add_argument('--display-profile', choices=['lab', 'beyond75'], default='lab',
+                        help='Synthetic display workload; beyond75 matches saved BSB render size/rate without a physical headset')
+    parser.add_argument('--refresh-hz', type=int, help='Override synthetic display clock (30..240 Hz)')
     parser.add_argument('--seconds', type=float, default=30)
     args = parser.parse_args()
+    if args.real_hmd and (args.display_profile != 'lab' or args.refresh_hz is not None):
+        parser.error('Synthetic display profiles/refresh overrides cannot be used with --real-hmd')
+    if args.refresh_hz is not None and not 30 <= args.refresh_hz <= 240:
+        parser.error('--refresh-hz must be 30..240')
+    display_profile = None
+    if args.display_profile != 'lab':
+        display_profile = json.loads((ROOT / 'utils/vrlab/display-presets' / (args.display_profile + '.json')).read_text())
+    if args.refresh_hz is not None:
+        display_profile = display_profile or {'name': 'lab', 'driver_petplay': {}}
+        display_profile['driver_petplay']['refreshHz'] = args.refresh_hz
     if args.real_hmd and (args.direct_server or args.driver_direct or args.disable_async or args.disable_fixes or args.capture_layer or args.renderdoc_layer or args.x11_compositor):
         parser.error('--real-hmd uses the normal headset/compositor configuration and excludes synthetic display/capture options')
     if args.action == 'recover':
         restore()
         return
+    if args.guard_monitor and (not args.direct_server or args.real_hmd):
+        parser.error('--guard-monitor requires a synthetic --direct-server session')
     if not 1 <= args.seconds <= 3600:
         parser.error('--seconds must be 1..3600')
     if args.direct_server and not args.x11_compositor:
@@ -241,6 +280,8 @@ def main():
         parser.error('Capture options require --x11-compositor')
     if args.renderdoc_layer and not args.renderdoc_layer.resolve().is_dir():
         parser.error('RenderDoc layer directory does not exist')
+    if args.capture_layer and args.display_profile != 'lab':
+        parser.error('--capture-layer currently requires the lab profile: its image detector assumes 960x960')
     capture_dir = None
     if args.capture_layer:
         if not args.driver_direct or not args.x11_compositor or args.renderdoc_layer:
@@ -261,7 +302,7 @@ def main():
         raise RuntimeError("SteamVR must be off and pending recovery resolved before run")
     watcher = RuntimeLogWatch([STEAM / 'logs' / name for name in
                                ('vrcompositor.txt', 'vrcompositor-linux.txt')])
-    prepare(args.direct_server, args.disable_async, args.driver_direct, args.real_hmd, args.touch_controllers)
+    prepare(args.direct_server, args.disable_async, args.driver_direct, args.real_hmd, args.touch_controllers, display_profile)
     try:
         print(f'{"Real-HMD / synthetic-controller" if args.real_hmd else "Synthetic-only"} session prepared; recovery: {BACKUP}', flush=True)
         with (SESSION / 'launch.log').open('wb') as log:
@@ -314,6 +355,16 @@ def main():
                     subprocess.Popen([str(STEAM / 'steamapps/common/SteamVR/bin/linux64/vrcompositor-launcher.sh')],
                                      env=x11_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 print('Launched X11 compositor' if args.direct_server else 'Retried compositor using X11 fallback', flush=True)
+                if args.guard_monitor:
+                    # A later vrmonitor://driverinstalled launch otherwise runs
+                    # TerminateZombieProcesses(), killing this live direct-launched runtime.
+                    # Claim the monitor first with the existing local launcher's safe flag.
+                    with (SESSION / 'guard-monitor-launch.log').open('wb') as log:
+                        subprocess.Popen([str(runtime / 'bin/vrenv.sh'),
+                                          str(runtime / 'bin/linux64/vrmonitor'), '-nokillprocess'],
+                                         env=env, stdout=log, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+                    print('Launched guarded monitor (-nokillprocess)', flush=True)
             time.sleep(.2)
     finally:
         if BACKUP.exists():

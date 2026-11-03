@@ -55,6 +55,27 @@ try {
   if (serialError[0] || serial !== "PETPLAY-SYNTHETIC-HMD-001") {
     throw new Error(`Refusing non-lab HMD: ${serial}`);
   }
+  const recommended = new Uint32Array(2);
+  system.GetRecommendedRenderTargetSize(
+    Deno.UnsafePointer.of(recommended.subarray(0, 1)),
+    Deno.UnsafePointer.of(recommended.subarray(1)),
+  );
+  const propertyError = new Int32Array(1);
+  const frequency = system.GetFloatTrackedDeviceProperty(
+    0,
+    VR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
+    Deno.UnsafePointer.of(propertyError),
+  );
+  if (propertyError[0]) throw new Error("Cannot read active display frequency");
+  const expected = settings.driver_petplay;
+  if (expected.refreshHz != null && Math.abs(frequency - expected.refreshHz) > 0.01) {
+    throw new Error(`Frequency mismatch: ${frequency}`);
+  }
+  if (
+    expected.renderWidth != null &&
+    (Math.abs(recommended[0] - expected.renderWidth) > 8 ||
+      Math.abs(recommended[1] - expected.renderHeight) > 8)
+  ) throw new Error(`Render-size mismatch: ${recommended}`);
   const overlay = new VR.IVROverlay(required(VR.IVROverlay_Version));
   const seconds = new Float32Array(1);
   const counter = new BigUint64Array(1);
@@ -87,6 +108,7 @@ try {
   intervals.sort((a, b) => a - b);
   const report = {
     serial,
+    display: { recommendedPerEye: [...recommended], frequency, requested: expected },
     samples: intervals.length,
     elapsedMs,
     errors,

@@ -34,17 +34,37 @@ export function pidsNamed(name: string): number[] {
   return found;
 }
 
-/** PIDs whose full command line contains every fragment; never the caller itself. */
+/** Match a workload's argv, excluding shell command text and the caller's ancestry. */
 export function pidsMatching(...fragments: string[]): number[] {
+  const ancestors = new Set<number>();
+  let current = Deno.pid;
+  while (current > 0 && !ancestors.has(current)) {
+    ancestors.add(current);
+    try {
+      const fields = Deno.readTextFileSync(`/proc/${current}/stat`).split(") ").at(-1)!.split(" ");
+      current = Number(fields[1]);
+    } catch {
+      break;
+    }
+  }
   const found: number[] = [];
   for (const entry of Deno.readDirSync("/proc")) {
-    if (!/^\d+$/.test(entry.name) || Number(entry.name) === Deno.pid) continue;
+    const pid = Number(entry.name);
+    if (!/^\d+$/.test(entry.name) || ancestors.has(pid)) continue;
     try {
-      const cmdline = Deno.readTextFileSync(`/proc/${entry.name}/cmdline`).replaceAll("\0", " ");
-      if (fragments.every((fragment) => cmdline.includes(fragment))) found.push(Number(entry.name));
-    } catch {
-      // The process exited while we looked.
-    }
+      const fields = Deno.readTextFileSync(`/proc/${pid}/stat`).split(") ").at(-1)!.split(" ");
+      if (fields[0] === "Z") continue;
+      const argv = Deno.readTextFileSync(`/proc/${pid}/cmdline`).split("\0").filter(Boolean);
+      const executable = argv[0]?.split("/").at(-1);
+      if (
+        ["bash", "sh", "dash", "zsh", "fish"].includes(executable ?? "") &&
+        argv.some((a) => /^-[a-z]*c[a-z]*$/.test(a))
+      ) continue;
+      // Do not match across argv boundaries or find script contents in a shell -c argument.
+      if (fragments.every((fragment) => argv.some((arg) => arg.includes(fragment)))) {
+        found.push(pid);
+      }
+    } catch { /* Process exited during the snapshot. */ }
   }
   return found;
 }

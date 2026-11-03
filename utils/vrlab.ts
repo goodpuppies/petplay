@@ -118,6 +118,8 @@ async function main(): Promise<void> {
         realConfig: flag("real-config"),
         vrchat: !flag("no-vrchat"),
         eyeCapture: !flag("no-eye-capture"),
+        displayProfile: option("display-profile") as "lab" | "beyond75" | undefined,
+        executable: option("executable"),
       });
     case "down":
       return await down({ stopPetplay: flag("stop-petplay") });
