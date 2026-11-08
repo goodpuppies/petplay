@@ -18,6 +18,7 @@
  *   invoked each frame before consumers read the snapshot.
  */
 
+import { gameInputBlocking } from "./environment/gameInputBlocking.ts";
 import type { OpenVrHmdEmulationPose } from "./openVrOverlayFramePacing.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
@@ -315,6 +316,15 @@ export class DirectOpenVrInputSource {
     const w = OpenVR.ActiveActionSetStruct.byteSize;
     const view0 = new DataView(b, 0, w);
     const view1 = new DataView(b, w, w);
+    const priority = (hand: "left" | "right") => {
+      const controller = hand === "left" ? this.leftView : this.rightView;
+      return gameInputBlocking.priority(
+        hand,
+        controller.trigger > 0 || controller.grab > 0 ||
+          Math.abs(controller.joystick[0]) > 0.1 || Math.abs(controller.joystick[1]) > 0.1 ||
+          this.rightClickModifier[hand] || this.middleClickModifier[hand],
+      );
+    };
     const base = {
       ulActionSet: this.actionSetHandle,
       ulSecondaryActionSet: 0n as OpenVR.ActionSetHandle,
@@ -322,11 +332,23 @@ export class DirectOpenVrInputSource {
       nPriority: 0,
     };
     OpenVR.ActiveActionSetStruct.write(
-      { ...base, ulRestrictedToDevice: this.leftHandPathHandle },
+      {
+        ...base,
+        ulRestrictedToDevice: this.leftHandPathHandle,
+        nPriority: this.leftHandPathHandle === OpenVR.k_ulInvalidInputValueHandle
+          ? 0
+          : priority("left"),
+      },
       view0,
     );
     OpenVR.ActiveActionSetStruct.write(
-      { ...base, ulRestrictedToDevice: this.rightHandPathHandle },
+      {
+        ...base,
+        ulRestrictedToDevice: this.rightHandPathHandle,
+        nPriority: this.rightHandPathHandle === OpenVR.k_ulInvalidInputValueHandle
+          ? 0
+          : priority("right"),
+      },
       view1,
     );
     const ptr = Deno.UnsafePointer.of(b) as Deno.PointerValue<OpenVR.ActiveActionSet>;
@@ -405,18 +427,14 @@ export class DirectOpenVrInputSource {
     const middleModL = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierLeft[1]);
     const middleModR = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierRight[1]);
 
-    this.leftBuffers.grab[0] = grabL.bState ? 1 : 0;
-    this.rightBuffers.grab[0] = grabR.bState ? 1 : 0;
-    this.leftBuffers.trigger[0] = trigL.bState ? 1 : 0;
-    this.rightBuffers.trigger[0] = trigR.bState ? 1 : 0;
-    if (joystickL.bActive) {
-      this.leftBuffers.joystick[0] = joystickL.x;
-      this.leftBuffers.joystick[1] = joystickL.y;
-    }
-    if (joystickR.bActive) {
-      this.rightBuffers.joystick[0] = joystickR.x;
-      this.rightBuffers.joystick[1] = joystickR.y;
-    }
+    this.leftBuffers.grab[0] = grabL.bActive && grabL.bState ? 1 : 0;
+    this.rightBuffers.grab[0] = grabR.bActive && grabR.bState ? 1 : 0;
+    this.leftBuffers.trigger[0] = trigL.bActive && trigL.bState ? 1 : 0;
+    this.rightBuffers.trigger[0] = trigR.bActive && trigR.bState ? 1 : 0;
+    this.leftBuffers.joystick[0] = joystickL.bActive ? joystickL.x : 0;
+    this.leftBuffers.joystick[1] = joystickL.bActive ? joystickL.y : 0;
+    this.rightBuffers.joystick[0] = joystickR.bActive ? joystickR.x : 0;
+    this.rightBuffers.joystick[1] = joystickR.bActive ? joystickR.y : 0;
     this.rightClickModifier.left = Boolean(rightModL.bActive && rightModL.bState);
     this.rightClickModifier.right = Boolean(rightModR.bActive && rightModR.bState);
     this.middleClickModifier.left = Boolean(middleModL.bActive && middleModL.bState);
@@ -437,6 +455,7 @@ export class DirectOpenVrInputSource {
 
   /** Reset IVRInput state so the source stops reading actions. */
   resetInput(): void {
+    gameInputBlocking.reset();
     setHapticSink(null);
     this.hapticHandle = OpenVR.k_ulInvalidActionHandle;
     this.vrInput = null;

@@ -8,6 +8,8 @@ import type { NormalizedKeyFace } from "./types.ts";
 import { keyTextColor, tokenBackground, tokenBorderColor } from "./theme.ts";
 import { ICON_CODEPOINTS, type IconName } from "../ui/icons.tsx";
 import { COLOR } from "../ui/tokens.ts";
+import { keyboardRepeat } from "./keyRepeat.ts";
+import { KeyHold, type KeyPhase } from "./keyHold.ts";
 import { recordPress } from "../pressLog.ts";
 
 const requestAnimFrame: (c: (t: number) => void) => number = (c) =>
@@ -60,11 +62,8 @@ export function legendGlyph(label: string): { text: string; font?: "material-ico
   }
   return BEYOND_TEXT_ATLAS.test(label) ? { text: label, font: "material-icons" } : { text: label };
 }
-/** Hold this long before a key starts repeating, then repeat this often. */
-const KEY_REPEAT_DELAY_MS = 420;
 /** A double-tap-held modifier's white ring around the latched fill, to tell it from a one-shot latch. */
 const HELD_BORDER_WIDTH = 5;
-const KEY_REPEAT_INTERVAL_MS = 45;
 
 type ImperativeUIKitRef = {
   setProperties?: (props: Record<string, unknown>) => void;
@@ -140,6 +139,7 @@ export type InteractiveKeyCapProps = {
     face: NormalizedKeyFace,
     source: THREE.Object3D | null,
     worldPoint?: readonly [number, number, number],
+    phase?: KeyPhase,
   ) => void;
   /** For testing: notify on any pointer down. */
   onTestPointerDown?: (face: NormalizedKeyFace) => void;
@@ -168,30 +168,29 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
     held = false,
   }: InteractiveKeyCapProps,
 ) {
+  const activationRef = useRef({ face, onActivate });
+  activationRef.current = { face, onActivate };
+  const pressLocationRef = useRef<{
+    source: THREE.Object3D | null;
+    worldPoint?: readonly [number, number, number];
+  }>({ source: null });
+  const holdRef = useRef<KeyHold | null>(null);
+  if (holdRef.current == null) {
+    holdRef.current = new KeyHold((phase) => {
+      const { face, onActivate } = activationRef.current;
+      const { source, worldPoint } = pressLocationRef.current;
+      onActivate(face, source, worldPoint, phase);
+    });
+  }
   const visualRef = useRef<ImperativeUIKitRef | null>(null);
   const primaryTextRef = useRef<TextMeshRef | null>(null);
   const secondaryTextRef = useRef<TextMeshRef | null>(null);
   const hoveredRef = useRef(false);
   const releaseRafRef = useRef<number | null>(null);
   const depressRef = useRef(0);
-  // Timer handles are stored as numbers to match the rAF handle above; this
-  // runtime's `setTimeout` returns a `Timeout` object, hence the casts below.
-  const repeatDelayRef = useRef<number | null>(null);
-  const repeatIntervalRef = useRef<number | null>(null);
-
   /** Modifiers and toggles latch instead: holding them must not repeat. */
   const canRepeat = face.sticky !== true && face.toggle !== true;
-
-  const stopRepeat = () => {
-    if (repeatDelayRef.current != null) {
-      clearTimeout(repeatDelayRef.current);
-      repeatDelayRef.current = null;
-    }
-    if (repeatIntervalRef.current != null) {
-      clearInterval(repeatIntervalRef.current);
-      repeatIntervalRef.current = null;
-    }
-  };
+  const stopRepeat = () => keyboardRepeat.stop(holdRef.current!);
 
   const litSurface = latched;
   const tc = keyTextColor(face.colorToken, litSurface);
@@ -236,6 +235,7 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
     () => () => {
       cancelReleaseRaf();
       stopRepeat();
+      holdRef.current?.releaseAll();
     },
     [],
   );
@@ -332,36 +332,36 @@ export const InteractiveKeyCap = React.memo(function InteractiveKeyCap(
           ? [point.x!, point.y!, point.z!] as const
           : undefined;
         recordPress(`key:${face.id}`, e);
-        onActivate(face, (e.object as unknown as THREE.Object3D | undefined) ?? null, worldPoint);
+        pressLocationRef.current = {
+          source: (e.object as unknown as THREE.Object3D | undefined) ?? null,
+          worldPoint,
+        };
+        const firstPress = holdRef.current!.down(e.pointerId);
+
         updateDepressVisual(1);
         // Hold to repeat: one press now, then this key keeps firing until the
         // pointer leaves or lifts.
-        if (canRepeat) {
-          stopRepeat();
-          repeatDelayRef.current = setTimeout(() => {
-            repeatDelayRef.current = null;
-            repeatIntervalRef.current = setInterval(() => {
-              onActivate(
-                face,
-                (e.object as unknown as THREE.Object3D | undefined) ?? null,
-                worldPoint,
-              );
-            }, KEY_REPEAT_INTERVAL_MS) as unknown as number;
-          }, KEY_REPEAT_DELAY_MS) as unknown as number;
+        if (canRepeat && firstPress) {
+          keyboardRepeat.start(holdRef.current!, () => holdRef.current?.repeat());
         }
       }}
       onPointerOut={(e) => {
         if (!isTriggerLikePointer(e)) return;
         e.stopPropagation();
-        stopRepeat();
+        if (holdRef.current?.up(e.pointerId)) stopRepeat();
         if (!hoveredRef.current && depressRef.current <= 0) return;
         hoveredRef.current = false;
         applyCurrentVisual();
         beginRelease();
       }}
+      onPointerCancel={(e) => {
+        if (!isTriggerLikePointer(e)) return;
+        if (holdRef.current?.up(e.pointerId)) stopRepeat();
+        beginRelease();
+      }}
       onPointerUp={(e) => {
         if (!isTriggerLikePointer(e)) return;
-        stopRepeat();
+        if (holdRef.current?.up(e.pointerId)) stopRepeat();
         beginRelease();
       }}
     >

@@ -10,6 +10,7 @@ import {
   detachDisplayHierarchy,
   detachFromParent,
   displayToolbarSide,
+  displayToolbarSwapSide,
   ensureDefaultSpatialContent,
   getDisplayAttachmentRole,
   getSpatialNodeWorldMatrix,
@@ -29,6 +30,7 @@ import {
   spawnDisplayForWorkspaceOutput,
   spawnHingedDisplay,
   spawnHingedDisplayWithAutomaticOutput,
+  swapDisplayToolbarSide,
 } from "./spatialGraph.ts";
 import { DEFAULT_DISPLAY_HEIGHT, DISPLAY_PANEL_WIDTH } from "./displayMetrics.ts";
 import type { WorkspaceOutput } from "./workspaceDisplays.ts";
@@ -797,4 +799,33 @@ Deno.test("a display's toolbar goes beside it when the stack fills above and bel
   tower = spawnHingedDisplay(tower, "display-2", "top");
   assert(tower.nodes["display-3"]?.parentId === "display-2", "a third window stacks on top");
   assert(displayToolbarSide(tower, "display-2") === "left", "a parent below counts as taken");
+});
+
+Deno.test("side-menu swap appears only beside the display with the opposite edge free", () => {
+  const initial = createInitialSpatialGraph();
+  assert(displayToolbarSwapSide(initial, "display-1") === null, "menu above has no swap");
+  assert(swapDisplayToolbarSide(initial, "display-1") === initial, "hidden action is a no-op");
+  const stacked = spawnHingedDisplay(initial, "display-1", "top");
+  assert(displayToolbarSwapSide(stacked, "display-1") === "right", "left menu can move right");
+  const right = swapDisplayToolbarSide(stacked, "display-1");
+  assert(displayToolbarSide(right, "display-1") === "right", "moves right");
+  assert(displayToolbarSide(stacked, "display-1") === "left", "does not mutate original");
+  assert(displayToolbarSwapSide(right, "display-1") === "left", "right menu can move back");
+  assert(
+    displayToolbarSide(swapDisplayToolbarSide(right, "display-1"), "display-1") === "left",
+    "moves back",
+  );
+  const blocked = spawnHingedDisplay(right, "display-1", "right");
+  assert(displayToolbarSide(blocked, "display-1") === "left", "occupied preference falls back");
+  assert(displayToolbarSwapSide(blocked, "display-1") === null, "occupied opposite hides swap");
+  assert(swapDisplayToolbarSide(blocked, "display-1") === blocked, "cannot move into attachment");
+});
+
+Deno.test("side-menu preference returns after its occupied edge is freed", () => {
+  let graph = spawnHingedDisplay(createInitialSpatialGraph(), "display-1", "top");
+  graph = swapDisplayToolbarSide(graph, "display-1");
+  graph = spawnHingedDisplay(graph, "display-1", "right");
+  assert(displayToolbarSide(graph, "display-1") === "left", "temporary fallback");
+  graph = detachFromParent(graph, "display-3");
+  assert(displayToolbarSide(graph, "display-1") === "right", "preferred side restored");
 });

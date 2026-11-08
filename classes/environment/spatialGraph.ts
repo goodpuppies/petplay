@@ -64,6 +64,8 @@ export type BoxSnapSource = {
 export type DisplaySpatialNode = SpatialNodeBase & {
   kind: "display";
   ordinal: number;
+  /** Preferred edge when the context menu must sit beside this display. */
+  toolbarSidePreference?: "left" | "right";
   /** Crop of the shared Full Workspace capture presented by this display. */
   workspaceCrop?: WorkspaceRect;
   workspaceOutputId?: string;
@@ -921,7 +923,7 @@ const OPPOSITE_SIDE: Record<SpatialAttachmentSide, SpatialAttachmentSide> = {
 /**
  * Below the display unless something is there: then above, and when a stack fills both (a window
  * between another window and a keyboard), beside it: on the left, where SteamVR puts an
- * overlay's controls, unless only the right is free.
+ * overlay's controls, unless the user prefers the right or only the right is free.
  *
  * A side is taken by a child hinged to that side's slot, or by the parent this display hangs
  * from: a display in its parent's bottom slot has the parent above it.
@@ -930,18 +932,57 @@ export function displayToolbarSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
 ): DisplayToolbarSide {
+  if (!displayToolbarEdgeTaken(graph, displayId, "bottom")) return "below";
+  if (!displayToolbarEdgeTaken(graph, displayId, "top")) return "above";
+  const node = graph.nodes[displayId];
+  const preferred = node?.kind === "display" && node.toolbarSidePreference === "right"
+    ? "right"
+    : "left";
+  const other = preferred === "left" ? "right" : "left";
+  return displayToolbarEdgeTaken(graph, displayId, preferred) &&
+      !displayToolbarEdgeTaken(graph, displayId, other)
+    ? other
+    : preferred;
+}
+
+function displayToolbarEdgeTaken(
+  graph: SpatialGraph,
+  displayId: SpatialNodeId,
+  side: SpatialAttachmentSide,
+): boolean {
   const constraint = graph.nodes[displayId]?.constraint;
   const parentSide = constraint?.kind === "hinge"
     ? constraint.attachmentSlotId.match(/-(left|right|top|bottom)-slot$/)?.[1] as
       | SpatialAttachmentSide
       | undefined
     : undefined;
-  const taken = (side: SpatialAttachmentSide) =>
-    isAttachmentSlotOccupied(graph, `${displayId}-${side}-slot`) ||
+  return isAttachmentSlotOccupied(graph, `${displayId}-${side}-slot`) ||
     (parentSide != null && OPPOSITE_SIDE[parentSide] === side);
-  if (!taken("bottom")) return "below";
-  if (!taken("top")) return "above";
-  return taken("left") && !taken("right") ? "right" : "left";
+}
+
+/** Destination of the side-menu swap button, or null when it must not be shown. */
+export function displayToolbarSwapSide(
+  graph: SpatialGraph,
+  displayId: SpatialNodeId,
+): "left" | "right" | null {
+  if (graph.nodes[displayId]?.kind !== "display") return null;
+  const side = displayToolbarSide(graph, displayId);
+  if (side !== "left" && side !== "right") return null;
+  const other = side === "left" ? "right" : "left";
+  return displayToolbarEdgeTaken(graph, displayId, other) ? null : other;
+}
+
+export function swapDisplayToolbarSide(
+  graph: SpatialGraph,
+  displayId: SpatialNodeId,
+): SpatialGraph {
+  const node = graph.nodes[displayId];
+  const nextSide = displayToolbarSwapSide(graph, displayId);
+  if (node?.kind !== "display" || nextSide == null) return graph;
+  return {
+    ...graph,
+    nodes: { ...graph.nodes, [displayId]: { ...node, toolbarSidePreference: nextSide } },
+  };
 }
 
 function isAttachmentSlotOccupied(graph: SpatialGraph, slotId: string): boolean {

@@ -53,6 +53,10 @@ function validGraph(value: unknown): value is SpatialGraph {
       (candidate.constraint != null && !constraint(candidate.constraint)) ||
       (candidate.onParentDelete !== "preserve" && candidate.onParentDelete !== "cascade")
     ) return false;
+    if (
+      candidate.kind === "display" && candidate.toolbarSidePreference != null &&
+      candidate.toolbarSidePreference !== "left" && candidate.toolbarSidePreference !== "right"
+    ) return false;
     if (candidate.parentId != null && !nodeIds.has(candidate.parentId)) return false;
     if (
       candidate.kind === "display" &&

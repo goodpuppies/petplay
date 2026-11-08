@@ -1,5 +1,6 @@
 /**
- * Every key the in-VR keyboard emits, for whoever wants to watch: a playtest checking that a press
+ * Key activations and modifiers from the in-VR keyboard, for whoever wants to watch. Key-up
+ * events go only to the sink; playtests can check that a press
  * landed, without reading the desktop it was typed into. The sink still does the typing.
  */
 import type { KeyboardLogicEvent } from "./types.ts";

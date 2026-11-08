@@ -62,6 +62,7 @@ const FALLBACK_ACTION_ICON: IconName = "more_horiz";
 export type SpatialContextAction = {
   id: string;
   label: string;
+  icon?: IconName;
   tone?: "normal" | "danger" | "accent";
   disabled?: boolean;
   run: () => void;
@@ -168,7 +169,7 @@ function ActionTile(
       }}
     >
       <Icon
-        name={ACTION_ICONS[action.id] ?? FALLBACK_ACTION_ICON}
+        name={action.icon ?? ACTION_ICONS[action.id] ?? FALLBACK_ACTION_ICON}
         size={40}
         color={ink}
       />

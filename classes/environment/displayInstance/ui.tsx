@@ -35,6 +35,8 @@ const BACKPLATE_LOGO_SIZE = 0.45;
 export type DisplayInstanceFrameProps = {
   /** Full height of the 16:9 frame. Width = height × `DISPLAY_ASPECT_WIDTH_OVER_HEIGHT`. */
   height?: number;
+  /** Override bound game controls while an XR pointer interacts with this display. */
+  blockGameInput?: boolean;
   depth?: number;
   /** Albedo / tint; same prop name as before. */
   lineColor?: number;
@@ -101,6 +103,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
   function DisplayInstanceFrame(
     {
       height = DEFAULT_DISPLAY_HEIGHT,
+      blockGameInput = true,
       depth = DEFAULT_DISPLAY_DEPTH,
       lineColor = DEFAULT_GRABBOX_LINE_COLOR,
       shellRayPickable = false,
@@ -257,6 +260,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     return (
       <GrabBox
         ref={ref}
+        userData={{ blockGameInput }}
         width={width}
         height={height}
         depth={depth}

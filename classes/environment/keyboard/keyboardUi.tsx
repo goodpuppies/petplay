@@ -1,7 +1,9 @@
+import { keyboardRepeat } from "./keyRepeat.ts";
+import type { KeyPhase } from "./keyHold.ts";
 import React, { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
-import { useThree } from "@react-three/fiber/webgpu";
+import { useFrame, useThree } from "@react-three/fiber/webgpu";
 import { Container, Text } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import type { NormalizedKeyFace } from "./types.ts";
 import type { EventHandlersProperties } from "../../../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/events.ts";
@@ -285,7 +287,12 @@ export type KeyCapChromeProps =
   }
   & Pick<
     EventHandlersProperties,
-    "onPointerDown" | "onPointerUp" | "onPointerOut" | "onClick" | "onPointerOver"
+    | "onPointerDown"
+    | "onPointerUp"
+    | "onPointerCancel"
+    | "onPointerOut"
+    | "onClick"
+    | "onPointerOver"
   >;
 
 /**
@@ -768,7 +775,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     const emit = useCallback(
       (ev: KeyboardLogicEvent) => {
         sink(ev);
-        emitKeyboardEvent(ev);
+        if (ev.kind !== "key" || ev.pressed !== false) emitKeyboardEvent(ev);
       },
       [sink],
     );
@@ -783,22 +790,75 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       emit({ kind: "modifier", modifier, active });
     }, [emit]);
 
+    useFrame(() => keyboardRepeat.tick(), { phase: "finish" });
+
+    const heldKeys = useRef(
+      new Map<string, {
+        event: KeyboardLogicEvent & { kind: "key" };
+        modifiers: StickyModifier[];
+      }>(),
+    );
+    // Release with the sink that received the downs if it changes or the keyboard unmounts.
+    useEffect(() => () => {
+      for (const { event, modifiers } of heldKeys.current.values()) {
+        emit({ ...event, pressed: false });
+        for (const modifier of modifiers) emit({ kind: "modifier", modifier, active: false });
+      }
+      heldKeys.current.clear();
+    }, [emit]);
+
     const handleKey = useCallback(
       (
         face: NormalizedKeyFace,
         source: THREE.Object3D | null,
         worldPoint?: readonly [number, number, number],
+        phase?: KeyPhase,
       ) => {
-        if (typingSounds) spatialAudio?.playAtObject(face.audio ?? "key", source, worldPoint);
+        if (phase === "up" || phase === "repeat") {
+          const heldKey = heldKeys.current.get(face.id);
+          if (heldKey == null) return;
+          emit({ ...heldKey.event, pressed: phase !== "up" });
+          if (phase === "up") {
+            heldKeys.current.delete(face.id);
+            for (const modifier of heldKey.modifiers) {
+              // Another simultaneously held key may still need this one-shot modifier.
+              if (
+                Array.from(heldKeys.current.values()).some((key) =>
+                  key.modifiers.includes(modifier)
+                )
+              ) continue;
+              if (!holdLocked.current.has(modifier)) setModifier(modifier, false);
+            }
+          }
+          return;
+        }
+        const emitKey = (event: KeyboardLogicEvent & { kind: "key" }) => {
+          if (phase === "down") {
+            if (heldKeys.current.has(face.id)) return;
+            heldKeys.current.set(face.id, {
+              event,
+              modifiers: STICKY_MODIFIER_KEYS.filter((key) =>
+                mods[key] && !holdLocked.current.has(key)
+              ),
+            });
+            emit({ ...event, pressed: true });
+          } else {
+            emit(event);
+          }
+        };
+        const playClick = () => {
+          if (typingSounds) spatialAudio?.playAtObject(face.audio ?? "key", source, worldPoint);
+        };
         if (face.useVirtualKeyCode) {
           const s = face.displayMain;
-          emit({
+          emitKey({
             kind: "key",
             scanCode: 0,
             scanCodeHex: "00",
             char: s.length === 1 ? s : undefined,
             virtualKeyName: face.virtualName,
           });
+          playClick();
           return;
         }
         const hi = face.scanCodeHex.toUpperCase();
@@ -809,6 +869,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
             emit({ kind: "modifier", modifier: "caps", active: next.caps });
             return next;
           });
+          playClick();
           return;
         }
         const modifier = face.sticky ? STICKY_SCAN_MODIFIERS[hi] : undefined;
@@ -831,6 +892,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
           } else {
             setModifier(modifier, false);
           }
+          playClick();
           return;
         }
         const { main } = keyLegendFromScan(
@@ -839,15 +901,18 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
           { shift: mods.shift, caps: mods.caps, altGr: mods.rightAlt },
           face.respectCapsLock,
         );
-        emit({
+        emitKey({
           kind: "key",
           scanCode: sc,
           scanCodeHex: hi,
           char: main.length === 1 ? main : undefined,
         });
+        // Dispatch input before native sound work, so feedback cannot hold up typing.
+        playClick();
         // Sticky modifiers are one-shot: they apply to the key that follows and
         // release with it, so a chord does not leave Ctrl or Shift held. Caps
         // Lock is the exception — it is `toggle`, and stays latched.
+        if (phase === "down") return;
         setMods((m) => {
           const latched = STICKY_MODIFIER_KEYS.filter((key) =>
             m[key] === true && !holdLocked.current.has(key)

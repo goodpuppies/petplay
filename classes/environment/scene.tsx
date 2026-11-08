@@ -23,7 +23,10 @@ import {
 } from "./displayInstance/mouse.ts";
 import type { DisplayMouseLogicEvent, DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
-import type { KeyboardLogicEvent, KeyboardSink } from "./keyboard/types.ts";
+import { tryLinuxX11Scroll } from "./displayInstance/linuxX11Scroll.ts";
+import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
+import { createLinuxKeyboardSink } from "./keyboard/linuxSystemKeyboard.ts";
+import type { KeyboardSink } from "./keyboard/types.ts";
 import { KEYBOARD_LOCALES, useKeyboardLocale } from "./keyboard/keyboardLocale.ts";
 import { PostMan } from "../../submodules/stageforge/mod.ts";
 import { SpatialAudioProvider } from "./spatialAudio.tsx";
@@ -61,6 +64,8 @@ import {
   detachFromParent,
   type DisplaySpatialNode,
   displayToolbarSide,
+  displayToolbarSwapSide,
+  swapDisplayToolbarSide,
   getDisplayAttachmentRole,
   getSpatialChildren,
   getSpatialRootId,
@@ -163,43 +168,15 @@ function postInputControl(actor: string, command: string): void {
   }
 }
 
-const MODIFIER_SCANS: Record<string, string> = {
-  shift: "2A",
-  leftCtrl: "1D",
-  rightCtrl: "E01D",
-  leftAlt: "38",
-  rightAlt: "E038",
-  leftMeta: "E05B",
-  rightMeta: "E05C",
-};
-
-const VIRTUAL_KEY_SCANS: Record<string, string> = {
-  NUMLOCK: "45",
-  DIVIDE: "E035",
-  MULTIPLY: "37",
-  SUBTRACT: "4A",
-  NUMPAD7: "47",
-  NUMPAD8: "48",
-  NUMPAD9: "49",
-  ADD: "4E",
-  NUMPAD4: "4B",
-  NUMPAD5: "4C",
-  NUMPAD6: "4D",
-  NUMPAD1: "4F",
-  NUMPAD2: "50",
-  NUMPAD3: "51",
-  RETURN: "E01C",
-  NUMPAD0: "52",
-  DECIMAL: "53",
-};
-
 function createLinuxMouseSink(actor: string): DisplayMouseSink {
   const rawSink: DisplayMouseSink = (event: DisplayMouseLogicEvent) => {
     postInputControl(actor, `M,${event.x},${event.y}`);
     if (event.kind === "button") {
       postInputControl(actor, `B,${event.button},${event.pressed ? 1 : 0}`);
     } else if (event.kind === "wheel") {
-      postInputControl(actor, `W,${event.deltaY}`);
+      if (!tryLinuxX11Scroll(event.deltaY, event.x, event.y)) {
+        postInputControl(actor, `W,${event.deltaY}`);
+      }
     }
   };
   const smoothedUinputSink = createSmoothedDisplayMouseSink(rawSink);
@@ -209,31 +186,6 @@ function createLinuxMouseSink(actor: string): DisplayMouseSink {
     // coordinate before the click transition.
     postInputControl(actor, `C,${event.x},${event.y}`);
     smoothedUinputSink(event);
-  };
-}
-
-function createLinuxKeyboardSink(actor: string): KeyboardSink {
-  return (event: KeyboardLogicEvent) => {
-    if (event.kind === "modifier") {
-      if (event.modifier === "caps") {
-        if (event.active) {
-          postInputControl(actor, "K,3A,1");
-          postInputControl(actor, "K,3A,0");
-        }
-        return;
-      }
-      const scan = MODIFIER_SCANS[event.modifier];
-      if (scan) postInputControl(actor, `K,${scan},${event.active ? 1 : 0}`);
-      return;
-    }
-    const scan = event.scanCodeHex && event.scanCodeHex !== "00"
-      ? event.scanCodeHex
-      : event.virtualKeyName
-      ? VIRTUAL_KEY_SCANS[event.virtualKeyName.toUpperCase()]
-      : undefined;
-    if (!scan) return;
-    postInputControl(actor, `K,${scan},1`);
-    postInputControl(actor, `K,${scan},0`);
   };
 }
 
@@ -532,7 +484,8 @@ function CommonOverlayChords({
     }
     const pointedId = displayObject?.userData.spatialElementId as string | undefined;
     if (!hit?.uv || !pointedId || graph.nodes[pointedId]?.mouseBlocked) return;
-    scrollAccumulator.current += Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND * delta;
+    scrollAccumulator.current +=
+      Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND * Math.min(delta, 0.05);
     const clicks = Math.floor(scrollAccumulator.current);
     if (clicks === 0) return;
     scrollAccumulator.current -= clicks;
@@ -1391,6 +1344,15 @@ function DisplaySpatialNodeView({
         run: () => setGraph((current) => detachDisplayHierarchy(current, node.id)),
       });
     }
+    const swapSide = displayToolbarSwapSide(graph, node.id);
+    if (swapSide != null) {
+      actions.push({
+        id: "swap-menu-side",
+        label: `Move menu ${swapSide}`,
+        icon: swapSide === "right" ? "arrow_forward" : "arrow_back",
+        run: () => setGraph((current) => swapDisplayToolbarSide(current, node.id)),
+      });
+    }
     actions.push({
       id: "lock",
       label: node.locked ? "Locked — unlock" : "Lock",
@@ -2099,19 +2061,24 @@ export function WebXRScene(
   }: WebXRSceneProps,
 ) {
   void _XROrigin;
-  const displayMouseSink = React.useMemo(
+  const rawDisplayMouseSink = React.useMemo(
     () =>
       Deno.build.os === "linux" && displayOverlayHostActor
         ? createLinuxMouseSink(displayOverlayHostActor)
         : windowsSystemDisplayMouseSink,
     [displayOverlayHostActor],
   );
-  const keyboardSink = React.useMemo(
+  const rawKeyboardSink = React.useMemo(
     () =>
       Deno.build.os === "linux" && displayOverlayHostActor
-        ? createLinuxKeyboardSink(displayOverlayHostActor)
+        ? createLinuxKeyboardSink((command) => postInputControl(displayOverlayHostActor, command))
         : windowsSystemKeyboardSink,
     [displayOverlayHostActor],
+  );
+
+  const { onMouse: displayMouseSink, onKey: keyboardSink } = React.useMemo(
+    () => createDesktopInputRouting(rawDisplayMouseSink, rawKeyboardSink),
+    [rawDisplayMouseSink, rawKeyboardSink],
   );
 
   React.useEffect(() => {

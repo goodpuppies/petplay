@@ -45,3 +45,20 @@ The user confirmed that trigger clicks and grabs work with that binding on 2026-
 confirms the Quest bridge workaround, not native Frame controller support. Accurate emulation
 of the Frame profile is tracked in the DroidFrame repository's
 `droidframe/issues/steam-frame-controller-fidelity.md`.
+
+## Blocking game input while using displays
+
+Display frames request a SteamVR input override for the hand pointing at or grabbing them,
+including their child controls. The other hand keeps its normal game input. Blocking continues
+until held trigger, grip, mouse modifiers and thumbstick are released, so leaving a display
+mid-gesture does not pass the held control into the game. Controller unmount and VR teardown
+clear the override. `DisplayInstanceFrame` has a `blockGameInput` prop (default `true`).
+
+Enable **Experimental overlay input overrides** in SteamVR's developer settings for this to
+work. PetPlay does not change that runtime setting. This uses OpenVR's
+[global action-set priority](https://github.com/ValveSoftware/openvr/blob/master/headers/openvr.h)
+(`0x01000000`) separately for each hand. SteamVR suppresses sources bound to PetPlay's actions,
+including trigger, grip, thumbstick and mouse modifiers; unbound buttons remain available to
+the game. This is SteamVR action routing, not OS keyboard/mouse suppression. Hover is taken from
+the latest scene pointer intersection, so a newly entered display takes effect on the next
+input sample. Live game/controller verification is still required.

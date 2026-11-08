@@ -25,6 +25,7 @@ import { type ColorRepresentation, type Mesh, MeshBasicMaterial, Object3D } from
 import { HandPoker } from "./handPoker.tsx";
 import { useControllerLaserEnabled } from "./controllerLaserMode.ts";
 import { registerPointerHand } from "./haptics.ts";
+import { gameInputBlocking } from "./gameInputBlocking.ts";
 import { isHandGrabbing, registerGrabPointerHand } from "./oneHandScale.ts";
 import { registerHandOrigin } from "./trackedOrigins.ts";
 
@@ -222,7 +223,12 @@ function PetplayDefaultXRInputSourceRayPointer(props: DefaultXRInputSourceRayPoi
   const handedness = state.inputSource.handedness;
   useEffect(() => {
     if (handedness !== "left" && handedness !== "right") return;
-    return registerPointerHand(pointer.id, handedness);
+    const unregisterHaptics = registerPointerHand(pointer.id, handedness);
+    const unregisterBlocking = gameInputBlocking.register(pointer, handedness);
+    return () => {
+      unregisterHaptics();
+      unregisterBlocking();
+    };
   }, [pointer, handedness]);
   // Only the transitions: the root pointer also disables this ray while the session is hidden.
   const quietForGrab = useRef(false);
@@ -260,7 +266,12 @@ function useRegisterGrabPointer(pointer: Pointer, space: "hand" | "ray"): void {
   useEffect(() => {
     const handedness = inputSource.handedness;
     if (handedness !== "left" && handedness !== "right") return;
-    return registerGrabPointerHand(pointer, handedness, inputSource, space);
+    const unregisterGrab = registerGrabPointerHand(pointer, handedness, inputSource, space);
+    const unregisterBlocking = gameInputBlocking.register(pointer, handedness);
+    return () => {
+      unregisterGrab();
+      unregisterBlocking();
+    };
   }, [pointer, inputSource, space]);
 }
 

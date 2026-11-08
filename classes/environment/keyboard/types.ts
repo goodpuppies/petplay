@@ -129,6 +129,8 @@ export type ModifierSnapshot = {
 
 export type KeyboardLogicEvent = {
   kind: "key";
+  /** Omitted for a legacy tap; true holds/repeats the key, false releases it. */
+  pressed?: boolean;
   /** Legacy aggregate from hex (wrong for E0-prefixed codes); use `scanCodeHex` for OS input. */
   scanCode: number;
   /**

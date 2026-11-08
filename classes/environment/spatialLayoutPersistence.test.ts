@@ -33,6 +33,7 @@ Deno.test("spatial layout round-trips hierarchy, transforms, and assignments", (
   assert(display?.kind === "display", "display fixture should exist");
   graph.nodes[display.id] = {
     ...display,
+    toolbarSidePreference: "right",
     workspaceOutputId: "DP-1",
     workspaceOutputName: "Main",
     workspaceCrop: { x: 0, y: 0, width: 0.5, height: 1 },

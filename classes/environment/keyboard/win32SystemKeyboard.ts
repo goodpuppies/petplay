@@ -166,7 +166,7 @@ function resolveVirtualVk(km: Win32Km, virtualKeyName?: string, char?: string): 
   return null;
 }
 
-function dispatch(km: Win32Km, ev: KeyboardLogicEvent): void {
+export function dispatchWindowsKeyboardEvent(km: Win32Km, ev: KeyboardLogicEvent): void {
   if (ev.kind === "modifier") {
     if (ev.modifier === "caps") return;
     const vk = modifierToVk(km, ev);
@@ -177,12 +177,19 @@ function dispatch(km: Win32Km, ev: KeyboardLogicEvent): void {
 
   if (ev.scanCodeHex && ev.scanCodeHex !== "00") {
     const { lowScan, extended } = parseLayoutScanHex(ev.scanCodeHex);
-    sendKeyTapScan(km, lowScan, extended);
+    if (ev.pressed == null) {
+      sendKeyTapScan(km, lowScan, extended);
+    } else {
+      const flags = km.KEYEVENTF_SCANCODE | (extended ? km.KEYEVENTF_EXTENDEDKEY : 0) |
+        (ev.pressed ? 0 : km.KEYEVENTF_KEYUP);
+      sendInputs(km, packInputKeyboard(km, 0, lowScan, flags), 1);
+    }
     return;
   }
   const vkDirect = resolveVirtualVk(km, ev.virtualKeyName, ev.char);
   if (vkDirect != null) {
-    sendKeyTapVk(km, vkDirect);
+    if (ev.pressed == null) sendKeyTapVk(km, vkDirect);
+    else sendModifierHold(km, vkDirect, ev.pressed);
   }
 }
 
@@ -231,7 +238,7 @@ export function createWindowsSystemKeyboardSink(): KeyboardSink {
   }
   return (ev) => {
     void win32Km.then((km) => {
-      if (km) dispatch(km, ev);
+      if (km) dispatchWindowsKeyboardEvent(km, ev);
     });
   };
 }
