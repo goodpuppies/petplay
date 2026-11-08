@@ -54,6 +54,11 @@ export function workspaceOutputsFromKscreen(value: unknown): WorkspaceOutput[] {
       logicalHeight: height,
     }];
   });
+  return withWorkspaceCrops(logical);
+}
+
+/** Crops each output out of the one frame spanning all of them, most important output first. */
+function withWorkspaceCrops(logical: Omit<WorkspaceOutput, "crop">[]): WorkspaceOutput[] {
   if (logical.length === 0) return [];
 
   const left = Math.min(...logical.map((output) => output.logicalX));
@@ -76,9 +81,21 @@ export function workspaceOutputsFromKscreen(value: unknown): WorkspaceOutput[] {
     .sort((a, b) => b.priority - a.priority || a.logicalX - b.logicalX || a.logicalY - b.logicalY);
 }
 
-/** Windows captures one monitor whole, so its only output is the entire frame. */
-const WINDOWS_CAPTURE_OUTPUT: WorkspaceOutput = {
-  id: "windows-capture",
+export type WindowsMonitor = {
+  deviceName: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+};
+
+/** Layouts saved by v0.0.15 are assigned to this id, so the primary monitor keeps it. */
+const WINDOWS_PRIMARY_OUTPUT_ID = "windows-capture";
+
+/** Without a monitor list, the captured frame can only be treated as one output. */
+const WINDOWS_WHOLE_FRAME_OUTPUT: WorkspaceOutput = {
+  id: WINDOWS_PRIMARY_OUTPUT_ID,
   name: "Desktop",
   priority: 0,
   logicalX: 0,
@@ -88,8 +105,78 @@ const WINDOWS_CAPTURE_OUTPUT: WorkspaceOutput = {
   crop: { x: 0, y: 0, width: 1, height: 1 },
 };
 
+/** The capture helper stitches monitors by desktop position, so these crop that frame. */
+export function workspaceOutputsFromWindowsMonitors(monitors: WindowsMonitor[]): WorkspaceOutput[] {
+  return withWorkspaceCrops(monitors.map((monitor) => ({
+    id: monitor.primary ? WINDOWS_PRIMARY_OUTPUT_ID : monitor.deviceName,
+    name: monitor.deviceName.replace(/^\\\\\.\\/, ""),
+    priority: monitor.primary ? 1 : 0,
+    logicalX: monitor.x,
+    logicalY: monitor.y,
+    logicalWidth: monitor.width,
+    logicalHeight: monitor.height,
+  })));
+}
+
+const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4n;
+const MONITORINFOEXW_SIZE = 104;
+const MONITORINFOF_PRIMARY = 1;
+
+function enumerateWindowsMonitors(): WindowsMonitor[] {
+  const user32 = Deno.dlopen("user32.dll", {
+    EnumDisplayMonitors: {
+      parameters: ["pointer", "pointer", "function", "isize"],
+      result: "bool",
+    },
+    GetMonitorInfoW: { parameters: ["pointer", "buffer"], result: "bool" },
+    SetThreadDpiAwarenessContext: { parameters: ["isize"], result: "isize" },
+  });
+  const monitors: WindowsMonitor[] = [];
+  const onMonitor = new Deno.UnsafeCallback(
+    { parameters: ["pointer", "pointer", "pointer", "isize"], result: "bool" },
+    (handle) => {
+      const info = new Uint8Array(MONITORINFOEXW_SIZE);
+      const view = new DataView(info.buffer);
+      view.setUint32(0, MONITORINFOEXW_SIZE, true);
+      if (user32.symbols.GetMonitorInfoW(handle, info)) {
+        const [left, top, right, bottom] = [4, 8, 12, 16].map((at) => view.getInt32(at, true));
+        monitors.push({
+          deviceName: new TextDecoder("utf-16le").decode(info.subarray(40)).split("\0")[0],
+          x: left,
+          y: top,
+          width: right - left,
+          height: bottom - top,
+          primary: (view.getUint32(36, true) & MONITORINFOF_PRIMARY) !== 0,
+        });
+      }
+      return true;
+    },
+  );
+  // Physical pixels, like the capture; this process otherwise receives DPI-scaled rectangles.
+  const previous = user32.symbols.SetThreadDpiAwarenessContext(
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+  );
+  try {
+    user32.symbols.EnumDisplayMonitors(null, null, onMonitor.pointer, 0n);
+  } finally {
+    user32.symbols.SetThreadDpiAwarenessContext(previous);
+    onMonitor.close();
+    user32.close();
+  }
+  return monitors;
+}
+
+function loadWindowsWorkspaceOutputs(): WorkspaceOutput[] {
+  try {
+    const outputs = workspaceOutputsFromWindowsMonitors(enumerateWindowsMonitors());
+    return outputs.length > 0 ? outputs : [WINDOWS_WHOLE_FRAME_OUTPUT];
+  } catch {
+    return [WINDOWS_WHOLE_FRAME_OUTPUT];
+  }
+}
+
 export async function loadWorkspaceOutputs(): Promise<WorkspaceOutput[]> {
-  if (Deno.build.os === "windows") return [WINDOWS_CAPTURE_OUTPUT];
+  if (Deno.build.os === "windows") return loadWindowsWorkspaceOutputs();
   if (Deno.build.os !== "linux") return [];
   try {
     const result = await new Deno.Command("kscreen-doctor", {

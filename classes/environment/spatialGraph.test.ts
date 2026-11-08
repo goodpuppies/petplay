@@ -647,6 +647,28 @@ Deno.test("recenter brings a lost keyboard back under the primary display", () =
   );
 });
 
+Deno.test("recenter rebuilds a layout with every display deleted", () => {
+  let graph = createInitialSpatialGraph();
+  graph = deleteSpatialNode(graph, "keyboard");
+  graph = deleteSpatialNode(graph, "display-1");
+  assert(Object.keys(graph.nodes).length === 0, "everything was deleted");
+
+  const rebuilt = recenterSpatialRoots(graph, [0, 1.6, 0], 0, [0, -0.08, -1.35], [
+    output("DP-1"),
+    output("HDMI-1"),
+  ]);
+  const nodes = Object.values(rebuilt.nodes);
+  const displays = nodes.filter((node): node is import("./spatialGraph.ts").DisplaySpatialNode =>
+    node.kind === "display"
+  );
+  assert(displays.length === 2, "one display per output comes back");
+  assert(
+    displays.every((display) => display.workspaceOutputConnected === true),
+    "the rebuilt displays show their outputs",
+  );
+  assert(nodes.some((node) => node.kind === "keyboard"), "the keyboard comes back");
+});
+
 Deno.test("locking a node is a no-op when unchanged and survives a clone", () => {
   const graph = createInitialSpatialGraph();
   assert(setSpatialNodeLocked(graph, "display-1", false) === graph, "unlocking an unlocked node");

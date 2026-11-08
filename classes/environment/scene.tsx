@@ -821,9 +821,10 @@ function WindowLayer({
           head.toArray() as [number, number, number],
           yaw,
           forwardOffset.toArray() as [number, number, number],
+          workspaceOutputs,
         )
       );
-    }), [camera, forwardOffset, renderer]);
+    }), [camera, forwardOffset, renderer, workspaceOutputs]);
 
   // Hiding keeps the windows built: unmounting them and building them again stalled a frame by
   // ~0.4 s on every show (~0.2 s on hide). A hidden Activity keeps React's tree and the three

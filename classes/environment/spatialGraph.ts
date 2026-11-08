@@ -664,7 +664,14 @@ export function recenterSpatialRoots(
   headPosition: [number, number, number],
   headYaw: number,
   offset: [number, number, number],
+  outputs: WorkspaceOutput[] = [],
 ): SpatialGraph {
+  // With every display deleted there is nothing to move, so start over from the first-run layout.
+  if (!Object.values(current.nodes).some((node) => node.kind === "display")) {
+    const rebuilt = initializeWorkspaceLayoutOutputs(current, outputs, false);
+    return recenterSpatialRoots(rebuilt, headPosition, headYaw, offset, outputs);
+  }
+
   // Windows attached to the head or a hand already sit where they belong.
   const roots = Object.values(current.nodes).filter((node) =>
     node.parentId == null && !node.constraint && node.originId === SCENE_ORIGIN_ID

@@ -125,10 +125,6 @@ const win32Km: Promise<Win32Km | null> = Deno.build.os === "windows"
   : Promise.resolve(null);
 
 type User32 = Deno.DynamicLibrary<{
-  GetSystemMetrics: {
-    parameters: ["i32"];
-    result: "i32";
-  };
   GetCursorPos: {
     parameters: ["pointer"];
     result: "bool";
@@ -136,12 +132,6 @@ type User32 = Deno.DynamicLibrary<{
 }>;
 
 let user32: User32 | null | undefined;
-
-// `screen-streamer` captures the primary display (currently 1920×1080), not
-// the combined virtual desktop. Mapping its UVs over every monitor produces a
-// visible offset whenever another display is attached.
-const SM_CXSCREEN = 0;
-const SM_CYSCREEN = 1;
 
 function sizeofInputForSendInput(): number {
   if (Deno.build.os !== "windows") {
@@ -160,7 +150,6 @@ function getUser32(): User32 | null {
     return user32;
   }
   user32 = Deno.dlopen("user32.dll", {
-    GetSystemMetrics: { parameters: ["i32"], result: "i32" },
     GetCursorPos: { parameters: ["pointer"], result: "bool" },
   });
   return user32;
@@ -169,26 +158,6 @@ function getUser32(): User32 | null {
 function clamp01(v: number): number {
   if (!Number.isFinite(v)) return 0;
   return Math.min(1, Math.max(0, v));
-}
-
-function getCapturedScreenRect(): { x: number; y: number; width: number; height: number } {
-  const u32 = getUser32();
-  if (u32 == null) {
-    return { x: 0, y: 0, width: 1, height: 1 };
-  }
-  const width = Math.max(1, u32.symbols.GetSystemMetrics(SM_CXSCREEN));
-  const height = Math.max(1, u32.symbols.GetSystemMetrics(SM_CYSCREEN));
-  return {
-    x: 0,
-    y: 0,
-    width,
-    height,
-  };
-}
-
-function toAbsoluteMouseCoordinate(pixel: number, origin: number, size: number): number {
-  if (size <= 1) return 0;
-  return Math.round(((pixel - origin) * 65535) / (size - 1));
 }
 
 function packInputMouse(
@@ -270,12 +239,10 @@ export async function releaseWindowsSyntheticDisplayMouseState(): Promise<void> 
 }
 
 function dispatch(km: Win32Km, ev: DisplayMouseLogicEvent): void {
-  const rect = getCapturedScreenRect();
-  const px = rect.x + clamp01(ev.x) * (rect.width - 1);
-  const py = rect.y + clamp01(ev.y) * (rect.height - 1);
-  const ax = toAbsoluteMouseCoordinate(px, rect.x, rect.width);
-  const ay = toAbsoluteMouseCoordinate(py, rect.y, rect.height);
-  let flags = km.MOUSEEVENTF_ABSOLUTE | km.MOUSEEVENTF_MOVE;
+  // The event's 0..1 coordinates span the stitched desktop, as this flag's 0..65535 range does.
+  const ax = Math.round(clamp01(ev.x) * 65535);
+  const ay = Math.round(clamp01(ev.y) * 65535);
+  let flags = km.MOUSEEVENTF_ABSOLUTE | km.MOUSEEVENTF_MOVE | km.MOUSEEVENTF_VIRTUALDESK;
   let mouseData = 0;
   if (ev.kind === "button") {
     flags |= mouseButtonFlags(km, ev.button, ev.pressed);

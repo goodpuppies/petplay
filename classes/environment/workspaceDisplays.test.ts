@@ -1,10 +1,24 @@
-import { workspaceOutputsFromKscreen } from "./workspaceDisplays.ts";
+import {
+  workspaceOutputsFromKscreen,
+  workspaceOutputsFromWindowsMonitors,
+} from "./workspaceDisplays.ts";
 
 function assertEquals(actual: unknown, expected: unknown): void {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a !== e) throw new Error(`Expected ${e}, received ${a}`);
 }
+
+Deno.test("Windows monitors crop the stitched desktop, primary first", () => {
+  const outputs = workspaceOutputsFromWindowsMonitors([
+    { deviceName: "\\\\.\\DISPLAY2", x: -1000, y: 0, width: 1000, height: 500, primary: false },
+    { deviceName: "\\\\.\\DISPLAY1", x: 0, y: 0, width: 3000, height: 1000, primary: true },
+  ]);
+  assertEquals(outputs.map((output) => [output.id, output.name, output.crop]), [
+    ["windows-capture", "DISPLAY1", { x: 0.25, y: 0, width: 0.75, height: 1 }],
+    ["\\\\.\\DISPLAY2", "DISPLAY2", { x: 0, y: 0, width: 0.25, height: 0.5 }],
+  ]);
+});
 
 Deno.test("KDE outputs become normalized Full Workspace crops", () => {
   const outputs = workspaceOutputsFromKscreen({
