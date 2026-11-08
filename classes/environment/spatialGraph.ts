@@ -296,6 +296,12 @@ export function reconcileWorkspaceOutputs(
   current: SpatialGraph,
   outputs: WorkspaceOutput[],
 ): SpatialGraph {
+  // A layout saved while no outputs were known has no assignments to preserve.
+  const hasAssignment = Object.values(current.nodes).some((node) =>
+    node.kind === "display" && node.workspaceOutputId != null
+  );
+  if (!hasAssignment) return assignWorkspaceOutputs(current, outputs);
+
   const byId = new Map(outputs.map((output) => [output.id, output]));
   const graph = cloneGraph(current);
   for (const node of Object.values(graph.nodes)) {

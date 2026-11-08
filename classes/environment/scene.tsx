@@ -89,7 +89,7 @@ import {
   spawnHingedDisplayWithAutomaticOutput,
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
-import { loadKdeWorkspaceOutputs, type WorkspaceOutput } from "./workspaceDisplays.ts";
+import { loadWorkspaceOutputs, type WorkspaceOutput } from "./workspaceDisplays.ts";
 import { publishWorkspaceLayout, registerWorkspaceLayoutActions } from "./workspaceLayoutStore.ts";
 import {
   getLayoutSlotPath,
@@ -661,7 +661,7 @@ function WindowLayer({
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>("display-1");
   const handleStores = React.useMemo(() => new Map<string, HandleStore<unknown>>(), []);
   const [workspaceOutputs, setWorkspaceOutputs] = React.useState<
-    Awaited<ReturnType<typeof loadKdeWorkspaceOutputs>>
+    Awaited<ReturnType<typeof loadWorkspaceOutputs>>
   >([]);
   const [persistenceReady, setPersistenceReady] = React.useState(Deno.build.os !== "linux");
   const workspaceOutputsInitialized = React.useRef(false);
@@ -669,7 +669,7 @@ function WindowLayer({
 
   React.useEffect(() => {
     let cancelled = false;
-    void loadKdeWorkspaceOutputs().then((outputs) => {
+    void loadWorkspaceOutputs().then((outputs) => {
       // Reloaded on every show: an equal list keeps its identity, or reconciling it clones the
       // graph, re-renders every window and saves the layout ~0.1 s after each show.
       if (!cancelled) {

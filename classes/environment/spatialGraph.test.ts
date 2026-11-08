@@ -276,6 +276,17 @@ Deno.test("restored workspace layouts never recreate deleted displays", () => {
   );
 });
 
+Deno.test("restored layouts saved without any outputs receive them", () => {
+  const restored = initializeWorkspaceLayoutOutputs(
+    createInitialSpatialGraph(),
+    [output("windows-capture")],
+    true,
+  );
+  const display = restored.nodes["display-1"] as import("./spatialGraph.ts").DisplaySpatialNode;
+  assert(display.workspaceOutputId === "windows-capture", "the saved display gets the output");
+  assert(display.workspaceOutputConnected === true, "the saved display should be connected");
+});
+
 Deno.test("first-run workspace layouts bootstrap connected physical outputs", () => {
   const initialized = initializeWorkspaceLayoutOutputs(
     createInitialSpatialGraph(),

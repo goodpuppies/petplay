@@ -76,7 +76,20 @@ export function workspaceOutputsFromKscreen(value: unknown): WorkspaceOutput[] {
     .sort((a, b) => b.priority - a.priority || a.logicalX - b.logicalX || a.logicalY - b.logicalY);
 }
 
-export async function loadKdeWorkspaceOutputs(): Promise<WorkspaceOutput[]> {
+/** Windows captures one monitor whole, so its only output is the entire frame. */
+const WINDOWS_CAPTURE_OUTPUT: WorkspaceOutput = {
+  id: "windows-capture",
+  name: "Desktop",
+  priority: 0,
+  logicalX: 0,
+  logicalY: 0,
+  logicalWidth: 1,
+  logicalHeight: 1,
+  crop: { x: 0, y: 0, width: 1, height: 1 },
+};
+
+export async function loadWorkspaceOutputs(): Promise<WorkspaceOutput[]> {
+  if (Deno.build.os === "windows") return [WINDOWS_CAPTURE_OUTPUT];
   if (Deno.build.os !== "linux") return [];
   try {
     const result = await new Deno.Command("kscreen-doctor", {
