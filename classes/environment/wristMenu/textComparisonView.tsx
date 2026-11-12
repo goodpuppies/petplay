@@ -3,6 +3,7 @@ import { TextDistanceProbe, type TextProbeDistance } from "./textDistanceProbe.t
 import { Button, Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { setSetting, useSetting } from "../../settings.ts";
 import {
+  experimentalTextRenderersShown,
   getTextRenderingSettings,
   glyphTextAvailable,
   pathfinderTextAvailable,
@@ -23,6 +24,7 @@ export function TextComparisonView({ onBack }: { onBack: () => void }) {
   const vectorAvailable = useMemo(pathfinderTextAvailable, []);
   const glyphAvailable = useMemo(glyphTextAvailable, []);
   const windfoilAvailable = useMemo(windfoilTextAvailable, []);
+  const experimental = useMemo(experimentalTextRenderersShown, []);
   const analyticActive = selection.renderer === "glyph" || selection.renderer === "windfoil";
   const [probe, setProbe] = useState<TextProbeDistance | null>(null);
   return (
@@ -47,16 +49,18 @@ export function TextComparisonView({ onBack }: { onBack: () => void }) {
             >
               MSDF
             </Pill>
-            <Pill
-              slots={1}
-              units={2}
-              fontSize={13}
-              disabled={!vectorAvailable}
-              tone={selection.renderer === "pathfinder" ? "accent" : "outline"}
-              onClick={() => setSetting("textRenderer", "pathfinder")}
-            >
-              VECTOR
-            </Pill>
+            {experimental && (
+              <Pill
+                slots={1}
+                units={2}
+                fontSize={13}
+                disabled={!vectorAvailable}
+                tone={selection.renderer === "pathfinder" ? "accent" : "outline"}
+                onClick={() => setSetting("textRenderer", "pathfinder")}
+              >
+                VECTOR
+              </Pill>
+            )}
             <Pill
               slots={1}
               units={2}
@@ -67,12 +71,18 @@ export function TextComparisonView({ onBack }: { onBack: () => void }) {
             >
               GLYPH
             </Pill>
-            <Pill slots={1} units={2} fontSize={12}
-              disabled={!windfoilAvailable}
-              tone={selection.renderer === "windfoil" ? "accent" : "outline"}
-              onClick={() => setSetting("textRenderer", "windfoil")}>
-              WIND
-            </Pill>
+            {experimental && (
+              <Pill
+                slots={1}
+                units={2}
+                fontSize={12}
+                disabled={!windfoilAvailable}
+                tone={selection.renderer === "windfoil" ? "accent" : "outline"}
+                onClick={() => setSetting("textRenderer", "windfoil")}
+              >
+                WIND
+              </Pill>
+            )}
           </Container>
         </Container>
         <Container flexDirection="row" alignItems="center" justifyContent="space-between">
@@ -102,10 +112,15 @@ export function TextComparisonView({ onBack }: { onBack: () => void }) {
           <Text fontSize={14} color={COLOR.ink}>Coverage</Text>
           <Container flexDirection="row" gap={INNER_GAP}>
             {[1, 0.85, 0.7].map((value) => (
-              <Pill key={value} slots={1} units={1} fontSize={12}
+              <Pill
+                key={value}
+                slots={1}
+                units={1}
+                fontSize={12}
                 disabled={!analyticActive}
                 tone={selection.glyphCoverageExponent === value ? "accent" : "outline"}
-                onClick={() => setSetting("glyphCoverageExponent", value)}>
+                onClick={() => setSetting("glyphCoverageExponent", value)}
+              >
                 {value.toFixed(2)}
               </Pill>
             ))}
@@ -115,10 +130,15 @@ export function TextComparisonView({ onBack }: { onBack: () => void }) {
           <Text fontSize={14} color={COLOR.ink}>Weight (px)</Text>
           <Container flexDirection="row" gap={INNER_GAP}>
             {[0, 0.125, 0.25].map((value) => (
-              <Pill key={value} slots={1} units={1} fontSize={12}
+              <Pill
+                key={value}
+                slots={1}
+                units={1}
+                fontSize={12}
                 disabled={!analyticActive}
                 tone={selection.glyphWeightPixels === value ? "accent" : "outline"}
-                onClick={() => setSetting("glyphWeightPixels", value)}>
+                onClick={() => setSetting("glyphWeightPixels", value)}
+              >
                 {String(value)}
               </Pill>
             ))}
@@ -128,10 +148,15 @@ export function TextComparisonView({ onBack }: { onBack: () => void }) {
           <Text fontSize={14} color={COLOR.ink}>AA width</Text>
           <Container flexDirection="row" gap={INNER_GAP}>
             {[1, 0.85, 0.7].map((value) => (
-              <Pill key={value} slots={1} units={1} fontSize={12}
+              <Pill
+                key={value}
+                slots={1}
+                units={1}
+                fontSize={12}
                 disabled={!analyticActive}
                 tone={selection.glyphAaWidth === value ? "accent" : "outline"}
-                onClick={() => setSetting("glyphAaWidth", value)}>
+                onClick={() => setSetting("glyphAaWidth", value)}
+              >
                 {`${Math.round(value * 100)}%`}
               </Pill>
             ))}
