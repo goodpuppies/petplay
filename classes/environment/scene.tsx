@@ -24,6 +24,7 @@ import {
 import type { DisplayMouseLogicEvent, DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
 import { tryLinuxX11Scroll } from "./displayInstance/linuxX11Scroll.ts";
+import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
 import { createLinuxKeyboardSink } from "./keyboard/linuxSystemKeyboard.ts";
 import type { KeyboardSink } from "./keyboard/types.ts";
@@ -389,7 +390,9 @@ function CommonOverlayChords({
   const origin = React.useMemo(() => new THREE.Vector3(), []);
   const direction = React.useMemo(() => new THREE.Vector3(), []);
   const quaternion = React.useMemo(() => new THREE.Quaternion(), []);
-  const scrollAccumulator = React.useRef(0);
+  const offsetPosition = React.useMemo(() => new THREE.Vector3(), []);
+  const offsetRotation = React.useMemo(() => new THREE.Quaternion(), []);
+  const scrollAccumulator = React.useRef({ left: 0, right: 0 });
   // The scroll chord only cares about the flat display proxy surfaces. The
   // joystick handler runs every XR tick, so raycast those directly instead of
   // the whole 600-node scene (0.8–1.2ms → ~0.005ms measured live).
@@ -405,19 +408,21 @@ function CommonOverlayChords({
     return found;
   }, [scene, graph]);
 
-  useFrame((_state, delta) => {
-    const right = inputSource?.getSnapshot().controllers.right;
-    if (!right) {
-      scrollAccumulator.current = 0;
+  // Either stick: scrolls the display its laser points at, or pushes/pulls (turns a hinge on) what
+  // that hand holds.
+  const stickFrame = (hand: "left" | "right", delta: number) => {
+    const controller = inputSource?.getSnapshot().controllers[hand];
+    if (!controller) {
+      scrollAccumulator.current[hand] = 0;
       return;
     }
-    const axis = Math.abs(right.joystick[1]) > 0.2 ? right.joystick[1] : 0;
-    origin.fromArray(right.position);
-    quaternion.fromArray(right.quaternion);
+    const axis = Math.abs(controller.joystick[1]) > 0.2 ? controller.joystick[1] : 0;
+    origin.fromArray(controller.position);
+    quaternion.fromArray(controller.quaternion);
     // Push/pull needs the nearest live handle pointer, not a surface hit, and the scroll chord
     // needs a non-zero axis. Both early-outs run before the raycast so an idle controller costs
     // nothing here.
-    if (right.grab > 0.5) {
+    if (controller.grab > 0.5) {
       let closestStore: HandleStore<unknown> | undefined;
       let closestPointerId: number | undefined;
       let closestNodeId: string | undefined;
@@ -470,8 +475,14 @@ function CommonOverlayChords({
       }
     }
     if (axis === 0) {
-      scrollAccumulator.current = 0;
+      scrollAccumulator.current[hand] = 0;
       return;
+    }
+    // Scroll what this hand's laser points at: its edited pose, not the controller tip's.
+    const laser = getLaserOffset(hand);
+    if (laser != null) {
+      origin.add(offsetPosition.fromArray(laser.position).applyQuaternion(quaternion));
+      quaternion.multiply(offsetRotation.fromArray(laser.rotation));
     }
     direction.set(0, 0, -1).applyQuaternion(quaternion).normalize();
     raycaster.set(origin, direction);
@@ -484,11 +495,11 @@ function CommonOverlayChords({
     }
     const pointedId = displayObject?.userData.spatialElementId as string | undefined;
     if (!hit?.uv || !pointedId || graph.nodes[pointedId]?.mouseBlocked) return;
-    scrollAccumulator.current += Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND *
+    scrollAccumulator.current[hand] += Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND *
       Math.min(delta, 0.05);
-    const clicks = Math.floor(scrollAccumulator.current);
+    const clicks = Math.floor(scrollAccumulator.current[hand]);
     if (clicks === 0) return;
-    scrollAccumulator.current -= clicks;
+    scrollAccumulator.current[hand] -= clicks;
     const node = graph.nodes[pointedId];
     const crop = node?.kind === "display"
       ? node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 }
@@ -499,6 +510,10 @@ function CommonOverlayChords({
       x: crop.x + hit.uv.x * crop.width,
       y: crop.y + (1 - hit.uv.y) * crop.height,
     });
+  };
+  useFrame((_state, delta) => {
+    stickFrame("right", delta);
+    stickFrame("left", delta);
   });
   return null;
 }

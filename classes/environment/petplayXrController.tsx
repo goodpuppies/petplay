@@ -69,6 +69,8 @@ type HudRayModelOptions = {
   color?: HudRayColor | ((pointer: Pointer) => HudRayColor);
   opacity?: number | ((pointer: Pointer) => number);
   size?: number;
+  /** Only while the pointer holds something (the grab ray's beam). */
+  whileCaptured?: boolean;
 };
 
 /** Match [ConstantControllerAimBeam](controllerAimBeam.tsx); options can override via `rayPointer.rayModel`. */
@@ -94,7 +96,7 @@ function updateHudRayModel(
   pointer: Pointer,
   options: HudRayModelOptions,
 ) {
-  if (!pointer.getEnabled()) {
+  if (!pointer.getEnabled() || (options.whileCaptured && pointer.getPointerCapture() == null)) {
     mesh.visible = false;
     return;
   }
@@ -144,8 +146,10 @@ const HudPointerRayModel = forwardRef<Object3D, HudRayModelOptions & { pointer: 
         new MeshBasicMaterial({
           transparent: true,
           toneMapped: false,
-          // Aim feedback must remain visible over the screen receiving the ray.
-          depthTest: false,
+          // Depth-tested so UI in front of the laser covers it. The beam stops at what it hits, so
+          // it is never behind the screen receiving it. (The raylib renderer writes UI depth for
+          // this: see `writeUiDepth`.)
+          depthTest: true,
           depthWrite: false,
         }),
       [],
@@ -202,7 +206,8 @@ function HudPointerCursorModel(
         transparent: true,
         opacity: 0.9,
         toneMapped: false,
-        depthTest: false,
+        // Sits just in front of the surface it marks; UI nearer than that covers it.
+        depthTest: true,
         depthWrite: false,
       }),
     [color],
@@ -319,7 +324,7 @@ function PetplayGrabSpherePointer(options: DefaultXRInputSourceGrabPointerOption
 
 /** Squeeze + target-ray, `pointerType: "grab"`. Paired with `PetplayGrabSpherePointer` in {@link LaserFirstGrabPointer}. */
 function PetplayGrabRayPointer(
-  { ...rayOpts }: RayPointerOptions,
+  { beam, ...rayOpts }: RayPointerOptions & { beam: boolean },
 ) {
   const state = useXRInputSourceStateContext();
   const ref = useRef<Object3D>(null);
@@ -332,9 +337,23 @@ function PetplayGrabRayPointer(
   }, [pointer]);
   usePointerXRInputSourceEvents(pointer, state.inputSource, "squeeze", state.events);
   useRegisterGrabPointer(pointer, "ray");
+  const hand = state.inputSource.handedness;
+  // While this ray holds something the select ray is off (so the trigger resizes instead of
+  // clicking), and its beam with it: this one stands in, from the laser to the grab point.
   return (
     <XRSpace space="target-ray-space">
-      <LaserOffsetGroup ref={ref} hand={state.inputSource.handedness} />
+      <group userData={{ renderTrackingAnchor: `${hand}-ray` }}>
+        <LaserOffsetGroup ref={ref} hand={hand}>
+          {beam && (
+            <HudPointerRayModel
+              pointer={pointer}
+              {...PETPLAY_RAY_DEFAULTS}
+              opacity={1}
+              whileCaptured
+            />
+          )}
+        </LaserOffsetGroup>
+      </group>
     </XRSpace>
   );
 }
@@ -691,6 +710,7 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
           <PetplayGrabRayPointer
             {...(grabForRay as RayPointerOptions)}
             minDistance={minD}
+            beam={laserEnabled && rayPointerOptions !== false}
           />
         </LaserFirstGrabPointer>
       )}

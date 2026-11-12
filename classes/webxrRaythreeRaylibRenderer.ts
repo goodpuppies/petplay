@@ -440,6 +440,8 @@ export class WebXRRaythreeRaylibRenderer {
   private textBatchPoolCap = 0;
   private uiPanelDataTexW = 9;
   private uiPanelRunSlots: UiPanelRunSlot[] = [];
+  /** Each UI root's backmost mostly-opaque panel this frame: what {@link writeUiDepth} draws. */
+  private readonly uiDepthPanels: WebXRRaythreeUiPanelSnapshot[] = [];
   private uiPanelFrameData: UiPanelFrameData[] = [];
   /** Advanced once per stereo frame by `beginUiFrame`; scopes panel-run reuse to one frame. */
   private uiFrame = 0;
@@ -480,7 +482,8 @@ export class WebXRRaythreeRaylibRenderer {
   constructor() {
     this.pathfinderText = PathfinderTextRenderer.createIfEnabled();
     this.textRenderer = this.pathfinderText ? "pathfinder" : "msdf";
-    const requested = Deno.args.find((arg) => arg.startsWith("--text-renderer="))?.split("=")[1] ?? Deno.env.get("PETPLAY_TEXT_RENDERER");
+    const requested = Deno.args.find((arg) => arg.startsWith("--text-renderer="))?.split("=")[1] ??
+      Deno.env.get("PETPLAY_TEXT_RENDERER");
     if (requested === "glyph" || requested === "windfoil") this.setTextRenderer(requested);
     this.baseMaterial = raylib.H.LoadMaterialDefault();
     this.lightingShader = createLightingShader();
@@ -707,12 +710,19 @@ export class WebXRRaythreeRaylibRenderer {
 
   /** Called on the GL owner; keep native caches warm during in-VR A/B switching. */
   setTextRenderer(renderer: "msdf" | "pathfinder" | "glyph" | "windfoil"): void {
-    if (renderer !== "msdf" && renderer !== "pathfinder" && renderer !== "glyph" && renderer !== "windfoil") throw new Error(`Unknown text renderer: ${renderer}`);
+    if (
+      renderer !== "msdf" && renderer !== "pathfinder" && renderer !== "glyph" &&
+      renderer !== "windfoil"
+    ) throw new Error(`Unknown text renderer: ${renderer}`);
     if (renderer === "pathfinder" && this.pathfinderText === null) {
       this.pathfinderText = new PathfinderTextRenderer();
     }
-    if (renderer === "glyph" && this.glyphText === null) this.glyphText = new PathfinderTextRenderer("glyph");
-    if (renderer === "windfoil" && this.windfoilText === null) this.windfoilText = new PathfinderTextRenderer("windfoil");
+    if (renderer === "glyph" && this.glyphText === null) {
+      this.glyphText = new PathfinderTextRenderer("glyph");
+    }
+    if (renderer === "windfoil" && this.windfoilText === null) {
+      this.windfoilText = new PathfinderTextRenderer("windfoil");
+    }
     this.textRenderer = renderer;
   }
 
@@ -968,6 +978,7 @@ export class WebXRRaythreeRaylibRenderer {
         setUiDepthTestEnabled(true);
         setUiDepthMaskEnabled(true);
       }
+      this.writeUiDepth();
     }
     this.drawHudOverUiInstances(frame);
     const tUi1 = performance.now();
@@ -1084,6 +1095,12 @@ export class WebXRRaythreeRaylibRenderer {
       group.push(panel);
       panelsByRoot.set(panel.rootIndex, group);
     }
+    this.uiDepthPanels.length = 0;
+    for (const rootPanels of panelsByRoot.values()) {
+      // Sorted back to front within the root, so this is its background (a card, the wrist square).
+      const background = rootPanels.find((panel) => (panel.data[7] ?? 0) >= UI_DEPTH_MIN_OPACITY);
+      if (background != null) this.uiDepthPanels.push(background);
+    }
     const textsByRoot = new Map<number, typeof texts>();
     for (const text of texts) {
       const group = textsByRoot.get(text.rootIndex) ?? [];
@@ -1199,8 +1216,11 @@ export class WebXRRaythreeRaylibRenderer {
       const textStart = performance.now();
       const vectorDrawn = this.textRenderer === "pathfinder"
         ? this.pathfinderText?.draw(rootTexts, this.uiMvpPV)
-        : this.textRenderer === "glyph" ? this.glyphText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
-        : this.textRenderer === "windfoil" ? this.windfoilText?.draw(rootTexts, this.uiMvpPV, ui.textRendering) : null;
+        : this.textRenderer === "glyph"
+        ? this.glyphText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
+        : this.textRenderer === "windfoil"
+        ? this.windfoilText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
+        : null;
       if (vectorDrawn != null) {
         textDrawn += vectorDrawn;
         textMs += performance.now() - textStart;
@@ -1727,6 +1747,27 @@ export class WebXRRaythreeRaylibRenderer {
     }
 
     this.drawNativeMesh(nativeMesh, nativeMaterial, instance.worldMatrix);
+  }
+
+  /**
+   * Puts the UI into the depth buffer, without color, so HUD meshes that keep their depth test
+   * (the lasers) go behind UI that is in front of them and stay over UI that is behind them. The UI
+   * pass itself writes no depth (it layers by draw order), so one quad per root, its background,
+   * stands in for the whole root. The panel shader discards transparent pixels, so rounded corners
+   * and see-through containers leave no depth behind.
+   */
+  private writeUiDepth(): void {
+    if (this.uiDepthPanels.length === 0) return;
+    setUiColorMaskEnabled(false);
+    setUiDepthTestEnabled(true);
+    setUiDepthMaskEnabled(true);
+    setUiBackfaceCullingEnabled(false);
+    try {
+      for (const panel of this.uiDepthPanels) this.drawUiPanel(panel, this.uiMvpPV);
+    } finally {
+      setUiBackfaceCullingEnabled(true);
+      setUiColorMaskEnabled(true);
+    }
   }
 
   /**
@@ -2727,6 +2768,9 @@ function compareUiOrderInfo(
     (left.elementType - right.elementType) ||
     (left.patchIndex - right.patchIndex);
 }
+
+/** A root background at least this opaque hides what is behind it from the lasers. */
+const UI_DEPTH_MIN_OPACITY = 0.5;
 
 function computeUiDepthOffset(
   orderInfo: WebXRRaythreeUiOrderInfo | undefined,

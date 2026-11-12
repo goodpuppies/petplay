@@ -24,7 +24,8 @@ export type ConstantControllerAimBeamProps = {
 const BEAM_THICKNESS = 0.002;
 
 /**
- * Controller aim cue: thin unlit box along local -Z. `depthTest` / `depthWrite` off. For the Raylib
+ * Controller aim cue: thin unlit box along local -Z. Depth-tested (UI in front covers it), no depth
+ * write. For the Raylib
  * overlay, `raythreeHudOverUi` draws this **after** uikit; `renderOrder` only affects the WebGPU
  * path among scene objects.
  */
@@ -48,7 +49,7 @@ export function ConstantControllerAimBeam(
       <meshBasicMaterial
         color={threeColor}
         toneMapped={false}
-        depthTest={false}
+        depthTest
         depthWrite={false}
         transparent={!opaque}
         opacity={opacity}
