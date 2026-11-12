@@ -60,7 +60,30 @@ def check(glb, ttf, chars):
         print(f'U+{ch:04X} gid={gid} texels={len(decoded)} on-curve={len(want)} {status} bounds={b} src=[{min(xs)},{min(ys)},{max(xs)},{max(ys)}]')
     return ok
 
-fonts = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'resources', 'fonts') + os.sep
-a = check('roboto.font.glb', fonts + 'roboto/Roboto-Regular.ttf', [ord(c) for c in '@sAgé€'])
-b = check('icons.font.glb', fonts + 'material-icons/MaterialIcons-Regular.ttf', [0xE5C4, 0xE145, 0xE8B8] )
-sys.exit(0 if a and b else 1)
+def check_gaps(glb, ttf):
+    """glyphFont.ts fills zero last-column curve texels from the next texel. That is exact unless a
+    contour can close at (0, 0) em, which this bake must rule out for every glyph with such a gap."""
+    from fontTools.ttLib import TTFont
+    f = load(glb); w = f['width']; glyf = TTFont(ttf)['glyf']; ok = True
+    names = {gid: name for name, gid in ((n, f['order'].index(n)) for n in f['order'])}
+    for gid in range(len(f['records']) // 40):
+        page, = struct.unpack('<H', f['records'][gid * 40 + 8:gid * 40 + 10])
+        if page == 0xFFFF: continue
+        base, span = struct.unpack('<2I', f['records'][gid * 40 + 16:gid * 40 + 24])
+        gaps = [t for t in range(base, base + span - 1)
+                if t % w == w - 1 and f['curves'][t * 8:t * 8 + 8] == bytes(8)]
+        if not gaps: continue
+        glyph = glyf[names[gid]] if names[gid] in glyf else None
+        at_origin = glyph is not None and glyph.numberOfContours > 0 and \
+            (0, 0) in [tuple(p) for p in glyph.getCoordinates(glyf)[0]]
+        print(f'{glb}: glyph {names[gid]} has {len(gaps)} packer gap(s); ' + ('AMBIGUOUS: has a point at (0, 0)' if at_origin else 'unambiguous'))
+        ok &= not at_origin
+    return ok
+
+if __name__ == '__main__':
+    fonts = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'resources', 'fonts') + os.sep
+    a = check('roboto.font.glb', fonts + 'roboto/Roboto-Regular.ttf', [ord(c) for c in '@sAgé€'])
+    b = check('icons.font.glb', fonts + 'material-icons/MaterialIcons-Regular.ttf', [0xE5C4, 0xE145, 0xE8B8] )
+    c = check_gaps('roboto.font.glb', fonts + 'roboto/Roboto-Regular.ttf')
+    d = check_gaps('icons.font.glb', fonts + 'material-icons/MaterialIcons-Regular.ttf')
+    sys.exit(0 if a and b and c and d else 1)

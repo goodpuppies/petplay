@@ -57,18 +57,15 @@ export function pathfinderTextAvailable(): boolean {
   }
 }
 
+/**
+ * Glyph draws in TypeScript from the baked fonts in resources/fonts/glyph (see
+ * classes/glyphText.ts), so it needs no native library and works on every platform.
+ */
 export function glyphTextAvailable(): boolean {
-  if (!pathfinderTextAvailable()) return false;
-  // Feature detection keeps a new UI from enabling Glyph against an older native build.
   try {
-    const lib = Deno.dlopen(
-      new URL("../resources/libpetplay_pathfinder_text.so", import.meta.url),
-      {
-        pp_glyph_draw: { parameters: ["pointer", "buffer", "u32"], result: "i32" },
-      },
+    return ["roboto.font.glb", "icons.font.glb"].every((file) =>
+      Deno.statSync(new URL(`../resources/fonts/glyph/${file}`, import.meta.url)).isFile
     );
-    lib.close();
-    return true;
   } catch {
     return false;
   }

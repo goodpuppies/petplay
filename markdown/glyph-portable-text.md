@@ -28,12 +28,12 @@ npx glyph bake --input $F/material-icons/MaterialIcons-Regular.ttf --output icon
 
 The Unicode sets are the characters of the two BMFont files that the UI lays text out with:
 
-- `utils/glyph-bake/roboto.set`: every code point below U+E000 in either `.fnt`. This includes the Latin-1 extras
-  from `material-icons.fnt`, which the native code draws from Roboto.
+- `utils/glyph-bake/roboto.set`: every code point below U+E000 in either `.fnt`. This includes the
+  Latin-1 extras from `material-icons.fnt`, which the native code draws from Roboto.
 - `utils/glyph-bake/icons.set`: the code points from U+E000 up.
 
-That comes to 190 Roboto characters (245 KB) and 48 icons (65 KB). `--outlines` keeps outlines for
-a later Windfoil port. Drop it if Windfoil never ships.
+That comes to 190 Roboto characters (245 KB) and 48 icons (65 KB). `--outlines` keeps outlines for a
+later Windfoil port. Drop it if Windfoil never ships.
 
 ## Format (`PMNDRS_font_slug` version 0)
 
@@ -56,12 +56,28 @@ a later Windfoil port. Drop it if Windfoil never ships.
 checks them against the source fonts with fontTools: every on-curve point and the bounds match
 within f16 precision (checked 2026-11-12).
 
+## As built (2026-11-12)
+
+- **Fonts:** `resources/fonts/glyph/{roboto,icons}.font.glb`. The build already embeds `resources/`.
+- **Loader:** `classes/glyphFont.ts` parses the glTF, reads the cmap and records, and returns the
+  three textures per page. It also fills the pinned packer's continuation gaps, which the native
+  loader patched too. The baked file does not record contours, so `check_slug.py` asserts that no
+  gapped glyph can close a contour at (0, 0).
+- **GL:** `classes/glFunctions.ts` reads raylib's `glad_gl*` pointers, which every shipped raylib
+  exports (Linux x86-64 and ARM64, Windows). A Deno `pointer` static is the variable's _address_:
+  dereference it. Calling the address segfaults.
+- **Renderer:** `classes/glyphText.ts` builds the same instances as the native `pp_glyph_draw` and
+  draws them with the same shaders (`classes/glyphShaders.ts`, copied from
+  `native/pathfinderText/src`). It saves and restores the GL state it touches.
+- **Check:** `tests/pathfinder_text/render.ts` now runs Glyph through the TypeScript renderer.
+  Against the native renderer's output, at most 12 of about 4,300 lit pixels differ, by 1/255. That
+  holds for every tuning variant.
+- **Available everywhere:** Glyph is available on every platform, whenever the baked fonts are
+  present. Vector and Windfoil still need the native library and are hidden in release builds.
+
 ## Next
 
-1. A TypeScript loader:
-   - parse the glTF and read the `cmap`;
-   - upload the three textures through raylib/rlgl;
-   - build the per-instance data the native `pp_glyph_draw` builds today, from the records.
-2. Run `glyph.vert` / `glyph.frag` as a raylib shader.
-3. Ship the two `.font.glb` files in `resources/fonts/`, and drop Glyph from the native library.
-4. Pin the npm version next to the Cargo pin: `.font.glb` is versioned (0.x) and may change.
+- Drop Glyph from the native library. Windfoil still uses its shared setup, so do it when Windfoil
+  is ported or retired.
+- Port Windfoil the same way, using the baked `--outlines`.
+- Pin the npm version next to the Cargo pin: `.font.glb` is versioned (0.x) and may change.

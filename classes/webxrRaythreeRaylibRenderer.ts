@@ -1,6 +1,7 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as THREE from "three";
 import { PathfinderTextRenderer } from "./pathfinderText.ts";
+import { GlyphTextRenderer } from "./glyphText.ts";
 import { beginUiAlphaBlend } from "./uiAlphaBlend.ts";
 import { captureTextBatchTransforms, textBatchTransformsMatch } from "./uiTextBatchTransforms.ts";
 import {
@@ -476,7 +477,7 @@ export class WebXRRaythreeRaylibRenderer {
   private loggedUiPanelBatchDebugOnce = false;
   private loggedUiPanelForceUnbatchedOnce = false;
   private pathfinderText: PathfinderTextRenderer | null;
-  private glyphText: PathfinderTextRenderer | null = null;
+  private glyphText: GlyphTextRenderer | null = null;
   private windfoilText: PathfinderTextRenderer | null = null;
   private textRenderer: "msdf" | "pathfinder" | "glyph" | "windfoil";
   constructor() {
@@ -718,7 +719,7 @@ export class WebXRRaythreeRaylibRenderer {
       this.pathfinderText = new PathfinderTextRenderer();
     }
     if (renderer === "glyph" && this.glyphText === null) {
-      this.glyphText = new PathfinderTextRenderer("glyph");
+      this.glyphText = new GlyphTextRenderer();
     }
     if (renderer === "windfoil" && this.windfoilText === null) {
       this.windfoilText = new PathfinderTextRenderer("windfoil");
