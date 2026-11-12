@@ -65,6 +65,24 @@ Deno.test("renderer-owned state does not change the fingerprint", () => {
   assertEquals(fingerprintScene(a), fingerprintScene(b));
 });
 
+Deno.test("Glyph tuning alone invalidates scene content", () => {
+  const p = payload();
+  p.ui.textRendering = {renderer:"glyph", panoramaFilter:"linear", glyphCoverageExponent:1, glyphWeightPixels:0};
+  const base = fingerprintScene(p);
+  p.ui.textRendering.glyphCoverageExponent = 0.85;
+  assertNotEquals(fingerprintScene(p), base);
+  p.ui.textRendering.glyphCoverageExponent = 1;
+  p.ui.textRendering.glyphWeightPixels = 0.125;
+  assertNotEquals(fingerprintScene(p), base);
+  p.ui.textRendering.glyphWeightPixels = 0;
+  p.ui.textRendering.glyphAaWidth = 0.85;
+  assertNotEquals(fingerprintScene(p), base);
+  p.ui.textRendering.glyphAaWidth = undefined;
+  const glyph = fingerprintScene(p);
+  p.ui.textRendering.renderer = "windfoil";
+  assertNotEquals(fingerprintScene(p), glyph);
+});
+
 Deno.test("scene content changes the fingerprint", () => {
   const base = fingerprintScene(payload());
   const cases: ((p: WebXRRaythreeRenderPayload) => void)[] = [
@@ -76,6 +94,9 @@ Deno.test("scene content changes the fingerprint", () => {
     (p) => p.ui.texts.pop(),
     (p) => p.frame.leftEyeProjectionMatrix[0] = 0.7,
     (p) => p.background[3] = 1,
+    (p) => p.ui.textRendering = { renderer: "pathfinder", panoramaFilter: "catmull-rom" },
+    (p) => p.ui.textRendering = { renderer: "glyph", panoramaFilter: "linear", glyphCoverageExponent: 0.85 },
+    (p) => p.ui.textRendering = { renderer: "glyph", panoramaFilter: "linear", glyphWeightPixels: 0.125 },
   ];
   for (const mutate of cases) {
     const p = payload();

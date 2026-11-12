@@ -28,7 +28,8 @@ type WirePayload = Omit<WebXRRaythreeRenderPayload, "ui"> & {
   ui: Omit<WebXRRaythreeRenderPayload["ui"], "texts"> & { texts: WireText[] };
   uiGeometryAssets: Asset[];
 };
-const bytes = (g: Geometry) => g.positions.byteLength + g.uvs.byteLength + g.indices.byteLength;
+const bytes = (g: Geometry) => g.positions.byteLength + g.uvs.byteLength + g.indices.byteLength +
+  (g.vectorGlyphs?.byteLength ?? 0);
 const identity = (d: SceneDelivery) => `${d.epoch}:${d.stream}`;
 function validRef(r: Ref): boolean {
   return Number.isSafeInteger(r.id) && r.id > 0 && Number.isSafeInteger(r.revision) &&

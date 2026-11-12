@@ -1,0 +1,18 @@
+[package]
+name = "petplay-pathfinder-spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gl = "0.14"
+font-kit = "0.6"
+pathfinder_canvas = { path = "../pathfinder-upstream/canvas", features = ["pf-text"] }
+pathfinder_color = { path = "../pathfinder-upstream/color" }
+pathfinder_geometry = { path = "../pathfinder-upstream/geometry" }
+pathfinder_gl = { path = "../pathfinder-upstream/gl" }
+pathfinder_renderer = { path = "../pathfinder-upstream/renderer" }
+pathfinder_resources = { path = "../pathfinder-upstream/resources" }
+
+[patch.crates-io]
+pathfinder_geometry = { path = "../pathfinder-upstream/geometry" }
+pathfinder_simd = { path = "../pathfinder-upstream/simd" }

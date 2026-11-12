@@ -1,5 +1,6 @@
 /** Cache CPU text data across independently decoded scene packets. */
 type Geometry = {
+  vectorGlyphs?: Float32Array;
   positions: Float32Array;
   uvs: Float32Array;
   indices: Uint16Array | Uint32Array;
@@ -26,7 +27,10 @@ export class UiTextGeometryInterner {
       if (
         source && old && source.version === old.version &&
         sameBytes(source.positions, old.positions) && sameBytes(source.uvs, old.uvs) &&
-        sameBytes(source.indices, old.indices)
+        sameBytes(source.indices, old.indices) &&
+        (source.vectorGlyphs === old.vectorGlyphs ||
+          (source.vectorGlyphs != null && old.vectorGlyphs != null &&
+            sameBytes(source.vectorGlyphs, old.vectorGlyphs)))
       ) {
         texts[i].geometry = old;
       }

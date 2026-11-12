@@ -1,0 +1,23 @@
+[package]
+name = "petplay-pathfinder-text"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+gl = "0.14"
+font-kit = "0.6"
+serde_json = "1.0"
+pmndrs-glyph-slug-core = { git = "https://github.com/pmndrs/glyph", rev = "4e25a96a57462fef5ad0d19065a822695b480f60" }
+pathfinder_color = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+pathfinder_content = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+pathfinder_geometry = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+pathfinder_gl = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+pathfinder_renderer = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+pathfinder_resources = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+
+[patch.crates-io]
+pathfinder_geometry = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }
+pathfinder_simd = { git = "https://github.com/servo/pathfinder", rev = "6c3c0466f451c5bd2007087728cd168798cd64e8" }

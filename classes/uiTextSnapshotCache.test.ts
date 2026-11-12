@@ -10,6 +10,7 @@ function text() {
     color: [1, 1, 1, 1],
     worldMatrix: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
     geometry: {
+      vectorGlyphs: new Float32Array([65, 0, 0, 80, 0]),
       positions: new Float32Array([0, 0, 1, 0, 0, 1]),
       uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
       indices: new Uint16Array([0, 1, 2]),
@@ -45,7 +46,7 @@ Deno.test("decoded equivalent labels retain geometry and reuse batch content", (
   );
 });
 Deno.test("same revision and lengths cannot hide changed glyph data", () => {
-  for (const part of ["positions", "uvs", "indices"] as const) {
+  for (const part of ["positions", "uvs", "indices", "vectorGlyphs"] as const) {
     const cache = new UiTextGeometryInterner();
     const a = [text()];
     cache.intern(a);

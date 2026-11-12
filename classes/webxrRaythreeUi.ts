@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { getTextRenderingSettings, type TextRenderingSettings } from "./textRenderingSettings.ts";
+import { captureVectorTextGlyphs, type VectorTextGeometrySource } from "./vectorTextGlyphs.ts";
 import { type Anchored, captureRenderAnchor } from "./overlayRenderTracking.ts";
 import type { InstancedBufferAttribute, Material, Object3D } from "three";
 import { collectUikitRootContextsFromObject } from "../submodules/threewebxrwebgpudeno/local-uikit/raylibUikitSceneRoots.ts";
@@ -106,6 +108,8 @@ export type WebXRRaythreeUiTextSnapshot = Anchored & {
   };
   /** Per-glyph quad geometry in mesh-local space (from MSDFTextGeometry). */
   geometry?: {
+    /** Existing layout's vector placements, packed by captureVectorTextGlyphs. */
+    vectorGlyphs?: Float32Array;
     positions: Float32Array; // itemSize=2
     uvs: Float32Array; // itemSize=2
     indices: Uint16Array | Uint32Array;
@@ -117,6 +121,7 @@ export type WebXRRaythreeUiTextSnapshot = Anchored & {
 };
 
 export type WebXRRaythreeUiSnapshot = {
+  textRendering?: TextRenderingSettings;
   panels: WebXRRaythreeUiPanelSnapshot[];
   texts: WebXRRaythreeUiTextSnapshot[];
   images: WebXRRaythreeUiImageSnapshot[];
@@ -164,7 +169,7 @@ const matrixHelper = new THREE.Matrix4();
 const instanceMatrixHelper = new THREE.Matrix4();
 const dataBlock16 = new Float32Array(16);
 
-type TextGeometrySource = {
+type TextGeometrySource = VectorTextGeometrySource & {
   attributes?: {
     position?: { array: ArrayLike<number>; itemSize: number; version?: number };
     uv?: { array: ArrayLike<number>; itemSize: number; version?: number };
@@ -210,6 +215,7 @@ function hasPanelDataAttributes(
 
 export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnapshot {
   const snapshot: WebXRRaythreeUiSnapshot = {
+    textRendering: getTextRenderingSettings(),
     panels: [],
     texts: [],
     images: [],
@@ -575,6 +581,7 @@ function getTextGeometrySnapshot(
     ? rawIndices.slice()
     : new Uint32Array(Array.from(rawIndices));
   const snapshot = {
+    vectorGlyphs: captureVectorTextGlyphs(source),
     id: cached?.snapshot.id ?? ++nextTextGeometryId,
     revision: (cached?.snapshot.revision ?? 0) + 1,
     positions: positionAttr.array instanceof Float32Array

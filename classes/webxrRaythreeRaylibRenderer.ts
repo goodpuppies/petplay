@@ -1,5 +1,7 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as THREE from "three";
+import { PathfinderTextRenderer } from "./pathfinderText.ts";
+import { beginUiAlphaBlend } from "./uiAlphaBlend.ts";
 import { captureTextBatchTransforms, textBatchTransformsMatch } from "./uiTextBatchTransforms.ts";
 import {
   captureTextBatchContent,
@@ -471,7 +473,15 @@ export class WebXRRaythreeRaylibRenderer {
   private readonly loggedProjectionSummary = new Set<string>();
   private loggedUiPanelBatchDebugOnce = false;
   private loggedUiPanelForceUnbatchedOnce = false;
+  private pathfinderText: PathfinderTextRenderer | null;
+  private glyphText: PathfinderTextRenderer | null = null;
+  private windfoilText: PathfinderTextRenderer | null = null;
+  private textRenderer: "msdf" | "pathfinder" | "glyph" | "windfoil";
   constructor() {
+    this.pathfinderText = PathfinderTextRenderer.createIfEnabled();
+    this.textRenderer = this.pathfinderText ? "pathfinder" : "msdf";
+    const requested = Deno.args.find((arg) => arg.startsWith("--text-renderer="))?.split("=")[1] ?? Deno.env.get("PETPLAY_TEXT_RENDERER");
+    if (requested === "glyph" || requested === "windfoil") this.setTextRenderer(requested);
     this.baseMaterial = raylib.H.LoadMaterialDefault();
     this.lightingShader = createLightingShader();
     this.uiPanelShader = createUiPanelShader();
@@ -661,6 +671,7 @@ export class WebXRRaythreeRaylibRenderer {
     batchGeometries: number;
     batchMaterials: number;
   } {
+    if (ui?.textRendering) this.setTextRenderer(ui.textRendering.renderer);
     this.work.textGeometryBuilds = 0;
     this.work.textBatchRebuilds = 0;
     this.work.textBatchHits = 0;
@@ -694,7 +705,21 @@ export class WebXRRaythreeRaylibRenderer {
     };
   }
 
+  /** Called on the GL owner; keep native caches warm during in-VR A/B switching. */
+  setTextRenderer(renderer: "msdf" | "pathfinder" | "glyph" | "windfoil"): void {
+    if (renderer !== "msdf" && renderer !== "pathfinder" && renderer !== "glyph" && renderer !== "windfoil") throw new Error(`Unknown text renderer: ${renderer}`);
+    if (renderer === "pathfinder" && this.pathfinderText === null) {
+      this.pathfinderText = new PathfinderTextRenderer();
+    }
+    if (renderer === "glyph" && this.glyphText === null) this.glyphText = new PathfinderTextRenderer("glyph");
+    if (renderer === "windfoil" && this.windfoilText === null) this.windfoilText = new PathfinderTextRenderer("windfoil");
+    this.textRenderer = renderer;
+  }
+
   dispose(): void {
+    this.pathfinderText?.dispose();
+    this.glyphText?.dispose();
+    this.windfoilText?.dispose();
     LogChannel.log(
       "webxrv2",
       `[webxr] raylib scene dispose: geometries=${this.geometries.size}`,
@@ -926,6 +951,7 @@ export class WebXRRaythreeRaylibRenderer {
       setUiDepthMaskEnabled(false);
       setUiDepthTestEnabled(false);
       setUiBackfaceCullingEnabled(false);
+      beginUiAlphaBlend();
       try {
         const uiPhases = this.drawUiSnapshot(ui, viewMatrix, projectionMatrix);
         uiSortPrepMs = uiPhases.sortPrepMs;
@@ -936,6 +962,7 @@ export class WebXRRaythreeRaylibRenderer {
         uiPanelDrawn = uiPhases.panelDrawn;
         uiTextDrawn = uiPhases.textDrawn;
       } finally {
+        raylib.H.EndBlendMode();
         setUiBackfaceCullingEnabled(true);
         setUiDepthTestEnabled(true);
         setUiDepthMaskEnabled(true);
@@ -1169,6 +1196,15 @@ export class WebXRRaythreeRaylibRenderer {
       }
       const rootTexts = op.texts;
       const textStart = performance.now();
+      const vectorDrawn = this.textRenderer === "pathfinder"
+        ? this.pathfinderText?.draw(rootTexts, this.uiMvpPV)
+        : this.textRenderer === "glyph" ? this.glyphText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
+        : this.textRenderer === "windfoil" ? this.windfoilText?.draw(rootTexts, this.uiMvpPV, ui.textRendering) : null;
+      if (vectorDrawn != null) {
+        textDrawn += vectorDrawn;
+        textMs += performance.now() - textStart;
+        continue;
+      }
       // One batch per font within the root: a batch binds a single atlas, so
       // runs from different fonts cannot share one. Grouping keeps batching in
       // play once icons are on screen.

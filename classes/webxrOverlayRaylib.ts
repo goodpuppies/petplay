@@ -183,6 +183,8 @@ export class WebXROverlayRaylib {
   private halfFovLocation = -1;
   private outputUvScaleLocation = -1;
   private outputUvOffsetLocation = -1;
+  private panoramaFilterLocation = -1;
+  private panoramaFilter: "linear" | "catmull-rom" = "linear";
   private readonly uniqueId = crypto.randomUUID().slice(0, 8);
   private resolvedEyeSize: number | null = null;
   private readonly shaderVec2Buffer = new Float32Array(2);
@@ -252,6 +254,8 @@ export class WebXROverlayRaylib {
       this.combineShader,
       "outputUvOffset",
     );
+    this.panoramaFilterLocation = raylib.H.GetShaderLocation(this.combineShader, "panoramaFilter");
+    this.setPanoramaFilter(Deno.env.get("PETPLAY_PANORAMA_FILTER") ?? "linear");
 
     LogChannel.log(
       "webxrv2",
@@ -266,6 +270,25 @@ export class WebXROverlayRaylib {
 
     const eye = this.requestedEyeSize ?? getRaylibNativeEyeSize();
     this.ensureTexture(eye, eye, eye, eye);
+  }
+
+  /** Live A/B on the GL owner: changes only eye-to-panorama reconstruction. */
+  setPanoramaFilter(filter: string): "linear" | "catmull-rom" {
+    if (filter !== "linear" && filter !== "catmull-rom") {
+      throw new Error(`Unknown panorama filter: ${filter}`);
+    }
+    if (!this.combineShader || this.panoramaFilterLocation < 0) {
+      throw new Error("Panorama filter shader is not ready");
+    }
+    const value = new Int32Array([filter === "catmull-rom" ? 1 : 0]);
+    raylib.H.SetShaderValue(
+      this.combineShader,
+      this.panoramaFilterLocation,
+      Deno.UnsafePointer.of(value),
+      raylib.ShaderUniformDataType.SHADER_UNIFORM_INT,
+    );
+    this.panoramaFilter = filter;
+    return filter;
   }
 
   /** New producer epoch: never resolve recycled asset IDs through the previous scene cache. */
@@ -560,6 +583,10 @@ export class WebXROverlayRaylib {
     uiTextDrawn: number;
   } {
     const eye = this.resolvedEyeSize ?? (this.requestedEyeSize ?? getRaylibNativeEyeSize());
+    const selection = payload.ui.textRendering;
+    if (selection && selection.panoramaFilter !== this.panoramaFilter) {
+      this.setPanoramaFilter(selection.panoramaFilter);
+    }
     const renderT0 = performance.now();
     this.checkGlHealth();
     this.rebuildRenderTargetsIfRequested();

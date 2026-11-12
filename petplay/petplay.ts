@@ -6,6 +6,9 @@ import { runLogParent, shouldRunLogParent } from "../classes/runLog.ts";
 
 installNativeCrashTrace();
 initializeLinuxScheduling();
+// IPC render workers inherit environment, rather than the server's command-line arguments.
+const textRenderer = Deno.args.find((arg) => arg.startsWith("--text-renderer="))?.split("=")[1];
+if (textRenderer != null) Deno.env.set("PETPLAY_TEXT_RENDERER", textRenderer);
 
 /**
  * PetPlay's process entry: either this process *is* a dispatched child module, or it is the server.

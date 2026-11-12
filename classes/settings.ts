@@ -33,6 +33,33 @@ export const VRC_CAMERA_RESOLUTIONS = ["1920x1080", "1280x720", "2560x1440"] as 
 export type VrcCameraResolution = typeof VRC_CAMERA_RESOLUTIONS[number];
 
 export const SETTINGS_SCHEMA = {
+  glyphAaWidth: {
+    default: 1 as number,
+    label: "Glyph antialiasing footprint scale (1 is original; smaller is sharper)",
+    valid: (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0.5 && v <= 1,
+  } satisfies SettingSpec<number>,
+  glyphCoverageExponent: {
+    default: 1 as number,
+    label: "Glyph edge coverage exponent (1 is the original coverage)",
+    valid: (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0.5 && v <= 1,
+  } satisfies SettingSpec<number>,
+  glyphWeightPixels: {
+    default: 0 as number,
+    label: "Glyph coverage dilation in eye pixels (0 is the original weight)",
+    valid: (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 0.25,
+  } satisfies SettingSpec<number>,
+  textRenderer: {
+    default: null as "msdf" | "pathfinder" | "glyph" | "windfoil" | null,
+    label: "Text renderer; null follows the session default",
+    valid: (value: unknown): value is "msdf" | "pathfinder" | "glyph" | "windfoil" | null =>
+      value === null || value === "msdf" || value === "pathfinder" || value === "glyph" || value === "windfoil",
+  } satisfies SettingSpec<"msdf" | "pathfinder" | "glyph" | "windfoil" | null>,
+  panoramaFilter: {
+    default: null as "linear" | "catmull-rom" | null,
+    label: "Panorama reconstruction filter; null follows the session default",
+    valid: (value: unknown): value is "linear" | "catmull-rom" | null =>
+      value === null || value === "linear" || value === "catmull-rom",
+  } satisfies SettingSpec<"linear" | "catmull-rom" | null>,
   grabboxOutline: {
     default: true as boolean,
     label: "Draw grab-box outlines (the hull stays grabbable either way)",

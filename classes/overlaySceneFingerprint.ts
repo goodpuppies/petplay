@@ -32,6 +32,7 @@ export function fingerprintScene(payload: WebXRRaythreeRenderPayload, extra = 0)
   h.items(payload.ui.panels);
   h.items(payload.ui.texts);
   h.items(payload.ui.images);
+  h.value(payload.ui.textRendering);
   return h.digest();
 }
 

@@ -45,6 +45,8 @@
     "driver:build": "zig build --build-file submodules/petplay_ovrdriver/build.zig",
     "driver:test": "deno run -A utils/petplay-ovrdriver-test.ts --build",
     "overlay:presenter:build": "deno run -A utils/build-overlay-presenter.ts",
+    "text:pathfinder:build": "deno run -A utils/build-pathfinder-text.ts",
+    "text:build": "deno run -A utils/build-pathfinder-text.ts",
     "openvr:probe": "deno run -A utils/openvr-timing-probe.ts",
     "probe:openvr-raylib-overlay": "deno run -A --no-check tests/openvr_raylib_overlay_probe/main.ts",
     "probe:openvr-raylib-overlay:build-native": "clang-cl /nologo /LD /O2 /Fo:tests/openvr_raylib_overlay_probe/native_timing.obj tests/openvr_raylib_overlay_probe/native_timing.c /link /out:tests/openvr_raylib_overlay_probe/native_timing.dll /implib:tests/openvr_raylib_overlay_probe/native_timing.lib",

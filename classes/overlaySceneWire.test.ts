@@ -45,6 +45,7 @@ function scene(sequence: number, revision = 1, epoch = "producer", stream = "vie
         color: [1, 1, 1, 1],
         worldMatrix: new Float32Array(16),
         geometry: {
+          vectorGlyphs: new Float32Array([65, 0, 0, 80, 0]),
           id: 1,
           revision,
           version: revision,
@@ -67,6 +68,18 @@ function frame(
 function assets(packet: ReturnType<OverlaySceneWireEncoder["encode"]>) {
   return deserialize(Buffer.from(packet.data, "base64")).uiGeometryAssets;
 }
+Deno.test("Glyph tuning changes survive scene transport with cached geometry", () => {
+  const encoder = new OverlaySceneWireEncoder(), decoder = new OverlaySceneWireDecoder();
+  for (const [index, [exponent, weight]] of [[1,0], [0.85,0.125], [1,0]].entries()) {
+    const source = scene(index + 1);
+    source.ui.textRendering = {renderer:index === 1 ? "windfoil" : "glyph", panoramaFilter:"catmull-rom", glyphCoverageExponent:exponent, glyphWeightPixels:weight, glyphAaWidth:index === 1 ? 0.85 : 1};
+    const packet = encoder.encode(source);
+    const decoded = frame(decoder, packet);
+    assert(JSON.stringify(decoded.ui.textRendering) === JSON.stringify(source.ui.textRendering), "tuning lost in transport");
+    encoder.acknowledge(source.delivery!);
+  }
+});
+
 Deno.test("acknowledged glyph buffers are omitted and retain consumer identity", () => {
   const encoder = new OverlaySceneWireEncoder(), decoder = new OverlaySceneWireDecoder();
   const first = encoder.encode(scene(1)), a = frame(decoder, first);
@@ -82,6 +95,7 @@ Deno.test("acknowledged glyph buffers are omitted and retain consumer identity",
   );
   assert(a.ui.texts[0] !== b.ui.texts[0], "per-frame UI state must stay independent");
   assert(b.leftEye === b.rightEye, "stereo alias lost");
+  assert(b.ui.texts[0].geometry?.vectorGlyphs?.[0] === 65, "vector glyph placements lost across asset receipts");
 });
 Deno.test("lost receipts and skipped packets retain all glyph dependencies", () => {
   const encoder = new OverlaySceneWireEncoder(), decoder = new OverlaySceneWireDecoder();

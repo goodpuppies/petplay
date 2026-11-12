@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { CameraSettingsView } from "./cameraView.tsx";
+import { TextComparisonView } from "./textComparisonView.tsx";
 import { useVrcCameraSnapshot } from "../vrcCameraStore.ts";
 import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
 import { Button, Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
@@ -337,12 +338,13 @@ function WristSettingsView({ onBack }: { onBack: () => void }) {
 
 /** Settings reachable from the wrist; every row here is persisted by `classes/settings.ts`. */
 function SettingsView(
-  { onBack, onOpenWrist, onOpenMonitors, onOpenLayouts, onOpenCamera }: {
+  { onBack, onOpenWrist, onOpenMonitors, onOpenLayouts, onOpenCamera, onOpenText }: {
     onBack: () => void;
     onOpenWrist: () => void;
     onOpenMonitors: () => void;
     onOpenLayouts: () => void;
     onOpenCamera: () => void;
+    onOpenText: () => void;
   },
 ) {
   return (
@@ -352,6 +354,8 @@ function SettingsView(
           <Pill slots={1} units={2} fontSize={14}>BACK</Pill>
         </Button>
         <Pill slots={3} units={2} tone="accent" fontSize={14}>SETTINGS</Pill>
+        <Container flexGrow={1} />
+        <Pill slots={1} units={2} fontSize={11} onClick={onOpenText}>TEXT</Pill>
       </Container>
       <SettingToggleRow label="Grab-box outlines" setting="grabboxOutline" />
       <SettingToggleRow label="Laser beams" setting="controllerLaser" />
@@ -422,6 +426,7 @@ export function WristMenuUi(
   const mainStyle = styleOf("main");
   const settingsStyle = styleOf("settings");
   const cameraStyle = styleOf("camera");
+  const textStyle = styleOf("text");
   const wristStyle = styleOf("wrist");
   const layoutsStyle = styleOf("layouts");
   const monitorsStyle = styleOf("monitors");
@@ -433,6 +438,7 @@ export function WristMenuUi(
         onOpenMonitors={() => setView("monitors")}
         onOpenLayouts={() => setView("layouts")}
         onOpenCamera={() => setView("camera")}
+        onOpenText={() => setView("text")}
       />
     </Shell>
   ), [settingsStyle]);
@@ -441,6 +447,11 @@ export function WristMenuUi(
       <CameraSettingsView onBack={() => setView("settings")} />
     </Shell>
   ), [cameraStyle]);
+  const textPage = useMemo(() => (
+    <Shell pointerEventsType={textStyle.pe} opacity={textStyle.opacity}>
+      <TextComparisonView onBack={() => setView("settings")} />
+    </Shell>
+  ), [textStyle]);
   const wrist = useMemo(() => (
     <Shell pointerEventsType={wristStyle.pe} opacity={wristStyle.opacity}>
       <WristSettingsView onBack={() => setView("settings")} />
@@ -495,11 +506,12 @@ export function WristMenuUi(
       {page("monitors", monitors)}
       {page("layouts", layouts)}
       {page("camera", cameraPage)}
+      {page("text", textPage)}
     </>
   );
 }
 
-type WristView = "main" | "settings" | "wrist" | "monitors" | "layouts" | "camera";
+type WristView = "main" | "settings" | "wrist" | "monitors" | "layouts" | "camera" | "text";
 type PageStyle = { pe: AllowedPointerEventsType; opacity: number };
 
 const EMPTY_LAYOUT_SLOTS: LayoutSlotSummary[] = [];
