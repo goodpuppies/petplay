@@ -12,6 +12,7 @@ export type OpenVrRuntimeRequest = {
   overlay?: OpenVrInterfaceRequirement;
   input?: OpenVrInterfaceRequirement;
   renderModels?: OpenVrInterfaceRequirement;
+  chaperoneSetup?: OpenVrInterfaceRequirement;
   identity?: OpenVrApplicationIdentity;
 };
 
@@ -26,6 +27,7 @@ export type OpenVrRuntimePointers = {
   overlay: Deno.PointerValue | null;
   input: Deno.PointerValue | null;
   renderModels: Deno.PointerValue | null;
+  chaperoneSetup: Deno.PointerValue | null;
 };
 
 const EMPTY_POINTERS = (): OpenVrRuntimePointers => ({
@@ -34,6 +36,7 @@ const EMPTY_POINTERS = (): OpenVrRuntimePointers => ({
   overlay: null,
   input: null,
   renderModels: null,
+  chaperoneSetup: null,
 });
 
 /**
@@ -201,6 +204,12 @@ export class OpenVrRuntime {
         request.renderModels ?? false,
         OpenVR.IVRRenderModels_Version,
         "IVRRenderModels",
+        errorPointer,
+      );
+      this.pointers.chaperoneSetup = this.acquireInterface(
+        request.chaperoneSetup ?? false,
+        OpenVR.IVRChaperoneSetup_Version,
+        "IVRChaperoneSetup",
         errorPointer,
       );
       // Event polling is the only reason to wrap `IVRSystem` here; consumers

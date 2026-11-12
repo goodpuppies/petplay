@@ -10,6 +10,7 @@ import {
 import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import { PostMan } from "../../../submodules/stageforge/mod.ts";
 import { hmd34FromColumnMajor4x4 } from "../../openvrTransform.ts";
+import { playspaceFrame } from "../../playspaceFrame.ts";
 import { DisplayInstanceFrame, type DisplayInstanceFrameProps } from "./ui.tsx";
 import { DEFAULT_DISPLAY_HEIGHT, DISPLAY_ASPECT_WIDTH_OVER_HEIGHT } from "../displayMetrics.ts";
 import type { WorkspaceRect } from "../workspaceDisplays.ts";
@@ -237,6 +238,10 @@ export function DisplayInstance(
         14: number;
       },
     );
+    // Absolute poses go out in PetPlay's playspace frame (raw tracking once anchored), so a
+    // playspace drag leaves the screen where it is; controller-relative ones need nothing.
+    const rawUniverse = deviceIndex == null && playspaceFrame.active;
+    if (rawUniverse) playspaceFrame.poseRowsToUniverse(hmd.m as number[][]);
     p0.current.set(-localHalfW, 0, 0);
     p1.current.set(localHalfW, 0, 0);
     p0.current.applyMatrix4(obj.matrixWorld);
@@ -283,12 +288,13 @@ export function DisplayInstance(
               opacity: sentOpacity,
               curvature,
               deviceIndex,
+              rawUniverse,
             },
           }
           : {
             target: targetActor,
             type: "SYNCDISPLAYPOSE",
-            payload: { hmd, widthMeters, opacity: sentOpacity, curvature, deviceIndex },
+            payload: { hmd, widthMeters, opacity: sentOpacity, curvature, deviceIndex, rawUniverse },
           },
       );
     } catch {

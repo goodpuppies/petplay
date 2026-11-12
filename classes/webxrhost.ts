@@ -42,6 +42,8 @@ import {
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLayer.ts";
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
+import { playspaceFrame } from "./playspaceFrame.ts";
+import { PlayspaceMover } from "./playspaceMover.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import {
   getScheduler,
@@ -97,6 +99,8 @@ type StartOptions = {
    * buttons directly from the action manifest each frame.
    */
   vrInputPointer?: number | bigint | null;
+  /** `IVRChaperoneSetup` (OpenVR). Enables space move ({@link PlayspaceMover}). */
+  vrChaperoneSetupPointer?: number | bigint | null;
   /**
    * Each XR session rAF tick, right after `paceToDisplayAndRefreshPoses` (when
    * present) and before HMD/controller emulation. Use to ingest cross-actor
@@ -1074,6 +1078,7 @@ export class WebXRHost {
   private readonly raylibDebugControllerCube = getWebxrRaylibControllerDebugEnabled();
   /** App-wide single source of OpenVR HMD + controller pose (allocation-free). */
   private readonly directOpenVrInputSource = new DirectOpenVrInputSource();
+  private playspaceMover: PlayspaceMover | null = null;
   private renderGripOffsets: Partial<Record<"left" | "right", Float32Array>> = {};
   private directRaylibOpenVrHmdPoseLogged = false;
   private emulatedControllerApplyPrevWallAt = 0;
@@ -1199,6 +1204,11 @@ export class WebXRHost {
       this.directOpenVrInputSource.initialize(this.vrInputPointer);
     }
     this.disableOpenVrHmdPose = options.disableOpenVrHmdPose ?? false;
+    this.playspaceMover?.dispose();
+    // The caller withholds the pointer when another process renders (it reads Standing).
+    this.playspaceMover = this.vrInputPointer == null
+      ? null
+      : PlayspaceMover.tryCreate(options.vrChaperoneSetupPointer);
     this.onBeforeExternalControllerApply = options.onBeforeExternalControllerApply;
     this.onInProcessControllerFrame = options.onInProcessControllerFrame;
     this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
@@ -1738,6 +1748,8 @@ export class WebXRHost {
     this.vrSystemPointer = null;
     this.vrInputPointer = null;
     this.directOpenVrInputSource.resetInput();
+    this.playspaceMover?.dispose();
+    this.playspaceMover = null;
     if (this.xrDevice != null && this.openVrDrivenBeforeIwerFrameStart) {
       const d = this.xrDevice as XrDeviceBridge & {
         setBeforeFrameStartHook?: (cb: ((frame: XRFrame) => void) | null | undefined) => void;
@@ -2186,6 +2198,7 @@ export class WebXRHost {
         const tCtrl = performance.now();
         this.applyExternalControllerData();
         this.xrControllerApplyMetric.record(performance.now() - tCtrl);
+        this.updatePlayspaceMover();
         this.syncIwerEmulatedPosesToSpaces();
       }
 
@@ -2557,7 +2570,22 @@ export class WebXRHost {
     const tCtrl = performance.now();
     this.applyExternalControllerData();
     this.xrControllerApplyMetric.record(performance.now() - tCtrl);
+    this.updatePlayspaceMover();
     this.syncIwerEmulatedPosesToSpaces();
+  }
+
+  private updatePlayspaceMover(): void {
+    const mover = this.playspaceMover;
+    if (!mover) return;
+    const left = this.directOpenVrInputSource.getSnapshot().controllers.left;
+    mover.update(this.directOpenVrInputSource.isSpaceDragHeld(), left?.position ?? null);
+  }
+
+  getPlayspaceStatus(): { available: boolean; dragging: boolean } {
+    return {
+      available: this.playspaceMover != null,
+      dragging: this.playspaceMover?.dragging ?? false,
+    };
   }
 
   private updateEmulatedHeadsetFromOpenVr() {
@@ -2611,8 +2639,9 @@ export class WebXRHost {
     const posePtr = Deno.UnsafePointer.of(poseArrayBuffer) as Deno.PointerValue<
       OpenVR.TrackedDevicePose
     >;
+    const readRaw = playspaceFrame.active;
     vrSystem.GetDeviceToAbsoluteTrackingPose(
-      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      playspaceFrame.universe,
       0.0,
       posePtr,
       OpenVR.k_unMaxTrackedDeviceCount,
@@ -2629,7 +2658,8 @@ export class WebXRHost {
       return null;
     }
 
-    const m = hmdPose.mDeviceToAbsoluteTracking.m;
+    const m = hmdPose.mDeviceToAbsoluteTracking.m as number[][];
+    if (readRaw) playspaceFrame.poseRowsFromRaw(m);
     return {
       matrix: new Float32Array([
         m[0][0],

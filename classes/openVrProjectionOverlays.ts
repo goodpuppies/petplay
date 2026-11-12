@@ -11,6 +11,7 @@
  * same way it treats a scene application's eye buffers.
  */
 import { FLIP_OVERLAY_Y } from "./overlayTextureFlip.ts";
+import { playspaceFrame } from "./playspaceFrame.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
@@ -152,6 +153,7 @@ export class OpenVrProjectionOverlays {
     const setTransform = (overlay: EyeOverlay, source: ProjectionOverlayEye) => {
       const start = performance.now();
       writeEyeFromTracking(source.viewMatrix, this.transform);
+      playspaceFrame.viewRows34ToUniverse(this.transform);
       writeProjectionTangents(
         source.projectionMatrix,
         this.conventions.yDownTangents,
@@ -160,7 +162,7 @@ export class OpenVrProjectionOverlays {
       this.check(
         this.overlayClass.SetOverlayTransformProjection(
           overlay.handle,
-          OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+          playspaceFrame.universe,
           this.transformPtr,
           this.projectionPtr,
           overlay.eye,

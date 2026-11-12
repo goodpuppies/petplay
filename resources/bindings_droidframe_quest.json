@@ -116,6 +116,9 @@
           "inputs": {
             "position": {
               "output": "/actions/main/in/JoystickLeft"
+            },
+            "click": {
+              "output": "/actions/main/in/SpaceDrag"
             }
           },
           "mode": "joystick",

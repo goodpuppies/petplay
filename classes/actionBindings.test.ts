@@ -112,3 +112,38 @@ Deno.test("runtime staging repairs missing bindings beside an existing binding",
     await Deno.remove(directory, { recursive: true });
   }
 });
+
+Deno.test("every default binding drags the playspace from the left hand", () => {
+  assert(
+    manifest.actions.some((action: { name: string; type: string }) =>
+      action.name === "/actions/main/in/SpaceDrag" && action.type === "boolean"
+    ),
+  );
+  for (const { binding_url } of manifest.default_bindings) {
+    const binding = JSON.parse(Deno.readTextFileSync(new URL(`resources/${binding_url}`, root)));
+    const main = binding.bindings["/actions/main"];
+    const sources = main.sources as {
+      path: string;
+      inputs: Record<string, { output: string }>;
+    }[];
+    const clicks = sources.filter((s) => s.inputs.click?.output === "/actions/main/in/SpaceDrag");
+    const chords = ((main.chords ?? []) as { output: string; inputs: string[][] }[])
+      .filter((c) => c.output === "/actions/main/in/SpaceDrag");
+    if (binding.controller_type === "knuckles") {
+      // Index: left grip + left trackpad touch; the stick click stays free.
+      assertEquals(clicks.length, 0, binding_url);
+      assertEquals(chords.length, 1, binding_url);
+      assertEquals(chords[0].inputs, [
+        ["/user/hand/left/input/grip", "click"],
+        ["/user/hand/left/input/trackpad", "touch"],
+      ]);
+      for (const [path] of chords[0].inputs) {
+        assert(sources.some((s) => s.path === path), `${binding_url}: chord needs ${path}`);
+      }
+      continue;
+    }
+    assertEquals(clicks.length, 1, binding_url);
+    assertEquals(chords.length, 0, binding_url);
+    assert(/^\/user\/hand\/left\/input\/(joystick|thumbstick)$/.test(clicks[0].path), binding_url);
+  }
+});

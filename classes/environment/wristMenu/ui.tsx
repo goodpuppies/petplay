@@ -14,6 +14,7 @@ import type { WristMenuButtonId } from "./types.ts";
 import type { WorkspaceLayoutSnapshot } from "../workspaceLayoutStore.ts";
 import type { LayoutSlotSummary } from "../spatialLayoutPersistence.ts";
 import { setSetting, type SettingKey, useSetting } from "../../settings.ts";
+import { resetPlayspace } from "../../playspaceMover.ts";
 
 export type { WristMenuButtonId } from "./types.ts";
 
@@ -355,6 +356,8 @@ function SettingsView(
         </Button>
         <Pill slots={3} units={2} tone="accent" fontSize={14}>SETTINGS</Pill>
         <Container flexGrow={1} />
+        {/* Undo space move (left stick click + drag): the playspace PetPlay attached in. */}
+        <Pill slots={2} units={2} fontSize={11} onClick={resetPlayspace}>RESET SPACE</Pill>
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenText}>TEXT</Pill>
       </Container>
       <SettingToggleRow label="Grab-box outlines" setting="grabboxOutline" />

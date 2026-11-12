@@ -28,6 +28,8 @@ const state = actorState({
   overlayPTR: null as Deno.PointerValue | null,
   inputPTR: null as Deno.PointerValue | null,
   renderModelsPTR: null as Deno.PointerValue | null,
+  /** `IVRChaperoneSetup` — playspace drag (`classes/playspaceMover.ts`). */
+  chaperoneSetupPTR: null as Deno.PointerValue | null,
   /** Last `VR_InitInternal`/interface failure; cleared once the runtime is up. */
   initError: null as string | null,
   initAttempts: 0,
@@ -63,6 +65,7 @@ export const api = {
       state.overlayPTR = null;
       state.inputPTR = null;
       state.renderModelsPTR = null;
+      state.chaperoneSetupPTR = null;
       LogChannel.log(
         "actor",
         "OpenVR runtime/library release deferred to OS process teardown on Linux.",
@@ -114,6 +117,10 @@ export const api = {
       return null;
     }
     return Deno.UnsafePointer.value(state.compositorPTR);
+  },
+  GETCHAPERONESETUPPTR: (_payload: null): bigint | null => {
+    if (!state.chaperoneSetupPTR) return null;
+    return Deno.UnsafePointer.value(state.chaperoneSetupPTR);
   },
   GETRENDERMODELSPTR: (_payload: null) => {
     if (!state.renderModelsPTR) throw new Error("render models system not initialized");
@@ -169,12 +176,14 @@ function attemptInitialize(): void {
       overlay: "required",
       input: "required",
       renderModels: "required",
+      chaperoneSetup: "optional",
     });
     state.vrSystemPTR = pointers.system;
     state.compositorPTR = pointers.compositor;
     state.overlayPTR = pointers.overlay;
     state.inputPTR = pointers.input;
     state.renderModelsPTR = pointers.renderModels;
+    state.chaperoneSetupPTR = pointers.chaperoneSetup;
     if (attachOnly) attachedVrserverPids = candidateVrserverPids;
     state.initError = null;
     state.runtimeQuit = false;
@@ -225,6 +234,7 @@ function shutdownOpenVR(): void {
   state.overlayPTR = null;
   state.inputPTR = null;
   state.renderModelsPTR = null;
+  state.chaperoneSetupPTR = null;
   state.initError = null;
   state.runtimeQuit = false;
   LogChannel.log("actor", "OpenVR actor released the client runtime.");

@@ -35,14 +35,11 @@ export function hmd34FromColumnMajor4x4(e: {
 export function setOverlayTransformAbsolute(
     overlay: OpenVR.IVROverlay,
     overlayHandle: OpenVR.OverlayHandle,
-    transform: OpenVR.HmdMatrix34
+    transform: OpenVR.HmdMatrix34,
+    universe: OpenVR.TrackingUniverseOrigin = OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
 ): void {
     const [transformPtr, _transformView] = createStruct<OpenVR.HmdMatrix34>(transform, OpenVR.HmdMatrix34Struct);
-    overlay.SetOverlayTransformAbsolute(
-        overlayHandle,
-        OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
-        transformPtr
-    );
+    overlay.SetOverlayTransformAbsolute(overlayHandle, universe, transformPtr);
 }
 
 /**
@@ -55,9 +52,10 @@ export function setOverlayTransform(
     overlayHandle: OpenVR.OverlayHandle,
     transform: OpenVR.HmdMatrix34,
     deviceIndex?: number,
+    universe?: OpenVR.TrackingUniverseOrigin,
 ): void {
     if (deviceIndex == null) {
-        setOverlayTransformAbsolute(overlay, overlayHandle, transform);
+        setOverlayTransformAbsolute(overlay, overlayHandle, transform, universe);
         return;
     }
     const [transformPtr] = createStruct<OpenVR.HmdMatrix34>(transform, OpenVR.HmdMatrix34Struct);

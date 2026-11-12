@@ -41,6 +41,10 @@
       "type": "boolean"
     },
     {
+      "name": "/actions/main/in/SpaceDrag",
+      "type": "boolean"
+    },
+    {
       "name": "/actions/main/out/Haptic",
       "type": "vibration"
     }
@@ -63,6 +67,10 @@
     {
       "controller_type": "frame_controller",
       "binding_url": "bindings_frame_controller.json"
+    },
+    {
+      "controller_type": "knuckles",
+      "binding_url": "bindings_knuckles.json"
     }
   ]
 }

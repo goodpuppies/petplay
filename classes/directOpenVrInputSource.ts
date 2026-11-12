@@ -104,6 +104,7 @@ export class DirectOpenVrInputSource {
   private inputReady = false;
   private readonly rightClickModifier = { left: false, right: false };
   private readonly middleClickModifier = { left: false, right: false };
+  private spaceDragHeld = false;
 
   private grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private grabRightHandle = OpenVR.k_ulInvalidActionHandle;
@@ -113,6 +114,7 @@ export class DirectOpenVrInputSource {
   private joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
   private rightClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
   private middleClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+  private spaceDragHandle = OpenVR.k_ulInvalidActionHandle;
   private hapticHandle = OpenVR.k_ulInvalidActionHandle;
   private actionSetHandle = OpenVR.k_ulInvalidActionSetHandle;
   private leftHandPathHandle = OpenVR.k_ulInvalidInputValueHandle;
@@ -147,6 +149,10 @@ export class DirectOpenVrInputSource {
     OpenVR.InputDigitalActionDataStruct,
   );
   private readonly middleClickModifierRight = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly spaceDragLeft = createStruct<OpenVR.InputDigitalActionData>(
     null,
     OpenVR.InputDigitalActionDataStruct,
   );
@@ -256,6 +262,12 @@ export class DirectOpenVrInputSource {
     this.joystickRightHandle = getActionHandle("/actions/main/in/JoystickRight");
     this.rightClickModifierHandle = getActionHandle("/actions/main/in/RightClickModifier");
     this.middleClickModifierHandle = getActionHandle("/actions/main/in/MiddleClickModifier");
+    try {
+      this.spaceDragHandle = getActionHandle("/actions/main/in/SpaceDrag");
+    } catch {
+      // An older manifest copy without space move; everything else still works.
+      this.spaceDragHandle = OpenVR.k_ulInvalidActionHandle;
+    }
     try {
       this.hapticHandle = getActionHandle("/actions/main/out/Haptic");
     } catch {
@@ -403,6 +415,16 @@ export class DirectOpenVrInputSource {
       OpenVR.InputDigitalActionDataStruct.byteSize,
       this.rightHandPathHandle,
     );
+    if (this.spaceDragHandle !== OpenVR.k_ulInvalidActionHandle) {
+      this.vrInput.GetDigitalActionData(
+        this.spaceDragHandle,
+        this.spaceDragLeft[0],
+        OpenVR.InputDigitalActionDataStruct.byteSize,
+        this.leftHandPathHandle,
+      );
+      const drag = OpenVR.InputDigitalActionDataStruct.read(this.spaceDragLeft[1]);
+      this.spaceDragHeld = Boolean(drag.bActive && drag.bState);
+    }
     this.vrInput.GetAnalogActionData(
       this.joystickLeftHandle,
       this.joystickLeft[0],
@@ -427,7 +449,8 @@ export class DirectOpenVrInputSource {
     const middleModL = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierLeft[1]);
     const middleModR = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierRight[1]);
 
-    this.leftBuffers.grab[0] = grabL.bActive && grabL.bState ? 1 : 0;
+    // Index starts space drag with a grip chord: the grip must not also grab what it points at.
+    this.leftBuffers.grab[0] = grabL.bActive && grabL.bState && !this.spaceDragHeld ? 1 : 0;
     this.rightBuffers.grab[0] = grabR.bActive && grabR.bState ? 1 : 0;
     this.leftBuffers.trigger[0] = trigL.bActive && trigL.bState ? 1 : 0;
     this.rightBuffers.trigger[0] = trigR.bActive && trigR.bState ? 1 : 0;
@@ -445,6 +468,11 @@ export class DirectOpenVrInputSource {
     this.leftView.trigger = this.leftBuffers.trigger[0];
     this.rightView.grab = this.rightBuffers.grab[0];
     this.rightView.trigger = this.rightBuffers.trigger[0];
+  }
+
+  /** Left stick click, held: drag the playspace (`classes/playspaceMover.ts`). */
+  isSpaceDragHeld(): boolean {
+    return this.spaceDragHeld;
   }
 
   getDesktopMouseButton(hand: "left" | "right"): "left" | "middle" | "right" {
@@ -468,6 +496,8 @@ export class DirectOpenVrInputSource {
     this.joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.rightClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
     this.middleClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+    this.spaceDragHandle = OpenVR.k_ulInvalidActionHandle;
+    this.spaceDragHeld = false;
     this.rightClickModifier.left = false;
     this.rightClickModifier.right = false;
     this.middleClickModifier.left = false;

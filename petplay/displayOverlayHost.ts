@@ -148,6 +148,8 @@ type SyncDisplayPosePayload = {
   curvature?: number;
   /** When set, `hmd` is relative to this tracked device (a controller carrying the window). */
   deviceIndex?: number;
+  /** An absolute `hmd` is in raw tracking (webxr's anchored playspace frame), not Standing. */
+  rawUniverse?: boolean;
 };
 
 type WorkspaceCrop = { x: number; y: number; width: number; height: number };
@@ -219,6 +221,12 @@ function freezeCarried(deviceIndex: number): void {
   }
 }
 
+function syncUniverse(rawUniverse?: boolean): OpenVR.TrackingUniverseOrigin {
+  return rawUniverse
+    ? OpenVR.TrackingUniverseOrigin.TrackingUniverseRawAndUncalibrated
+    : OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding;
+}
+
 /** Device pose (column-major 4×4) × device-relative 3×4 → absolute 3×4. */
 function composeDevicePose(
   device: ArrayLike<number>,
@@ -245,9 +253,9 @@ type SetFrameDataPayload = {
   height: number;
 };
 
-function setTransformSafe(transform: OpenVR.HmdMatrix34, deviceIndex?: number) {
+function setTransformSafe(transform: OpenVR.HmdMatrix34, deviceIndex?: number, rawUniverse?: boolean) {
   if (!state.overlayClass || !state.overlayHandle) return;
-  setOverlayTransform(state.overlayClass, state.overlayHandle, transform, deviceIndex);
+  setOverlayTransform(state.overlayClass, state.overlayHandle, transform, deviceIndex, syncUniverse(rawUniverse));
 }
 
 new PostMan(
@@ -391,7 +399,7 @@ new PostMan(
         }
         state.lastWidthMeters = sync.widthMeters;
       }
-      if (acceptCarriedTransform(mainCarry, sync)) setTransformSafe(sync.hmd, sync.deviceIndex);
+      if (acceptCarriedTransform(mainCarry, sync)) setTransformSafe(sync.hmd, sync.deviceIndex, sync.rawUniverse);
       state.lastHmd = sync.hmd;
       state.lastDeviceIndex = sync.deviceIndex;
     },
@@ -842,7 +850,7 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
   setVirtualOverlayMouseScale(entry);
   const carry = entry.handle === state.overlayHandle ? mainCarry : (entry.carry ??= {});
   if (acceptCarriedTransform(carry, sync)) {
-    setOverlayTransform(overlay, entry.handle, sync.hmd, sync.deviceIndex);
+    setOverlayTransform(overlay, entry.handle, sync.hmd, sync.deviceIndex, syncUniverse(sync.rawUniverse));
   }
   const [boundsPtr] = createStruct<OpenVR.TextureBounds>(
     withOverlayFlipY(textureBoundsForCrop(sync.crop)),

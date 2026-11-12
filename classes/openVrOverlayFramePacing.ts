@@ -6,6 +6,7 @@
  *   call `GetDeviceToAbsoluteTrackingPose` with
  *   `frameDuration - secondsSinceLastVsync + secondsFromVsyncToPhotons`.
  */
+import { playspaceFrame } from "./playspaceFrame.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "./webxrCrashOnDrop.ts";
 import { FpsCounter } from "./fpsCounter.ts";
@@ -169,6 +170,8 @@ export class OpenVrOverlayFramePacer {
   private vsyncIndexMovedAt = 0;
   private readonly poseArrayBuffer: ArrayBuffer;
   private readonly posePtr: Deno.PointerValue<OpenVR.TrackedDevicePose>;
+  /** The cached poses came from the Raw universe and need {@link playspaceFrame}'s anchor. */
+  private posesReadRaw = false;
   private readonly vsyncSecondsBuffer = new Float32Array(1);
   private readonly vsyncFrameBuffer = new BigUint64Array(1);
   /**
@@ -556,8 +559,9 @@ export class OpenVrOverlayFramePacer {
     );
     this.lastPredictedSeconds = predictedSecondsFromNow;
 
+    this.posesReadRaw = playspaceFrame.active;
     this.vr.GetDeviceToAbsoluteTrackingPose(
-      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      playspaceFrame.universe,
       predictedSecondsFromNow,
       this.posePtr,
       OpenVR.k_unMaxTrackedDeviceCount,
@@ -615,8 +619,9 @@ export class OpenVrOverlayFramePacer {
       frameDuration * (1 + this.extraPredictionFrames) + this.secondsVsyncToPhotonsCache,
     );
     this.lastPredictedSeconds = predictedSecondsFromNow;
+    this.posesReadRaw = playspaceFrame.active;
     this.vr.GetDeviceToAbsoluteTrackingPose(
-      OpenVR.TrackingUniverseOrigin.TrackingUniverseStanding,
+      playspaceFrame.universe,
       predictedSecondsFromNow,
       this.posePtr,
       OpenVR.k_unMaxTrackedDeviceCount,
@@ -764,6 +769,7 @@ export class OpenVrOverlayFramePacer {
         m[row][column] = poseView.getFloat32((row * 4 + column) * 4, true);
       }
     }
+    if (this.posesReadRaw) playspaceFrame.poseRowsFromRaw(m);
     const pose = this.poseCache[index];
     const matrix = pose.matrix;
     matrix[0] = m[0][0];

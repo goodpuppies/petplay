@@ -274,6 +274,7 @@ type OpenVrPointers = {
   input: number | bigint;
   renderModels: number | bigint;
   compositor: number | bigint | null;
+  chaperoneSetup: number | bigint | null;
 };
 
 type OpenVrStatus = {
@@ -765,22 +766,24 @@ function startWebXr(
       /** Sample IVRInput on the webxr XR rAF (after compositor pacing) instead of a ~1kHz SAB writer. */
       vrInputPointer: pointers?.input ?? null,
       vrRenderModelsPointer: pointers?.renderModels ?? null,
+      vrChaperoneSetupPointer: pointers?.chaperoneSetup ?? null,
     },
   });
 }
 
 async function readOpenVrPointers(ivr: ActorId): Promise<OpenVrPointers> {
-  const [system, overlay, input, renderModels, compositor] = await Promise.all([
+  const [system, overlay, input, renderModels, compositor, chaperoneSetup] = await Promise.all([
     callActor<number | bigint>(ivr, "GETOPENVRPTR"),
     callActor<number | bigint>(ivr, "GETOVERLAYPTR"),
     callActor<number | bigint>(ivr, "GETINPUTPTR"),
     callActor<number | bigint>(ivr, "GETRENDERMODELSPTR"),
     callActor<number | bigint | null>(ivr, "GETCOMPOSITORPTR"),
+    callActor<number | bigint | null>(ivr, "GETCHAPERONESETUPPTR"),
   ]);
   if (system == null || overlay == null || input == null || renderModels == null) {
     throw new Error("OpenVR interfaces are not all available");
   }
-  return { system, overlay, input, renderModels, compositor };
+  return { system, overlay, input, renderModels, compositor, chaperoneSetup };
 }
 
 /**
@@ -1144,6 +1147,7 @@ async function createNoOpenVrScene() {
       vrCompositorPointer: null,
       vrInputPointer: null,
       vrRenderModelsPointer: null,
+      vrChaperoneSetupPointer: null,
     },
   });
 

@@ -101,12 +101,23 @@ function ensureRunTemp() {
   };
   for (const { binding_url: name } of manifest.default_bindings) {
     const binding = join(RUN_TEMP_DIR, name);
+    const wanted = Deno.readFileSync(join(resources, name));
+    let staged: Uint8Array | null = null;
     try {
-      Deno.statSync(binding);
+      staged = Deno.readFileSync(binding);
     } catch {
-      Deno.writeFileSync(binding, Deno.readFileSync(join(resources, name)));
+      // Not staged yet.
     }
+    // Refresh a changed binding too: a reboot or webxr reload keeps this process's directory, and
+    // a stale copy silently leaves new actions unbound.
+    if (staged == null || !bytesEqual(staged, wanted)) Deno.writeFileSync(binding, wanted);
   }
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 export function createTemp() {

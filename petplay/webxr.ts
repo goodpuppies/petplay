@@ -14,6 +14,7 @@ import { wait } from "../classes/utils.ts";
 import { getDisplayMouseDiagnostics } from "../classes/environment/displayInstance/mouse.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { OpenVrProjectionOverlays } from "../classes/openVrProjectionOverlays.ts";
+import { playspaceFrame } from "../classes/playspaceFrame.ts";
 import { closeRaylibAudio } from "../classes/environment/raylibAudioContext.ts";
 import type { CompositorFrameTiming } from "../classes/openVrOverlayFramePacing.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
@@ -224,6 +225,8 @@ type StartWebXRPayload = {
   /** `GETINPUTPTR` from the OpenVR actor; enables DirectOpenVrInputSource trigger/grab reads. */
   vrInputPointer?: number | bigint | null;
   vrRenderModelsPointer?: number | bigint | null;
+  /** `GETCHAPERONESETUPPTR`; enables playspace drag (`classes/playspaceMover.ts`). */
+  vrChaperoneSetupPointer?: number | bigint | null;
 };
 
 type DesktopViewOffsetPayload = {
@@ -419,6 +422,17 @@ const state = actorState({
   desktopViewControlEnabled: false,
   desktopViewOffset: [0, 0, 0] as Vec3Tuple,
 });
+
+/** VRChat's origin, in Standing: it follows the game world through a playspace drag. */
+let standingVrcOrigin: Matrix34Tuple | null = null;
+function applyVrcOrigin(): void {
+  if (!standingVrcOrigin) return;
+  const matrix = standingVrcOrigin.map((row) => [...row]) as Matrix34Tuple;
+  playspaceFrame.poseRowsFromStanding(matrix as unknown as number[][]);
+  setVrcLegacyOriginDebugMatrix(matrix);
+  setVRCOriginFromHmdMatrix34(matrix);
+}
+playspaceFrame.onStandingChange(applyVrcOrigin);
 
 new PostMan(
   state,
@@ -715,6 +729,10 @@ new PostMan(
             vrSystemPointer: payload?.vrSystemPointer,
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             vrInputPointer: payload?.vrInputPointer ?? null,
+            // The decoupled renderer and its native presenter read and write Standing.
+            vrChaperoneSetupPointer: state.decoupledRenderer
+              ? null
+              : payload?.vrChaperoneSetupPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayOverlayHostActor: payload?.displayOverlayHostActor,
             sessionMode: payload?.sessionMode,
@@ -744,11 +762,8 @@ new PostMan(
     },
     ORIGINUPDATE: (payload: OpenVR.HmdMatrix34 | null) => {
       if (!payload) return;
-      const matrix = payload.m as Matrix34Tuple;
-      setVrcLegacyOriginDebugMatrix(matrix);
-      setVRCOriginFromHmdMatrix34(
-        matrix,
-      );
+      standingVrcOrigin = payload.m as Matrix34Tuple;
+      applyVrcOrigin();
     },
     VRCCAMERADEBUGUPDATE: (
       payload: {
