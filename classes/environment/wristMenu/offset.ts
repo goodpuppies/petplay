@@ -10,6 +10,9 @@ export type WristOffset = {
   rotation: [number, number, number, number];
 };
 
+/** A position + rotation offset in some parent frame; the wrist menu's and the lasers' share it. */
+export type PoseOffset = WristOffset;
+
 const isFiniteTuple = (value: unknown, length: number): boolean =>
   Array.isArray(value) && value.length === length &&
   value.every((n) => typeof n === "number" && Number.isFinite(n));

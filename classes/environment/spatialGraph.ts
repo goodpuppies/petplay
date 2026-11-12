@@ -96,6 +96,8 @@ export type BoxSnapHitbox = {
   localTransform: SpatialTransform;
   side: SpatialAttachmentSide;
   accepts: Array<SpatialNode["kind"]>;
+  /** Kinds this slot accepts but no longer snaps (toggled off in edit layout mode). */
+  disabledKinds?: Array<SpatialNode["kind"]>;
   attachments: Partial<
     Record<SpatialNode["kind"], {
       kind: "hinge";
@@ -926,29 +928,44 @@ const OPPOSITE_SIDE: Record<SpatialAttachmentSide, SpatialAttachmentSide> = {
  * overlay's controls, unless the user prefers the right or only the right is free.
  *
  * A side is taken by a child hinged to that side's slot, or by the parent this display hangs
- * from: a display in its parent's bottom slot has the parent above it.
+ * from: a display in its parent's bottom slot has the parent above it. Given the menu's size
+ * (`footprint`), a side is also taken when the space the menu would fill there overlaps another
+ * window or keyboard, attached or not.
  */
 export function displayToolbarSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
+  footprint?: ToolbarFootprint,
 ): DisplayToolbarSide {
-  if (!displayToolbarEdgeTaken(graph, displayId, "bottom")) return "below";
-  if (!displayToolbarEdgeTaken(graph, displayId, "top")) return "above";
+  if (!displayToolbarEdgeTaken(graph, displayId, "bottom", footprint)) return "below";
+  if (!displayToolbarEdgeTaken(graph, displayId, "top", footprint)) return "above";
   const node = graph.nodes[displayId];
   const preferred = node?.kind === "display" && node.toolbarSidePreference === "right"
     ? "right"
     : "left";
   const other = preferred === "left" ? "right" : "left";
-  return displayToolbarEdgeTaken(graph, displayId, preferred) &&
-      !displayToolbarEdgeTaken(graph, displayId, other)
+  return displayToolbarEdgeTaken(graph, displayId, preferred, footprint) &&
+      !displayToolbarEdgeTaken(graph, displayId, other, footprint)
     ? other
     : preferred;
 }
+
+/**
+ * The side menu's world size in metres (it keeps a fixed world size however the window is
+ * scaled): `horizontal` below or above the window, `vertical` as the column beside it.
+ */
+export type ToolbarFootprint = {
+  horizontal: [number, number];
+  vertical: [number, number];
+  /** Between the window's edge and the menu. */
+  gap: number;
+};
 
 function displayToolbarEdgeTaken(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
   side: SpatialAttachmentSide,
+  footprint?: ToolbarFootprint,
 ): boolean {
   const constraint = graph.nodes[displayId]?.constraint;
   const parentSide = constraint?.kind === "hinge"
@@ -957,27 +974,82 @@ function displayToolbarEdgeTaken(
       | undefined
     : undefined;
   return isAttachmentSlotOccupied(graph, `${displayId}-${side}-slot`) ||
-    (parentSide != null && OPPOSITE_SIDE[parentSide] === side);
+    (parentSide != null && OPPOSITE_SIDE[parentSide] === side) ||
+    (footprint != null && toolbarSpaceBlocked(graph, displayId, side, footprint));
+}
+
+/** Where on the window (local, on its front) the menu docks for each side. */
+const TOOLBAR_DOCK: Record<SpatialAttachmentSide, [number, number, number]> = {
+  bottom: [0, -DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
+  top: [0, DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
+  // Beside the window the column hangs from the top corner.
+  left: [-DISPLAY_PANEL_WIDTH / 2, DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
+  right: [DISPLAY_PANEL_WIDTH / 2, DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
+};
+/** How far in front of and behind the menu's plane counts as in its way. */
+const TOOLBAR_CLEARANCE_DEPTH = 0.12;
+
+/**
+ * Whether the space the menu would take on `side` overlaps another window or keyboard in the
+ * same origin, attached or not: something floating just below a window has no slot to say so.
+ */
+export function toolbarSpaceBlocked(
+  graph: SpatialGraph,
+  displayId: SpatialNodeId,
+  side: SpatialAttachmentSide,
+  footprint: ToolbarFootprint,
+): boolean {
+  const display = graph.nodes[displayId];
+  if (display == null) return false;
+  const world = getSpatialNodeWorldMatrix(graph, displayId);
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  world.decompose(position, quaternion, new THREE.Vector3());
+  const dock = new THREE.Vector3(...TOOLBAR_DOCK[side]).applyMatrix4(world);
+  const vertical = side === "left" || side === "right";
+  const [w, h] = vertical ? footprint.vertical : footprint.horizontal;
+  const g = footprint.gap;
+  // From the dock along the window's own axes, in world metres.
+  const offset = side === "bottom"
+    ? new THREE.Vector3(0, -(g + h / 2), 0)
+    : side === "top"
+    ? new THREE.Vector3(0, g + h / 2, 0)
+    : new THREE.Vector3((side === "right" ? 1 : -1) * (g + w / 2), -h / 2, 0);
+  const center = dock.add(offset.applyQuaternion(quaternion));
+  const region = orientedBoxFromMatrix(
+    [w, h, TOOLBAR_CLEARANCE_DEPTH],
+    new THREE.Matrix4().compose(center, quaternion, new THREE.Vector3(1, 1, 1)),
+  );
+  return Object.values(graph.nodes).some((other) => {
+    if (other.id === displayId || other.originId !== display.originId) return false;
+    if (other.kind !== "display" && other.kind !== "keyboard") return false;
+    const source = nodeSnapSource(other);
+    const matrix = getSpatialNodeWorldMatrix(graph, other.id)
+      .multiply(composeTransform(source.localTransform));
+    return region.intersectsOBB(orientedBoxFromMatrix(source.size, matrix));
+  });
 }
 
 /** Destination of the side-menu swap button, or null when it must not be shown. */
 export function displayToolbarSwapSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
+  footprint?: ToolbarFootprint,
 ): "left" | "right" | null {
   if (graph.nodes[displayId]?.kind !== "display") return null;
-  const side = displayToolbarSide(graph, displayId);
+  const side = displayToolbarSide(graph, displayId, footprint);
   if (side !== "left" && side !== "right") return null;
   const other = side === "left" ? "right" : "left";
-  return displayToolbarEdgeTaken(graph, displayId, other) ? null : other;
+  return displayToolbarEdgeTaken(graph, displayId, other, footprint) ? null : other;
 }
 
 export function swapDisplayToolbarSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
+  footprint?: ToolbarFootprint,
 ): SpatialGraph {
   const node = graph.nodes[displayId];
-  const nextSide = displayToolbarSwapSide(graph, displayId);
+  const nextSide = displayToolbarSwapSide(graph, displayId, footprint);
   if (node?.kind !== "display" || nextSide == null) return graph;
   return {
     ...graph,
@@ -1143,11 +1215,18 @@ function attachmentSlotsFor(nodes: SpatialGraph["nodes"]): SpatialGraph["hitboxe
  * Slots and pivots are a function of the current panel metrics and each node's size, but they are
  * serialized with the graph, so a layout saved before those metrics changed would keep hinging to
  * the old geometry and the panels would separate. Only the user's choices — hierarchy, transforms,
- * hinge angle, workspace assignment — survive; everything derived is rebuilt here. Returns `current`
- * untouched when the stored geometry already matches.
+ * hinge angle, workspace assignment, which slots snap which kinds — survive; everything derived is
+ * rebuilt here. Returns `current` untouched when the stored geometry already matches.
  */
 export function normalizeSpatialLayout(current: SpatialGraph): SpatialGraph {
   const hitboxes = attachmentSlotsFor(current.nodes);
+  for (const [id, slot] of Object.entries(hitboxes)) {
+    const disabledKinds = current.hitboxes[id]?.disabledKinds
+      ?.filter((kind) => slot.accepts.includes(kind));
+    if (disabledKinds != null && disabledKinds.length > 0) {
+      hitboxes[id] = { ...slot, disabledKinds };
+    }
+  }
   const nodes: SpatialGraph["nodes"] = {};
   let changed = JSON.stringify(hitboxes) !== JSON.stringify(current.hitboxes);
   for (const node of Object.values(current.nodes)) {
@@ -1186,6 +1265,35 @@ export function normalizeSpatialLayout(current: SpatialGraph): SpatialGraph {
   return changed ? { ...current, nodes, hitboxes } : current;
 }
 
+/**
+ * Whether a slot snaps a kind of node. Turning it off leaves anything already attached there:
+ * it only stops new snaps.
+ */
+export function isHitboxKindEnabled(hitbox: SpatialHitbox, kind: SpatialNode["kind"]): boolean {
+  return hitbox.accepts.includes(kind) && !hitbox.disabledKinds?.includes(kind);
+}
+
+export function setHitboxKindEnabled(
+  current: SpatialGraph,
+  hitboxId: string,
+  kind: SpatialNode["kind"],
+  enabled: boolean,
+): SpatialGraph {
+  const hitbox = current.hitboxes[hitboxId];
+  if (hitbox == null || !hitbox.accepts.includes(kind)) return current;
+  if (isHitboxKindEnabled(hitbox, kind) === enabled) return current;
+  const others = (hitbox.disabledKinds ?? []).filter((disabled) => disabled !== kind);
+  const disabledKinds = enabled ? others : [...others, kind];
+  const { disabledKinds: _previous, ...rest } = hitbox;
+  return {
+    ...current,
+    hitboxes: {
+      ...current.hitboxes,
+      [hitboxId]: disabledKinds.length > 0 ? { ...rest, disabledKinds } : rest,
+    },
+  };
+}
+
 export function snapNodeToOverlappingHitbox(
   current: SpatialGraph,
   nodeId: SpatialNodeId,
@@ -1201,6 +1309,7 @@ export function snapNodeToOverlappingHitbox(
   const sourceCenter = sourceBox.center;
   const candidates = Object.values(current.hitboxes)
     .filter((hitbox) => hitbox.accepts.includes(node.kind))
+    .filter((hitbox) => !hitbox.disabledKinds?.includes(node.kind))
     .filter((hitbox) => hitbox.ownerId !== node.id)
     // Only within one origin: a hand-attached window passing a world one must not latch on.
     .filter((hitbox) => current.nodes[hitbox.ownerId]?.originId === node.originId)

@@ -761,12 +761,13 @@ export class WebXRRaythreeRaylibRenderer {
       this.unloadNativeMesh(entry.mesh);
     }
     this.uiTextBatchMeshes.clear();
+    // Slots are filled by index (`??=`), so the array can have holes.
     for (const slot of this.uiPanelRunSlots) {
-      if (slot.mesh !== null) this.unloadNativeMesh(slot.mesh);
+      if (slot != null && slot.mesh !== null) this.unloadNativeMesh(slot.mesh);
     }
     this.uiPanelRunSlots = [];
     for (const data of this.uiPanelFrameData) {
-      if (data.texture !== null) raylib.H.UnloadTexture(data.texture);
+      if (data != null && data.texture !== null) raylib.H.UnloadTexture(data.texture);
     }
     this.uiPanelFrameData = [];
     LogChannel.log("webxrv2", "[webxr] raylib scene dispose: shaders");

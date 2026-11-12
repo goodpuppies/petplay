@@ -10,7 +10,8 @@ import React, {
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
-import type { HandleOptions, HandleStore } from "@pmndrs/handle";
+import { defaultApply, type HandleOptions, type HandleStore } from "@pmndrs/handle";
+import { withOneHandScale } from "./oneHandScale.ts";
 import { pushPullGrab } from "./pushPull.ts";
 import type {
   PointerEvent as PenPointerEvent,
@@ -29,6 +30,20 @@ declare module "@react-three/fiber/webgpu" {
 
 /** Default frame tint (shared with the display wireframe in prior code paths). */
 export const DEFAULT_GRABBOX_LINE_COLOR = 0x7ec8e3;
+
+/**
+ * The one-hand trigger resize ({@link withOneHandScale}): while one hand grabs the box, pulling
+ * its trigger resizes the target. Leave it off where a grab must not resize (a locked node).
+ */
+export type TriggerResize = {
+  /** Let the renderer carry the target with the grabbing controller (free grabs, not hinges). */
+  carryWithController?: boolean;
+};
+
+/** Handle options, plus the trigger resize, which travels with them through wrapping layers. */
+export type GrabBoxManipulationOptions = Omit<HandleOptions<unknown>, "filter"> & {
+  triggerResize?: TriggerResize;
+};
 
 export type GrabBoxProps = {
   width: number;
@@ -58,7 +73,7 @@ export type GrabBoxProps = {
    */
   grabbable?: boolean;
   manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
-  manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
+  manipulationOptions?: GrabBoxManipulationOptions;
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
   grabFilter?: (event: PenPointerEvent) => boolean;
   /** Select/focus this spatial object without coupling its contents to a specific node type. */
@@ -191,13 +206,44 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
   const chromeVisible = visibleChrome && globalOutlineVisible;
   const handleStoreRef = useRef<HandleStore<unknown> | null>(null);
   useImperativeHandle(ref, () => boxRef.current!, []);
+  // `withOneHandScale` finds the grabbing pointer through the store its state belongs to.
+  const resizeStores = useMemo(() => new Map<string, HandleStore<unknown>>(), []);
   const setHandleStore = useCallback((store: HandleStore<unknown> | null) => {
     handleStoreRef.current = store;
+    if (store) resizeStores.set("box", store);
+    else resizeStores.delete("box");
     if (typeof manipulationStoreRef === "function") manipulationStoreRef(store);
     else if (manipulationStoreRef != null) {
       (manipulationStoreRef as React.MutableRefObject<HandleStore<unknown> | null>).current = store;
     }
-  }, [manipulationStoreRef]);
+  }, [manipulationStoreRef, resizeStores]);
+  const worldScale = useMemo(() => new THREE.Vector3(), []);
+  const handleOptions = useMemo((): Omit<HandleOptions<unknown>, "filter"> | undefined => {
+    if (manipulationOptions == null) return undefined;
+    const { triggerResize, ...options } = manipulationOptions;
+    if (triggerResize == null) return options;
+    const measure = {
+      width: () => {
+        const box = boxRef.current;
+        if (box == null) return width;
+        box.updateWorldMatrix(true, false);
+        return width * Math.abs(box.getWorldScale(worldScale).x);
+      },
+      // The box geometry is centred on its group.
+      center: (out: THREE.Vector3) => boxRef.current?.getWorldPosition(out) ?? out.set(0, 0, 0),
+    };
+    return {
+      ...options,
+      apply: withOneHandScale(
+        options.apply ?? defaultApply,
+        resizeStores,
+        measure,
+        triggerResize.carryWithController ?? false,
+      ),
+      // The trigger resizes while the hand holds still, so apply runs every frame.
+      alwaysUpdate: true,
+    };
+  }, [manipulationOptions, resizeStores, width, worldScale]);
   const handleWheel = useCallback((event: PenWheelEvent) => {
     const store = handleStoreRef.current;
     const notches = -event.deltaY / 100;
@@ -295,9 +341,9 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
       ref={setHandleStore}
       handleRef={boxRef as unknown as React.RefObject<import("three").Object3D | null>}
       targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
-      {...manipulationOptions}
-      multitouch={manipulationOptions?.multitouch ?? true}
-      scale={manipulationOptions?.scale ?? { uniform: true }}
+      {...handleOptions}
+      multitouch={handleOptions?.multitouch ?? true}
+      scale={handleOptions?.scale ?? { uniform: true }}
       filter={grabFilter}
     >
       {box}

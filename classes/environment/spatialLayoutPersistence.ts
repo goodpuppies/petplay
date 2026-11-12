@@ -86,7 +86,12 @@ function validGraph(value: unknown): value is SpatialGraph {
       !Array.isArray(candidate.accepts) ||
       !candidate.accepts.every((kind) =>
         kind === "display" || kind === "keyboard" || kind === "control"
-      ) || !record(candidate.attachments)
+      ) || !record(candidate.attachments) ||
+      (candidate.disabledKinds !== undefined &&
+        (!Array.isArray(candidate.disabledKinds) ||
+          !candidate.disabledKinds.every((kind) =>
+            kind === "display" || kind === "keyboard" || kind === "control"
+          )))
     ) return false;
     for (const [kind, attachment] of Object.entries(candidate.attachments)) {
       if (

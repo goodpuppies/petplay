@@ -1,11 +1,13 @@
 /**
- * One-hand resize, after XSOverlay: while one hand grabs a window, pulling that hand's trigger
- * resizes it. Pushing the hand forward (and a little down) grows the window; pulling it back
- * toward you shrinks it. The window holds still while the trigger is down.
+ * One-hand resize: while one hand grabs a window, holding that hand's trigger resizes it. Pulling
+ * the hand away from the window shrinks it; bringing it closer grows it. Only the distance from
+ * the hand to the window's centre counts, so it does not matter how the hand is turned or which
+ * way it moves. The window holds still while the trigger is down.
  *
- * XSOverlay's `Raycaster.Scale()` measures the hand's travel since the trigger went down along the
- * hand's backward axis tilted 40° up, and adds three times that to the window's starting width.
- * This does the same with the grip space.
+ * The size follows that distance exponentially ({@link oneHandScaledWidth}), so the same pull
+ * feels the same on a small wrist menu and on a large display, and never inverts the window.
+ * (This replaced XSOverlay's gesture, hand travel along its tilted backward axis, which depended
+ * on the wrist's angle and felt random.)
  *
  * Handle callbacks only know their `HandleState`, so the grab pointers register which hand and
  * input source they belong to ({@link registerGrabPointerHand}), and the wrapped `apply` finds its
@@ -22,12 +24,12 @@ import {
   type RenderTrackingFollow,
 } from "../overlayRenderTracking.ts";
 import { requestFollowRelease, syncDisplaysNow } from "./controllerDeviceFrames.ts";
+import { laserOffsetMatrix } from "./laserOffset.ts";
 
 export type GrabHand = "left" | "right";
 
-/** XSOverlay's `ScaleSpeed`: metres of width per metre of hand travel. */
-export const ONE_HAND_SCALE_SPEED = 3;
-export const ONE_HAND_SCALE_TILT_RADIANS = 40 * Math.PI / 180;
+/** Natural-log size change per metre of distance: about 23 cm halves or doubles the window. */
+export const ONE_HAND_SCALE_RATE = 3;
 export const ONE_HAND_SCALE_MIN_WIDTH = 0.05;
 export const ONE_HAND_SCALE_MAX_WIDTH = 8;
 const TRIGGER_DOWN = 0.2;
@@ -67,37 +69,34 @@ export function isHandGrabbing(hand: GrabHand): boolean {
   return false;
 }
 
-/** The scale gesture's axis in grip space: backward, tilted up. */
-const LOCAL_AXIS = new THREE.Vector3(
-  0,
-  Math.sin(ONE_HAND_SCALE_TILT_RADIANS),
-  Math.cos(ONE_HAND_SCALE_TILT_RADIANS),
-);
-
 /**
- * The window width for a hand that has moved from `start` to `position`. Travel against the
- * tilted backward axis (forward and down) widens it.
+ * The window width once the hand is `distance` from the window's centre, having been
+ * `startDistance` away when the trigger went down: further away is smaller, closer is larger.
  */
 export function oneHandScaledWidth(
   startWidth: number,
-  start: THREE.Vector3,
-  position: THREE.Vector3,
-  handQuaternion: THREE.Quaternion,
+  startDistance: number,
+  distance: number,
 ): number {
-  const axis = LOCAL_AXIS.clone().applyQuaternion(handQuaternion);
-  const travel = start.clone().sub(position).dot(axis);
-  return Math.min(
-    ONE_HAND_SCALE_MAX_WIDTH,
-    Math.max(ONE_HAND_SCALE_MIN_WIDTH, startWidth + travel * ONE_HAND_SCALE_SPEED),
-  );
+  const width = startWidth * Math.exp((startDistance - distance) * ONE_HAND_SCALE_RATE);
+  return Math.min(ONE_HAND_SCALE_MAX_WIDTH, Math.max(ONE_HAND_SCALE_MIN_WIDTH, width));
 }
+
+/** How {@link withOneHandScale} measures the grabbed box, in world space. */
+export type OneHandScaleMeasure = {
+  width: () => number;
+  center: (out: THREE.Vector3) => THREE.Vector3;
+};
 
 type Session = {
   pointerId: number;
   /** Set once the trigger has been up during this grab, so a trigger held into a grab is ignored. */
   armed: boolean;
   active?: {
-    hand: THREE.Vector3;
+    /** Hand-to-centre distance when the trigger went down. */
+    distance: number;
+    /** The centre then; the window holds still while resizing. */
+    center: THREE.Vector3;
     scale: THREE.Vector3;
     width: number;
   };
@@ -108,7 +107,7 @@ const handMatrix = new THREE.Matrix4();
 const handPosition = new THREE.Vector3();
 const handQuaternion = new THREE.Quaternion();
 const handScale = new THREE.Vector3();
-const worldScale = new THREE.Vector3();
+const boxCenter = new THREE.Vector3();
 
 function readHand(hand: GrabHand): boolean {
   if (!getHandOriginWorldMatrix(`${hand}-hand`, handMatrix)) return false;
@@ -142,8 +141,8 @@ export function consumeOneHandScaleEnd(target: object): boolean {
 }
 
 /**
- * Adds the one-hand resize to a grab's `apply`. `baseWidth` is the window's width in the target's
- * frame, which XSOverlay's speed and limits are in.
+ * Adds the one-hand resize to a grab's `apply`. `measure` reads the grabbed box's width and centre
+ * in world space. {@link GrabBox} applies this when its options carry `triggerResize`.
  *
  * While resizing, the store is rebased (`save`) every frame, so the hand's travel moves nothing,
  * and when the trigger comes up the grab carries on from where the window is.
@@ -151,7 +150,7 @@ export function consumeOneHandScaleEnd(target: object): boolean {
 export function withOneHandScale<T>(
   apply: (state: HandleState<unknown>, target: THREE.Object3D) => T,
   stores: Map<string, HandleStore<unknown>>,
-  baseWidth: number,
+  measure: OneHandScaleMeasure,
   /** Let the renderer carry the window with the grabbing controller ({@link setRenderFollow}). */
   renderFollow = false,
 ): (state: HandleState<unknown>, target: THREE.Object3D) => T | undefined {
@@ -195,12 +194,13 @@ export function withOneHandScale<T>(
     if (session.active == null) {
       if (!down) session.armed = true;
       else if (session.armed && readHand(grabber.hand)) {
-        target.updateWorldMatrix(true, false);
-        target.getWorldScale(worldScale);
+        target.updateWorldMatrix(true, true);
+        const center = measure.center(boxCenter).clone();
         session.active = {
-          hand: handPosition.clone(),
+          distance: handPosition.distanceTo(center),
+          center,
           scale: target.scale.clone(),
-          width: baseWidth * worldScale.x,
+          width: measure.width(),
         };
         pulseHand(grabber.hand, "click");
       }
@@ -217,7 +217,8 @@ export function withOneHandScale<T>(
       session.active = undefined;
       resizedTargets.add(target);
     } else if (readHand(grabber.hand)) {
-      const width = oneHandScaledWidth(active.width, active.hand, handPosition, handQuaternion);
+      const distance = handPosition.distanceTo(active.center);
+      const width = oneHandScaledWidth(active.width, active.distance, distance);
       target.scale.copy(active.scale).multiplyScalar(width / active.width);
     }
     store.save();
@@ -272,13 +273,13 @@ function setRenderFollow(
   }
   follow.releasing = false;
   // The poses this apply placed the window from, not a later sample of the controllers.
-  const pose = poseOf(input, firstPose);
+  const pose = poseOf(input, firstPose, grabber);
   if (second == null || pairSpace == null) {
     follow.pair = undefined;
     (follow.pose as unknown as THREE.Matrix4).copy(pose);
     return;
   }
-  const otherPose = poseOf(second.input!, secondPose);
+  const otherPose = poseOf(second.input!, secondPose, second.grabber!);
   const pair: FollowPair = {
     space: pairSpace,
     // Each grab point in its pointer's own space: fixed while the grab holds (frozen points).
@@ -305,9 +306,17 @@ const firstPose = new THREE.Matrix4();
 const secondPose = new THREE.Matrix4();
 const grabPointHelper = new THREE.Matrix4();
 
-function poseOf(input: GrabInput, target: THREE.Matrix4): THREE.Matrix4 {
-  return target.compose(input.pointerWorldOrigin, input.pointerWorldQuaternion, UNIT_SCALE);
+/**
+ * The grabbing pointer's pose in its render anchor's frame. A grab ray hangs from the laser's
+ * offset ({@link laserOffsetMatrix}), but its anchor is the controller tip the renderer re-poses.
+ */
+function poseOf(input: GrabInput, target: THREE.Matrix4, grabber: GrabPointer): THREE.Matrix4 {
+  target.compose(input.pointerWorldOrigin, input.pointerWorldQuaternion, UNIT_SCALE);
+  if (grabber.space !== "ray") return target;
+  return target.multiply(laserOffsetMatrix(grabber.hand, laserOffset).invert());
 }
+
+const laserOffset = new THREE.Matrix4();
 
 function grabPoint(input: GrabInput, pose: THREE.Matrix4): number[] {
   return input.pointerWorldPoint.clone().applyMatrix4(grabPointHelper.copy(pose).invert())

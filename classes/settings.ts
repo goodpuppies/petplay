@@ -8,7 +8,11 @@
  */
 import { dirname, join } from "@std/path";
 import { useSyncExternalStore } from "react";
-import { isWristOffset, type WristOffset } from "./environment/wristMenu/offset.ts";
+import {
+  isWristOffset,
+  type PoseOffset,
+  type WristOffset,
+} from "./environment/wristMenu/offset.ts";
 
 export const SETTINGS_FILENAME = "settings.json";
 
@@ -36,23 +40,27 @@ export const SETTINGS_SCHEMA = {
   glyphAaWidth: {
     default: 1 as number,
     label: "Glyph antialiasing footprint scale (1 is original; smaller is sharper)",
-    valid: (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0.5 && v <= 1,
+    valid: (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0.5 && v <= 1,
   } satisfies SettingSpec<number>,
   glyphCoverageExponent: {
     default: 1 as number,
     label: "Glyph edge coverage exponent (1 is the original coverage)",
-    valid: (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0.5 && v <= 1,
+    valid: (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0.5 && v <= 1,
   } satisfies SettingSpec<number>,
   glyphWeightPixels: {
     default: 0 as number,
     label: "Glyph coverage dilation in eye pixels (0 is the original weight)",
-    valid: (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 0.25,
+    valid: (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 0.25,
   } satisfies SettingSpec<number>,
   textRenderer: {
     default: null as "msdf" | "pathfinder" | "glyph" | "windfoil" | null,
     label: "Text renderer; null follows the session default",
     valid: (value: unknown): value is "msdf" | "pathfinder" | "glyph" | "windfoil" | null =>
-      value === null || value === "msdf" || value === "pathfinder" || value === "glyph" || value === "windfoil",
+      value === null || value === "msdf" || value === "pathfinder" || value === "glyph" ||
+      value === "windfoil",
   } satisfies SettingSpec<"msdf" | "pathfinder" | "glyph" | "windfoil" | null>,
   panoramaFilter: {
     default: null as "linear" | "catmull-rom" | null,
@@ -90,6 +98,19 @@ export const SETTINGS_SCHEMA = {
     label: "Wrist menu opacity (0.2 to 1); below 1 the controller shows through it",
     valid: isWristOpacity,
   } satisfies SettingSpec<number>,
+  contextToolbarScale: {
+    default: 1 as number,
+    label: "Window side-menu size, relative to the default (0.5 to 2; resized in edit layout mode)",
+    valid: isWristScale,
+  } satisfies SettingSpec<number>,
+  laserOffsets: {
+    default: {} as Record<string, PoseOffset>,
+    label:
+      "Each laser's pose relative to its controller's tip, keyed \"<render model>/<hand>\" (edit layout mode)",
+    valid: (value: unknown): value is Record<string, PoseOffset> =>
+      value != null && typeof value === "object" && !Array.isArray(value) &&
+      Object.values(value).every(isWristOffset),
+  } satisfies SettingSpec<Record<string, PoseOffset>>,
   wristMenuOffset: {
     default: null as WristOffset | null,
     label:

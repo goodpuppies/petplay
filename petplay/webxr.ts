@@ -15,6 +15,7 @@ import { getDisplayMouseDiagnostics } from "../classes/environment/displayInstan
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { OpenVrProjectionOverlays } from "../classes/openVrProjectionOverlays.ts";
 import { playspaceFrame } from "../classes/playspaceFrame.ts";
+import { setLaserControllerModel } from "../classes/environment/laserOffset.ts";
 import { closeRaylibAudio } from "../classes/environment/raylibAudioContext.ts";
 import type { CompositorFrameTiming } from "../classes/openVrOverlayFramePacing.ts";
 import { WEBXR_CRASH_ON_DROP_WARMUP_FRAMES } from "../classes/webxrCrashOnDrop.ts";
@@ -2816,12 +2817,13 @@ function getNativeRaylibControllerSelection(
   const trackedPose = index === OpenVR.k_unTrackedDeviceIndexInvalid
     ? null
     : pacer.getCachedTrackedDevicePose(index);
-  return {
-    index,
-    pose: trackedPose && state.controllerTipPoseResolver
-      ? state.controllerTipPoseResolver.resolve(index, trackedPose)
-      : trackedPose,
-  };
+  const tip = state.controllerTipPoseResolver;
+  const pose = trackedPose && tip ? tip.resolve(index, trackedPose) : trackedPose;
+  // Laser offsets are saved per controller model.
+  if (trackedPose && tip) {
+    setLaserControllerModel(isLeft ? "left" : "right", tip.lastRenderModel(index));
+  }
+  return { index, pose };
 }
 
 async function uploadNativeRaylibDebugFrame() {

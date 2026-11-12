@@ -20,6 +20,7 @@ import {
   reconcileWorkspaceOutputs,
   releaseHinge,
   resetSpatialNodeTransform,
+  setHitboxKindEnabled,
   setSpatialNodeAutoHide,
   setSpatialNodeCurvature,
   setSpatialNodeLocked,
@@ -33,6 +34,7 @@ import {
   swapDisplayToolbarSide,
 } from "./spatialGraph.ts";
 import { DEFAULT_DISPLAY_HEIGHT, DISPLAY_PANEL_WIDTH } from "./displayMetrics.ts";
+import { parseSpatialLayout, serializeSpatialLayout } from "./spatialLayoutPersistence.ts";
 import type { WorkspaceOutput } from "./workspaceDisplays.ts";
 import * as THREE from "three/webgpu";
 
@@ -386,6 +388,79 @@ Deno.test("a detached display can snap into another display attachment slot", ()
       display.constraint.attachmentSlotId === "display-1-left-slot",
     "display should become a left-slot hinge",
   );
+});
+
+Deno.test("a slot toggled off for a kind no longer snaps it, and keeps what is attached", () => {
+  let graph = spawnHingedDisplay(createInitialSpatialGraph(), "display-1", "right");
+  graph = detachFromParent(graph, "display-2");
+  graph = setHitboxKindEnabled(graph, "display-1-left-slot", "display", false);
+  assert(
+    JSON.stringify(graph.hitboxes["display-1-left-slot"].disabledKinds) === '["display"]',
+    "the slot records the disabled kind",
+  );
+  const pose = {
+    position: [-0.52, 0, 0.025] as [number, number, number],
+    rotation: [0, 0, 0] as [number, number, number],
+    scale: [1, 1, 1] as [number, number, number],
+  };
+  const unsnapped = commitSpatialNodeTransformAndSnap(graph, "display-2", pose);
+  const unsnappedConstraint = unsnapped.nodes["display-2"].constraint;
+  assert(
+    unsnappedConstraint?.kind !== "hinge" ||
+      unsnappedConstraint.attachmentSlotId !== "display-1-left-slot",
+    "a disabled slot must not snap (another overlapping slot still may)",
+  );
+
+  const enabled = setHitboxKindEnabled(graph, "display-1-left-slot", "display", true);
+  assert(
+    enabled.hitboxes["display-1-left-slot"].disabledKinds === undefined,
+    "re-enabling the last kind drops the field",
+  );
+  const snapped = commitSpatialNodeTransformAndSnap(enabled, "display-2", pose);
+  const snappedConstraint = snapped.nodes["display-2"].constraint;
+  assert(
+    snappedConstraint?.kind === "hinge" &&
+      snappedConstraint.attachmentSlotId === "display-1-left-slot",
+    "the re-enabled slot snaps again",
+  );
+
+  // Turning the slot off afterwards leaves the attached display where it is.
+  const offAgain = setHitboxKindEnabled(snapped, "display-1-left-slot", "display", false);
+  assert(offAgain.nodes["display-2"].constraint?.kind === "hinge", "attachment survives");
+  assert(
+    setHitboxKindEnabled(offAgain, "display-1-left-slot", "keyboard", false) === offAgain,
+    "a kind the slot does not accept is ignored",
+  );
+  const parsed = parseSpatialLayout(serializeSpatialLayout(offAgain));
+  // Loading rebuilds the slot table from the nodes; the toggles are the user's and carry over.
+  const reloaded = parsed == null ? null : normalizeSpatialLayout(parsed);
+  assert(
+    JSON.stringify(reloaded?.hitboxes["display-1-left-slot"].disabledKinds) === '["display"]',
+    "the toggle survives saving and loading the layout",
+  );
+});
+
+Deno.test("the side menu avoids a keyboard floating where it would go, attached or not", () => {
+  const footprint = {
+    horizontal: [0.4, 0.15] as [number, number],
+    vertical: [0.18, 0.4] as [number, number],
+    gap: 0.015,
+  };
+  // The default keyboard hangs in display-1's bottom slot; detached, it floats right below.
+  let graph = detachFromParent(createInitialSpatialGraph(), "keyboard");
+  assert(graph.nodes.keyboard.parentId == null, "nothing is attached any more");
+  assert(displayToolbarSide(graph, "display-1") === "below", "the slots alone see a free edge");
+  assert(
+    displayToolbarSide(graph, "display-1", footprint) === "above",
+    "the floating keyboard takes the menu's space",
+  );
+  // Moved well away, it no longer blocks anything.
+  graph = commitNodeTransform(graph, "keyboard", {
+    position: [5, 0, 0],
+    rotation: [0, 0, 0],
+    scale: [1, 1, 1],
+  });
+  assert(displayToolbarSide(graph, "display-1", footprint) === "below", "free again");
 });
 
 Deno.test("ripping a hinge preserves hierarchy until the free node is placed", () => {

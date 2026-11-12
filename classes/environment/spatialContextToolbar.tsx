@@ -32,6 +32,10 @@ import {
   unitSpan,
 } from "./ui/tokens.ts";
 import { pulseForPointerEvent } from "./haptics.ts";
+import { GrabBox, type GrabBoxManipulationOptions } from "./grabbox.tsx";
+import { useToolEditMode } from "./toolEditMode.ts";
+import { getSetting, setSetting } from "../settings.ts";
+import { defaultApply, type HandleState } from "@pmndrs/handle";
 import { recordPress } from "./pressLog.ts";
 
 /**
@@ -179,6 +183,37 @@ function ActionTile(
 
 /** Metres between the node's edge and the near side of the card. */
 const EDGE_GAP = 0.015;
+/** The card's default world scale (`scale` prop). */
+const DEFAULT_TOOLBAR_SCALE = 0.72;
+
+/**
+ * The card's size in its own units (uikit pixels × 0.001): shell padding, the title pill and rows
+ * of tiles, with the settings closed. Two tiles wide beside a window, one row of them otherwise.
+ */
+function cardSize(tileCount: number, vertical: boolean): [number, number] {
+  const units = vertical ? 2 : Math.max(2, tileCount);
+  const rows = vertical ? Math.max(1, Math.ceil(tileCount / 2)) : 1;
+  const width = unitSpan(units) + GAP * 2;
+  const height = GAP * 2 + slotSize(units) + GAP + rows * UNIT + (rows - 1) * GAP;
+  return [width * 0.001, height * 0.001];
+}
+
+/**
+ * The menu's world footprint for choosing a side clear of other windows
+ * (`displayToolbarSide`). `tileCount` counts the actions and the settings button.
+ */
+export function contextToolbarFootprint(
+  tileCount: number,
+  scale = DEFAULT_TOOLBAR_SCALE,
+): { horizontal: [number, number]; vertical: [number, number]; gap: number } {
+  const k = scale * getSetting("contextToolbarScale");
+  const [hw, hh] = cardSize(tileCount, false);
+  const [vw, vh] = cardSize(tileCount, true);
+  return { horizontal: [hw * k, hh * k], vertical: [vw * k, vh * k], gap: EDGE_GAP };
+}
+/** The `contextToolbarScale` setting's range. */
+const MIN_USER_SCALE = 0.5;
+const MAX_USER_SCALE = 2;
 
 export function SpatialContextToolbar({
   title,
@@ -188,7 +223,7 @@ export function SpatialContextToolbar({
   side = "below",
   settingsPosition,
   role,
-  scale = 0.72,
+  scale = DEFAULT_TOOLBAR_SCALE,
   pointerEventsType = "all",
   open = true,
 }: SpatialContextToolbarProps) {
@@ -229,12 +264,42 @@ export function SpatialContextToolbar({
   const group = useRef<THREE.Group>(null);
   const settingsGroup = useRef<THREE.Group>(null);
   const scratch = useRef({ parentScale: new THREE.Vector3() });
+  // Edit layout mode resizes the card (never moves it): the trigger resize or a two-hand pinch
+  // scales this inner group, and letting go folds that into the shared `contextToolbarScale`.
+  const editing = useToolEditMode();
+  const resizeRef = useRef<THREE.Group>(null);
+  const resizeFolded = useRef(false);
+  const resizeOptions = React.useMemo((): GrabBoxManipulationOptions => ({
+    // Resize only: one hand by trigger, two hands by pinch, about the docked edge.
+    translate: false,
+    rotate: false,
+    scale: { uniform: true },
+    multitouch: true,
+    triggerResize: {},
+    apply: (state: HandleState<unknown>, target: import("three").Object3D) => {
+      defaultApply(state, target);
+      if (!state.last) return;
+      const k = target.scale.x;
+      if (Math.abs(k - 1) < 1e-4) return;
+      const current = getSetting("contextToolbarScale");
+      setSetting(
+        "contextToolbarScale",
+        Math.min(MAX_USER_SCALE, Math.max(MIN_USER_SCALE, current * k)),
+      );
+      resizeFolded.current = true;
+    },
+  }), []);
   useFrame(() => {
     const node = group.current;
     if (node?.parent == null) return;
     const s = scratch.current;
     node.parent.getWorldScale(s.parentScale);
-    const k = scale;
+    const k = scale * getSetting("contextToolbarScale");
+    // The setting now carries the resize: drop it from the inner group in the same frame.
+    if (resizeFolded.current) {
+      resizeFolded.current = false;
+      resizeRef.current?.scale.setScalar(1);
+    }
     node.scale.set(k / s.parentScale.x, k / s.parentScale.y, k / s.parentScale.z);
     if (vertical) {
       const gap = (side === "right" ? EDGE_GAP : -EDGE_GAP) / s.parentScale.x;
@@ -271,6 +336,13 @@ export function SpatialContextToolbar({
   const toolbarShell = shellFor(cardUnits);
   // uikit pixels are 0.001 group units (`pixelSize`).
   const besideCard = (toolbarShell.width + GAP) * 0.001;
+  // The card's outline for edit mode's grab box: shell padding, title pill, rows of tiles.
+  const [cardWidth, cardHeight] = cardSize(tileCount, vertical);
+  const cardCenter: [number, number, number] = [
+    side === "right" ? cardWidth / 2 : side === "left" ? -cardWidth / 2 : 0,
+    side === "above" ? cardHeight / 2 : -cardHeight / 2,
+    0,
+  ];
 
   return (
     <group
@@ -303,14 +375,30 @@ export function SpatialContextToolbar({
         rather than into the stack above or below it.
       */
       }
-      <Container
-        {...toolbarShell}
-        anchorX={side === "right" ? "left" : side === "left" ? "right" : undefined}
-        anchorY={side === "above" ? "bottom" : "top"}
-        flexDirection={side === "above" ? "column-reverse" : "column"}
-      >
-        {
-          /*
+      <group ref={resizeRef}>
+        {editing && open && (
+          <group position={cardCenter}>
+            <GrabBox
+              width={cardWidth}
+              height={cardHeight}
+              depth={0.02}
+              // Grab only: trigger presses go through to the buttons.
+              shellRayPickable={false}
+              manipulationTargetRef={resizeRef}
+              manipulationOptions={resizeOptions}
+              grabFilter={(event) => event.pointerType !== "ray" && event.pointerType !== "poker"}
+              userData={{ contextToolbarResize: true }}
+            />
+          </group>
+        )}
+        <Container
+          {...toolbarShell}
+          anchorX={side === "right" ? "left" : side === "left" ? "right" : undefined}
+          anchorY={side === "above" ? "bottom" : "top"}
+          flexDirection={side === "above" ? "column-reverse" : "column"}
+        >
+          {
+            /*
           The one piece of text left: the icons say what the actions do, but
           nothing else says which node they act on. Spans the full card width,
           so its edges land on the grid like every other pill.
@@ -319,37 +407,38 @@ export function SpatialContextToolbar({
           reserved for "this is on", so on a detached node nothing in this card
           is lit at all — which is the point.
         */
-        }
-        <Container flexDirection="row" gap={INNER_GAP}>
-          {role != null && <HierarchyBadge role={role} size={slotSize(cardUnits)} />}
-          <Pill slots={cardUnits * 2 - (role != null ? 1 : 0)} units={cardUnits} fontSize={14}>
-            {hoverLabel ?? title}
-          </Pill>
-        </Container>
-
-        <Container flexDirection="row" flexWrap="wrap" gap={GAP}>
-          {actions.map((action) => (
-            <ActionTile key={action.id} action={action} onHover={setHoveredId} />
-          ))}
-          {settings != null && <ActionTile action={settingsAction} onHover={setHoveredId} />}
-        </Container>
-        {settingsOpen && !detachedSettings && settings}
-      </Container>
-      {settingsOpen && detachedSettings && (
-        <group
-          ref={vertical ? undefined : settingsGroup}
-          position={vertical ? [side === "right" ? besideCard : -besideCard, 0, 0] : undefined}
-        >
-          <Container
-            {...shell}
-            anchorX={side === "left" ? "right" : "left"}
-            anchorY="top"
-            flexDirection="column"
-          >
-            {settings}
+          }
+          <Container flexDirection="row" gap={INNER_GAP}>
+            {role != null && <HierarchyBadge role={role} size={slotSize(cardUnits)} />}
+            <Pill slots={cardUnits * 2 - (role != null ? 1 : 0)} units={cardUnits} fontSize={14}>
+              {hoverLabel ?? title}
+            </Pill>
           </Container>
-        </group>
-      )}
+
+          <Container flexDirection="row" flexWrap="wrap" gap={GAP}>
+            {actions.map((action) => (
+              <ActionTile key={action.id} action={action} onHover={setHoveredId} />
+            ))}
+            {settings != null && <ActionTile action={settingsAction} onHover={setHoveredId} />}
+          </Container>
+          {settingsOpen && !detachedSettings && settings}
+        </Container>
+        {settingsOpen && detachedSettings && (
+          <group
+            ref={vertical ? undefined : settingsGroup}
+            position={vertical ? [side === "right" ? besideCard : -besideCard, 0, 0] : undefined}
+          >
+            <Container
+              {...shell}
+              anchorX={side === "left" ? "right" : "left"}
+              anchorY="top"
+              flexDirection="column"
+            >
+              {settings}
+            </Container>
+          </group>
+        )}
+      </group>
     </group>
   );
 }

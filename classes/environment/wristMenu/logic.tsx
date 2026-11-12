@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
@@ -21,10 +21,10 @@ import {
   saveLayoutSlot,
   useWorkspaceLayoutSnapshot,
 } from "../workspaceLayoutStore.ts";
-import { GrabBox } from "../grabbox.tsx";
+import { GrabBox, type GrabBoxManipulationOptions } from "../grabbox.tsx";
 import { isPointerBlockedByHost } from "./pointerFilter.ts";
-import { setSetting, useSetting } from "../../settings.ts";
-import { defaultApply, type HandleOptions, type HandleState } from "@pmndrs/handle";
+import { getSetting, setSetting, useSetting } from "../../settings.ts";
+import { defaultApply, type HandleState } from "@pmndrs/handle";
 import { wristOffsetForHand } from "./offset.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -254,20 +254,25 @@ export function WristMenuPanel(
   const offset = savedOffset == null ? null : wristOffsetForHand(savedOffset, offsetHand);
   const offsetRef = useRef<THREE.Group>(null);
   const dragging = useRef(false);
+  /** A resize was saved to `wristMenuScale`; the grab's own scale resets when that arrives. */
+  const resizeSaved = useRef(false);
   // Grabbing the panel with the other hand moves it (and its occluder) within the mount; letting
-  // go saves where it ended up. Size has its own setting, so the grab doesn't scale. The desktop
-  // HUD isn't on a wrist and keeps the default grab.
+  // go saves where it ended up. Two hands don't scale it; the grabbing hand's trigger resizes it
+  // (GrabBox's trigger resize), and letting go folds that into the `wristMenuScale` setting. The
+  // desktop HUD isn't on a wrist and keeps the default grab.
   //
   // Every trigger click on a wrist button also reaches the handle as a grab that barely moves.
   // Until the grab passes a small slop the panel stays put, so a press neither nudges the menu by
   // the hand's jitter nor saves an offset (which would read "Position: moved").
-  const grabOptions = useMemo((): Omit<HandleOptions<unknown>, "filter"> | undefined =>
+  const grabOptions = useMemo((): GrabBoxManipulationOptions | undefined =>
     attached
       ? {
         scale: false,
+        triggerResize: {},
         apply: (state: HandleState<unknown>, target: import("three").Object3D) => {
           if (state.first) dragging.current = false;
-          if (!dragging.current) {
+          const resized = Math.abs(target.scale.x - 1) > 1e-4;
+          if (!dragging.current && !resized) {
             const moved = state.initial.position.distanceTo(state.current.position);
             const turned = state.initial.quaternion.angleTo(state.current.quaternion);
             if (moved < WRIST_DRAG_SLOP_METERS && turned < WRIST_DRAG_SLOP_RADIANS) return;
@@ -275,10 +280,23 @@ export function WristMenuPanel(
           }
           defaultApply(state, target);
           if (!state.last) return;
+          let position = target.position;
+          if (resized) {
+            const current = getSetting("wristMenuScale");
+            const next = Math.min(2, Math.max(0.5, current * target.scale.x));
+            // The offset sits inside the scaled mount: keep the panel where it is in the world.
+            position = target.position.clone().multiplyScalar(current / next);
+            if (next !== current) {
+              resizeSaved.current = true;
+              setSetting("wristMenuScale", next);
+            } else {
+              target.scale.setScalar(1);
+            }
+          }
           setSetting(
             "wristMenuOffset",
             wristOffsetForHand({
-              position: target.position.toArray() as [number, number, number],
+              position: position.toArray() as [number, number, number],
               rotation: target.quaternion.toArray() as [number, number, number, number],
             }, offsetHand),
           );
@@ -345,6 +363,13 @@ export function WristMenuPanel(
   const position = transform?.position ?? CONTROLLER_UI_POSITION;
   const rotation = transform?.rotation ?? CONTROLLER_UI_ROTATION;
   const scale = transform?.scale ?? CONTROLLER_UI_SCALE;
+  // The mount now carries a trigger resize: drop it from the grab target in the same commit, so the
+  // panel never shows both scales or neither for a frame.
+  useLayoutEffect(() => {
+    if (!resizeSaved.current) return;
+    resizeSaved.current = false;
+    offsetRef.current?.scale.setScalar(1);
+  }, [scale]);
 
   return (
     <group

@@ -1,4 +1,5 @@
 import { getSetting, setSetting, useSetting } from "../settings.ts";
+import { useToolEditMode } from "./toolEditMode.ts";
 
 /** Whether grab-box chrome draws. The interaction hull stays active either way. */
 export function getGrabboxOutlineVisible(): boolean {
@@ -14,6 +15,8 @@ export function toggleGrabboxOutlineVisible(): boolean {
   return getGrabboxOutlineVisible();
 }
 
+/** Drawn when the setting is on, and always in edit layout mode, where grab boxes are the point. */
 export function useGrabboxOutlineVisible(): boolean {
-  return useSetting("grabboxOutline");
+  const setting = useSetting("grabboxOutline");
+  return useToolEditMode() || setting;
 }

@@ -49,9 +49,10 @@ import {
 import { subscribeLayoutRecenter, useWindowLayerVisible } from "./windowLayerMode.ts";
 import { setGrabboxOutlineVisible, useGrabboxOutlineVisible } from "./grabboxOutlineMode.ts";
 import { useHingedOneHandScaleMaxGrabOffset } from "./spatialManipulationMode.ts";
-import { GrabBox } from "./grabbox.tsx";
+import { GrabBox, type GrabBoxManipulationOptions } from "./grabbox.tsx";
+import { SnapSlotMarkers } from "./snapSlotMarkers.tsx";
 import { pushPullGrab } from "./pushPull.ts";
-import { consumeOneHandScaleEnd, withOneHandScale } from "./oneHandScale.ts";
+import { consumeOneHandScaleEnd } from "./oneHandScale.ts";
 import {
   assignWorkspaceOutput,
   commitHingePose,
@@ -65,7 +66,6 @@ import {
   type DisplaySpatialNode,
   displayToolbarSide,
   displayToolbarSwapSide,
-  swapDisplayToolbarSide,
   getDisplayAttachmentRole,
   getSpatialChildren,
   getSpatialRootId,
@@ -92,6 +92,7 @@ import {
   spawnDisplayForWorkspaceOutput,
   spawnHingedDisplay,
   spawnHingedDisplayWithAutomaticOutput,
+  swapDisplayToolbarSide,
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
 import { loadWorkspaceOutputs, type WorkspaceOutput } from "./workspaceDisplays.ts";
@@ -121,6 +122,7 @@ import {
   type TrackedOriginId,
 } from "./trackedOrigins.ts";
 import {
+  contextToolbarFootprint,
   type SpatialContextAction,
   SpatialContextToolbar,
   SpatialHierarchyIndicator,
@@ -201,8 +203,13 @@ function VrcCameraCalibrationBall() {
     if (pose) ref.current.position.fromArray(pose.position);
   });
   return (
-    <mesh ref={ref} name="vrc-camera-calibration-ball" visible={false}
-      userData={{ vrcCameraHidden: true }} pointerEvents="none">
+    <mesh
+      ref={ref}
+      name="vrc-camera-calibration-ball"
+      visible={false}
+      userData={{ vrcCameraHidden: true }}
+      pointerEvents="none"
+    >
       <sphereGeometry args={[0.025, 16, 12]} />
       <meshBasicMaterial color="#36ff68" />
     </mesh>
@@ -353,24 +360,17 @@ function applyDampedHandleState(
 
 /**
  * Grab options that move the target freely with the hand (not a hinge), so the renderer may carry
- * it with the grabbing controller's fresh pose.
+ * it with the grabbing controller's fresh pose while it is resized by trigger.
  */
-const freeGrabOptionSet = new WeakSet<object>();
-function freeGrabOptions<T extends object>(options: T): T {
-  freeGrabOptionSet.add(options);
-  return options;
+function freeGrabOptions(
+  options: Omit<HandleOptions<unknown>, "filter">,
+): GrabBoxManipulationOptions {
+  return { ...options, triggerResize: { carryWithController: true } };
 }
 
-/** Grab options with the trigger resize ({@link withOneHandScale}). */
-function withTriggerResize(
-  options: Omit<HandleOptions<unknown>, "filter">,
-  stores: Map<string, HandleStore<unknown>>,
-  baseWidth: number,
-): Omit<HandleOptions<unknown>, "filter"> {
-  const apply = options.apply == null
-    ? undefined
-    : withOneHandScale(options.apply, stores, baseWidth, freeGrabOptionSet.has(options));
-  return { ...options, apply, alwaysUpdate: true };
+/** Grab options with the trigger resize ({@link GrabBox} applies it); hinges keep theirs. */
+function withTriggerResize(options: GrabBoxManipulationOptions): GrabBoxManipulationOptions {
+  return options.triggerResize != null ? options : { ...options, triggerResize: {} };
 }
 
 function CommonOverlayChords({
@@ -484,8 +484,8 @@ function CommonOverlayChords({
     }
     const pointedId = displayObject?.userData.spatialElementId as string | undefined;
     if (!hit?.uv || !pointedId || graph.nodes[pointedId]?.mouseBlocked) return;
-    scrollAccumulator.current +=
-      Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND * Math.min(delta, 0.05);
+    scrollAccumulator.current += Math.abs(axis) * JOYSTICK_SCROLL_CLICKS_PER_SECOND *
+      Math.min(delta, 0.05);
     const clicks = Math.floor(scrollAccumulator.current);
     if (clicks === 0) return;
     scrollAccumulator.current -= clicks;
@@ -827,11 +827,12 @@ const WindowLayerContent = React.memo(function WindowLayerContent(
         handleStores={handleStores}
         onMouse={onMouse}
       />
-      {fontsLoaded && getSpatialChildren(graph, null).map((node) => (
-        <SpatialRootOrigin key={node.id} originId={node.originId}>
-          <SpatialNodeView key={node.id} node={node} {...props} />
-        </SpatialRootOrigin>
-      ))}
+      {fontsLoaded &&
+        getSpatialChildren(graph, null).map((node) => (
+          <SpatialRootOrigin key={node.id} originId={node.originId}>
+            <SpatialNodeView key={node.id} node={node} {...props} />
+          </SpatialRootOrigin>
+        ))}
     </group>
   );
 });
@@ -1138,11 +1139,14 @@ function objectTransform(target: import("three").Object3D): SpatialTransform {
 
 /** A locked node keeps its handle (so a grab is still swallowed) but every axis is frozen. */
 function useLockedGrabOptions(
-  options: Omit<HandleOptions<unknown>, "filter">,
+  options: GrabBoxManipulationOptions,
   locked: boolean,
-): Omit<HandleOptions<unknown>, "filter"> {
+): GrabBoxManipulationOptions {
   return React.useMemo(
-    () => locked ? { ...options, translate: false, rotate: false, scale: false } : options,
+    () =>
+      locked
+        ? { ...options, translate: false, rotate: false, scale: false, triggerResize: undefined }
+        : options,
     [locked, options],
   );
 }
@@ -1150,7 +1154,7 @@ function useLockedGrabOptions(
 function useScaleToDelete(
   nodeId: string,
   grabSize: [number, number, number],
-  baseOptions: Omit<HandleOptions<unknown>, "filter">,
+  baseOptions: GrabBoxManipulationOptions,
   setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>,
 ) {
   const [armed, setArmed] = React.useState(false);
@@ -1265,9 +1269,6 @@ function DisplaySpatialNodeView({
   const [hovered, setHovered] = React.useState(false);
   const grabOutlineVisible = useGrabboxOutlineVisible();
   const local = localTransformOverride ?? node.localTransform;
-  // A borrowed target (a slot's frame) sits outside this node's own transform; a hinge frame
-  // leaves the node's scale inside it.
-  const innerScale = manipulationTargetRef == null ? 1 : local.scale[0];
 
   const commitFreeTransform = React.useCallback(
     (state: HandleState<unknown>, target: import("three").Object3D) => {
@@ -1289,13 +1290,8 @@ function DisplaySpatialNodeView({
     }
   }, [handleStores, manipulationStoreRef, node.id]);
   const baseOptions = React.useMemo(
-    () =>
-      withTriggerResize(
-        manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform }),
-        handleStores,
-        DISPLAY_GRAB_SIZE[0] * innerScale,
-      ),
-    [commitFreeTransform, handleStores, manipulationOptions, innerScale],
+    () => withTriggerResize(manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform })),
+    [commitFreeTransform, manipulationOptions],
   );
   const deletion = useScaleToDelete(node.id, DISPLAY_GRAB_SIZE, baseOptions, setGraph);
   const grabOptions = useLockedGrabOptions(deletion.options, node.locked ?? false);
@@ -1319,6 +1315,8 @@ function DisplaySpatialNodeView({
     });
   }, [onMouse, workspaceCrop.x, workspaceCrop.y, workspaceCrop.width, workspaceCrop.height]);
   const selectNode = React.useCallback(() => onSelectNode(node.id), [node.id, onSelectNode]);
+  // The menu's size is part of where it fits.
+  const toolbarScale = useSetting("contextToolbarScale");
   const contextActions = React.useMemo<SpatialContextAction[]>(() => {
     const actions: SpatialContextAction[] = [];
     if (hasAvailableDisplayAttachmentSlot(graph, node.id)) {
@@ -1344,13 +1342,15 @@ function DisplaySpatialNodeView({
         run: () => setGraph((current) => detachDisplayHierarchy(current, node.id)),
       });
     }
-    const swapSide = displayToolbarSwapSide(graph, node.id);
+    // Sized as if the swap button shows: so far, swap, lock, delete and settings.
+    const swapFootprint = contextToolbarFootprint(actions.length + 4);
+    const swapSide = displayToolbarSwapSide(graph, node.id, swapFootprint);
     if (swapSide != null) {
       actions.push({
         id: "swap-menu-side",
         label: `Move menu ${swapSide}`,
         icon: swapSide === "right" ? "arrow_forward" : "arrow_back",
-        run: () => setGraph((current) => swapDisplayToolbarSide(current, node.id)),
+        run: () => setGraph((current) => swapDisplayToolbarSide(current, node.id, swapFootprint)),
       });
     }
     actions.push({
@@ -1367,9 +1367,14 @@ function DisplaySpatialNodeView({
       run: () => setGraph((current) => deleteSpatialNode(current, node.id)),
     });
     return actions;
-  }, [attachmentRole, graph, node.id, node.parentId, setGraph, workspaceOutputs]);
-  // A keyboard hinged under the window would sit in front of a toolbar hanging below it.
-  const toolbarSide = displayToolbarSide(graph, node.id);
+  }, [attachmentRole, graph, node.id, node.parentId, setGraph, workspaceOutputs, toolbarScale]);
+  // A keyboard hinged under the window would sit in front of a toolbar hanging below it, and so
+  // would anything floating in the space the menu needs (its actions plus the settings button).
+  const toolbarFootprint = React.useMemo(
+    () => contextToolbarFootprint(contextActions.length + 1),
+    [contextActions.length, toolbarScale],
+  );
+  const toolbarSide = displayToolbarSide(graph, node.id, toolbarFootprint);
   const assignedSide = node.constraint?.kind === "hinge"
     ? node.constraint.attachmentSlotId.match(/-(left|right|top|bottom)-slot$/)?.[1]
     : undefined;
@@ -1394,6 +1399,7 @@ function DisplaySpatialNodeView({
       }}
     >
       {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
+      <SnapSlotMarkers graph={graph} ownerId={node.id} setGraph={setGraph} />
       <DisplayInstance
         displayOverlayHostActor={activeDisplayOverlayHostActor}
         virtualDisplayId={node.id}
@@ -1518,9 +1524,6 @@ function KeyboardSpatialNodeView({
 }: SpatialNodeViewProps & { node: KeyboardSpatialNode }) {
   const nodeRef = React.useRef<THREE.Group>(null);
   const local = localTransformOverride ?? node.localTransform;
-  // A borrowed target (a slot's frame) sits outside this node's own transform; a hinge frame
-  // leaves the node's scale inside it.
-  const innerScale = manipulationTargetRef == null ? 1 : local.scale[0];
   const commitFreeTransform = React.useCallback(
     (state: HandleState<unknown>, target: import("three").Object3D) => {
       applyDampedHandleState(state, target);
@@ -1547,13 +1550,8 @@ function KeyboardSpatialNodeView({
     }
   }, [handleStores, manipulationStoreRef, node.id]);
   const baseOptions = React.useMemo(
-    () =>
-      withTriggerResize(
-        manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform }),
-        handleStores,
-        node.snapSource.size[0] * innerScale,
-      ),
-    [commitFreeTransform, handleStores, manipulationOptions, node.snapSource.size, innerScale],
+    () => withTriggerResize(manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform })),
+    [commitFreeTransform, manipulationOptions],
   );
   const deletion = useScaleToDelete(node.id, node.snapSource.size, baseOptions, setGraph);
   const grabOptions = useLockedGrabOptions(deletion.options, node.locked ?? false);

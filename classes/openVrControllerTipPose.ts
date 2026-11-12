@@ -136,6 +136,7 @@ export class OpenVrControllerTipPoseResolver {
   readonly #renderModels: OpenVR.IVRRenderModels;
   readonly #strings: OpenVrTrackedDeviceStringReader;
   readonly #tipByRenderModel = new Map<string, Matrix34Rows | null>();
+  readonly #renderModelByIndex = new Map<number, string | null>();
   readonly #controllerState = new Uint8Array(64);
   readonly #modeState = createStruct<OpenVR.RenderModel_ControllerMode_State>(
     { bScrollWheelVisible: false },
@@ -156,6 +157,7 @@ export class OpenVrControllerTipPoseResolver {
       index,
       OpenVR.TrackedDeviceProperty.Prop_RenderModelName_String,
     );
+    this.#renderModelByIndex.set(index, renderModel);
     if (!renderModel) {
       return composeTrackedDeviceTipPose(trackedDevicePose, LEGACY_TARGET_RAY_OFFSET);
     }
@@ -166,6 +168,11 @@ export class OpenVrControllerTipPoseResolver {
       this.onResolved?.(index, renderModel, tip != null);
     }
     return composeTrackedDeviceTipPose(trackedDevicePose, tip ?? LEGACY_TARGET_RAY_OFFSET);
+  }
+
+  /** The render model {@link resolve} last read for a device, e.g. to key per-controller settings. */
+  lastRenderModel(index: number): string | null {
+    return this.#renderModelByIndex.get(index) ?? null;
   }
 
   #readTip(renderModel: string): Matrix34Rows | null {

@@ -1,6 +1,10 @@
-import { Pointer, type RayPointerOptions } from "@pmndrs/pointer-events";
 import {
-  CombinedPointer,
+  CombinedPointer as CombinedPointerImpl,
+  type Intersection,
+  Pointer,
+  type RayPointerOptions,
+} from "@pmndrs/pointer-events";
+import {
   type DefaultXRControllerOptions,
   type DefaultXRInputSourceGrabPointerOptions,
   type DefaultXRInputSourceRayPointerOptions,
@@ -16,6 +20,7 @@ import { useFrame } from "@react-three/fiber/webgpu";
 import React, {
   forwardRef,
   Suspense,
+  useContext,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -27,7 +32,28 @@ import { useControllerLaserEnabled } from "./controllerLaserMode.ts";
 import { registerPointerHand } from "./haptics.ts";
 import { gameInputBlocking } from "./gameInputBlocking.ts";
 import { isHandGrabbing, registerGrabPointerHand } from "./oneHandScale.ts";
-import { registerHandOrigin } from "./trackedOrigins.ts";
+import { getHeadObject, registerHandOrigin } from "./trackedOrigins.ts";
+import {
+  applyLaserOffset,
+  clampLaserOffset,
+  type LaserHand,
+  mirrorLaserOffset,
+  poseOffsetOf,
+  resetLaserOffset,
+  saveLaserOffset,
+  setLiveLaserOffset,
+} from "./laserOffset.ts";
+import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
+import { Pill } from "./ui/primitives.tsx";
+import { COLOR, INNER_GAP, RADIUS } from "./ui/tokens.ts";
+import { Matrix4, Quaternion, Vector3 } from "three/webgpu";
+import { useToolEditMode } from "./toolEditMode.ts";
+import { GrabBox } from "./grabbox.tsx";
+import { readPointerHandedness } from "./wristMenu/pointerFilter.ts";
+import { defaultApply, type HandleState, type HandleStore } from "@pmndrs/handle";
+import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
+// Not re-exported by the package index; the same module instance the XR root provides.
+import { combinedPointerContext } from "../../submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/contexts.tsx";
 
 function spreadable<T>(value: true | T | undefined): T | undefined {
   if (value === true || value === undefined) {
@@ -243,17 +269,20 @@ function PetplayDefaultXRInputSourceRayPointer(props: DefaultXRInputSourceRayPoi
   const cursorModelOptions = props.cursorModel;
   const rayOpts = spreadable(rayModelOptions);
   return (
-    <XRSpace ref={ref} space="target-ray-space">
+    <XRSpace space="target-ray-space">
+      {/* The anchor stays on the tip; the laser's own offset sits inside it. */}
       <group userData={{ renderTrackingAnchor: `${handedness}-ray` }}>
-        {rayModelOptions !== false && (
-          <HudPointerRayModel
-            pointer={pointer}
-            {...PETPLAY_RAY_DEFAULTS}
-            opacity={1}
-            {...rayOpts}
-          />
-        )}
-        {cursorModelOptions !== false && <HudPointerCursorModel pointer={pointer} />}
+        <LaserOffsetGroup ref={ref} hand={handedness}>
+          {rayModelOptions !== false && (
+            <HudPointerRayModel
+              pointer={pointer}
+              {...PETPLAY_RAY_DEFAULTS}
+              opacity={1}
+              {...rayOpts}
+            />
+          )}
+          {cursorModelOptions !== false && <HudPointerCursorModel pointer={pointer} />}
+        </LaserOffsetGroup>
       </group>
     </XRSpace>
   );
@@ -288,16 +317,308 @@ function PetplayGrabSpherePointer(options: DefaultXRInputSourceGrabPointerOption
   return <XRSpace ref={ref} space="grip-space" />;
 }
 
-/** Squeeze + target-ray, `pointerType: "grab"`. Paired with `PetplayGrabSpherePointer` in `CombinedPointer`. */
+/** Squeeze + target-ray, `pointerType: "grab"`. Paired with `PetplayGrabSpherePointer` in {@link LaserFirstGrabPointer}. */
 function PetplayGrabRayPointer(
   { ...rayOpts }: RayPointerOptions,
 ) {
   const state = useXRInputSourceStateContext();
   const ref = useRef<Object3D>(null);
   const pointer = useRayPointer(ref, state, rayOpts, "grab");
+  useEffect(() => {
+    laserGrabPointers.add(pointer);
+    return () => {
+      laserGrabPointers.delete(pointer);
+    };
+  }, [pointer]);
   usePointerXRInputSourceEvents(pointer, state.inputSource, "squeeze", state.events);
   useRegisterGrabPointer(pointer, "ray");
-  return <XRSpace ref={ref} space="target-ray-space" />;
+  return (
+    <XRSpace space="target-ray-space">
+      <LaserOffsetGroup ref={ref} hand={state.inputSource.handedness} />
+    </XRSpace>
+  );
+}
+
+function isLaserHand(hand: XRHandedness): hand is LaserHand {
+  return hand === "left" || hand === "right";
+}
+
+/**
+ * A child of target-ray space posed at the hand's laser offset ({@link applyLaserOffset}): the
+ * select and grab rays hang from it, so both follow the reposed laser.
+ */
+const LaserOffsetGroup = forwardRef<Object3D, { hand: XRHandedness; children?: React.ReactNode }>(
+  function LaserOffsetGroup({ hand, children }, ref) {
+    const groupRef = useRef<Object3D>(null);
+    useImperativeHandle(ref, () => groupRef.current!, []);
+    useFrame(() => {
+      const group = groupRef.current;
+      if (group != null && isLaserHand(hand)) applyLaserOffset(group, hand);
+    });
+    return <group ref={groupRef as never}>{children}</group>;
+  },
+);
+
+/** Thin across, long along the beam, from a little behind the laser's origin forward. */
+const LASER_HANDLE_WIDTH = 0.02;
+const LASER_HANDLE_LENGTH = 0.09;
+const LASER_HANDLE_BEHIND = 0.02;
+/**
+ * The keyboard's order (20), which ranks ahead of distance in pointer intersection: at the same
+ * order the nearer of the two wins, so aiming at a handle in front of the keyboard grabs the handle.
+ */
+const LASER_HANDLE_POINTER_EVENTS_ORDER = 20;
+const LASER_GUIDE_LENGTH = 0.3;
+const LASER_HANDLE_COLOR = 0x5ec8ff;
+
+/**
+ * Edit layout mode: a small grab box where the hand's laser starts, with a short guide beam
+ * along it. Grabbing it with the other hand moves and turns the laser relative to its controller;
+ * letting go saves the pose for this controller model and hand.
+ */
+function LaserOffsetHandle() {
+  const state = useXRInputSourceStateContext();
+  const hand = state.inputSource.handedness;
+  const editing = useToolEditMode();
+  const targetRef = useRef<Object3D>(null);
+  const storeRef = useRef<HandleStore<unknown> | null>(null);
+  const options = useMemo(() => ({
+    scale: false as const,
+    multitouch: false,
+    apply: (handleState: HandleState<unknown>, target: Object3D) => {
+      defaultApply(handleState, target as never);
+      if (!isLaserHand(hand)) return;
+      // Held back within reach of the controller: the handle stops where the laser would.
+      const offset = clampLaserOffset(poseOffsetOf(target as never));
+      target.position.fromArray(offset.position);
+      if (handleState.last) saveLaserOffset(hand, offset);
+      else setLiveLaserOffset(hand, offset);
+    },
+  }), [hand]);
+  // Only the other hand: this one's own grab volumes sit right on its laser's origin.
+  const grabFilter = useMemo(
+    () => (event: PenPointerEvent) =>
+      editing && event.pointerType !== "ray" && event.pointerType !== "poker" &&
+      isLaserHand(hand) && readPointerHandedness(event.pointerState) === otherHand(hand),
+    [editing, hand],
+  );
+  const hullFilter = useMemo(
+    () => (_pointerId: number, _pointerType: string, pointerState: unknown) =>
+      isLaserHand(hand) && readPointerHandedness(pointerState) === otherHand(hand),
+    [hand],
+  );
+  useFrame(() => {
+    const target = targetRef.current;
+    const grabbing = (storeRef.current?.capturedObjects.size ?? 0) > 0;
+    if (target != null && !grabbing && isLaserHand(hand)) applyLaserOffset(target, hand);
+  });
+  if (!editing || !isLaserHand(hand)) return null;
+  return (
+    <XRSpace space="target-ray-space">
+      <group ref={targetRef as never}>
+        <group
+          position={[0, 0, LASER_HANDLE_BEHIND - LASER_HANDLE_LENGTH / 2]}
+          {...({ pointerEventsOrder: LASER_HANDLE_POINTER_EVENTS_ORDER } as Record<
+            string,
+            unknown
+          >)}
+        >
+          <GrabBox
+            width={LASER_HANDLE_WIDTH}
+            height={LASER_HANDLE_WIDTH}
+            depth={LASER_HANDLE_LENGTH}
+            lineColor={LASER_HANDLE_COLOR}
+            // Squeeze-grab only, and invisible to its own hand: that hand's grab sphere sits on it
+            // and would otherwise prefer it ({@link NEAR_GRAB_PRIORITY}) over anything else.
+            shellRayPickable={false}
+            interactionHullFilter={hullFilter}
+            manipulationTargetRef={targetRef as never}
+            manipulationOptions={options}
+            manipulationStoreRef={storeRef}
+            grabFilter={grabFilter}
+            userData={{ laserOffsetHandle: hand, [NEAR_GRAB_PRIORITY]: true }}
+          />
+        </group>
+        <mesh
+          position={[0, 0, -LASER_GUIDE_LENGTH / 2]}
+          scale={[0.003, 0.003, LASER_GUIDE_LENGTH]}
+          userData={{ raythreeHudOverUi: true }}
+          {...({ pointerEvents: "none" } as Record<string, unknown>)}
+        >
+          <boxGeometry />
+          <meshBasicMaterial
+            color={LASER_HANDLE_COLOR}
+            transparent
+            opacity={0.8}
+            depthTest={false}
+            depthWrite={false}
+          />
+        </mesh>
+        <LaserHandleMenu hand={hand} />
+      </group>
+    </XRSpace>
+  );
+}
+
+/** Below the handle, in world metres, so it reads upright however the controller is held. */
+const LASER_MENU_DROP = 0.07;
+/** Above the keyboard and toolbars (20), like the snap pills. */
+const LASER_MENU_POINTER_EVENTS_ORDER = 30;
+const WORLD_UP = new Vector3(0, 1, 0);
+
+/**
+ * World matrix of an object under an XR space. Composed by hand: XR spaces write `matrix` without
+ * flagging `matrixWorldNeedsUpdate`, so `updateWorldMatrix` would return a stale pose.
+ */
+function freshWorldMatrix(object: Object3D, target: Matrix4): Matrix4 {
+  if (object.matrixAutoUpdate) object.updateMatrix();
+  target.copy(object.matrix);
+  for (let node = object.parent; node != null; node = node.parent) {
+    if (node.matrixAutoUpdate) node.updateMatrix();
+    target.premultiply(node.matrix);
+  }
+  return target;
+}
+
+/**
+ * Under a laser handle in edit layout mode, turned toward the head every frame: copy this laser
+ * onto the other hand as its mirror image (once), and put this laser back on the controller tip.
+ */
+function LaserHandleMenu({ hand }: { hand: LaserHand }) {
+  const ref = useRef<Object3D>(null);
+  const scratch = useMemo(() => ({
+    parent: new Matrix4(),
+    world: new Matrix4(),
+    position: new Vector3(),
+    head: new Vector3(),
+    rotation: new Quaternion(),
+    unit: new Vector3(1, 1, 1),
+  }), []);
+  useFrame((state) => {
+    const card = ref.current;
+    const parent = card?.parent;
+    if (card == null || parent == null) return;
+    freshWorldMatrix(parent, scratch.parent);
+    scratch.position.setFromMatrixPosition(scratch.parent);
+    scratch.position.y -= LASER_MENU_DROP;
+    const head = getHeadObject(state.gl, state.camera);
+    head.updateWorldMatrix(true, false);
+    scratch.head.setFromMatrixPosition(head.matrixWorld);
+    // +Z, the side uikit draws on, toward the head, with world up kept upright.
+    scratch.rotation.setFromRotationMatrix(
+      scratch.world.lookAt(scratch.head, scratch.position, WORLD_UP),
+    );
+    scratch.world.compose(scratch.position, scratch.rotation, scratch.unit);
+    // Into the parent's frame, dropping its scale so the card keeps its size.
+    scratch.world.premultiply(scratch.parent.invert());
+    scratch.world.decompose(card.position, card.quaternion, card.scale);
+  });
+  return (
+    <group
+      ref={ref as never}
+      name="laser-handle-menu"
+      {...({ pointerEventsOrder: LASER_MENU_POINTER_EVENTS_ORDER } as Record<string, unknown>)}
+    >
+      <Container
+        pixelSize={0.001}
+        flexDirection="row"
+        gap={INNER_GAP}
+        padding={INNER_GAP}
+        borderRadius={RADIUS.shell}
+        backgroundColor={COLOR.ground}
+        backgroundOpacity={0.9}
+      >
+        <Pill slots={2} units={1} fontSize={12} onClick={() => mirrorLaserOffset(hand)}>
+          MIRROR
+        </Pill>
+        <Pill slots={2} units={1} fontSize={12} onClick={() => resetLaserOffset(hand)}>
+          RESET
+        </Pill>
+      </Container>
+    </group>
+  );
+}
+
+function otherHand(hand: LaserHand): LaserHand {
+  return hand === "left" ? "right" : "left";
+}
+
+/** The grab rays, which {@link LaserFirstGrabPointer} prefers over the grip sphere. */
+const laserGrabPointers = new WeakSet<Pointer>();
+
+/** The `CombinedPointer` fields its own choice uses; private in its typings. */
+type CombinedPointerInternals = {
+  pointers: (Pointer | CombinedPointerImpl)[];
+  activePointer: Pointer | CombinedPointerImpl | undefined;
+  computeActivePointer: () => void;
+};
+
+function realHit(intersection: Intersection | undefined): intersection is Intersection {
+  return intersection != null && intersection.object.isVoidObject !== true;
+}
+
+/** Marks a grab target the sphere keeps even when the laser points elsewhere (edit handles). */
+export const NEAR_GRAB_PRIORITY = "nearGrabPriority";
+
+function prefersNearGrab(object: Object3D): boolean {
+  for (let o: Object3D | null = object; o != null; o = o.parent) {
+    if (o.userData[NEAR_GRAB_PRIORITY] === true) return true;
+  }
+  return false;
+}
+
+/** The scene node (display, keyboard, wrist menu…) an intersected object belongs to. */
+function spatialElementOf(object: Object3D): Object3D | null {
+  for (let o: Object3D | null = object; o != null; o = o.parent) {
+    if (o.userData.spatialElement === true) return o;
+  }
+  return null;
+}
+
+/**
+ * Picks the grab after pmndrs' nearest-hit choice, which always took the grip sphere when in range.
+ * What the laser points at wins instead: aiming at a display or the keyboard while the hand is
+ * near the wrist menu grabs the display. The sphere keeps it when both reach the same node, so a
+ * window in the hand is grabbed at the hand, and a held grab is never switched. Targets marked
+ * {@link NEAR_GRAB_PRIORITY} (the laser handles, reached for while the laser points elsewhere)
+ * always keep the sphere.
+ */
+export function preferLaserGrab(combined: CombinedPointerInternals): void {
+  const active = combined.activePointer;
+  if (active == null || !(active instanceof Pointer)) return;
+  if (active.getPointerCapture() != null || laserGrabPointers.has(active)) return;
+  const laser = combined.pointers.find((p): p is Pointer =>
+    p instanceof Pointer && laserGrabPointers.has(p)
+  );
+  if (laser == null) return;
+  const laserHit = laser.getIntersection();
+  if (!realHit(laserHit)) return;
+  const sphereHit = active.getIntersection();
+  if (realHit(sphereHit)) {
+    if (prefersNearGrab(sphereHit.object)) return;
+    const node = spatialElementOf(sphereHit.object);
+    if (node != null && node === spatialElementOf(laserHit.object)) return;
+  }
+  combined.activePointer = laser;
+}
+
+/** `CombinedPointer` with {@link preferLaserGrab}'s choice. */
+function LaserFirstGrabPointer({ children }: { children?: React.ReactNode }) {
+  const pointer = useMemo(() => {
+    const combined = new CombinedPointerImpl(false);
+    const internals = combined as unknown as CombinedPointerInternals;
+    const nearest = internals.computeActivePointer.bind(combined);
+    internals.computeActivePointer = () => {
+      nearest();
+      preferLaserGrab(internals);
+    };
+    return combined;
+  }, []);
+  const parent = useContext(combinedPointerContext);
+  useEffect(() => parent?.register(pointer), [parent, pointer]);
+  return (
+    <combinedPointerContext.Provider value={pointer}>{children}</combinedPointerContext.Provider>
+  );
 }
 
 /** Publishes this controller's grip space, so windows can be attached to the hand. */
@@ -329,7 +650,8 @@ function RenderTrackedControllerModel(props: React.ComponentProps<typeof XRContr
 
 /**
  * Hit-capped aim beam, select ray, teleport, and both grip-sphere and laser grab on squeeze.
- * Inner `CombinedPointer` picks one active grab (sphere when in range, else aim-ray grab).
+ * The inner {@link LaserFirstGrabPointer} picks one active grab: what the laser points at, else
+ * the sphere when in range (the sphere also wins when both reach the same node).
  */
 export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
   const modelOptions = props.model;
@@ -357,19 +679,20 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
     <>
       {/* <HandPoker /> */}
       <HandOriginSpace />
+      <LaserOffsetHandle />
       {modelOptions !== false && (
         <Suspense>
           <RenderTrackedControllerModel {...spreadable(modelOptions)} />
         </Suspense>
       )}
       {grabPointerOptions !== false && (
-        <CombinedPointer>
+        <LaserFirstGrabPointer>
           <PetplayGrabSpherePointer {...grabPointerProps} />
           <PetplayGrabRayPointer
             {...(grabForRay as RayPointerOptions)}
             minDistance={minD}
           />
-        </CombinedPointer>
+        </LaserFirstGrabPointer>
       )}
       {
         /*
