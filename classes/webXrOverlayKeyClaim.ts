@@ -18,15 +18,18 @@ export type OverlayKeyClaim = {
   staleKeys: string[];
 };
 
+import { dirname, join } from "@std/path";
+import { tempDir } from "./appPaths.ts";
+
 const CLAIMS_PATH_ENV = "PETPLAY_OVERLAY_CLAIMS_PATH";
-const DEFAULT_CLAIMS_PATH = "./tmp/webxr-overlay-claims.json";
+const CLAIMS_FILENAME = "webxr-overlay-claims.json";
 /** Only the most recent claims are worth keeping; a sweep list is not a log. */
 const MAX_RECORDED_CLAIMS = 8;
 
 type RecordedClaim = { pid: number; keys: string[] };
 
 export function claimWebXrOverlayKeys(baseKeys: string[]): OverlayKeyClaim {
-  const path = Deno.env.get(CLAIMS_PATH_ENV) ?? DEFAULT_CLAIMS_PATH;
+  const path = Deno.env.get(CLAIMS_PATH_ENV) ?? join(tempDir(), CLAIMS_FILENAME);
   const recorded = readClaims(path);
   const staleKeys: string[] = [];
   const alive: RecordedClaim[] = [];
@@ -63,7 +66,7 @@ function readClaims(path: string): RecordedClaim[] {
 
 function writeClaims(path: string, claims: RecordedClaim[]): void {
   try {
-    Deno.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+    Deno.mkdirSync(dirname(path), { recursive: true });
     Deno.writeTextFileSync(path, JSON.stringify(claims));
   } catch {
     // No claim file: keys are still unique per process, only ghost sweeping is lost.

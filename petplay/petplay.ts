@@ -3,6 +3,8 @@ import { dispatchChildModule } from "../classes/childModule.ts";
 import { startPetplayServer } from "./petplayServer.ts";
 import { installNativeCrashTrace } from "../classes/nativeCrashTrace.ts";
 import { runLogParent, shouldRunLogParent } from "../classes/runLog.ts";
+import { runCliCommand } from "../classes/cli.ts";
+import { migrateLegacyWindowsConfig } from "../classes/appPaths.ts";
 
 installNativeCrashTrace();
 initializeLinuxScheduling();
@@ -20,6 +22,10 @@ if (textRenderer != null) Deno.env.set("PETPLAY_TEXT_RENDERER", textRenderer);
  * separate modules rather than behind an early exit.
  */
 if (await dispatchChildModule(Deno.args) == null) {
+  // `--reset`, `--logs`, `--version`… do their job and exit without starting PetPlay.
+  const cliExit = await runCliCommand(Deno.args);
+  if (cliExit != null) Deno.exit(cliExit);
+  migrateLegacyWindowsConfig();
   // The compiled release logs each run to a file through a thin parent; see runLog.
   if (shouldRunLogParent(Deno.args)) Deno.exit(await runLogParent());
   await startPetplayServer({ interactive: import.meta.main });

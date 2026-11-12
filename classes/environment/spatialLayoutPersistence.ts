@@ -1,4 +1,5 @@
 import { dirname, join } from "@std/path";
+import { configDir } from "../appPaths.ts";
 import {
   normalizeSpatialLayout,
   type SpatialGraph,
@@ -147,9 +148,7 @@ export function spatialLayoutPersistenceEnabled(args: string[] = Deno.args): boo
 export function getSpatialLayoutPath(): string {
   const override = Deno.env.get("PETPLAY_SPATIAL_LAYOUT_PATH");
   if (override) return override;
-  const configHome = Deno.env.get("XDG_CONFIG_HOME") ??
-    join(Deno.env.get("HOME") ?? Deno.cwd(), ".config");
-  return join(configHome, "petplay", SPATIAL_LAYOUT_FILENAME);
+  return join(configDir(), SPATIAL_LAYOUT_FILENAME);
 }
 
 export function loadSpatialLayoutSync(path = getSpatialLayoutPath()): SpatialGraph | null {

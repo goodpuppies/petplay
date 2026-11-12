@@ -1,5 +1,6 @@
 import { PostMan } from "../submodules/stageforge/mod.ts";
 import { dirname, extname, join } from "jsr:@std/path";
+import { tempDir } from "./appPaths.ts";
 
 export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(() => resolve(), ms));
@@ -75,7 +76,7 @@ export async function assignActorHierarchy(
  * server loses controller input). Workers share the pid, so the webxr actor's
  * files land here too.
  */
-const RUN_TEMP_DIR = join("./tmp", `run-${Deno.pid}`);
+const RUN_TEMP_DIR = join(tempDir(), `run-${Deno.pid}`);
 
 export function tempFile(filename: string, base: string): string {
   const basepath = join(base, "../");
@@ -128,14 +129,14 @@ export function createTemp() {
 /** Removes the scratch directories of servers that exited without cleaning up. */
 function pruneDeadRunTemps() {
   if (Deno.build.os !== "linux") return;
-  for (const entry of Deno.readDirSync("./tmp")) {
+  for (const entry of Deno.readDirSync(tempDir())) {
     const pid = /^run-(\d+)$/.exec(entry.name)?.[1];
     if (!entry.isDirectory || pid == null || Number(pid) === Deno.pid) continue;
     try {
       Deno.statSync(`/proc/${pid}`);
     } catch {
       try {
-        Deno.removeSync(join("./tmp", entry.name), { recursive: true });
+        Deno.removeSync(join(tempDir(), entry.name), { recursive: true });
       } catch (error) {
         // Servers started together race to prune the same directory.
         if (!(error instanceof Deno.errors.NotFound)) throw error;

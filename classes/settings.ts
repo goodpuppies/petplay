@@ -1,5 +1,5 @@
 /**
- * User settings: one typed store, persisted to `$XDG_CONFIG_HOME/petplay/settings.json`
+ * User settings: one typed store, persisted to `settings.json` in `configDir()` (classes/appPaths.ts)
  * (`PETPLAY_SETTINGS_PATH` overrides).
  *
  * Module state is per isolate. The isolate that owns the scene (the `webxr` actor) loads the file
@@ -7,6 +7,7 @@
  * the file are kept, so a newer build's settings survive a run of an older one.
  */
 import { dirname, join } from "@std/path";
+import { configDir } from "./appPaths.ts";
 import { useSyncExternalStore } from "react";
 import {
   isWristOffset,
@@ -192,9 +193,7 @@ export function parseSettings(
 export function getSettingsPath(): string {
   const override = Deno.env.get("PETPLAY_SETTINGS_PATH");
   if (override) return override;
-  const configHome = Deno.env.get("XDG_CONFIG_HOME") ??
-    join(Deno.env.get("HOME") ?? Deno.cwd(), ".config");
-  return join(configHome, "petplay", SETTINGS_FILENAME);
+  return join(configDir(), SETTINGS_FILENAME);
 }
 
 let current: Settings = defaultSettings();

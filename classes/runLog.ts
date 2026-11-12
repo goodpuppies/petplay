@@ -2,7 +2,8 @@
  * Per-run diagnostic log for the compiled release, the binary testers run on hardware we do not
  * have. The process a user starts becomes a thin logging parent: it runs PetPlay as its child,
  * mirrors all output (every worker and child process inherits the child's stdout/stderr) to the
- * terminal and to `$XDG_STATE_HOME/petplay/logs/petplay-<time>.log`, and adds what a bug report
+ * terminal and to `logs/current.log` in the state directory (classes/appPaths.ts; earlier runs are
+ * kept as `petplay-<start time>.log`, `--logs` prints where), and adds what a bug report
  * needs: the system, session and portal environment up front, CPU per PetPlay process and thermal
  * zone temperatures every 30 s, and how PetPlay exited (a native crash included).
  *
@@ -12,6 +13,8 @@
  * mirroring from `utils/dev-runner.ts`; `--no-log-file` turns this off.
  */
 import { join } from "@std/path";
+import { configDir, logsDir } from "./appPaths.ts";
+import { describeBuild } from "./buildInfo.ts";
 
 const CHILD_ENV = "PETPLAY_LOG_PARENT_PID";
 const KEEP_LOGS = 10;
@@ -24,12 +27,39 @@ export function shouldRunLogParent(args: readonly string[]): boolean {
 }
 
 function logDirectory(): string {
-  if (Deno.build.os === "windows") {
-    return join(Deno.env.get("LOCALAPPDATA") ?? Deno.cwd(), "petplay", "logs");
+  return logsDir();
+}
+
+const CURRENT_LOG = "current.log";
+
+function stampOf(time: Date): string {
+  return time.toISOString().replaceAll(":", "-").replace(".", "-");
+}
+
+/**
+ * The running (or last) PetPlay logs to `current.log`. Before a new run takes it, the previous one
+ * is renamed to `petplay-<its start time>.log`. If it cannot be (another PetPlay is still writing
+ * it, on Windows), this run gets a timestamped name instead.
+ * @returns the path this run logs to.
+ */
+export function archiveCurrentLog(directory: string): string {
+  const current = join(directory, CURRENT_LOG);
+  let previous: Deno.FileInfo;
+  try {
+    previous = Deno.statSync(current);
+  } catch {
+    return current;
   }
-  const state = Deno.env.get("XDG_STATE_HOME") ??
-    join(Deno.env.get("HOME") ?? Deno.cwd(), ".local", "state");
-  return join(state, "petplay", "logs");
+  const started = read(current)?.match(/^started (\S+)$/m)?.[1];
+  const time = started != null && !Number.isNaN(Date.parse(started))
+    ? new Date(started)
+    : previous.mtime ?? new Date();
+  try {
+    Deno.renameSync(current, join(directory, `petplay-${stampOf(time)}.log`));
+    return current;
+  } catch {
+    return join(directory, `petplay-${stampOf(new Date())}.log`);
+  }
 }
 
 function pruneLogs(directory: string): void {
@@ -119,13 +149,7 @@ const SESSION_PROCESSES =
 
 function header(logPath: string): string {
   const lines = [`[petplay log] ${logPath}`, `started ${new Date().toISOString()}`];
-  let build = "unknown";
-  try {
-    build = Deno.readTextFileSync(new URL("../dist/build-info.json", import.meta.url)).trim();
-  } catch {
-    // Builds before build-info.json, or a checkout.
-  }
-  lines.push(`build ${build}`);
+  lines.push(`build ${describeBuild()}`);
   lines.push(`exe ${Deno.execPath()} args ${JSON.stringify(Deno.args)} cwd ${Deno.cwd()}`);
   const osRelease = read("/etc/os-release");
   const pretty = osRelease?.match(/^PRETTY_NAME="?([^"\n]*)/m)?.[1];
@@ -167,8 +191,7 @@ function header(logPath: string): string {
       // Not every system has both.
     }
   }
-  const config = Deno.env.get("XDG_CONFIG_HOME") ?? join(Deno.env.get("HOME") ?? "", ".config");
-  const token = read(join(config, "petplay", "screencast-restore-token"));
+  const token = read(join(configDir(), "screencast-restore-token"));
   lines.push(`capture restore token ${token == null ? "none" : "present"}`);
   return lines.join("\n") + "\n";
 }
@@ -237,9 +260,8 @@ export async function runLogParent(): Promise<number> {
   let logPath = "(not written)";
   try {
     Deno.mkdirSync(directory, { recursive: true });
+    logPath = archiveCurrentLog(directory);
     pruneLogs(directory);
-    const stamp = new Date().toISOString().replaceAll(":", "-").replace(".", "-");
-    logPath = join(directory, `petplay-${stamp}.log`);
     logFile = Deno.openSync(logPath, { createNew: true, write: true });
   } catch (error) {
     console.error(`[petplay log] cannot write a log file: ${error}`);

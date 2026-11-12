@@ -6,12 +6,13 @@ import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { Buffer } from "node:buffer";
 import { join } from "@std/path";
+import { configDir, tempDir } from "../classes/appPaths.ts";
 import { wait } from "../classes/utils.ts";
 import { nativeBuildTarget, screenStreamerRelativePath } from "../classes/nativeBuildTarget.ts";
 import {
+  type CapturedFrame,
   clampCaptureFps,
   DEFAULT_CAPTURE_FPS,
-  type CapturedFrame,
   type ScreenCapturer,
 } from "../classes/ScreenCapturer/scclass.ts";
 import type { OpenGLManager } from "../classes/openglManager.ts";
@@ -253,9 +254,19 @@ type SetFrameDataPayload = {
   height: number;
 };
 
-function setTransformSafe(transform: OpenVR.HmdMatrix34, deviceIndex?: number, rawUniverse?: boolean) {
+function setTransformSafe(
+  transform: OpenVR.HmdMatrix34,
+  deviceIndex?: number,
+  rawUniverse?: boolean,
+) {
   if (!state.overlayClass || !state.overlayHandle) return;
-  setOverlayTransform(state.overlayClass, state.overlayHandle, transform, deviceIndex, syncUniverse(rawUniverse));
+  setOverlayTransform(
+    state.overlayClass,
+    state.overlayHandle,
+    transform,
+    deviceIndex,
+    syncUniverse(rawUniverse),
+  );
 }
 
 new PostMan(
@@ -399,7 +410,9 @@ new PostMan(
         }
         state.lastWidthMeters = sync.widthMeters;
       }
-      if (acceptCarriedTransform(mainCarry, sync)) setTransformSafe(sync.hmd, sync.deviceIndex, sync.rawUniverse);
+      if (acceptCarriedTransform(mainCarry, sync)) {
+        setTransformSafe(sync.hmd, sync.deviceIndex, sync.rawUniverse);
+      }
       state.lastHmd = sync.hmd;
       state.lastDeviceIndex = sync.deviceIndex;
     },
@@ -556,9 +569,11 @@ function getScreenStreamerPath(): string {
     bytes = Deno.readFileSync(url);
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
-    throw new Error("screen-streamer is missing. Run deno task build:native, or set PETPLAY_SCREEN_STREAMER.");
+    throw new Error(
+      "screen-streamer is missing. Run deno task build:native, or set PETPLAY_SCREEN_STREAMER.",
+    );
   }
-  const runtimeDir = join(Deno.cwd(), "tmp");
+  const runtimeDir = tempDir();
   Deno.mkdirSync(runtimeDir, { recursive: true });
   screenStreamerPath = join(runtimeDir, SCREEN_STREAMER_PROCESS_NAME);
   Deno.writeFileSync(screenStreamerPath, bytes);
@@ -592,9 +607,7 @@ async function stopStaleScreenStreamer(): Promise<void> {
 async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
   const { ScreenCapturer } = await import("../classes/ScreenCapturer/scclass.ts");
   const logStats = getWebxrFrameLogsEnabled();
-  const configHome = Deno.env.get("XDG_CONFIG_HOME") ??
-    join(Deno.env.get("HOME") ?? Deno.cwd(), ".config");
-  const portalStateDir = join(configHome, "petplay");
+  const portalStateDir = configDir();
   const capturer = new ScreenCapturer({
     debug: Deno.build.os !== "windows",
     fps,
@@ -622,7 +635,8 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
         LogChannel.error("actor", `[displayOverlayHost] ${message}; not restarting capture`);
         postStatusToast({
           title: "Desktop capture unavailable",
-          content: reason ?? "The screen-sharing request did not complete. Open the desktop to retry.",
+          content: reason ??
+            "The screen-sharing request did not complete. Open the desktop to retry.",
           tone: "warning",
         });
         void capturer.dispose();
@@ -850,7 +864,13 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
   setVirtualOverlayMouseScale(entry);
   const carry = entry.handle === state.overlayHandle ? mainCarry : (entry.carry ??= {});
   if (acceptCarriedTransform(carry, sync)) {
-    setOverlayTransform(overlay, entry.handle, sync.hmd, sync.deviceIndex, syncUniverse(sync.rawUniverse));
+    setOverlayTransform(
+      overlay,
+      entry.handle,
+      sync.hmd,
+      sync.deviceIndex,
+      syncUniverse(sync.rawUniverse),
+    );
   }
   const [boundsPtr] = createStruct<OpenVR.TextureBounds>(
     withOverlayFlipY(textureBoundsForCrop(sync.crop)),
@@ -1086,7 +1106,9 @@ async function deskCapLoop(
       await wait(250);
       continue;
     }
-    const frame: CapturedFrame | null = await capturer.getNextFrame(lastFrame, 1_000).catch(() => null);
+    const frame: CapturedFrame | null = await capturer.getNextFrame(lastFrame, 1_000).catch(() =>
+      null
+    );
     if (!frame) {
       continue;
     }

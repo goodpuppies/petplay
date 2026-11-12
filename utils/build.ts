@@ -30,9 +30,18 @@ const commit = new TextDecoder().decode(
     .output())
     .stdout,
 ).trim();
+// The version shown in the wrist menu and checked by the update prompt (classes/buildInfo.ts).
+const version = new TextDecoder().decode(
+  (await new Deno.Command("git", {
+    args: ["describe", "--tags", "--always", "--dirty"],
+    stdout: "piped",
+    stderr: "null",
+  }).output()).stdout,
+).trim();
 await Deno.writeTextFile(
   "dist/build-info.json",
   JSON.stringify({
+    version: version || null,
     commit: commit || null,
     target: target ?? Deno.build.target,
     built: new Date().toISOString(),
