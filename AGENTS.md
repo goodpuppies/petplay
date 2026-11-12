@@ -7,6 +7,13 @@
 - Use `_scratch/` for agent scratch files, experiments and local test artifacts. Do not use the
   repo-local `tmp/` for agent work: PetPlay manages it programmatically and may clobber its contents.
   Leave PetPlay's runtime files there.
+- Assume the developer is in VR using a live PetPlay while you work, usually launched by SteamVR
+  with `--watch-webxr` so every save hot-reloads the `webxr` actor. Keep it running: crashes
+  happen during development, but avoid causing them. Apply each change in one step (all files of
+  a cross-file edit in one write; importers first, removed exports last) so a reload never sees a
+  half-done edit. If it does go down, read `logs/petplay-<start time>.log` for why and restart it detached, the way SteamVR does:
+  `STEAMVR_APPKEY=petplay.overlay setsid -f ~/.local/share/petplay/steamvr/launch-petplay.sh`
+  (its launch log is `~/.local/state/petplay/steamvr-launch.log`).
 - Type-check with `deno task check`: it filters out the vendor submodules' unrelated errors that
   raw `deno check` reports (`deno task check:all` for the unfiltered graph).
 
