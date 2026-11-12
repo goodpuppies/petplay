@@ -52,6 +52,11 @@ export function dataDir(): string {
   return join(env("XDG_DATA_HOME") ?? join(home(), ".local", "share"), "petplay");
 }
 
+/** The SteamVR manifest, launcher and image (one registration: release install or checkout). */
+export function steamVrAppDir(): string {
+  return join(dataDir(), "steamvr");
+}
+
 /** Where the installed executable lives. */
 export function installDir(): string {
   if (windows) return join(localAppData(), "Programs", "PetPlay");

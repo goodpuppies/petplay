@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { CameraSettingsView } from "./cameraView.tsx";
 import { TextComparisonView } from "./textComparisonView.tsx";
+import { AppView } from "./appView.tsx";
 import { useVrcCameraSnapshot } from "../vrcCameraStore.ts";
 import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
 import { Button, Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
@@ -391,9 +392,19 @@ function RenderSettingsView({ onBack }: { onBack: () => void }) {
 
 /** Settings reachable from the wrist; every row here is persisted by `classes/settings.ts`. */
 function SettingsView(
-  { onBack, onOpenWrist, onOpenMonitors, onOpenLayouts, onOpenCamera, onOpenText, onOpenRender }: {
+  {
+    onBack,
+    onOpenWrist,
+    onOpenMonitors,
+    onOpenLayouts,
+    onOpenCamera,
+    onOpenText,
+    onOpenRender,
+    onOpenApp,
+  }: {
     onBack: () => void;
     onOpenRender: () => void;
+    onOpenApp: () => void;
     onOpenWrist: () => void;
     onOpenMonitors: () => void;
     onOpenLayouts: () => void;
@@ -432,6 +443,8 @@ function SettingsView(
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenLayouts}>LAYOUTS</Pill>
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenCamera}>CAMERA</Pill>
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenRender}>RENDER</Pill>
+        {/* Version, installing into SteamVR, logs. */}
+        <Pill slots={1} units={2} fontSize={11} onClick={onOpenApp}>APP</Pill>
       </Container>
     </Container>
   );
@@ -485,6 +498,7 @@ export function WristMenuUi(
   const cameraStyle = styleOf("camera");
   const textStyle = styleOf("text");
   const renderStyle = styleOf("render");
+  const appStyle = styleOf("app");
   const wristStyle = styleOf("wrist");
   const layoutsStyle = styleOf("layouts");
   const monitorsStyle = styleOf("monitors");
@@ -499,6 +513,7 @@ export function WristMenuUi(
           onOpenCamera={() => setView("camera")}
           onOpenText={() => setView("text")}
           onOpenRender={() => setView("render")}
+          onOpenApp={() => setView("app")}
         />
       </Shell>
     ),
@@ -528,6 +543,11 @@ export function WristMenuUi(
     ),
     [renderStyle],
   );
+  const appPage = useMemo(() => (
+    <Shell pointerEventsType={appStyle.pe} opacity={appStyle.opacity}>
+      <AppView onBack={() => setView("settings")} />
+    </Shell>
+  ), [appStyle]);
   const wrist = useMemo(() => (
     <Shell pointerEventsType={wristStyle.pe} opacity={wristStyle.opacity}>
       <WristSettingsView onBack={() => setView("settings")} />
@@ -594,6 +614,7 @@ export function WristMenuUi(
       {page("camera", cameraPage)}
       {page("text", textPage)}
       {page("render", renderPage)}
+      {page("app", appPage)}
     </>
   );
 }
@@ -606,7 +627,8 @@ type WristView =
   | "layouts"
   | "camera"
   | "text"
-  | "render";
+  | "render"
+  | "app";
 type PageStyle = { pe: AllowedPointerEventsType; opacity: number };
 
 const EMPTY_LAYOUT_SLOTS: LayoutSlotSummary[] = [];

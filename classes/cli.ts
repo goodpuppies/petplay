@@ -5,7 +5,7 @@
  * - `--logs`: where the logs are (the running or last run is `current.log`)
  * - `--reset`: settings, layouts and the screen-capture permission back to defaults
  *
- * Install, uninstall and update are in classes/install.ts.
+ * - `--install`, `--uninstall` (classes/install.ts, which also asks about updating on start)
  */
 import { join } from "@std/path";
 import { checkoutRoot, configDir, logsDir, tempDir } from "./appPaths.ts";
@@ -27,6 +27,17 @@ export async function runCliCommand(args: readonly string[]): Promise<number | n
     return 0;
   }
   if (args.includes("--reset")) return await reset(args.includes("--yes"));
+  if (args.includes("--install") || args.includes("--uninstall")) {
+    const { installSelf, uninstallSelf } = await import("./install.ts");
+    try {
+      const notes = args.includes("--install") ? await installSelf() : await uninstallSelf();
+      for (const note of notes) console.log(note);
+      return 0;
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  }
   return null;
 }
 

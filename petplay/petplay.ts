@@ -26,6 +26,12 @@ if (await dispatchChildModule(Deno.args) == null) {
   const cliExit = await runCliCommand(Deno.args);
   if (cliExit != null) Deno.exit(cliExit);
   migrateLegacyWindowsConfig();
+  // A release run while a different build is installed asks whether to update it, and stops.
+  if (Deno.build.standalone) {
+    const { offerUpdate } = await import("../classes/install.ts");
+    const updateExit = await offerUpdate(Deno.args);
+    if (updateExit != null) Deno.exit(updateExit);
+  }
   // The compiled release logs each run to a file through a thin parent; see runLog.
   if (shouldRunLogParent(Deno.args)) Deno.exit(await runLogParent());
   await startPetplayServer({ interactive: import.meta.main });
