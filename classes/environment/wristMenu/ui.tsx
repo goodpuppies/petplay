@@ -15,6 +15,12 @@ import type { WorkspaceLayoutSnapshot } from "../workspaceLayoutStore.ts";
 import type { LayoutSlotSummary } from "../spatialLayoutPersistence.ts";
 import { setSetting, type SettingKey, useSetting } from "../../settings.ts";
 import { resetPlayspace } from "../../playspaceMover.ts";
+import {
+  MAX_EYE_SIZE,
+  RENDER_SCALE_STEPS,
+  setRenderScale,
+  useRenderResolution,
+} from "../../renderResolution.ts";
 
 export type { WristMenuButtonId } from "./types.ts";
 
@@ -337,10 +343,57 @@ function WristSettingsView({ onBack }: { onBack: () => void }) {
   );
 }
 
+/**
+ * Render resolution, relative to what SteamVR asks for, saved for that size: a headset that looks
+ * soft at SteamVR's size (a Quest 3 over Steam Link) can be rendered sharper without changing
+ * the others.
+ */
+function RenderSettingsView({ onBack }: { onBack: () => void }) {
+  const { key, scale, eye } = useRenderResolution();
+  const capped = eye === MAX_EYE_SIZE;
+  return (
+    <Container flexDirection="column" gap={INNER_GAP} width={448}>
+      <Container flexDirection="row" alignItems="center" gap={INNER_GAP}>
+        <Button paddingX={0} paddingY={0} backgroundOpacity={0} onClick={onBack}>
+          <Pill slots={1} units={2} fontSize={14}>BACK</Pill>
+        </Button>
+        <Pill slots={3} units={2} tone="accent" fontSize={14}>RENDER</Pill>
+      </Container>
+      {/* One pill per step, the chosen one lit, like the text renderer's row. */}
+      <Container flexDirection="row" alignItems="center" justifyContent="space-between">
+        <Text fontSize={14} color={key == null ? COLOR.inkDim : COLOR.ink}>Resolution</Text>
+        <Container flexDirection="row" gap={INNER_GAP}>
+          {RENDER_SCALE_STEPS.map((step) => (
+            <Pill
+              key={step}
+              slots={1}
+              units={2}
+              fontSize={12}
+              disabled={key == null}
+              tone={step === scale ? "accent" : "outline"}
+              onClick={key == null ? undefined : () => setRenderScale(step)}
+            >
+              {percent(step)}
+            </Pill>
+          ))}
+        </Container>
+      </Container>
+      <Text fontSize={12} color={COLOR.inkDim}>
+        {key == null
+          ? "No headset yet: SteamVR's size is not known."
+          : `SteamVR asks ${key} per eye. Rendering ${eye}x${eye}${
+            capped ? ` (the ${MAX_EYE_SIZE} limit)` : ""
+          }. Saved for ${key} only.`}
+      </Text>
+    </Container>
+  );
+}
+
 /** Settings reachable from the wrist; every row here is persisted by `classes/settings.ts`. */
 function SettingsView(
-  { onBack, onOpenWrist, onOpenMonitors, onOpenLayouts, onOpenCamera, onOpenText }: {
+  { onBack, onOpenWrist, onOpenMonitors, onOpenLayouts, onOpenCamera, onOpenText, onOpenRender }: {
     onBack: () => void;
+    onOpenRender: () => void;
     onOpenWrist: () => void;
     onOpenMonitors: () => void;
     onOpenLayouts: () => void;
@@ -378,6 +431,7 @@ function SettingsView(
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenMonitors}>SCREENS</Pill>
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenLayouts}>LAYOUTS</Pill>
         <Pill slots={1} units={2} fontSize={11} onClick={onOpenCamera}>CAMERA</Pill>
+        <Pill slots={1} units={2} fontSize={11} onClick={onOpenRender}>RENDER</Pill>
       </Container>
     </Container>
   );
@@ -430,62 +484,91 @@ export function WristMenuUi(
   const settingsStyle = styleOf("settings");
   const cameraStyle = styleOf("camera");
   const textStyle = styleOf("text");
+  const renderStyle = styleOf("render");
   const wristStyle = styleOf("wrist");
   const layoutsStyle = styleOf("layouts");
   const monitorsStyle = styleOf("monitors");
-  const settings = useMemo(() => (
-    <Shell pointerEventsType={settingsStyle.pe} opacity={settingsStyle.opacity}>
-      <SettingsView
-        onBack={() => setView("main")}
-        onOpenWrist={() => setView("wrist")}
-        onOpenMonitors={() => setView("monitors")}
-        onOpenLayouts={() => setView("layouts")}
-        onOpenCamera={() => setView("camera")}
-        onOpenText={() => setView("text")}
-      />
-    </Shell>
-  ), [settingsStyle]);
-  const cameraPage = useMemo(() => (
-    <Shell pointerEventsType={cameraStyle.pe} opacity={cameraStyle.opacity}>
-      <CameraSettingsView onBack={() => setView("settings")} />
-    </Shell>
-  ), [cameraStyle]);
-  const textPage = useMemo(() => (
-    <Shell pointerEventsType={textStyle.pe} opacity={textStyle.opacity}>
-      <TextComparisonView onBack={() => setView("settings")} />
-    </Shell>
-  ), [textStyle]);
+  const settings = useMemo(
+    () => (
+      <Shell pointerEventsType={settingsStyle.pe} opacity={settingsStyle.opacity}>
+        <SettingsView
+          onBack={() => setView("main")}
+          onOpenWrist={() => setView("wrist")}
+          onOpenMonitors={() => setView("monitors")}
+          onOpenLayouts={() => setView("layouts")}
+          onOpenCamera={() => setView("camera")}
+          onOpenText={() => setView("text")}
+          onOpenRender={() => setView("render")}
+        />
+      </Shell>
+    ),
+    [settingsStyle],
+  );
+  const cameraPage = useMemo(
+    () => (
+      <Shell pointerEventsType={cameraStyle.pe} opacity={cameraStyle.opacity}>
+        <CameraSettingsView onBack={() => setView("settings")} />
+      </Shell>
+    ),
+    [cameraStyle],
+  );
+  const textPage = useMemo(
+    () => (
+      <Shell pointerEventsType={textStyle.pe} opacity={textStyle.opacity}>
+        <TextComparisonView onBack={() => setView("settings")} />
+      </Shell>
+    ),
+    [textStyle],
+  );
+  const renderPage = useMemo(
+    () => (
+      <Shell pointerEventsType={renderStyle.pe} opacity={renderStyle.opacity}>
+        <RenderSettingsView onBack={() => setView("settings")} />
+      </Shell>
+    ),
+    [renderStyle],
+  );
   const wrist = useMemo(() => (
     <Shell pointerEventsType={wristStyle.pe} opacity={wristStyle.opacity}>
       <WristSettingsView onBack={() => setView("settings")} />
     </Shell>
   ), [wristStyle]);
-  const layouts = useMemo(() => (
-    <Shell pointerEventsType={layoutsStyle.pe} opacity={layoutsStyle.opacity}>
-      <LayoutSlotsView
-        slots={layoutSlots}
-        onSave={onSaveLayout}
-        onLoad={onLoadLayout}
-        onBack={() => setView("settings")}
-      />
-    </Shell>
-  ), [layoutsStyle, layoutSlots, onSaveLayout, onLoadLayout]);
-  const monitors = useMemo(() => (
-    <Shell pointerEventsType={monitorsStyle.pe} opacity={monitorsStyle.opacity}>
-      <MonitorAssignments
-        workspaceLayout={workspaceLayout}
-        onAssignOutput={onAssignOutput}
-        onAddOutput={onAddOutput}
-        onBack={() => setView("settings")}
-      />
-    </Shell>
-  ), [monitorsStyle, workspaceLayout, onAssignOutput, onAddOutput]);
+  const layouts = useMemo(
+    () => (
+      <Shell pointerEventsType={layoutsStyle.pe} opacity={layoutsStyle.opacity}>
+        <LayoutSlotsView
+          slots={layoutSlots}
+          onSave={onSaveLayout}
+          onLoad={onLoadLayout}
+          onBack={() => setView("settings")}
+        />
+      </Shell>
+    ),
+    [layoutsStyle, layoutSlots, onSaveLayout, onLoadLayout],
+  );
+  const monitors = useMemo(
+    () => (
+      <Shell pointerEventsType={monitorsStyle.pe} opacity={monitorsStyle.opacity}>
+        <MonitorAssignments
+          workspaceLayout={workspaceLayout}
+          onAssignOutput={onAssignOutput}
+          onAddOutput={onAddOutput}
+          onBack={() => setView("settings")}
+        />
+      </Shell>
+    ),
+    [monitorsStyle, workspaceLayout, onAssignOutput, onAddOutput],
+  );
 
   const main = (
     <WristOverlay
       clock={clock}
       dateLabel={dateLabel}
-      status={camera?.layer.running ? `Camera layer on · ${camera.tracker.calibration || camera.tracker.liveFit ? "synced" : "not synced"}` : statusLabel}
+      status={camera?.layer.running
+        ? `Camera layer on · ${
+          camera.tracker.calibration || camera.tracker.liveFit ? "synced" : "not synced"
+        }`
+        : statusLabel}
       displayCount={workspaceLayout.displays.length}
       batteries={batteries}
       nowPlaying={nowPlaying}
@@ -510,11 +593,20 @@ export function WristMenuUi(
       {page("layouts", layouts)}
       {page("camera", cameraPage)}
       {page("text", textPage)}
+      {page("render", renderPage)}
     </>
   );
 }
 
-type WristView = "main" | "settings" | "wrist" | "monitors" | "layouts" | "camera" | "text";
+type WristView =
+  | "main"
+  | "settings"
+  | "wrist"
+  | "monitors"
+  | "layouts"
+  | "camera"
+  | "text"
+  | "render";
 type PageStyle = { pe: AllowedPointerEventsType; opacity: number };
 
 const EMPTY_LAYOUT_SLOTS: LayoutSlotSummary[] = [];

@@ -1,4 +1,5 @@
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
+import { scaledEyeSize, setRecommendedEyeSize } from "./renderResolution.ts";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { getRaylibLibraryPath } from "./nativeLibraryPaths.ts";
 import { areNativeAssetBatchesIdenticalForSync } from "./raythreeAssetBatchesForSync.ts";
@@ -83,11 +84,13 @@ let headsetEyeSize: number | null = null;
  * Size the eyes for the headset: its `GetRecommendedRenderTargetSize` (which already includes
  * SteamVR's resolution setting), squared up to the larger side. The square eye spans ~109°, about
  * a headset eye's field of view. 3560 on a Quest 3 over Steam Link (2064x2208) was ~2.8x the
- * pixels the runtime asked for.
+ * pixels the runtime asked for. The Settings page can scale it per recommended size
+ * ({@link scaledEyeSize}).
  */
 export function setHeadsetEyeSize(width: number, height: number): number | null {
+  setRecommendedEyeSize(width, height);
   const size = Math.max(width, height);
-  headsetEyeSize = Number.isInteger(size) && size >= 512 ? Math.min(size, 4096) : null;
+  headsetEyeSize = Number.isInteger(size) && size >= 512 ? size : null;
   return headsetEyeSize;
 }
 
@@ -104,7 +107,7 @@ export function getRaylibNativeEyeSize(): number {
   if (Number.isFinite(n) && n >= 64 && n <= 4096) {
     return n;
   }
-  return headsetEyeSize ?? DEFAULT_RAYLIB_EYE_SIZE;
+  return headsetEyeSize == null ? DEFAULT_RAYLIB_EYE_SIZE : scaledEyeSize(headsetEyeSize);
 }
 
 function getRaylibNativeEyeSizeCandidates(preferred = getRaylibNativeEyeSize()): number[] {

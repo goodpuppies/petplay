@@ -103,6 +103,16 @@ export const SETTINGS_SCHEMA = {
     label: "Window side-menu size, relative to the default (0.5 to 2; resized in edit layout mode)",
     valid: isWristScale,
   } satisfies SettingSpec<number>,
+  renderScaleByResolution: {
+    default: {} as Record<string, number>,
+    label:
+      "Render resolution relative to SteamVR's, keyed by SteamVR's recommended size \"<width>x<height>\" (Settings → Render)",
+    valid: (value: unknown): value is Record<string, number> =>
+      value != null && typeof value === "object" && !Array.isArray(value) &&
+      Object.values(value).every((scale) =>
+        typeof scale === "number" && scale >= 0.5 && scale <= 2
+      ),
+  } satisfies SettingSpec<Record<string, number>>,
   laserOffsets: {
     default: {} as Record<string, PoseOffset>,
     label:

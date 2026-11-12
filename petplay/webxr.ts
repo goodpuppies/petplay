@@ -1,4 +1,5 @@
 import { initializeLinuxScheduling } from "../classes/linuxScheduling.ts";
+import { getRenderScale, subscribeRenderResolution } from "../classes/renderResolution.ts";
 import { actorState, PostMan, resolveActorId, System } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
@@ -28,12 +29,16 @@ import {
 import { WebXROverlayGl } from "../classes/webxrOverlayGl.ts";
 import {
   getRaylibNativeEyeSize,
-  setHeadsetEyeSize,
   type NativeOpenVrRaylibDebugFrame,
+  setHeadsetEyeSize,
   WebXROverlayRaylib,
 } from "../classes/webxrOverlayRaylib.ts";
-import { OverlayAssetCache, OverlaySceneCredit, type SceneDelivery } from "../classes/overlaySceneDelivery.ts";
-import { OverlaySceneWireEncoder, OVERLAY_SCENE_WIRE_FORMAT } from "../classes/overlaySceneWire.ts";
+import {
+  OverlayAssetCache,
+  OverlaySceneCredit,
+  type SceneDelivery,
+} from "../classes/overlaySceneDelivery.ts";
+import { OVERLAY_SCENE_WIRE_FORMAT, OverlaySceneWireEncoder } from "../classes/overlaySceneWire.ts";
 import { fingerprintScene } from "../classes/overlaySceneFingerprint.ts";
 import { FpsCounter } from "../classes/fpsCounter.ts";
 import { formatFrameStability, FrameStabilityTracker } from "../classes/frameStability.ts";
@@ -41,9 +46,9 @@ import { IntervalMetric, type IntervalMetricSample } from "../classes/intervalMe
 import type { RaylibOverlayFrameAckPayload } from "../classes/raylibOverlayAckPayload.ts";
 import {
   getSceneBackgroundColor,
-  withoutVrcCameraHelpers,
   type WebXRRaythreeRenderPayload,
   WebXRRaythreeSceneBridge,
+  withoutVrcCameraHelpers,
 } from "../classes/webxrRaythreeScene.ts";
 import type { AssetBatch } from "../submodules/raythree/src/ir.ts";
 import { getKeyboardLocaleInfo } from "../classes/environment/keyboard/keyboardLocale.ts";
@@ -71,7 +76,10 @@ import {
 } from "../classes/vrcCameraDebugState.ts";
 import { type TrackedPose, VrcCameraTracker } from "../classes/vrcCameraCalibration.ts";
 import { createVrcCameraWorkerSolver } from "../classes/vrcCameraSolver.ts";
-import { vrcCameraStore, type VrcCameraLayerStatus } from "../classes/environment/vrcCameraStore.ts";
+import {
+  type VrcCameraLayerStatus,
+  vrcCameraStore,
+} from "../classes/environment/vrcCameraStore.ts";
 import { captureDenoCpuProfile } from "../classes/denoCpuProfile.ts";
 import { getSettings, isSettingKey, loadSettings, setSetting } from "../classes/settings.ts";
 import { pushToast, type ToastInput } from "../classes/environment/toastStore.ts";
@@ -497,10 +505,17 @@ new PostMan(
     STARTWEBXR: (payload: StartWebXRPayload | null) => {
       state.lastStartPayload = payload ?? null;
       state.mainActor = payload?.mainActor ?? state.mainActor;
-      if (state.mainActor) PostMan.PostMessage({
-        target: state.mainActor, type: "VRCCAMERAVIEWSTATUS", payload: null,
-      });
-      state.decoupledRenderer = payload?.decoupledRenderer ?? Deno.args.some((arg) => arg === "--webxr-decoupled-renderer" || arg === "--webxr-decoupled-renderer=1");
+      if (state.mainActor) {
+        PostMan.PostMessage({
+          target: state.mainActor,
+          type: "VRCCAMERAVIEWSTATUS",
+          payload: null,
+        });
+      }
+      state.decoupledRenderer = payload?.decoupledRenderer ??
+        Deno.args.some((arg) =>
+          arg === "--webxr-decoupled-renderer" || arg === "--webxr-decoupled-renderer=1"
+        );
       state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ??
         false;
       // A registered IR view may have asked for camera control; its grant has to
@@ -589,9 +604,15 @@ new PostMan(
           if (state.decoupledRenderer) {
             onBeforeExternalControllerApply = () => {
               state.nativeRaylibPacer?.paceToDisplayAndRefreshPoses();
-              state.host?.updateDirectOpenVrInputs(state.nativeRaylibPacer?.getCachedHmdEmulation() ?? null,
-                getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand),
-                getNativeRaylibControllerPose(OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand));
+              state.host?.updateDirectOpenVrInputs(
+                state.nativeRaylibPacer?.getCachedHmdEmulation() ?? null,
+                getNativeRaylibControllerPose(
+                  OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+                ),
+                getNativeRaylibControllerPose(
+                  OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand,
+                ),
+              );
             };
           }
           state.controllerSharedStateSab = null;
@@ -860,10 +881,16 @@ new PostMan(
     },
     /** Decoupled renderer only: reprojected per-eye overlays, or the head-locked panorama. */
     SETPRESENTMODE: async (mode: "projection" | "panorama") => {
-      if (mode !== "projection" && mode !== "panorama") throw new Error(`Unknown present mode ${mode}`);
+      if (mode !== "projection" && mode !== "panorama") {
+        throw new Error(`Unknown present mode ${mode}`);
+      }
       state.raylibProjectionOverlayEnabled = mode === "projection";
       if (state.renderOwner) {
-        await PostMan.PostMessage({ target: state.renderOwner, type: "SETPRESENTMODE", payload: mode }, true);
+        await PostMan.PostMessage({
+          target: state.renderOwner,
+          type: "SETPRESENTMODE",
+          payload: mode,
+        }, true);
       }
       return mode;
     },
@@ -972,7 +999,10 @@ new PostMan(
       view.lastAckAt = Date.now();
       // A scene may have been extracted and skipped while this delivery held credit.
       // Publish its current state now, rather than wait for a further simulation tick.
-      if (state.decoupledRenderer && (state.host?.getStatus().frameCount ?? -1) > view.lastSentSceneFrame) {
+      if (
+        state.decoupledRenderer &&
+        (state.host?.getStatus().frameCount ?? -1) > view.lastSentSceneFrame
+      ) {
         publishViewOnlyFrame(true);
       }
       return getWebXrViewsStatus();
@@ -1260,6 +1290,35 @@ function recoverRaylibOverlayTargets(reason: string): boolean {
  * content sits at a different depth than the OpenVR overlays beside it.
  * Safe to call repeatedly; it no-ops until both the system and host exist.
  */
+/** Scale the eye targets were last sized for; a different one from Settings rebuilds them. */
+let appliedRenderScale = getRenderScale();
+let renderScaleDirty = false;
+subscribeRenderResolution(() => {
+  if (getRenderScale() !== appliedRenderScale) renderScaleDirty = true;
+});
+
+/**
+ * Rebuilds the eye targets at the new render resolution, between frames. The same steps as
+ * {@link recoverRaylibOverlayTargets}: nothing pending is presented from the old targets, and the
+ * overlay handle is dropped so the next frame imports the new texture. Skips this frame.
+ */
+function applyRenderScaleChange(): boolean {
+  renderScaleDirty = false;
+  appliedRenderScale = getRenderScale();
+  state.raylibPendingProjectionFrame = null;
+  state.raylibShownProjectionTexture = -1;
+  dropRaylibOverlayForRecreate("render resolution change");
+  state.raylibOverlayRaylib?.followHeadsetEyeSize();
+  state.raylibOverlayRaylib?.invalidateRenderTargets();
+  LogChannel.log(
+    "webxrv2",
+    `[webxr] render resolution ${
+      Math.round(appliedRenderScale * 100)
+    }%: eye ${getRaylibNativeEyeSize()}`,
+  );
+  return false;
+}
+
 function applyHeadsetEyeSize(sys: OpenVR.IVRSystem): void {
   const size = new Uint32Array(2);
   sys.GetRecommendedRenderTargetSize(
@@ -1267,9 +1326,14 @@ function applyHeadsetEyeSize(sys: OpenVR.IVRSystem): void {
     Deno.UnsafePointer.of(size.subarray(1)),
   );
   const eye = setHeadsetEyeSize(size[0]!, size[1]!);
+  // The targets are about to follow this size and its saved scale: nothing left to rebuild.
+  appliedRenderScale = getRenderScale();
+  renderScaleDirty = false;
   LogChannel.log(
     "webxrv2",
-    `[webxr] headset recommends ${size[0]}x${size[1]} per eye; rendering ${getRaylibNativeEyeSize()}`,
+    `[webxr] headset recommends ${size[0]}x${
+      size[1]
+    } per eye; rendering ${getRaylibNativeEyeSize()}`,
   );
   if (eye != null) state.raylibOverlayRaylib?.followHeadsetEyeSize();
 }
@@ -1457,18 +1521,25 @@ vrcCameraStore.setControls({
   },
   async refreshLayer() {
     if (!state.mainActor) throw new Error("Camera layer host unavailable");
-    await PostMan.PostMessage({ target: state.mainActor, type: "VRCCAMERAVIEWSTATUS", payload: null }, true);
+    await PostMan.PostMessage({
+      target: state.mainActor,
+      type: "VRCCAMERAVIEWSTATUS",
+      payload: null,
+    }, true);
   },
   async setLayer(running) {
     if (!state.mainActor) throw new Error("Camera layer host unavailable");
     await PostMan.PostMessage({
-      target: state.mainActor, type: running ? "STARTVRCCAMERAVIEW" : "STOPVRCCAMERAVIEW", payload: null,
+      target: state.mainActor,
+      type: running ? "STARTVRCCAMERAVIEW" : "STOPVRCCAMERAVIEW",
+      payload: null,
     }, true);
   },
 });
 vrcCameraStore.setPredictor(() =>
   vrcCameraTracker.status().live || vrcCameraLayer.running
-    ? vrcCameraTracker.currentViewPose() : null
+    ? vrcCameraTracker.currentViewPose()
+    : null
 );
 publishVrcCameraStatus();
 
@@ -1501,7 +1572,11 @@ function reportVrcCameraCalibration(
   const status = vrcCameraTracker.status();
   if (calibration == null) {
     LogChannel.log("webxrv2", `[webxr] vrc camera ${status.lastError ?? "calibration failed"}`);
-    pushToast({ title: "Camera calibration failed", content: status.lastError ?? "", tone: "error" });
+    pushToast({
+      title: "Camera calibration failed",
+      content: status.lastError ?? "",
+      tone: "error",
+    });
     return;
   }
   const rmsCm = (calibration.rmsErrorMeters * 100).toFixed(1);
@@ -1514,7 +1589,9 @@ function reportVrcCameraCalibration(
   const rough = calibration.rmsErrorMeters > VRC_CAMERA_CALIBRATION_WARN_RMS_METERS;
   pushToast({
     title: rough ? "Camera calibration is rough" : "Camera calibrated",
-    content: `${calibration.hand} hand, ${rmsCm} cm error${rough ? " - try again, turning slowly" : ""}`,
+    content: `${calibration.hand} hand, ${rmsCm} cm error${
+      rough ? " - try again, turning slowly" : ""
+    }`,
     tone: rough ? "warning" : "info",
   });
 }
@@ -1551,8 +1628,9 @@ function getWebXrViewsStatus() {
 const viewAssetCache = new OverlayAssetCache();
 let viewDeliveryError: string | null = null;
 
-function rememberViewAssets(batch: AssetBatch): void { viewAssetCache.remember(batch); }
-
+function rememberViewAssets(batch: AssetBatch): void {
+  viewAssetCache.remember(batch);
+}
 
 /**
  * Hands one extracted frame to each registered view.
@@ -1573,7 +1651,12 @@ function publishRaythreeFrameToViews(
   if (viewDeliveryError) return;
   // Accumulate unconditionally: a view that registers later needs the assets
   // that were emitted (and consumed by the in-worker renderer) before it existed.
-  try { rememberViewAssets(payload.leftEye.assets); } catch (error) { viewDeliveryError = String(error); return; }
+  try {
+    rememberViewAssets(payload.leftEye.assets);
+  } catch (error) {
+    viewDeliveryError = String(error);
+    return;
+  }
   if (state.views.size === 0) {
     return;
   }
@@ -1611,14 +1694,20 @@ function publishRaythreeFrameToViews(
     const outgoing: WebXRRaythreeRenderPayload = {
       ...payload,
       background: view.label === "projection-renderer" || vrcView ? [0, 0, 0, 0] : background,
-      delivery: prepared.delivery, leftEye: extraction, rightEye: extraction,
+      delivery: prepared.delivery,
+      leftEye: extraction,
+      rightEye: extraction,
       ...(vrcView ? { vrcCamera: vrcCameraTracker.currentViewPose() } : {}),
     };
     if (view.compactWire) {
       const start = performance.now();
       let packet;
-      try { packet = view.wireEncoder.encode(outgoing); }
-      catch (error) { viewDeliveryError = String(error); return; }
+      try {
+        packet = view.wireEncoder.encode(outgoing);
+      } catch (error) {
+        viewDeliveryError = String(error);
+        return;
+      }
       view.lastEncodeMs = performance.now() - start;
       view.lastWireBytes = packet.data.length;
       PostMan.PostMessage({ target: actorId, type: "WEBXRVIEWFRAMEPACKET", payload: packet });
@@ -1652,8 +1741,16 @@ function getWebXRStatus() {
     uploadedFrames: state.uploadedFrames,
     nominalHmdDisplayHz: state.nominalHmdDisplayHz,
     views: getWebXrViewsStatus(),
-    independentRenderer: { enabled: state.decoupledRenderer, actor: state.renderOwner, status: state.renderOwnerStatus },
-    viewDelivery: { assetVersion: viewAssetCache.version, bytes: viewAssetCache.bytes, error: viewDeliveryError },
+    independentRenderer: {
+      enabled: state.decoupledRenderer,
+      actor: state.renderOwner,
+      status: state.renderOwnerStatus,
+    },
+    viewDelivery: {
+      assetVersion: viewAssetCache.version,
+      bytes: viewAssetCache.bytes,
+      error: viewDeliveryError,
+    },
     presentation: getPresentationStatus(),
     // The scene's keyboard renders in this worker, so its locale is this worker's.
     keyboardLocale: getKeyboardLocaleInfo(),
@@ -1951,7 +2048,9 @@ function buildOverlayName(
 
 async function startRenderOwner() {
   if (state.renderOwner) return;
-  const actor = await PostMan.create("./overlayRenderOwner.ts", import.meta.url, { worker: "process" });
+  const actor = await PostMan.create("./overlayRenderOwner.ts", import.meta.url, {
+    worker: "process",
+  });
   state.renderOwner = resolveActorId(actor);
   const config = state.lastStartPayload;
   await PostMan.PostMessage({
@@ -1987,7 +2086,9 @@ async function stopRenderOwner() {
 async function initializeOverlay(payload: StartWebXRPayload | null) {
   if (!payload?.overlayPointer) return;
   if (state.decoupledRenderer) {
-    if ((payload?.overlayRenderMode ?? "raylib") !== "raylib") throw new Error("Decoupled renderer requires raylib-only mode");
+    if ((payload?.overlayRenderMode ?? "raylib") !== "raylib") {
+      throw new Error("Decoupled renderer requires raylib-only mode");
+    }
     await startRenderOwner();
     return;
   }
@@ -2547,6 +2648,7 @@ async function uploadRaylibShadowFrame() {
   );
   state.raythreeExtractMetric.record(performance.now() - extractStartedAt);
 
+  if (renderScaleDirty) return applyRenderScaleChange();
   const handlerT0 = performance.now();
   const projection = state.raylibProjectionOverlayEnabled;
   const pipelined = projection && state.raylibPresentPipelined;
