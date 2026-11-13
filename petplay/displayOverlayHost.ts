@@ -620,6 +620,10 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
     },
     executablePath: getScreenStreamerPath(),
     captureTokenPath: join(portalStateDir, "screencast-restore-token"),
+    // Opt in by pointing this at a media worker that is already listening, the same
+    // way the remote scene controls are enabled. Capture and the local overlay behave
+    // identically without it; see markdown/remote-desktop-stream.md.
+    mediaSocketPath: Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOCKET") || undefined,
     onExit: (status) => {
       state.screenCapturer = null;
       warmCapturePromise = null;

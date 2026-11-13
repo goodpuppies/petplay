@@ -27,6 +27,13 @@ export interface ScreenCapturerOptions {
   executablePath?: string;
   /** Persistent Linux ScreenCast portal restore-token file. */
   captureTokenPath?: string;
+  /**
+   * Linux only. Also publish every captured frame to a native media worker already
+   * listening on this AF_UNIX path, which encodes it on the GPU for streaming. The
+   * local overlay keeps using the frame socket either way; this is an extra consumer,
+   * not a replacement. See `submodules/petplay_mediatransport/docs/protocol.md`.
+   */
+  mediaSocketPath?: string;
   /** Whether to log debug information. Defaults to false. */
   debug?: boolean;
   /** Callback for frame statistics (FPS, latency). Called every 30 frames if provided. */
@@ -107,6 +114,8 @@ export class ScreenCapturer {
       debug: options.debug ?? false,
       onStats: options.onStats ?? (() => {}),
       onExit: options.onExit ?? (() => {}),
+      // Empty means no media worker, so the helper is started without the option.
+      mediaSocketPath: options.mediaSocketPath ?? "",
     };
   }
 
@@ -223,6 +232,9 @@ export class ScreenCapturer {
         `--fps=${this.options.fps}`,
         `--port=${this.options.port}`,
         `--capture-token-path=${this.options.captureTokenPath}`,
+        ...(this.options.mediaSocketPath
+          ? [`--media-socket=${this.options.mediaSocketPath}`]
+          : []),
       ],
       // The helper reads Enter to stop. Keep stdin open for its lifetime rather
       // than giving it Deno.Command's closed default, which makes it exit at

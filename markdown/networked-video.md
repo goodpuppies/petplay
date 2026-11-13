@@ -73,6 +73,13 @@ remain unresolved, so this is a working rendering proof rather than a production
 
 Continues the 2026-11-13 work in `submodules/petplay_ovrdriver/PRESENT-BOUNDARY.md`.
 
+## Desktop sharing between two instances
+
+The desktop-overlay variant of the second path — one person's desktop overlay appearing in
+another person's headset — is tracked separately in
+[remote-desktop-stream.md](remote-desktop-stream.md), including the geometry-driven encoder, the
+GBM desktop producer, and the zero-copy Windows and Linux receiver designs.
+
 ## Intended paths
 
 - No physical headset: OpenVR scene → PetPlay native video → moq → browser WebXR or desktop
