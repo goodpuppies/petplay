@@ -27,9 +27,7 @@ MoQ over iroh, and a receiver.
 ## Milestones
 
 - **M1 — a desktop feed reaches the encoder.** Done, including real capture; see below.
-- **M2 — remote iroh.** A real endpoint with relay and discovery, plus a share code. Ends with
-  the other person watching in a browser over the internet, which validates transport before
-  any receiver code exists.
+- **M2 — remote iroh.** Implemented and tested locally; a two-machine NAT test remains. See below.
 - **M3 — a receiver inside PetPlay.** Ends with the actual goal.
 - **M4 — pairing in PetPlay, both directions, more than one stream.**
 
@@ -106,6 +104,65 @@ to disk.
 recurred in four sessions since. It predates the error context now carried by the producer's
 map, send and acknowledgement paths, so it cannot be attributed retroactively — it was one of
 those three. A recurrence will name its call site.
+
+## M2 as implemented
+
+`--iroh-share` binds an endpoint that can reach a peer across the internet and prints one
+pasteable share code. `petplay-media gateway CODE ADDR` consumes it.
+
+No discovery service is involved. iroh's `N0` preset would publish this machine's addresses to
+n0's DNS; instead the endpoint uses the `Minimal` preset with only the relay mode added back,
+and the viewer seeds the source's addresses into a `MemoryLookup` from the share code. The
+consequence is that **a share code is a bearer secret**: it is the only way to find the source
+and all that is needed to watch it. It also contains the source's IP addresses. Restricting a
+source to specific viewer identities is not implemented and is the obvious M4 addition.
+
+The gateway requires an active direct path within 15 seconds, before starting its browser
+WebTransport and HTTP listeners. MoQ track requests are lazy, so while connection setup and
+announcements can traverse a relay, there are no downstream consumers to request config/video
+frames until the direct gate opens. `GATEWAY_DIRECT` precedes `VIEWER_READY` and `GATEWAY_READY`.
+This closes the initial-frame relay window in the first implementation.
+
+The gateway then checks iroh's active route every 100 ms and exits if the direct route is lost.
+This is **fail on observed loss**, not a packet-level guarantee against relay traffic: iroh's
+path detection and polling can lag a transition, leaving a brief fallback window. A strict
+zero-relayed-media guarantee would need enforcement inside the transport's send path.
+
+### Validation
+
+The source and gateway on this machine exercised the real relay-assisted setup path using the
+synthetic GBM pattern producer, not real desktop content. The gateway confirmed a direct path
+before opening its browser listener. Headless Chromium then decoded 122 frames of the mono
+1280×720 stream without decode errors.
+
+After the source was stopped, a second gateway using its share code failed with the direct-path
+error. Its browser port remained closed throughout the attempt and it never printed
+`GATEWAY_READY`. Unit tests also cover share-code round-tripping, damaged/truncated/versionless
+and address-less codes, initial direct-path refusal, and the route-loss guard.
+
+The existing generated `web/dist/viewer.js` was stale (it still required fixed 1920×1080
+geometry). Rebuilding the viewer was necessary for the mono browser test; source and gateway
+must be started with assets built from the same checkout.
+
+The finite pattern producer can close before its final slot ACK, making the worker report
+`slot release failed: Broken pipe` at fixture teardown. This is separate from playback and
+remains a producer-drain/shutdown issue; the test does not claim clean source teardown.
+
+Artifacts: `_scratch/m2-direct-gate-result.log` and the private directory it names. Share codes
+stay inside the private test logs. No screen contents were captured or recorded.
+
+**Not validated:** a genuinely remote peer across two NATs, forced direct-to-relay migration
+with an active stream, and Windows runtime behavior. The receive-only Windows GNU target
+passed `cargo check --no-default-features --features iroh` using Zig as the cross C compiler
+(the host has no MinGW GCC). Linux full and receive-only test suites pass.
+
+### A receive-only build
+
+The worker linked `moq-vaapi` unconditionally, so the gateway that bridges iroh to browser
+WebTransport could not build where VA-API does not exist — which is exactly where the Windows
+viewer is. The encoder and its DMA-BUF ingestion now live in `src/source.rs` behind a default-on
+`encode` feature, and `--no-default-features --features iroh` produces a binary that can only
+run the `gateway` subcommand. M3's Windows receiver needs this split too.
 
 ### Next optimization, not a blocker
 
