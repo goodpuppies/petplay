@@ -28,7 +28,8 @@ MoQ over iroh, and a receiver.
 
 - **M1 — a desktop feed reaches the encoder.** Done, including real capture; see below.
 - **M2 — remote iroh.** Implemented and tested locally; a two-machine NAT test remains. See below.
-- **M3 — a receiver inside PetPlay.** Ends with the actual goal.
+- **M3 — a receiver inside PetPlay.** Linux GPU path implemented and locally tested; Windows
+  native decoding remains open. See below.
 - **M4 — pairing in PetPlay, both directions, more than one stream.**
 
 Input is deliberately out of scope for now. `screen-streamer` already injects through
@@ -38,18 +39,21 @@ changing the media path. Audio does not exist anywhere in this stack and is its 
 
 ## M3 needs no CPU decode and no vendor decoder
 
-The receiver is zero-copy on both platforms, and neither side needs NVDEC/NVENC:
+The intended path keeps raw frames off the CPU on both platforms:
 
-- **Windows:** decode with Media Foundation's hardware H.264 MFT in D3D11 mode — vendor-neutral
-  across NVIDIA, AMD and Intel, with bindings in the `windows` crate and no ffmpeg DLLs to ship
-  — into a texture created `MISC_SHARED`. OpenVR accepts that handle directly as
-  `TextureType_DXGISharedHandle` (`openvr_bindings.ts:559`), so a legacy shared handle crosses
-  the process boundary as a plain number and Deno submits it unchanged. No GL, no D3D interop
-  in Deno, and no copies.
-- **Linux:** `moq-vaapi`'s `decode_exported` already yields a DMA-BUF. Import it with
-  `EGL_EXT_image_dma_buf_import` into PetPlay's existing GL context and submit today's
-  `TextureType_OpenGL`. `classes/openglManager.ts` is already Deno FFI against GL, so this is
-  `Deno.dlopen` on libEGL rather than a new native library.
+- **Windows (planned):** hardware Media Foundation H.264 decode in D3D11 mode, followed by
+  GPU color conversion into an RGB shared texture. PetPlay can submit a compatible shared
+  handle as `TextureType_DXGISharedHandle`. The exact allocation, ownership and synchronization
+  contract still needs implementation and runtime validation.
+- **Linux (implemented):** `moq-vaapi::decode_exported` yields an NV12 DMA-BUF. VA-API VPP
+  converts it into a three-slot RGB GBM pool, and a process-owned PetPlay actor imports each
+  descriptor with EGL. It blits on GPU into its own GL texture and finishes the read before
+  ACKing the reusable slot, then submits `TextureType_OpenGL` to OpenVR. This includes GPU
+  color conversion and one presentation copy; it does not download raw pixels.
+
+EGLImages cannot be used in PetPlay's existing GLX context: the first import crashed inside
+Mesa. The receiver instead owns an EGL OpenGL pbuffer context in its own actor process,
+keeping the main scene's GL context untouched.
 
 The decision not to decode on the CPU is deliberate: the overlay's existing CPU upload is
 affordable at one desktop, but couch gaming wants headroom at higher resolutions.
@@ -169,3 +173,54 @@ run the `gateway` subcommand. M3's Windows receiver needs this split too.
 The worker acknowledges a slot only after the encode finishes, so that ~9.5 ms sits directly in
 the latency path, and it re-imports a fresh DMA-BUF every frame rather than caching the three
 recurring slots. Both are worth revisiting when latency is measured end to end.
+
+
+## M3 Linux implementation
+
+Build mediatransport with `cargo build --release --features decode`. An encoder-free Linux
+receiver can use `--no-default-features --features decode`. Start the source with
+`--layout mono`; the native receiver rejects stereo, unsupported codecs and changing geometry.
+The current GPU node is `/dev/dri/renderD128`, and EGL and VA-API need compatible device access.
+
+PetPlay exposes these messages on `main`:
+
+- `STARTREMOTEMEDIA`: `{ "code": "SHARE_CODE", "widthMeters": 1.2, "distance": 1.5 }`.
+  Local tests can use `{ "url": "iroh://SOURCE_ID/", "address": "SOURCE_ADDRESS" }` instead.
+- `REMOTEMEDIASTATUS`: running/starting, last error, presented frame count and dimensions.
+- `STOPREMOTEMEDIA`: stop the native worker, destroy the overlay and release GPU resources.
+
+For example, through the existing opt-in agent REPL:
+
+```sh
+curl http://127.0.0.1:3987/message -H 'Content-Type: application/json' \
+  --data '{"target":"main","type":"STARTREMOTEMEDIA","payload":{"code":"SHARE_CODE"},"reply":true}'
+```
+
+The actor places a regular quad in front of the current headset pose. It is a single-stream
+prototype; pairing controls, scene manipulation of the quad, audio and remote desktop input
+are not implemented. The main actor must load the updated code to expose the new messages;
+there is no reason to restart a live VR session just to install them.
+
+The native worker bounds the encoded queue and waits for a keyframe after reference loss.
+The output pool never blocks reference decoding: it drops presentation frames while all
+slots are awaiting ACK. The actor drains to the newest available frame, imports it, blits,
+finishes GPU reads and ACKs before handing its own texture to OpenVR. Socket files are private
+and removed on clean teardown; processes have explicit stop paths and no session expiry.
+
+### Validation
+
+On the RX 7900 XTX, a synthetic 640×480 GBM pattern exercised native encode, local Iroh/MoQ,
+VA-API decode, NV12-to-RGB VPP, descriptor transfer, EGL import and OpenVR submission. A hidden
+OpenVR overlay accepted 60 frames. Diagnostic-only readback checked the expected RGB gradient
+and orientation; the runtime receiver contains no raw pixel readback. Holding all three slot
+ACKs for 200 ms produced no fourth descriptor, then reception resumed after release. The
+receiver exited cleanly when the consumer disconnected.
+
+The process-owned actor separately completed two start/stop cycles against an unavailable
+source without showing an overlay or leaving a receiver process/socket behind. These checks
+ran alongside the user's live VR session. Artifacts: `_scratch/m3-openvr-result.log`,
+`_scratch/m3-actor-result.log`, and the private synthetic test directory named by the first log.
+
+`deno task check`, Linux Rust tests with `decode`, and the Windows GNU browser-gateway
+cross-check pass. This does not validate Windows native reception, two-machine NAT traversal,
+physical display latency, sustained 4K reception or the visible quad's placement in-headset.

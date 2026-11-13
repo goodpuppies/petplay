@@ -1,3 +1,4 @@
+import type { RemoteMediaRequest } from "./remoteMediaOverlay.ts";
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
 import { wait } from "../classes/utils.ts";
 import { clampCaptureFps } from "../classes/ScreenCapturer/scclass.ts";
@@ -140,6 +141,7 @@ new PostMan(
     },
     /** Host teardown announces itself before it starts shutting actors down. */
     PREPARESHUTDOWN: async (_payload: unknown) => {
+      await stopRemoteMedia().catch((error) => console.warn("[remote-media] shutdown", error));
       supervisor.running = false;
       await Promise.race([supervisor.idle ?? Promise.resolve(), wait(3_000)]);
       return true;
@@ -168,6 +170,11 @@ new PostMan(
     GETSUPERVISORSTATUS: (_payload: unknown) => {
       return getSupervisorHealth();
     },
+    /** Native GPU receiver; one opt-in stream in a process-owned OpenVR overlay. */
+    STARTREMOTEMEDIA: async (payload: RemoteMediaRequest) => startRemoteMedia(payload),
+    STOPREMOTEMEDIA: async () => stopRemoteMedia(),
+    REMOTEMEDIASTATUS: async () =>
+      remoteMediaActor ? await callActor(remoteMediaActor, "__HEALTH__") : { running: false },
     /** Desktop view actor: started by the client CLI, not by a client process. */
     STARTDESKTOPCONTROL: async (_payload: unknown) => {
       return await startDesktopView();
@@ -462,6 +469,30 @@ function registerSceneActors(actors: SupervisedSceneActors): void {
   clientActors.agentRepl = actors.agentRepl;
   clientActors.cameraOrigin = actors.cameraOrigin;
   registerClientActors();
+}
+
+let remoteMediaActor: ActorId | null = null;
+async function startRemoteMedia(payload: RemoteMediaRequest) {
+  if (!remoteMediaActor) {
+    const actor = await PostMan.create("./remoteMediaOverlay.ts", import.meta.url, {
+      worker: "process",
+    });
+    remoteMediaActor = resolveActorId(actor);
+  }
+  return await withTimeout(
+    PostMan.PostMessage({ target: remoteMediaActor, type: "STARTMEDIA", payload }, true),
+    OPENVR_CALL_TIMEOUT_MS,
+    "start remote media",
+  );
+}
+async function stopRemoteMedia() {
+  const id = remoteMediaActor;
+  if (!id) return true;
+  await callActor(id, "STOPMEDIA", 10000);
+  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await waitForActorsStopped([id]);
+  remoteMediaActor = null;
+  return true;
 }
 
 /** Starts (or restarts) the desktop view actor; its window opens on this machine. */
