@@ -1,0 +1,13 @@
+{
+  "name": "virtual1080",
+  "description": "Synthetic stereo output matching the experimental PPL virtual display EDID: 1920x1080 at 75 Hz.",
+  "driver_petplay": {
+    "renderWidth": 960,
+    "renderHeight": 1080,
+    "displayEyeWidth": 960,
+    "displayEyeHeight": 1080,
+    "refreshHz": 75,
+    "ipdMeters": 0.064,
+    "maxSwapchainMiB": 512
+  }
+}

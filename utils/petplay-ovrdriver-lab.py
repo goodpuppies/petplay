@@ -135,7 +135,7 @@ def restore():
     print('Restored original settings and external-driver registrations; SteamVR remains off', flush=True)
 
 
-def prepare(direct_server=False, disable_async=False, driver_direct=False, real_hmd=False, touch_controllers=False, display_profile=None):
+def prepare(direct_server=False, disable_async=False, driver_direct=False, real_hmd=False, touch_controllers=False, display_profile=None, virtual_display=None):
     # Touch emulation lets applications' shipped Touch bindings drive the synthetic hands.
     controller_type = 'oculus_touch' if touch_controllers else 'petplay_synthetic'
     if running():
@@ -190,7 +190,19 @@ def prepare(direct_server=False, disable_async=False, driver_direct=False, real_
         settings.setdefault('power', {}).update(pauseCompositorOnStandby=False,
                                                 turnOffScreensTimeout=3600.0,
                                                 turnOffControllersTimeout=3600.0)
-        settings.setdefault('driver_petplay', {}).update(enable=True, syntheticHmd=True, syntheticControllers=True, driverDirect=driver_direct, socketDirectory=str(SESSION / 'ipc'), syntheticControllerType=controller_type)
+        settings.setdefault('driver_petplay', {}).update(enable=True, syntheticHmd=True, syntheticControllers=True, driverDirect=driver_direct, virtualDisplay=False, socketDirectory=str(SESSION / 'ipc'), syntheticControllerType=controller_type)
+        if virtual_display:
+            # Stop asking for debug mode and claim to be a real direct-mode panel, so the
+            # compositor looks for a DRM connector with these EDID identifiers instead of
+            # publishing only a mirror swapchain. See PRESENT-BOUNDARY.md.
+            settings['driver_petplay'].update(virtualDisplay=True,
+                                              edidVid=virtual_display['vid'],
+                                              edidPid=virtual_display['pid'])
+            settings.setdefault('direct_mode', {}).update(enable=True,
+                                                          edidVid=virtual_display['vid'],
+                                                          edidPid=virtual_display['pid'])
+            vr['directMode'] = True
+            vr['displayDebug'] = False
         for key in ('renderWidth', 'renderHeight', 'displayEyeWidth', 'displayEyeHeight',
                     'refreshHz', 'ipdMeters', 'maxSwapchainMiB'):
             settings['driver_petplay'].pop(key, None)
@@ -205,6 +217,19 @@ def prepare(direct_server=False, disable_async=False, driver_direct=False, real_
             if folder.is_dir() and folder.name != 'petplay':
                 settings.setdefault('driver_' + folder.name, {})['enable'] = False
         paths = json.loads(PATHS.read_text())
+        if virtual_display:
+            # Keep the installed package intact; this session has a DRM panel rather
+            # than an IVRVirtualDisplay compositor plugin.
+            panel = SESSION / 'panel-driver'
+            panel.mkdir(exist_ok=True)
+            for name in ('bin', 'resources'):
+                link = panel / name
+                if not link.exists():
+                    link.symlink_to(driver / name, target_is_directory=True)
+            manifest = json.loads((driver / 'driver.vrdrivermanifest').read_text())
+            manifest['redirectsDisplay'] = False
+            atomic_write(panel / 'driver.vrdrivermanifest', (json.dumps(manifest, indent=2) + '\n').encode())
+            driver = panel
         paths['external_drivers'] = [str(driver)]
         atomic_write(SETTINGS, (json.dumps(settings, indent=2) + '\n').encode())
         atomic_write(PATHS, (json.dumps(paths, indent=2) + '\n').encode())
@@ -250,13 +275,24 @@ def main():
     parser.add_argument('--renderdoc-layer', type=Path, help='Private RenderDoc implicit-layer directory for the X11 retry only')
     parser.add_argument('--capture-layer', action='store_true', help='Enable the optional pure Zig producer-side readback layer for this compositor only')
     parser.add_argument('--present-audit', action='store_true', help='Enable the capture layer in read-only presentation-path audit mode (no readback); allowed with --real-hmd')
+    parser.add_argument('--virtual-display', metavar='VID:PID', help='Claim to be a real direct-mode panel with these decimal EDID identifiers instead of forcing debug mode (requires a matching DRM connector)')
+    parser.add_argument('--headless-display', action='store_true', help='Experimental userspace 1920x1080@75 Vulkan display backed by Mesa headless WSI; implies present audit and virtual1080 profile, no DRM changes')
     parser.add_argument('--present-proof', type=int, default=0, metavar='N', help='With --present-audit, copy N presented frames while waiting on the compositor\'s own render semaphores (max 16)')
+    parser.add_argument('--present-proof-start', type=int, default=0, help='Skip presents before this count when taking proof frames')
+    parser.add_argument('--present-proof-interval', type=int, default=1, help='Present-count spacing between proof frames')
     parser.add_argument('--touch-controllers', action='store_true', help='Present the synthetic controllers as Oculus Touch so applications use their own Touch bindings')
-    parser.add_argument('--display-profile', choices=['lab', 'beyond75'], default='lab',
+    parser.add_argument('--display-profile', choices=['lab', 'beyond75', 'virtual1080'], default='lab',
                         help='Synthetic display workload; beyond75 matches saved BSB render size/rate without a physical headset')
     parser.add_argument('--refresh-hz', type=int, help='Override synthetic display clock (30..240 Hz)')
     parser.add_argument('--seconds', type=float, default=30)
     args = parser.parse_args()
+    if args.headless_display:
+        if args.real_hmd or args.driver_direct or args.virtual_display or args.capture_layer:
+            parser.error('--headless-display is a separate synthetic display backend')
+        if args.display_profile not in ('lab', 'virtual1080') or args.refresh_hz not in (None, 75):
+            parser.error('--headless-display currently supports only the virtual1080 75 Hz profile')
+        args.display_profile = 'virtual1080'
+        args.present_audit = True
     if args.real_hmd and (args.display_profile != 'lab' or args.refresh_hz is not None):
         parser.error('Synthetic display profiles/refresh overrides cannot be used with --real-hmd')
     if args.refresh_hz is not None and not 30 <= args.refresh_hz <= 240:
@@ -270,10 +306,25 @@ def main():
     # A present audit needs its layer in vrserver's own environment, so it is the one
     # real-HMD mode allowed to start the runtime directly instead of through Steam.
     real_hmd_excluded = (args.driver_direct or args.disable_async or args.disable_fixes or args.capture_layer or args.renderdoc_layer)
+    virtual_display = None
+    if args.headless_display:
+        virtual_display = {'vid': 16908, 'pid': 20560}
+    if args.virtual_display:
+        if args.real_hmd or args.driver_direct:
+            parser.error('--virtual-display replaces the physical headset and the driver-direct backend')
+        try:
+            vid_text, pid_text = args.virtual_display.split(':')
+            virtual_display = {'vid': int(vid_text, 0), 'pid': int(pid_text, 0)}
+        except ValueError:
+            parser.error('--virtual-display takes VID:PID, for example 16908:20560')
+        if not (0 < virtual_display['vid'] <= 0x7fff and 0 < virtual_display['pid'] <= 0xffff):
+            parser.error('--virtual-display requires a 15-bit EDID manufacturer and 16-bit product identifier')
     if args.present_proof and not args.present_audit:
         parser.error('--present-proof requires --present-audit')
     if not 0 <= args.present_proof <= 16:
         parser.error('--present-proof must be 0..16')
+    if not 0 <= args.present_proof_start <= 1000000 or not 1 <= args.present_proof_interval <= 1000000:
+        parser.error('Proof start must be 0..1000000 and interval 1..1000000')
     if args.present_audit:
         if not args.direct_server:
             parser.error('--present-audit must use --direct-server --x11-compositor: steam.sh does not carry the layer environment into vrserver')
@@ -329,6 +380,8 @@ def main():
         print(f'Native diagnostic capture directory: {capture_dir / "images"}', flush=True)
     env = desktop_env()
     if audit_dir:
+        if args.headless_display:
+            env['PP_HEADLESS_DISPLAY'] = '1'
         # No PP_CAPTURE_DIRECTORY: the layer's readback path stays unarmed and it only
         # records swapchain/present structure to the compositor log.
         env['PP_CAPTURE_ENABLE'] = '1'
@@ -337,6 +390,8 @@ def main():
             # path still needs its own 'request' file, which nothing writes here.
             env['PP_CAPTURE_DIRECTORY'] = str(audit_dir / 'frames')
             env['PP_PRESENT_PROOF_FRAMES'] = str(args.present_proof)
+            env['PP_PRESENT_PROOF_START'] = str(args.present_proof_start)
+            env['PP_PRESENT_PROOF_INTERVAL'] = str(args.present_proof_interval)
         existing = env.get('VK_ADD_IMPLICIT_LAYER_PATH', '')
         env['VK_ADD_IMPLICIT_LAYER_PATH'] = str(audit_dir) + (':' + existing if existing else '')
         existing = env.get('VK_LOADER_LAYERS_ENABLE', '')
@@ -346,7 +401,7 @@ def main():
         raise RuntimeError("SteamVR must be off and pending recovery resolved before run")
     watcher = RuntimeLogWatch([STEAM / 'logs' / name for name in
                                ('vrcompositor.txt', 'vrcompositor-linux.txt')])
-    prepare(args.direct_server, args.disable_async, args.driver_direct, args.real_hmd, args.touch_controllers, display_profile)
+    prepare(args.direct_server, args.disable_async, args.driver_direct, args.real_hmd, args.touch_controllers, display_profile, virtual_display)
     try:
         print(f'{"Real-HMD / synthetic-controller" if args.real_hmd else "Synthetic-only"} session prepared; recovery: {BACKUP}', flush=True)
         with (SESSION / 'launch.log').open('wb') as log:
