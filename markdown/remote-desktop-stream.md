@@ -26,7 +26,7 @@ MoQ over iroh, and a receiver.
 
 ## Milestones
 
-- **M1 — a desktop feed reaches the encoder.** Done; see below.
+- **M1 — a desktop feed reaches the encoder.** Done, including real capture; see below.
 - **M2 — remote iroh.** A real endpoint with relay and discovery, plus a share code. Ends with
   the other person watching in a browser over the internet, which validates transport before
   any receiver code exists.
@@ -93,8 +93,19 @@ are all exercised without a capture portal and without encoding real screen cont
 `ffprobe` reads the output back as H.264 Main 2560×1440. From the worker's frame journal,
 `encode_ms` averaged 9.46 with a p95 of 11.55.
 
-**Capture itself is not yet validated end to end.** The ScreenCast portal path has not been run
-against the media socket, and no measurement here involves PipeWire.
+Real capture then ran against the same worker. The KDE ScreenCast portal restored from
+PetPlay's existing token with no picker dialog and handed over a single 3840×1080 node covering
+both monitors. The session sustained **60.0 fps at 3840×1080 with 540 frames published and 1
+dropped**, so the GPU encoder keeps up with the whole desktop at full capture rate. Four
+capture sessions in total reached 360–540 frames each.
+
+Nothing was recorded: the worker ran with recording disabled, so no desktop content was written
+to disk.
+
+**Open item.** The first capture session failed immediately with a bare `EINVAL` and has not
+recurred in four sessions since. It predates the error context now carried by the producer's
+map, send and acknowledgement paths, so it cannot be attributed retroactively — it was one of
+those three. A recurrence will name its call site.
 
 ### Next optimization, not a blocker
 
