@@ -38,3 +38,7 @@
 	path = submodules/screen-streamer
 	url = https://github.com/goodpuppies/screen-streamer.git
 	branch = master
+[submodule "submodules/petplay_mediatransport"]
+	path = submodules/petplay_mediatransport
+	url = https://github.com/goodpuppies/petplay_mediatransport.git
+	branch = main

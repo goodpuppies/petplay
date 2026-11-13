@@ -1,3 +1,5 @@
+import { updateCompositorInputCamera } from "./compositorInputCamera.ts";
+import { SteamVrRemoteControls } from "./environment/steamVrRemoteControls.tsx";
 import React from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
@@ -1198,6 +1200,7 @@ export class WebXRHost {
       }
     }
     this.vrSystemPointer = options.vrSystemPointer ?? null;
+    this.remoteInputCameras = null;
     this.vrCompositorPointer = options.vrCompositorPointer ?? null;
     this.vrInputPointer = options.vrInputPointer ?? null;
     if (this.vrInputPointer != null) {
@@ -1544,6 +1547,14 @@ export class WebXRHost {
           { store },
           React.createElement(SceneMountedMarker),
           React.createElement(NoR3FDefaultRender), // for the test
+          ...(Deno.env.get("PETPLAY_REMOTE_INPUT_PORT")
+            ? [React.createElement(SteamVrRemoteControls, {
+              getContext: () => this.getSteamVrInputContext(),
+              driverSocket: Deno.env.get("PETPLAY_REMOTE_DRIVER_SOCKET"),
+              port: Number(Deno.env.get("PETPLAY_REMOTE_INPUT_PORT")),
+              origin: Deno.env.get("PETPLAY_REMOTE_INPUT_ORIGIN"),
+            })]
+            : []),
           React.createElement(WebXRScene, {
             XROrigin,
             displayOverlayHostActor: options.displayOverlayHostActor ?? null,
@@ -1909,6 +1920,51 @@ export class WebXRHost {
   /** Direct access to the shared source instance for consumers that need its helpers. */
   getDirectOpenVrInputSource(): DirectOpenVrInputSource {
     return this.directOpenVrInputSource;
+  }
+
+  private remoteInputCameras:
+    | { camera: THREE.PerspectiveCamera; projection: THREE.Matrix4 }[]
+    | null = null;
+
+  /** The streamed compositor output uses the headset lens, not the overlay render lens. */
+  getSteamVrInputContext() {
+    const context = this.getRaythreeSceneContext();
+    if (!context || !this.vrSystemPointer) return null;
+    if (!this.remoteInputCameras) {
+      const pointer = Deno.UnsafePointer.create(BigInt(this.vrSystemPointer));
+      if (!pointer) return null;
+      const system = new OpenVR.IVRSystem(pointer);
+      this.remoteInputCameras = [OpenVR.Eye.Eye_Left, OpenVR.Eye.Eye_Right].map((eye) => {
+        const rows = system.GetProjectionMatrix(eye, .1, 1000).m;
+        const projection = new THREE.Matrix4().set(
+          ...rows.flat() as [
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+          ],
+        );
+        return { camera: new THREE.PerspectiveCamera(), projection };
+      });
+    }
+    const [left, right] = this.remoteInputCameras;
+    return {
+      scene: context.scene,
+      leftCamera: updateCompositorInputCamera(left.camera, context.leftCamera, left.projection),
+      rightCamera: updateCompositorInputCamera(right.camera, context.rightCamera, right.projection),
+    };
   }
 
   getRaythreeSceneContext(): {

@@ -1,12 +1,17 @@
 # AGENTS.md
 
 - `docs/`: settled docs, starting with `docs/ARCHITECTURE.md`.
+- Submodules follow this root `AGENTS.md` and do not require a separate copy.
+- `submodules/petplay_mediatransport/`: native media ingestion, encoding, MoQ/Iroh transport,
+  and the browser receiver; start with its `README.md`.
 - `markdown/`: plans and work in progress. Start with `markdown/what-petplay-is.md` and
   `markdown/petplay-2.0/README.md`.
 - `markdown/issues/`: the bug tracker, one folder per issue (see its README).
 - Use `_scratch/` for agent scratch files, experiments and local test artifacts. Do not use the
   repo-local `tmp/` for agent work: PetPlay manages it programmatically and may clobber its contents.
   Leave PetPlay's runtime files there.
+- Do not put time limits or automatic expiry on experiments unless the user explicitly asks.
+  Leave experimental sessions running until asked to stop; retain explicit stop and cleanup paths.
 - Assume the developer is in VR using a live PetPlay while you work, usually launched by SteamVR
   with `--watch-webxr` so every save hot-reloads the `webxr` actor. Keep it running: crashes
   happen during development, but avoid causing them. Apply each change in one step (all files of

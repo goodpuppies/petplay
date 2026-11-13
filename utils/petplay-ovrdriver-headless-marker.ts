@@ -2,6 +2,10 @@
 import * as VR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { getOpenVrLibraryPath } from "../classes/nativeLibraryPaths.ts";
+const seconds = Number(Deno.args.find((arg) => arg.startsWith("--seconds="))?.slice(10) ?? 8);
+if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 600) {
+  throw Error("Marker duration must be 0..600 seconds");
+}
 const settings = JSON.parse(
   await Deno.readTextFile(`${Deno.env.get("HOME")}/.local/share/Steam/config/steamvr.vrsettings`),
 );
@@ -51,7 +55,7 @@ try {
   console.log("MARKER_SHOWN");
   const start = performance.now();
   let n = 0;
-  while (performance.now() - start < 8000) {
+  while (performance.now() - start < seconds * 1000) {
     const t = (performance.now() - start) / 1000;
     matrix[3] = .45 * Math.sin(t * 2 * Math.PI / 2.4);
     ok(

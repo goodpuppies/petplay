@@ -1,5 +1,53 @@
 # Networked video: headset-free display experiment
 
+## Next milestone: native video to a browser
+
+The headless proof is committed as driver `0b7bf97` and parent `6913330`. The next target is
+OpenVR stereo → native GPU encoder → MoQ → browser WebCodecs, with native iroh connections
+available for peer-to-peer legs. The final browser connection uses WebTransport. Deno 2.9.8 on
+this machine **does** expose `WebTransport`; keeping encoded frames and transport native is an
+ownership/latency choice, not a missing-Deno-API workaround. Deno remains the actor/control plane.
+
+### GPU encoder gate passed
+
+An independent Vulkan producer on the RX 7900 XTX cleared a 1920×1080 BGRA image on the GPU,
+released queue ownership, exported a DMA-BUF, and handed its FD to a separate Rust process.
+The consumer used published `moq-vaapi = 0.2.1`'s strict `encode_dmabuf` API. The VAAPI video
+processor converted the packed RGB image into the encoder surface on the GPU, producing H.264
+Main, 4:2:0, BT.709 limited range. Neither producer nor consumer maps raw pixel memory.
+
+The first attempt using Vulkan `LINEAR` tiling with DMA-BUF export was unsupported. Explicit
+`VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` with linear modifier zero succeeded; pitch 7680,
+offset zero, allocation size 8,294,400 bytes. The copy/export path must use queried support and
+the actual layout, not assume that Vulkan linear tiling is the same negotiation.
+
+Twelve repeated encodes of the same GPU image succeeded. FFmpeg decoded the stream to RGB:
+the mean was `[24, 202, 50]` versus Vulkan's approximately `[26, 204, 51]`, within the expected
+lossy/color-conversion tolerance. This is a color/layout/interop gate, not an end-to-end stream
+or moving-frame performance result. The probe synchronously waits the producer's GPU fence
+before starting the consumer; the real source needs a reusable bounded slot pool and release
+acknowledgments instead. Only compressed output is read back by the encoder.
+
+Scratch sources/results: `_scratch/gpu-encode-producer.cpp`, `_scratch/gpu-encode-probe/`,
+`_scratch/gpu-encode-result.log`, `_scratch/gpu-encode-probe.h264`. The raw Annex-B stream's
+`ffprobe` rate guess was 150 fps despite a 75 fps encoder setting (`num_units_in_tick=1`,
+`time_scale=150`, `fixed_frame_rate_flag=0`). Timestamp each live frame explicitly; reconcile
+catalog/SPS timing before claiming correct browser playback cadence.
+
+### Transport dependency needs an explicit pin
+
+The MoQ reference checkout at `6aa4f9c1cad482aa86adcf3cf26bd7779697a01a` (2026-11-13) removes
+iroh in `rs/moq-tokio/MIGRATE.md` / PR 7345, although the public transport docs still describe it.
+The downloaded **published** `moq-tokio 0.19.23` retains the `iroh` feature and backend (alongside
+native QUIC/WebTransport). It is a verified candidate for retaining the requested iroh path;
+do not build against unpinned main and silently lose it. A publisher/player integration against
+one compatible Rust/TypeScript version set remains to be tested.
+
+Next implementation boundary: semaphore-ordered GPU copy from the presented image into reusable
+exportable slots; native worker imports those DMA-BUFs, encodes without a CPU fallback, and
+returns each slot only after encoding finishes. Then publish timestamped H.264 groups and codec
+configuration to a local browser before adding remote connectivity and WebXR tracking feedback.
+
 ## Update: userspace headless output works
 
 The subsequent userspace Vulkan display experiment succeeded without another privileged change.
@@ -135,3 +183,88 @@ driver's cached sink; that has not been tested.
 
 The virtual-panel and headless-display work is committed in driver revision `0b7bf97`.
 The pre-existing `raythree` change is unrelated and was left outside these commits.
+
+### Native media path and initial browser pacing (2026-11-13)
+
+The current uncommitted prototype copies the headless swapchain into a three-slot Vulkan
+DMA-BUF pool and hands the DMA-BUF plus SYNC_FD to `submodules/petplay_mediatransport` over a Unix seqpacket
+socket. Exact sequence ACK plus GPU completion gate reuse. Saturation drops captures rather
+than blocking presentation. Rust imports directly into VAAPI, does GPU RGB-to-NV12 conversion,
+and encodes H.264. No CPU raw-frame fallback is enabled. The source publishes custom `config`
+and timestamped Annex-B `video` MoQ tracks over loopback-only Iroh; a native gateway relays
+these tracks over WebTransport to the browser. This is not yet a generic Hang catalog or a
+remote-Iroh connectivity test. Source is fixed at 1920×1080, side-by-side, 75 fps, 12 Mbps.
+
+A tailnet-only HTTPS Serve route on port 8449 exposes the viewer; WebTransport uses UDP4470
+on the Tailscale interface with a pinned ephemeral certificate. The temporary supervisor in
+`_scratch/serve-tailnet-media.py` runs a bounded ten-minute lab, restores SteamVR configuration,
+and removes only its own Serve route on exit. It writes no encoded recording. SteamVR lab
+shutdown still aborts the compositor and can reset the worker socket; clean teardown remains
+unfinished.
+
+User feedback identified uneven pacing. The original viewer drew immediately on decoder
+output and reset the decoder whenever its input queue exceeded six chunks. It now maps capture
+timestamps onto the browser clock, queues decoded VideoFrames for requestAnimationFrame,
+selects the latest due frame each display tick, and starts with a 20 ms jitter cushion. Query
+`?buffer=0` through `?buffer=100` adjusts that cushion. Presentation queue is bounded to twelve
+frames. Decode submission yields above six queued chunks and resets only if the queue remains
+blocked for a second, rather than discarding a GOP immediately on a delivery burst. Stalls over 150 ms re-anchor
+instead of replaying old frames. `window.petplayStream` retains bounded timing samples for
+source intervals, delivery intervals, presentation intervals, and scheduled lateness. These
+are browser submission timings, not physical scanout or end-to-end latency measurements.
+
+Headless Chromium on the tailnet URL: 507 received/decoded, 401 presented, zero decode skips
+or errors. Source interval p50/p95 13.344/13.740 ms; arrival p50/p95 13.4/17.1 ms;
+presentation p50/p95 16.7/16.7 ms, maximum 33.3 ms. 101 decoded frames were superseded at
+presentation, expected when displaying a 75 fps source on a 60 Hz browser clock. This verifies
+the local pipeline and timestamp scheduling; subjective remote smoothness still needs feedback.
+The headless decoder selected `no-preference`; browser hardware decode was not established.
+
+Viewer checks: `bun run --cwd submodules/petplay_mediatransport/web check` and `bun run --cwd submodules/petplay_mediatransport/web build`.
+Native build/test: `cargo test --manifest-path submodules/petplay_mediatransport/Cargo.toml --release --features iroh`.
+
+Follow-up: user reported a freeze after roughly one second in the paced viewer. This has not
+been reproduced locally: a late-join 30-second headless run received 2296 / decoded 2221 /
+presented 1774 frames, with no errors; initial backlog triggered one decode reset. Do not treat
+this local result as resolving the remote freeze. The viewer now displays live receive/decode/
+presentation counters once per second, catches presentation exceptions, and resets a configured
+decoder that has produced no output for two seconds while data continues arriving (then waits
+for a keyframe). `?immediate=1` bypasses presentation buffering for comparison; `?software=1`
+requests software decoding. Both flags can be combined. Remote browser/device and counters
+at the freeze are needed to distinguish transport, decode, and presentation failures.
+
+The earlier immediate-reset policy also affected late join: cached groups could enqueue faster
+than decoder tasks run and cause avoidable GOP loss. The receive loop now awaits dequeue
+events (with a bounded timeout) before submitting more chunks. This fix addresses that local
+mechanism; the remote one-second freeze still requires confirmation after refresh.
+
+A subsequent late-join run did reproduce a presentation freeze: receive/decode continued,
+while shown stayed at one and the bounded presentation queue continually evicted frames.
+An old cached GOP anchored the clock behind the live edge, leaving queued frames perpetually
+scheduled in the future. The presentation clock now takes the minimum offset observed from
+decoded arrivals, bringing cached-GOP deadlines forward while preserving source intervals and
+the requested cushion. This is separate from decode backpressure. User reported playback
+recovered during investigation; the additional late-join correction still merits verification.
+
+Final served-build check after the clock correction: 30 seconds, 2281 received and decoded,
+1802 presented, zero decode skips and no errors. Presentation counters advanced throughout.
+User also confirmed playback recovered. Current bounded tailnet session expires at 14:29:58
+Helsinki time; the route is temporary.
+
+### Media repository extraction
+
+The media worker, transport gateway, and browser receiver now live in the public repository
+https://github.com/goodpuppies/petplay_mediatransport, registered as the PetPlay submodule
+`submodules/petplay_mediatransport` on `main`. Initial revision is
+`11868b1d827f42faba1b9566c3b975ab00e557da`. Cargo package name is
+`petplay-mediatransport`; the executable remains `petplay-media`.
+
+The user specified that PetPlay submodules inherit the root `AGENTS.md` and need no separate
+copy. The new repository has build/run instructions and prototype protocol documentation;
+OpenVR capture stays in the driver. The intended scope is broader media source, destination,
+and forwarding adapters, while current implementation remains a Linux VAAPI video prototype.
+
+Validation after relocation: native release build and two tests passed, browser type-check and
+bundle passed, parent `deno task check` passed. A gateway built from the extracted checkout
+relayed the existing Iroh feed to a headless browser: 529 received, 528 decoded, 401 presented,
+zero decode skips or errors. Parent integration changes remain uncommitted.

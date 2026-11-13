@@ -277,6 +277,7 @@ def main():
     parser.add_argument('--present-audit', action='store_true', help='Enable the capture layer in read-only presentation-path audit mode (no readback); allowed with --real-hmd')
     parser.add_argument('--virtual-display', metavar='VID:PID', help='Claim to be a real direct-mode panel with these decimal EDID identifiers instead of forcing debug mode (requires a matching DRM connector)')
     parser.add_argument('--headless-display', action='store_true', help='Experimental userspace 1920x1080@75 Vulkan display backed by Mesa headless WSI; implies present audit and virtual1080 profile, no DRM changes')
+    parser.add_argument('--media-socket', type=Path, help='With --headless-display, export a three-slot GPU DMA-BUF pool to the native media worker on this Unix socket')
     parser.add_argument('--present-proof', type=int, default=0, metavar='N', help='With --present-audit, copy N presented frames while waiting on the compositor\'s own render semaphores (max 16)')
     parser.add_argument('--present-proof-start', type=int, default=0, help='Skip presents before this count when taking proof frames')
     parser.add_argument('--present-proof-interval', type=int, default=1, help='Present-count spacing between proof frames')
@@ -284,8 +285,14 @@ def main():
     parser.add_argument('--display-profile', choices=['lab', 'beyond75', 'virtual1080'], default='lab',
                         help='Synthetic display workload; beyond75 matches saved BSB render size/rate without a physical headset')
     parser.add_argument('--refresh-hz', type=int, help='Override synthetic display clock (30..240 Hz)')
-    parser.add_argument('--seconds', type=float, default=30)
+    parser.add_argument('--seconds', type=float, default=0, help='Run until stopped by default; an explicit positive value limits the session duration')
     args = parser.parse_args()
+    if args.media_socket:
+        if not args.headless_display or args.present_proof:
+            parser.error('--media-socket requires --headless-display and excludes raw proof capture')
+        args.media_socket = args.media_socket.resolve()
+        if len(os.fsencode(args.media_socket)) >= 108 or not args.media_socket.is_socket():
+            parser.error('--media-socket must name an existing Unix socket with a path shorter than 108 bytes')
     if args.headless_display:
         if args.real_hmd or args.driver_direct or args.virtual_display or args.capture_layer:
             parser.error('--headless-display is a separate synthetic display backend')
@@ -337,8 +344,8 @@ def main():
         return
     if args.guard_monitor and (not args.direct_server or args.real_hmd):
         parser.error('--guard-monitor requires a synthetic --direct-server session')
-    if not 1 <= args.seconds <= 3600:
-        parser.error('--seconds must be 1..3600')
+    if not 0 <= args.seconds <= 3600:
+        parser.error('--seconds must be 0 (until stopped) or a positive value up to 3600')
     if args.direct_server and not args.x11_compositor:
         parser.error("--direct-server requires --x11-compositor")
     if args.renderdoc_layer and not args.x11_compositor:
@@ -379,6 +386,10 @@ def main():
         atomic_write(SESSION / 'latest-native-capture.json', json.dumps({'directory': str(capture_dir / 'images')}).encode())
         print(f'Native diagnostic capture directory: {capture_dir / "images"}', flush=True)
     env = desktop_env()
+    if args.media_socket:
+        env['PP_MEDIA_SOCKET'] = str(args.media_socket)
+    else:
+        env.pop('PP_MEDIA_SOCKET', None)
     if audit_dir:
         if args.headless_display:
             env['PP_HEADLESS_DISPLAY'] = '1'
@@ -414,13 +425,13 @@ def main():
             else:
                 subprocess.run([str(STEAM / 'steam.sh'), '-applaunch', '250820'],
                                env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=20)
-        print(f'SteamVR launch requested; test window {args.seconds:g}s', flush=True)
-        deadline = time.monotonic() + args.seconds
+        print('SteamVR launch requested; ' + (f'test window {args.seconds:g}s' if args.seconds else 'running until stopped'), flush=True)
+        deadline = time.monotonic() + args.seconds if args.seconds else None
         startup_deadline = time.monotonic() + 15
         observed = False
         compositor_attempted = False
         retry_at = time.monotonic() + 3
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             watcher.check()
             observed = observed or bool(pids('vrserver'))
             if not observed and time.monotonic() > startup_deadline:

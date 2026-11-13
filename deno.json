@@ -139,6 +139,7 @@
     }
   },
   "exclude": [
+    "research/",
     "_scratch/",
     "tmp/",
     "submodules/",
