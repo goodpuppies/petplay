@@ -151,6 +151,28 @@ try {
     console.error(`Holding guarded synthetic overlay client open for ${holdSeconds}s`);
     await new Promise((resolve) => setTimeout(resolve, holdSeconds * 1000));
   }
+  if (Deno.args.includes("--direct-semaphore")) {
+    const { PostalService } = await import("../submodules/stageforge/mod.ts");
+    const { attachOpenVrDriverProxy } = await import("../classes/petplayOpenVrDriverProxy.ts");
+    const postal = new PostalService();
+    const id = await attachOpenVrDriverProxy(
+      postal,
+      `${settings.driver_petplay.socketDirectory}/control.sock`,
+    );
+    try {
+      const accepted = await postal.PostMessage(
+        { target: id, type: "PROBEDIRECTSEMAPHORE", payload: null },
+        true,
+      );
+      const state = await postal.PostMessage(
+        { target: id, type: "GETDIRECTSTATE", payload: null },
+        true,
+      );
+      console.log(JSON.stringify({ semaphoreProbe: accepted, direct: state }, null, 2));
+    } finally {
+      postal.detachProxy(id);
+    }
+  }
   if (Deno.args.includes("--direct-state")) {
     const { PostalService } = await import("../submodules/stageforge/mod.ts");
     const { attachOpenVrDriverProxy } = await import("../classes/petplayOpenVrDriverProxy.ts");

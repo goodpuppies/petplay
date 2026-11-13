@@ -249,6 +249,8 @@ def main():
     parser.add_argument('--disable-async', action='store_true', help='Disable Linux Vulkan async for this session only (capture diagnostic)')
     parser.add_argument('--renderdoc-layer', type=Path, help='Private RenderDoc implicit-layer directory for the X11 retry only')
     parser.add_argument('--capture-layer', action='store_true', help='Enable the optional pure Zig producer-side readback layer for this compositor only')
+    parser.add_argument('--present-audit', action='store_true', help='Enable the capture layer in read-only presentation-path audit mode (no readback); allowed with --real-hmd')
+    parser.add_argument('--present-proof', type=int, default=0, metavar='N', help='With --present-audit, copy N presented frames while waiting on the compositor\'s own render semaphores (max 16)')
     parser.add_argument('--touch-controllers', action='store_true', help='Present the synthetic controllers as Oculus Touch so applications use their own Touch bindings')
     parser.add_argument('--display-profile', choices=['lab', 'beyond75'], default='lab',
                         help='Synthetic display workload; beyond75 matches saved BSB render size/rate without a physical headset')
@@ -265,7 +267,19 @@ def main():
     if args.refresh_hz is not None:
         display_profile = display_profile or {'name': 'lab', 'driver_petplay': {}}
         display_profile['driver_petplay']['refreshHz'] = args.refresh_hz
-    if args.real_hmd and (args.direct_server or args.driver_direct or args.disable_async or args.disable_fixes or args.capture_layer or args.renderdoc_layer or args.x11_compositor):
+    # A present audit needs its layer in vrserver's own environment, so it is the one
+    # real-HMD mode allowed to start the runtime directly instead of through Steam.
+    real_hmd_excluded = (args.driver_direct or args.disable_async or args.disable_fixes or args.capture_layer or args.renderdoc_layer)
+    if args.present_proof and not args.present_audit:
+        parser.error('--present-proof requires --present-audit')
+    if not 0 <= args.present_proof <= 16:
+        parser.error('--present-proof must be 0..16')
+    if args.present_audit:
+        if not args.direct_server:
+            parser.error('--present-audit must use --direct-server --x11-compositor: steam.sh does not carry the layer environment into vrserver')
+    elif args.real_hmd and (args.direct_server or args.x11_compositor):
+        real_hmd_excluded = True
+    if args.real_hmd and real_hmd_excluded:
         parser.error('--real-hmd uses the normal headset/compositor configuration and excludes synthetic display/capture options')
     if args.action == 'recover':
         restore()
@@ -282,6 +296,23 @@ def main():
         parser.error('RenderDoc layer directory does not exist')
     if args.capture_layer and args.display_profile != 'lab':
         parser.error('--capture-layer currently requires the lab profile: its image detector assumes 960x960')
+    audit_dir = None
+    if args.present_audit:
+        if args.capture_layer:
+            parser.error('--present-audit and --capture-layer are separate modes of the same layer')
+        library = ROOT / 'submodules/petplay_ovrdriver/zig-out/lib/libpetplay_capture.so'
+        if not library.is_file():
+            parser.error('Build zig capture-layer first')
+        SESSION.mkdir(parents=True, exist_ok=True, mode=0o700)
+        audit_dir = Path(tempfile.mkdtemp(prefix='present-audit-', dir=SESSION))
+        manifest = {'file_format_version': '1.1.0', 'layer': {'name': 'VK_LAYER_PETPLAY_capture', 'type': 'GLOBAL', 'library_path': str(library), 'api_version': '1.2.198', 'implementation_version': '1', 'description': 'PetPlay presentation-path audit', 'enable_environment': {'PP_CAPTURE_ENABLE': '1'}, 'disable_environment': {'PP_CAPTURE_DISABLE': '1'}}}
+        (audit_dir / 'petplay_capture.json').write_text(json.dumps(manifest))
+        if args.present_proof:
+            (audit_dir / 'frames').mkdir(mode=0o700)
+            atomic_write(SESSION / 'latest-present-proof.json', json.dumps({'directory': str(audit_dir / 'frames')}).encode())
+            print(f'Present-boundary proof: {args.present_proof} frame(s) -> {audit_dir / "frames"}', flush=True)
+        else:
+            print(f'Presentation-path audit layer: {audit_dir} (no capture directory; readback stays disarmed)', flush=True)
     capture_dir = None
     if args.capture_layer:
         if not args.driver_direct or not args.x11_compositor or args.renderdoc_layer:
@@ -297,6 +328,19 @@ def main():
         atomic_write(SESSION / 'latest-native-capture.json', json.dumps({'directory': str(capture_dir / 'images')}).encode())
         print(f'Native diagnostic capture directory: {capture_dir / "images"}', flush=True)
     env = desktop_env()
+    if audit_dir:
+        # No PP_CAPTURE_DIRECTORY: the layer's readback path stays unarmed and it only
+        # records swapchain/present structure to the compositor log.
+        env['PP_CAPTURE_ENABLE'] = '1'
+        if args.present_proof:
+            # PP_CAPTURE_DIRECTORY only enables file output; the request-driven readback
+            # path still needs its own 'request' file, which nothing writes here.
+            env['PP_CAPTURE_DIRECTORY'] = str(audit_dir / 'frames')
+            env['PP_PRESENT_PROOF_FRAMES'] = str(args.present_proof)
+        existing = env.get('VK_ADD_IMPLICIT_LAYER_PATH', '')
+        env['VK_ADD_IMPLICIT_LAYER_PATH'] = str(audit_dir) + (':' + existing if existing else '')
+        existing = env.get('VK_LOADER_LAYERS_ENABLE', '')
+        env['VK_LOADER_LAYERS_ENABLE'] = existing + (',' if existing else '') + 'VK_LAYER_PETPLAY_capture'
     signal.signal(signal.SIGTERM, interrupted)
     if running() or BACKUP.exists():
         raise RuntimeError("SteamVR must be off and pending recovery resolved before run")
