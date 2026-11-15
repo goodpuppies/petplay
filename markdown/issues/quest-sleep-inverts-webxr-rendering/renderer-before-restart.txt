@@ -1,0 +1,40 @@
+{
+  renderer: {
+    requestedEyeSize: undefined,
+    windowInitialized: true,
+    renderWidth: 4056,
+    renderHeight: 4056,
+    outputEyeWidth: 4056,
+    outputEyeHeight: 4056,
+    leftEyeTarget: {
+      id: 1,
+      texture: { id: 5, width: 4056, height: 4056, mipmaps: 1, format: 7 },
+      depth: { id: 1, width: 4056, height: 4056, mipmaps: 1, format: 19 }
+    },
+    rightEyeTarget: {
+      id: 2,
+      texture: { id: 6, width: 4056, height: 4056, mipmaps: 1, format: 7 },
+      depth: { id: 2, width: 4056, height: 4056, mipmaps: 1, format: 19 }
+    },
+    outputTarget: {
+      id: 3,
+      texture: { id: 7, width: 8112, height: 8112, mipmaps: 1, format: 7 },
+      depth: { id: 3, width: 8112, height: 8112, mipmaps: 1, format: 19 }
+    },
+    combineShader: { id: 5, locs: 140040871464624n },
+    lookRotationLocation: 4,
+    halfFovLocation: 5,
+    outputUvScaleLocation: 1,
+    outputUvOffsetLocation: 2,
+    panoramaFilterLocation: 6,
+    panoramaFilter: "catmull-rom",
+    uniqueId: "e79a787e",
+    resolvedEyeSize: 4056,
+    eyeDiagnosticsRequested: false,
+    renderTargetRebuildRequested: false,
+    glHealthFrameCounter: 196707,
+    expectedContextId: "0x7f5dcd12c200",
+    selfHealCount: 0,
+    selfHealEnabled: true
+  },
+}

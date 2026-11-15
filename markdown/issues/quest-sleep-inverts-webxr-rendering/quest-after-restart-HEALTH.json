@@ -1,0 +1,86 @@
+{
+  "ok": true,
+  "target": "webxr@bb0b1276-9e48-4093-a018-5b88f02a27be",
+  "type": "HEALTH",
+  "result": {
+    "ok": true,
+    "actorId": "webxr@bb0b1276-9e48-4093-a018-5b88f02a27be",
+    "name": "webxr",
+    "addressBookSize": 3,
+    "details": {
+      "running": true,
+      "frameCount": 3415,
+      "xrFps": 31.462685665781898,
+      "inspected": true,
+      "lastInspection": null,
+      "error": null,
+      "lastLayerInfo": "shadow frame=3415 eyeWidth=40 eyeHeight=40 output=80x80",
+      "xrRafMaxIntervalMs": 104.78554700000677,
+      "xrRafSlowFrameCount": 3148,
+      "vsyncDisplayFramesSkipped": 0,
+      "desktopViewControlEnabled": false,
+      "desktopViewOffset": [
+        0,
+        0,
+        0
+      ],
+      "desktopViewControlAllowed": false,
+      "displayMouse": {
+        "events": 0,
+        "moves": 0,
+        "buttonDowns": 0,
+        "buttonUps": 0,
+        "sendInputCalls": 0,
+        "sendInputFailures": 0,
+        "lastCursorPosition": null,
+        "lastEvent": null
+      },
+      "overlayFps": 31.701592215044965,
+      "uploadedFrames": 3416,
+      "nominalHmdDisplayHz": 72.00460815429688,
+      "views": [],
+      "independentRenderer": {
+        "enabled": false,
+        "actor": null,
+        "status": null
+      },
+      "viewDelivery": {
+        "assetVersion": 354,
+        "bytes": 19908,
+        "error": null
+      },
+      "presentation": {
+        "watching": true,
+        "overlayVisible": true,
+        "uploadedFrames": 3416,
+        "stalledMs": 95,
+        "repairs": 0,
+        "reShows": 0,
+        "overlayRebuilds": 0,
+        "restarts": 0,
+        "lastRepairReason": null,
+        "lastRepairAt": 0
+      },
+      "keyboardLocale": {
+        "id": "fi",
+        "source": "host-layout"
+      },
+      "raylib": {
+        "expected": true,
+        "configured": true,
+        "overlayReady": true,
+        "rendererReady": true,
+        "pacerReady": true,
+        "running": true,
+        "stopping": false,
+        "lastStatusLogAt": 0
+      },
+      "webgpu": {
+        "expected": false,
+        "configured": false,
+        "overlayReady": false,
+        "rendererReady": false
+      }
+    }
+  }
+}

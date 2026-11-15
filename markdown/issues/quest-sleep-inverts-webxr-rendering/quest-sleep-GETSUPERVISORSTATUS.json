@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "target": "main@62925a8d-574c-40d3-86af-7b9ae4b1481f",
+  "type": "GETSUPERVISORSTATUS",
+  "result": {
+    "running": true,
+    "phase": "attached",
+    "attachCount": 1,
+    "detachCount": 0,
+    "lastReason": null,
+    "lastTransitionAt": 1794589826408,
+    "openvr": {
+      "ready": true,
+      "initialized": true,
+      "vrSystemReady": true,
+      "compositorReady": true,
+      "overlayReady": true,
+      "inputReady": true,
+      "renderModelsReady": true,
+      "runtimeQuit": false,
+      "initError": null,
+      "initAttempts": 1,
+      "presence": {
+        "libraryLoaded": true,
+        "runtimeInstalled": true,
+        "hmdPresent": true
+      }
+    },
+    "desktopViewActor": null,
+    "attachment": {
+      "hmd": "hmd_position_actor@15ee48fe-fcce-4b9b-a280-976b92dc3112",
+      "origin": "origin@ad36742f-2f36-48f5-a893-3ff20021ed29",
+      "displayOverlayHost": "display_overlay_host@7ae0fb32-3610-48ce-8e9f-8dad98b27b22",
+      "attachedAt": 1794589826406
+    }
+  }
+}
