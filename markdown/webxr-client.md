@@ -69,7 +69,16 @@ or PetPlay is running. `--with-petplay` also starts PetPlay on the synthetic hea
   head (0.1, 1.7, −0.2) with exactly the emulated 30° yaw, the right grip pose, and the trigger
   press (click and value 1.0). The presenter ran at the emulated 61 fps.
 
-**Not yet tested:** a real Quest, real SteamVR, VRChat bindings with streamed Touch input,
+**On a real Quest 3 (Quest Browser 156, 2026-11-15)** the stream decoded in hardware and the
+headset drove SteamVR. Its views gave `--fov-tangents 1.3764,0.8391,0.9657,1.4281 --ipd 0.0713`.
+Two bugs surfaced. `session.inputSources` is an array-like `XRInputSourceArray` without `.some()`,
+which IWER's plain array had hidden; every XR frame threw before drawing. And OpenVR's raw `top`
+is the image's *downward* edge: with Quest's uneven up/down FOV the picture was stretched
+vertically. A marker overlay held 1 m ahead of the synthetic head
+(`_scratch/quest-cdp/center-marker.ts`) moved from 59.5% to the expected 40.3% down each eye
+after the driver swapped them; across, it sat exactly at the predicted 63.7% / 36.2%.
+
+**Not yet tested:** VRChat bindings with streamed Touch input,
 and the grip-to-`/pose/raw` offset (the Touch profile's raw pose may not equal WebXR's grip).
 
 ## Known limits and next steps
@@ -81,7 +90,7 @@ and the grip-to-`/pose/raw` offset (the Touch profile's raw pose may not equal W
   rotation since. The vertex shader already takes a full `clipFromEye` matrix for this.
 - **Uplink is a separate WebSocket.** Moving poses onto the media path (gateway → iroh → source)
   would make a remote headset need only the viewer URL.
-- The Quest menu button is not exposed to web pages, so `system` is never pressed; VRChat's
-  left-hand menu needs another mapping.
+- The Quest menu button is not exposed to web pages. Pressing both sticks together is the left
+  menu button (`system`) instead, held as long as the chord is; neither stick clicks meanwhile.
 - The XR frame loop runs at the headset rate (72–120 Hz) against a 75 fps stream; frames are
   repeated or skipped according to timestamps, not interpolated.

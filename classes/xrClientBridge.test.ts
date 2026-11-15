@@ -26,6 +26,23 @@ Deno.test("frame messages validate poses, inputs and unknown fields", () => {
     },
   });
   assertEquals(ok.right!.pose!.rotation, [0, 0, 0, 1]);
+  const menu = parseXrMessage({
+    version: 1,
+    type: "xr-frame",
+    sequence: 2,
+    left: {
+      input: {
+        trigger: 0,
+        grip: 0,
+        joystick: [0, 0],
+        joystickClick: false,
+        a: false,
+        b: false,
+        system: true,
+      },
+    },
+  }) as XrFrameMessage;
+  assertEquals(menu.left!.input!.system, true);
   for (
     const bad of [
       { head: { position: [0, 1], rotation: identity } },

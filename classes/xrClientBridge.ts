@@ -15,6 +15,8 @@ export type XrHandInput = {
   grip: number;
   joystick: [number, number];
   joystickClick: boolean;
+  /** Menu button; Quest Browser never exposes it, so the viewer maps a chord onto it. */
+  system?: boolean;
   a: boolean;
   b: boolean;
 };
@@ -96,6 +98,7 @@ function hand(value: unknown): XrHandState | undefined {
       grip: unit(i.grip),
       joystick: vector(i.joystick, 2, 1) as [number, number],
       joystickClick: flag(i.joystickClick),
+      ...(i.system === undefined ? {} : { system: flag(i.system) }),
       a: flag(i.a),
       b: flag(i.b),
     };
