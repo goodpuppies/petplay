@@ -126,24 +126,36 @@ network both ways ~5.5. With `xrQueue=0` about 3% of frames are dropped: the PC 
 - **Keyframes** every `--keyframe-seconds` (default 1). Each keyframe starts a MoQ group and
   moq-net aborts a group past 32 MB ("group too large"), so the worker refuses intervals whose
   group would exceed 24 MB: at 80 Mbps that is at most 2 s.
-- **Controllers latch at a steady lag.** Head poses are tagged per frame and warped, so arrival
-  jitter never showed on the head; the hands simply took the newest pose, and 13% of display
-  frames got no new pose or two. Each uplink frame now carries the browser's XR frame time and
-  the hands' velocities. The driver learns the Quest→PC clock offset as a 2 s sliding minimum
-  of (arrival − client time) and, at every latch, carries the newest hand pose along its
-  velocity to the client time matching that latch (at most 50 ms). Measured on the latched
-  right hand while moving: frame-to-frame step change median 0.01 mm.
-- **Open: the sender delivers in a sawtooth.** About twice a second, pictures arrive
-  progressively later (≈83% of real time for ~0.4 s, up to ~37 ms behind), then catch up in a
-  burst; every moving thing in the picture stutters with it, and the head's translation swims.
-  It reproduces over loopback from the worker's own server, and Chromium's NetLog shows the
-  QUIC data itself arriving that way, while the worker hands frames to moq-net steadily
-  (`PETPLAY_FRAME_TRACE`). Not the cause: Wi-Fi, bitrate (50 and 80 Mbps), congestion control
-  (`MOQ_QUIC_CONGESTION_CONTROL=loss|delay`), noq pacing (patched off), flow control (≥3 MB
-  credit), the pose track, or the Quest's decoder/main thread.
-- Viewer pacing: `?xrPacing=steady` shows pictures strictly in order and catches up only after
-  being behind for `xrCatchUpFrames`; against the sawtooth it only adds latency, so `queue`
-  (with `xrQueue=0`) stays the default.
+- **Controllers latch between real samples.** Head poses are tagged per frame and warped, so
+  arrival jitter never showed on the head; hands simply took the newest pose, and 13% of
+  display frames got no new pose or two. Each uplink frame now carries the browser's XR frame
+  time and the hands' velocities. The driver maps the client clock onto its own (2 s sliding
+  minimum of arrival − client time) and keeps 16 samples per hand. Each latch interpolates
+  between the two real samples around a client time `margin` behind the mapping and carries
+  the result forward by that margin. The margin is one sample interval plus the 98th
+  percentile of lateness, slew-limited. A first version carried the newest sample by its age
+  instead; that horizon varied 0–30 ms, and the Quest's smoothed velocity turned it into
+  jitter (driver output 3–4× rougher than its input). Now the horizon is constant, so velocity
+  error is a small steady offset: on a capture at 0.8 m/s the latched hand's roughness (p95 of
+  the second difference) was 2.18 mm against 2.12 mm going in.
+- **Root cause of the "looping" stutter: the GPU's video clock.** About twice a second,
+  pictures left the worker progressively later, then caught up in a burst. The worker's
+  per-frame trace (`PETPLAY_FRAME_TRACE`) showed the VAAPI encode time itself cycling
+  5 → 16 ms on a ~0.6 s period while the 7900 XTX's VCLK swung 513 ↔ ~1430 MHz: with an
+  otherwise idle GPU (headless SteamVR renders almost nothing) power management downclocks
+  the video engine until encoding is continuously busy, then clocks back up.
+  `power_dpm_force_performance_level=high` does not hold VCLK on this card. Pinning it
+  (`manual`, `pp_dpm_vclk`/`pp_dpm_dclk` = top level) made encode 4.0–4.8 ms (was 4–19 ms, 30%
+  over the frame budget) and loopback arrival p95 1.1 ms above minimum (was ~35 ms). The
+  setting is not yet persistent. On the way there, the transport was ruled out: a server qlog
+  (`--features qlog`, `MOQ_QUIC_QLOG=DIR`) showed noq sending each picture the moment it was
+  handed over, and Wi-Fi, bitrate, congestion control, pacing and flow control made no
+  difference.
+- **Viewer pacing: `steady` (default).** With pictures arriving evenly, the next picture's
+  decode (~13 ms at 3360×1760 on Quest) often finished right at the display deadline, so
+  "show the newest" skipped and repeated in 42% of frames. Steady pacing shows the next
+  picture in order and catches up only after being behind for `xrCatchUpFrames` (36):
+  0.2% repeats/skips, 55 ms median pose-to-display. `?xrPacing=queue` restores the old policy.
 - Pacing tools: `petplayStream.xr.handTrace = []` records per-frame picture, arrival, decode
   and grip data on the Quest; the driver writes latched hands to `hand-poses` beside
   `hmd-poses`; `_scratch/pacing-analyze.py` and `_scratch/media-browser-test/transit.mjs`
