@@ -160,6 +160,7 @@ Deno.test("driver writer keeps only the latest pose per device and sends inputs 
   await first;
   assertEquals(sent.map(([type]) => type), ["SETHMDPOSE", "SETHMDPOSE", "SETCONTROLLERINPUT"]);
   assertEquals((sent[1][1] as { position: number[] }).position[1], 1.63);
+  assertEquals((sent[1][1] as { sequence: number }).sequence, 4);
   // Unchanged input is not resent.
   await writer.apply(frame(5, { left: { input } as never }));
   assertEquals(sent.filter(([type]) => type === "SETCONTROLLERINPUT").length, 1);

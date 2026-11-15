@@ -277,7 +277,8 @@ def main():
     parser.add_argument('--capture-layer', action='store_true', help='Enable the optional pure Zig producer-side readback layer for this compositor only')
     parser.add_argument('--present-audit', action='store_true', help='Enable the capture layer in read-only presentation-path audit mode (no readback); allowed with --real-hmd')
     parser.add_argument('--virtual-display', metavar='VID:PID', help='Claim to be a real direct-mode panel with these decimal EDID identifiers instead of forcing debug mode (requires a matching DRM connector)')
-    parser.add_argument('--headless-display', action='store_true', help='Experimental userspace 1920x1080@75 Vulkan display backed by Mesa headless WSI; implies present audit and virtual1080 profile, no DRM changes')
+    parser.add_argument('--headless-display', action='store_true', help='Experimental userspace Vulkan display backed by Mesa headless WSI (default 1920x1080@75); implies present audit and virtual1080 profile, no DRM changes')
+    parser.add_argument('--headless-size', metavar='WxH', help='With --headless-display, the side-by-side output size (both eyes); --refresh-hz sets its rate')
     parser.add_argument('--media-socket', type=Path, help='With --headless-display, export a three-slot GPU DMA-BUF pool to the native media worker on this Unix socket')
     parser.add_argument('--present-proof', type=int, default=0, metavar='N', help='With --present-audit, copy N presented frames while waiting on the compositor\'s own render semaphores (max 16)')
     parser.add_argument('--present-proof-start', type=int, default=0, help='Skip presents before this count when taking proof frames')
@@ -299,9 +300,19 @@ def main():
     if args.headless_display:
         if args.real_hmd or args.driver_direct or args.virtual_display or args.capture_layer:
             parser.error('--headless-display is a separate synthetic display backend')
-        if args.display_profile not in ('lab', 'virtual1080') or args.refresh_hz not in (None, 75):
-            parser.error('--headless-display currently supports only the virtual1080 75 Hz profile')
+        if args.display_profile not in ('lab', 'virtual1080'):
+            parser.error('--headless-display uses the virtual1080 profile, resized by --headless-size')
         args.display_profile = 'virtual1080'
+    headless_size = (1920, 1080)
+    if args.headless_size:
+        if not args.headless_display:
+            parser.error('--headless-size requires --headless-display')
+        try:
+            headless_size = tuple(int(n) for n in args.headless_size.lower().split('x'))
+        except ValueError:
+            headless_size = ()
+        if len(headless_size) != 2 or not (64 <= headless_size[0] <= 8192 and 64 <= headless_size[1] <= 8192) or headless_size[0] % 4 or headless_size[1] % 2:
+            parser.error('--headless-size must be WxH with W a multiple of 4 and H even, 64..8192')
         args.present_audit = True
     if args.real_hmd and (args.display_profile != 'lab' or args.refresh_hz is not None):
         parser.error('Synthetic display profiles/refresh overrides cannot be used with --real-hmd')
@@ -313,6 +324,11 @@ def main():
     if args.refresh_hz is not None:
         display_profile = display_profile or {'name': 'lab', 'driver_petplay': {}}
         display_profile['driver_petplay']['refreshHz'] = args.refresh_hz
+    if args.headless_display:
+        # The synthetic HMD's panel and render size follow the headless output, one eye per half.
+        display_profile['driver_petplay'].update(displayEyeWidth=headless_size[0] // 2, displayEyeHeight=headless_size[1],
+                                                 renderWidth=headless_size[0] // 2, renderHeight=headless_size[1])
+        args.headless_mode = f'{headless_size[0]}x{headless_size[1]}@{args.refresh_hz or 75}'
     if args.fov_tangents is not None or args.ipd is not None:
         if args.real_hmd:
             parser.error('--fov-tangents/--ipd describe the synthetic headset')
@@ -412,6 +428,7 @@ def main():
     if audit_dir:
         if args.headless_display:
             env['PP_HEADLESS_DISPLAY'] = '1'
+            env['PP_HEADLESS_MODE'] = args.headless_mode
         # No PP_CAPTURE_DIRECTORY: the layer's readback path stays unarmed and it only
         # records swapchain/present structure to the compositor log.
         env['PP_CAPTURE_ENABLE'] = '1'

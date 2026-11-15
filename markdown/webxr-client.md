@@ -81,16 +81,60 @@ after the driver swapped them; across, it sat exactly at the predicted 63.7% / 3
 **Not yet tested:** VRChat bindings with streamed Touch input,
 and the grip-to-`/pose/raw` offset (the Touch profile's raw pose may not equal WebXR's grip).
 
+## Latency work (2026-11-15, Quest 3, home Wi-Fi over Tailscale)
+
+Pose-to-display latency is measured end to end: each head pose carries the browser's frame
+sequence, the driver echoes it into the pose ring, the worker tags the frame rendered from it,
+and the viewer times send → draw. It went **83 → 69 → 55 → 41 ms**, steady to within 1 ms.
+
+- **Frames carry their head pose.** The driver latches the held head pose once per display
+  frame, `poseLatchLeadUs` (2 ms) before each tick, on the same absolute CLOCK_MONOTONIC grid
+  as the headless display, and pushes it to SteamVR at once. It writes each latched pose to
+  `hmd-poses` beside the control socket (64-byte seqlocked entries: latch time, client
+  sequence, rotation, position, arrival time). The worker (`--pose-ring PATH`) tags each frame
+  with the newest pose latched before its capture and publishes it on a `pose` MoQ track with
+  the video timestamp. Without latching, network-jittered poses made the tag off by one update
+  and the warp jittered while turning.
+- **Rotational timewarp** in the presenter rotates each eye quad by q_now⁻¹ · q_rendered.
+  `?warp=0` turns it off.
+- **Head prediction.** The presenter sends the head pose extrapolated by the measured latency
+  with the runtime's velocities (`petplayStream.xr.predictScale`, default 1). The frame is
+  tagged with the predicted pose, so the warp only corrects the prediction error.
+- **72 Hz end to end.** Quest Browser offers 72/80/90/120 Hz, not 75. The headless display mode
+  is now `PP_HEADLESS_MODE=WxH@HZ` (lab: `--headless-size`, `--refresh-hz`), the session asks
+  the headset for the stream's rate (`updateTargetFrameRate`, not awaited: Quest resolves it
+  only once frames are submitted, and awaiting it first left a black session).
+- **No viewer queue in XR.** The XR path ignores the 2D jitter buffer and shows the oldest
+  decoded picture each display frame, keeping `xrQueue` (default 1, `?xrQueue=0` recommended)
+  behind it. A queue that never drained cost three frames.
+- **H.264 POC type 2.** Quest's Qualcomm hardware decoder held every picture until the next one
+  arrived (18.7 ms receive → decoded) despite `max_num_reorder_frames = 0`. The vendored
+  `moq-vaapi` (see its `PETPLAY-PATCH.md`) writes POC type 2: 4.5 ms.
+
+Breakdown at 41 ms: pose arrival → latch 10.3, latch → capture 12.0 (the compositor captures
+~10 ms after the tick), capture → published 7.3, receive → decoded 4.5, decoded → drawn 1.5,
+network both ways ~5.5. With `xrQueue=0` about 3% of frames are dropped: the PC and Quest
+72 Hz clocks are independent, so arrivals sometimes straddle a Quest frame boundary.
+
+## Hot reload
+
+`presenter.ts` (upload, timewarp, prediction, uplink) is built separately to
+`dist/presenter.js`. The shell (`xr.ts`) owns the session, GL context, texture, bridge socket and
+pose sequence, polls `/build` each second while immersive and swaps in a new presenter without
+ending the session. A presenter that throws within 30 frames is replaced by the previous one.
+The gateway reads viewer files per request. A changed shell or connection still needs a page
+reload; `navigator.xr.offerSession` then shows the browser's own entry prompt.
+The harness `_scratch/xr-client-e2e/run.py` checks a live swap and the broken-build fallback.
+
 ## Known limits and next steps
 
-- **No reprojection.** The picture is shown as if rendered at the current head pose, so all
-  motion-to-photon latency is visible as the world swimming with head rotation. Next: stamp
-  each encoded frame with the head pose it rendered (the compositor's capture runs in a
-  different process from the driver), then counter-rotate the eye quads in `xr.ts` by the
-  rotation since. The vertex shader already takes a full `clipFromEye` matrix for this.
+- **Clock lock.** Steer the headless display's tick to the Quest's frame phase so poses arrive
+  just before the latch (saves ~9 ms) and pictures arrive mid-interval (no drops).
+- **Latch → capture 12 ms**: latch closer to when the compositor samples the pose.
+- **Resolution and codec**: the headless mode now takes any size; Quest decodes H.264 High,
+  HEVC and AV1 in hardware at 3840×1920; bitrate is still 12 Mbps.
+- Head translation is predicted but not warped.
 - **Uplink is a separate WebSocket.** Moving poses onto the media path (gateway → iroh → source)
   would make a remote headset need only the viewer URL.
 - The Quest menu button is not exposed to web pages. Pressing both sticks together is the left
   menu button (`system`) instead, held as long as the chord is; neither stick clicks meanwhile.
-- The XR frame loop runs at the headset rate (72–120 Hz) against a 75 fps stream; frames are
-  repeated or skipped according to timestamps, not interpolated.

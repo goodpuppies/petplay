@@ -208,7 +208,10 @@ export class XrDriverWriter {
   lastError: string | undefined;
   constructor(private send: Send) {}
   apply(frame: XrFrameMessage): Promise<void> {
-    if (frame.head) this.pending.set("head", ["SETHMDPOSE", frame.head]);
+    // The sequence comes back with each frame rendered from this pose (latency measurement).
+    if (frame.head) {
+      this.pending.set("head", ["SETHMDPOSE", { ...frame.head, sequence: frame.sequence }]);
+    }
     for (const side of ["left", "right"] as const) {
       const state = frame[side];
       if (state?.pose) {
