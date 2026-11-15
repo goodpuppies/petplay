@@ -30,11 +30,18 @@ class DisplayProfileTests(unittest.TestCase):
             originals = [settings.read_bytes(), paths.read_bytes()]
             session = root / 'session'
             profile = json.loads((ROOT / 'utils/vrlab/display-presets/beyond75.json').read_text())
+            profile['driver_petplay']['passthroughKeyRgb'] = 0xff00ff
+            profile['driver_petplay']['framePassthrough'] = True
+            profile['camera'] = {'enableCamera': True, 'enableConstructRoomView': False,
+                                 'roomView': 2, 'roomViewStyle': 4}
             with patch.multiple(lab, ROOT=root, SETTINGS=settings, PATHS=paths, SESSION=session, BACKUP=session / 'restore.json'), patch.object(lab, 'running', return_value=[]):
                 lab.prepare(driver_direct=True, display_profile=profile)
                 configured = json.loads(settings.read_text())
                 self.assertEqual(configured['driver_petplay']['renderWidth'], 3562)
                 self.assertEqual(configured['driver_petplay']['refreshHz'], 75)
+                self.assertEqual(configured['driver_petplay']['passthroughKeyRgb'], 0xff00ff)
+                self.assertTrue(configured['driver_petplay']['framePassthrough'])
+                self.assertEqual(configured['camera'], profile['camera'])
                 self.assertFalse(configured['driver_lighthouse']['enable'])
                 self.assertEqual(configured['steamvr']['forcedDriver'], 'petplay')
                 self.assertEqual(configured['steamvr']['supersampleScale'], 1.0)

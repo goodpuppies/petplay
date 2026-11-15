@@ -205,10 +205,12 @@ def prepare(direct_server=False, disable_async=False, driver_direct=False, real_
             vr['displayDebug'] = False
         for key in ('renderWidth', 'renderHeight', 'displayEyeWidth', 'displayEyeHeight',
                     'refreshHz', 'ipdMeters', 'maxSwapchainMiB',
-                    'fovTanLeft', 'fovTanRight', 'fovTanUp', 'fovTanDown'):
+                    'fovTanLeft', 'fovTanRight', 'fovTanUp', 'fovTanDown', 'passthroughKeyRgb', 'framePassthrough'):
             settings['driver_petplay'].pop(key, None)
         if display_profile:
             settings['driver_petplay'].update(display_profile['driver_petplay'])
+            if 'camera' in display_profile:
+                settings.setdefault('camera', {}).update(display_profile['camera'])
             vr.update(supersampleManualOverride=True, supersampleScale=1.0,
                       maxRecommendedResolution=8192, renderTargetMultiplier=1.0)
             atomic_write(SESSION / 'display-profile.json', (json.dumps(display_profile, indent=2) + '\n').encode())
@@ -287,6 +289,7 @@ def main():
     parser.add_argument('--display-profile', choices=['lab', 'beyond75', 'virtual1080'], default='lab',
                         help='Synthetic display workload; beyond75 matches saved BSB render size/rate without a physical headset')
     parser.add_argument('--refresh-hz', type=int, help='Override synthetic display clock (30..240 Hz)')
+    parser.add_argument('--passthrough-key', metavar='RRGGBB', help='Experimental Frame camera profile for this key colour; requires a separate DMA-BUF producer and a compositor with a camera reader')
     parser.add_argument('--fov-tangents', metavar='L,R,U,D', help='Synthetic left-eye frustum as positive tangents (right eye mirrored); a WebXR client bridge prints its headset\'s values as XR_VIEWS')
     parser.add_argument('--ipd', type=float, metavar='METRES', help='Synthetic headset IPD (0.04..0.09 m)')
     parser.add_argument('--seconds', type=float, default=0, help='Run until stopped by default; an explicit positive value limits the session duration')
@@ -329,6 +332,22 @@ def main():
         display_profile['driver_petplay'].update(displayEyeWidth=headless_size[0] // 2, displayEyeHeight=headless_size[1],
                                                  renderWidth=headless_size[0] // 2, renderHeight=headless_size[1])
         args.headless_mode = f'{headless_size[0]}x{headless_size[1]}@{args.refresh_hz or 75}'
+    if args.passthrough_key is not None:
+        if args.real_hmd:
+            parser.error('--passthrough-key describes the synthetic headset')
+        try:
+            key = int(args.passthrough_key, 16)
+        except ValueError:
+            key = 0
+        if not 0 < key <= 0xffffff or len(args.passthrough_key) != 6:
+            parser.error('--passthrough-key needs a nonzero RRGGBB hex colour')
+        display_profile = display_profile or {'name': 'lab', 'driver_petplay': {}}
+        display_profile['driver_petplay']['passthroughKeyRgb'] = key
+        display_profile['driver_petplay']['framePassthrough'] = True
+        # Use Frame's DMA-BUF API; the legacy camera queue hits a Linux NOIMPL path.
+        # The producer owns passthrough activation after it has registered its buffers.
+        display_profile['camera'] = {'enableCamera': True, 'enableConstructRoomView': False,
+                                     'roomView': 2, 'roomViewStyle': 4}
     if args.fov_tangents is not None or args.ipd is not None:
         if args.real_hmd:
             parser.error('--fov-tangents/--ipd describe the synthetic headset')

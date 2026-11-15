@@ -183,3 +183,150 @@ The harness `_scratch/xr-client-e2e/run.py` checks a live swap and the broken-bu
   would make a remote headset need only the viewer URL.
 - The Quest menu button is not exposed to web pages. Pressing both sticks together is the left
   menu button (`system`) instead, held as long as the chord is; neither stick clicks meanwhile.
+
+## Passthrough key-camera experiment (2026-11-15)
+
+**Status: browser AR keying works; camera passthrough is not working end to end.** The
+legacy camera reaches an unimplemented renderer operation. The newer Frame API accepts
+DMA-BUF registration on desktop SteamVR, but no camera reader has attached. The current
+stream was verified healthy with the experimental Frame profile. Camera work is parked.
+
+The proposed route is a synthetic HMD camera filled with `ff00ff`: SteamVR paints the key
+where Room View would display the room; the remote headset removes that colour over its
+own native passthrough. No real camera images need to leave the headset.
+
+- `--passthrough-key ff00ff` in `utils/petplay-ovrdriver-lab.py` sets the opt-in
+  `driver_petplay.passthroughKeyRgb` and `framePassthrough=true`. Frame mode advertises
+  `Prop_Hmd_SupportsRoomViewDirect_Bool`, excludes the legacy camera component and queue,
+  and selects `roomView=2`, `roomViewStyle=4`. It requires a separate DMA-BUF producer; the
+  profile alone does not create passthrough. Camera settings are included in exact lab
+  backup/restore. The legacy implementation remains available through explicit driver
+  settings with `framePassthrough=false`; activating it crashes this compositor build.
+- `camera.zig` implements `IVRCameraComponent_003`; `camera_queue.zig` isolates the private,
+  versioned `IVRBlockQueue_005` / `IVRPaths_002` bindings. The compositor connects directly to
+  `/lighthouse/camera/raw_frames`; the public camera component alone is insufficient. Queue
+  dimensions and format live on the queue handle; frame sequence (uint64), byte size,
+  monotonic time, server ticks, delivery interval and elapsed time live on each acquired
+  block. Frames are RGBX at 640×480, 30 Hz. Missing private interfaces leave the optional
+  public implementation available. The queue owner is destroyed after its producer joins.
+- The camera firmware must exceed `0x200040048`. A value of two billion is too low.
+  Distortion coefficients contain doubles but use the float property tag. Private-queue
+  startup must not mark the public stream active: SteamVR needs to initialize that stream
+  itself. In queue mode the public frame getter returns null and no sink callback is issued,
+  avoiding a loop polling rejected public frames.
+- Viewer `?xrMode=ar` selects `immersive-ar` for support checks, browser offers and entry;
+  default remains VR. `?xrKey=RRGGBB` overrides magenta. The XR framebuffer carries alpha,
+  clears transparently, and the presenter uses soft chroma keying and premultiplied output
+  with key-colour removal at mixed edges. This is a prototype: similarly coloured content
+  can disappear and compressed edges still need real-headset evaluation.
+
+### Evidence and remaining blocker
+
+SteamVR 2.18.4, Linux x86-64 `vrcompositor`, ELF Build ID
+`9043766964b1831d8df849a867c1df0418413cd4`:
+
+1. Initially logged `Error connecting to camera block queue`.
+2. After queue creation, logged `Created static resources for tracked camera complete`.
+3. After correcting the firmware version, logged `Finished creating camera roomview. (Success)`.
+4. An independent queue client read magenta pixels and the typed metadata through SteamVR.
+5. Correcting the sequence from int32 to uint64 let frame processing proceed and immediately
+   hit `ASSERT: "NOIMPL" ... facetrenderer.cpp:3572`, then `Aborting due to fatal assertion failure`.
+
+The assertion is at ELF virtual address `0x3e9770`, referenced by renderer vtable slot `0x1d0`
+(address point `0x4de638`). Camera frame processing calls that slot at `0x2a9df6`, after issuing
+its conversion work. The adjacent event creation/query calls use `0x1c8` / `0x1d8`: this
+identifies GPU event/fence handling as the likely missing operation, rather than camera
+configuration or the encoder. This is scoped to this binary/path, not a claim about all
+SteamVR passthrough. A supported camera path or a native workaround is required before the
+fake-camera idea can work end to end here; changing Room View settings does not implement
+that renderer operation. No SteamVR binary was patched.
+
+Validation: native build and ABI tests, a queue mock covering typed sequence metadata,
+publication/release, failed acquire and unavailable-interface fallback; lab backup/restore
+tests; viewer TypeScript/build. A headless Chromium + IWER test read actual WebGL pixels:
+magenta `[255,0,255,255]` in VR became `[0,0,0,0]` in AR, while `[34,68,102,255]` stayed opaque
+in both modes. This is not an on-Quest passthrough validation.
+
+Research references (read-only checkouts under `_scratch/`):
+
+- [Rectus/openvr_camera_sim](https://github.com/Rectus/openvr_camera_sim), revision
+  `4415906bfa4a97a3ae97acaa6b6025560dd140f8`: camera queue contract, firmware floor,
+  coefficient tagging, and rejected public-frame behavior. Its example uses Windows D3D11;
+  it does not supply the missing Linux renderer implementation.
+- [Rectus/openxr-steamvr-passthrough](https://github.com/Rectus/openxr-steamvr-passthrough),
+  revision `603c4c8e8d707ba2130c6a472ce5e539e3841a72`: useful application-layer composition,
+  alpha/mask handling and camera calibration reference; a different boundary from the
+  legacy SteamVR Room View path used by this experiment.
+
+Local harnesses: `_scratch/passthrough-queue-probe.ts`,
+`_scratch/media-browser-test/passthrough-shader.mjs`, and `_scratch/re/compositor.asm`.
+`_scratch/latest-tailnet-xr.txt` identifies the currently running experimental stream; create its
+`stop` file to stop and restore the lab. Experimental sessions have no automatic expiry.
+
+
+### Frame DMA-BUF path: desktop registration proof
+
+The reference Frame producer is `drivers/cv/bin/linuxarm64/XRService`, not the legacy
+`IVRCameraComponent_003` implementation. The private client interface is
+`IVRCameraPassthroughInternal_001`; it exists in both Frame and desktop `vrclient.so`.
+The two Rectus references use the legacy camera boundary, not this Frame producer API.
+
+Recovered ABI evidence lives under `_scratch/re/`: `passthrough-vtables.json`,
+`frame-passthrough-client.json`, `frame-passthrough-metadata.txt`, and
+`frame-xrservice-camera-correct.txt`. Decompiler output is inference; runtime observations
+below are separate. The XRService executable has an ELF image base of `0x200000`, so
+module offsets passed to the Ghidra exporter must subtract that base from ELF addresses.
+
+The real producer initializes camera type **1** for colour passthrough (type 0 is the other
+camera set). Its configuration is 56 bytes: count, width, height, nine colour-matrix floats,
+then spline width and height. Its buffer set is two eyes × sixteen packed, 104-byte OpenVR
+`DmabufAttributes_t` entries. Metadata is 248 bytes per eye/frame. `SetPassthroughActive`
+returns void, while `IsPassthroughActive` returns a status and writes a boolean.
+
+The native scratch probe `_scratch/re/frame-key-probe.cpp`:
+
+- Initializes an OpenVR overlay client and explicitly obtains `IVRCompositor_029` before
+  importing DMA-BUFs. Without that compositor connection, import fails.
+- Creates a Vulkan device and six GBM 640×480 ARGB8888 magenta images; supplies three
+  buffers per eye, an identity colour matrix and 2×2 spline allocation.
+- Successfully calls `SetGraphicsDevice` and `InitializeCamera(1, ...)`, both returning 0.
+- Advertises camera availability, requests activation, and reads reader/slot state.
+  Activation reads true immediately, then false; `CameraHasReader(1)` stays false and
+  all three slot statuses remain 0. No picture has been submitted or displayed.
+- Repeated with `Prop_HasCamera_Bool=true` in the isolated lab and an explicit Room View
+  request: still no reader. A stream capture decoded/presented frames with no errors.
+
+The desktop compositor only has three direct references to its private-interface getter:
+activation and two floor-geometry calls. Its activation condition still depends on the
+legacy tracked-camera object's readiness. The Frame compositor contains the
+`VR_CameraPassthroughState`/mutex names and `PassthroughQualityManager` initialization;
+these are absent from the desktop compositor. Together with the runtime reader result,
+this suggests the Frame image consumer is missing from this desktop build. This is not
+proof that every desktop SteamVR version lacks it, nor a validated Frame headset result.
+Do not interpret successful buffer registration as successful passthrough.
+
+Pinned SHA-256:
+
+- Desktop compositor: `ebdffa9a8309d9596201cb385ceded35b71a1f16fb8f123fc0196c245cb8186c`.
+- Desktop client: `83d08c3800875e0384983fed826ef50fc8d46c3cbbdc379f61acbe9f92c58cff`.
+- Frame compositor: `9b1bd5fe4463592cbc71b2517b9ceb0a0fcd66cd6885a19dca4be0784bf6c265`.
+- Symbolized Frame Android client: `857d2179871f23446932e6b08c8eec02b3825d25c52a28d71fb3b725544b305e`.
+
+Build the probe with `c++ -std=c++20 -O2 -I submodules/petplay_ovrdriver/vendor/openvr
+-I /usr/include/libdrm _scratch/re/frame-key-probe.cpp -o _scratch/re/frame-key-probe
+-lvulkan -lgbm -ldl -pthread` (one shell command). Run with `PETPLAY_OPENVR_LIBRARY`
+pointing to SteamVR's `libopenvr_api.so` and argument `--activate`. It refuses a non-synthetic
+lab. It remains running until SIGTERM/SIGINT, then restores camera availability, clears
+activation and releases its shared resources. The optional `--camera-presence` probe assumes
+HasCamera was initially absent, as it is in this Frame synthetic profile, and erases that
+property on exit. Do not use it against physical hardware.
+
+
+### Simpler alternative: render the key in PetPlay
+
+Park the SteamVR camera integration for now. PetPlay can render the key colour itself,
+then use the existing WebXR AR presenter to remove it over the headset's native
+passthrough. This avoids needing a SteamVR camera reader. The user identified the existing
+VRChat depth shader system as a way to control key regions dynamically in that application.
+This alternative is recorded for the next implementation; it has not been implemented or
+validated by this camera experiment. Key-colour collisions and compression edges still apply.
