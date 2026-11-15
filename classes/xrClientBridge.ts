@@ -25,6 +25,8 @@ export type XrFrameMessage = {
   version: 1;
   type: "xr-frame";
   sequence: number;
+  /** The browser's XR frame time (ms, its own clock), for steady per-frame hand latching. */
+  time?: number;
   head?: XrPose;
   left?: XrHandState;
   right?: XrHandState;
@@ -106,6 +108,11 @@ function hand(value: unknown): XrHandState | undefined {
   return out;
 }
 
+function positiveTime(value: unknown): number {
+  if (!finite(value, 1e12) || value < 0) throw Error("Invalid time");
+  return value;
+}
+
 /** Validates one browser packet. Unknown types and malformed numbers throw. */
 export function parseXrMessage(value: unknown): XrFrameMessage | XrViewMessage {
   if (!value || typeof value !== "object") throw Error("Invalid XR message");
@@ -119,6 +126,7 @@ export function parseXrMessage(value: unknown): XrFrameMessage | XrViewMessage {
       version: 1,
       type: "xr-frame",
       sequence: m.sequence as number,
+      ...(m.time === undefined ? {} : { time: positiveTime(m.time) }),
       head: m.head === undefined ? undefined : pose(m.head),
       left: hand(m.left),
       right: hand(m.right),
@@ -219,6 +227,12 @@ export class XrDriverWriter {
           hand: side,
           position: state.pose.position,
           rotation: state.pose.rotation,
+          ...(state.pose.velocity ? { velocity: state.pose.velocity } : {}),
+          ...(state.pose.angularVelocity ? { angularVelocity: state.pose.angularVelocity } : {}),
+          // 0 means "no client time" to the driver, so the clock's first instant becomes 1 µs.
+          ...(frame.time === undefined
+            ? {}
+            : { clientTimeUs: Math.max(1, Math.round(frame.time * 1000)) }),
         }]);
       }
       if (state?.input) {

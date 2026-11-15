@@ -185,3 +185,31 @@ Deno.test("a failing device does not stall the head, and release clears everythi
   assert(sent.includes('SETCONTROLLERPOSE:{"hand":"left","clear":true}'));
   assert(sent.includes('SETCONTROLLERINPUT:{"hand":"right"}'));
 });
+
+Deno.test("hand poses carry the frame's client time and velocities to the driver", async () => {
+  const sent: [string, unknown][] = [];
+  const writer = new XrDriverWriter(async (type, payload) => {
+    sent.push([type, payload]);
+  });
+  await writer.apply(frame(1, {
+    time: 1234.5678,
+    right: {
+      pose: {
+        position: [0.2, 1, -0.3],
+        rotation: identity,
+        velocity: [0.5, 0, 0],
+        angularVelocity: [0, 2, 0],
+      },
+    },
+  }));
+  const [, hand] = sent.find(([type]) => type === "SETCONTROLLERPOSE")!;
+  assertEquals(hand, {
+    hand: "right",
+    position: [0.2, 1, -0.3],
+    rotation: identity,
+    velocity: [0.5, 0, 0],
+    angularVelocity: [0, 2, 0],
+    clientTimeUs: 1234568,
+  });
+  assertThrows(() => parseXrMessage({ version: 1, type: "xr-frame", sequence: 1, time: -1 }));
+});

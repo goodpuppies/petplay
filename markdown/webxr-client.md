@@ -116,6 +116,39 @@ Breakdown at 41 ms: pose arrival → latch 10.3, latch → capture 12.0 (the com
 network both ways ~5.5. With `xrQueue=0` about 3% of frames are dropped: the PC and Quest
 72 Hz clocks are independent, so arrivals sometimes straddle a Quest frame boundary.
 
+## Resolution, LAN media and controller pacing (2026-11-15)
+
+- **3360×1760 at 80 Mbps** (`--size`, `--bitrate` in the supervisor). Through Tailscale this
+  dropped ~13% of frames, so media now goes straight over the LAN: the gateway listens on all
+  interfaces, ufw allows UDP 4470 from `192.168.1.0/24` only, and the viewer's
+  `?media=192.168.1.101` points WebTransport at the PC while the page and bridge stay on the
+  tailnet. Quest decodes 3360×1760 in 8–12 ms.
+- **Keyframes** every `--keyframe-seconds` (default 1). Each keyframe starts a MoQ group and
+  moq-net aborts a group past 32 MB ("group too large"), so the worker refuses intervals whose
+  group would exceed 24 MB: at 80 Mbps that is at most 2 s.
+- **Controllers latch at a steady lag.** Head poses are tagged per frame and warped, so arrival
+  jitter never showed on the head; the hands simply took the newest pose, and 13% of display
+  frames got no new pose or two. Each uplink frame now carries the browser's XR frame time and
+  the hands' velocities. The driver learns the Quest→PC clock offset as a 2 s sliding minimum
+  of (arrival − client time) and, at every latch, carries the newest hand pose along its
+  velocity to the client time matching that latch (at most 50 ms). Measured on the latched
+  right hand while moving: frame-to-frame step change median 0.01 mm.
+- **Open: the sender delivers in a sawtooth.** About twice a second, pictures arrive
+  progressively later (≈83% of real time for ~0.4 s, up to ~37 ms behind), then catch up in a
+  burst; every moving thing in the picture stutters with it, and the head's translation swims.
+  It reproduces over loopback from the worker's own server, and Chromium's NetLog shows the
+  QUIC data itself arriving that way, while the worker hands frames to moq-net steadily
+  (`PETPLAY_FRAME_TRACE`). Not the cause: Wi-Fi, bitrate (50 and 80 Mbps), congestion control
+  (`MOQ_QUIC_CONGESTION_CONTROL=loss|delay`), noq pacing (patched off), flow control (≥3 MB
+  credit), the pose track, or the Quest's decoder/main thread.
+- Viewer pacing: `?xrPacing=steady` shows pictures strictly in order and catches up only after
+  being behind for `xrCatchUpFrames`; against the sawtooth it only adds latency, so `queue`
+  (with `xrQueue=0`) stays the default.
+- Pacing tools: `petplayStream.xr.handTrace = []` records per-frame picture, arrival, decode
+  and grip data on the Quest; the driver writes latched hands to `hand-poses` beside
+  `hmd-poses`; `_scratch/pacing-analyze.py` and `_scratch/media-browser-test/transit.mjs`
+  (loopback, decoder stubbed) summarize them.
+
 ## Hot reload
 
 `presenter.ts` (upload, timewarp, prediction, uplink) is built separately to
