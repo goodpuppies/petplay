@@ -204,7 +204,8 @@ def prepare(direct_server=False, disable_async=False, driver_direct=False, real_
             vr['directMode'] = True
             vr['displayDebug'] = False
         for key in ('renderWidth', 'renderHeight', 'displayEyeWidth', 'displayEyeHeight',
-                    'refreshHz', 'ipdMeters', 'maxSwapchainMiB'):
+                    'refreshHz', 'ipdMeters', 'maxSwapchainMiB',
+                    'fovTanLeft', 'fovTanRight', 'fovTanUp', 'fovTanDown'):
             settings['driver_petplay'].pop(key, None)
         if display_profile:
             settings['driver_petplay'].update(display_profile['driver_petplay'])
@@ -285,6 +286,8 @@ def main():
     parser.add_argument('--display-profile', choices=['lab', 'beyond75', 'virtual1080'], default='lab',
                         help='Synthetic display workload; beyond75 matches saved BSB render size/rate without a physical headset')
     parser.add_argument('--refresh-hz', type=int, help='Override synthetic display clock (30..240 Hz)')
+    parser.add_argument('--fov-tangents', metavar='L,R,U,D', help='Synthetic left-eye frustum as positive tangents (right eye mirrored); a WebXR client bridge prints its headset\'s values as XR_VIEWS')
+    parser.add_argument('--ipd', type=float, metavar='METRES', help='Synthetic headset IPD (0.04..0.09 m)')
     parser.add_argument('--seconds', type=float, default=0, help='Run until stopped by default; an explicit positive value limits the session duration')
     args = parser.parse_args()
     if args.media_socket:
@@ -310,6 +313,22 @@ def main():
     if args.refresh_hz is not None:
         display_profile = display_profile or {'name': 'lab', 'driver_petplay': {}}
         display_profile['driver_petplay']['refreshHz'] = args.refresh_hz
+    if args.fov_tangents is not None or args.ipd is not None:
+        if args.real_hmd:
+            parser.error('--fov-tangents/--ipd describe the synthetic headset')
+        display_profile = display_profile or {'name': 'lab', 'driver_petplay': {}}
+    if args.fov_tangents is not None:
+        try:
+            tangents = [float(x) for x in args.fov_tangents.split(',')]
+        except ValueError:
+            tangents = []
+        if len(tangents) != 4 or not all(0.1 <= t <= 6 for t in tangents):
+            parser.error('--fov-tangents needs four tangents in 0.1..6: left,right,up,down')
+        display_profile['driver_petplay'].update(zip(('fovTanLeft', 'fovTanRight', 'fovTanUp', 'fovTanDown'), tangents))
+    if args.ipd is not None:
+        if not 0.04 <= args.ipd <= 0.09:
+            parser.error('--ipd must be 0.04..0.09 m')
+        display_profile['driver_petplay']['ipdMeters'] = args.ipd
     # A present audit needs its layer in vrserver's own environment, so it is the one
     # real-HMD mode allowed to start the runtime directly instead of through Steam.
     real_hmd_excluded = (args.driver_direct or args.disable_async or args.disable_fixes or args.capture_layer or args.renderdoc_layer)

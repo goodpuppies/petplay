@@ -83,7 +83,7 @@ GBM desktop producer, and the zero-copy Windows and Linux receiver designs.
 ## Intended paths
 
 - No physical headset: OpenVR scene → PetPlay native video → moq → browser WebXR or desktop
-  controls. The virtual HMD is a production source, with remote tracking eventually driving it.
+  controls. The WebXR half is in [webxr-client.md](webxr-client.md). The virtual HMD is a production source, with remote tracking eventually driving it.
 - Physical headset: normal VR gameplay → PetPlay native video → moq → another PetPlay instance.
 
 Deno orchestrates the pipeline; GPU images, synchronization, encoding and transport should stay

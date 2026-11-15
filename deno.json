@@ -66,6 +66,7 @@
     "overlay:perf": "deno run -A utils/overlay-perf.ts --launch",
     "playtest": "deno run -A utils/playtest-run.ts",
     "vrlab": "deno run -A --no-check utils/vrlab.ts",
+    "xrclient": "deno run -A utils/xr-client-bridge.ts",
     "vrlab:camera-check": "deno run -A --no-check utils/vrlab-camera-check.ts",
     "keyb": "deno run -A petplay/keyboardViewer.tsx ",
     "keyb:reset": "deno run -A petplay/resetKeyboard.ts",
