@@ -16,6 +16,7 @@ import { type ExtractionResult, RaythreeExtractor } from "../submodules/raythree
 import type { WebXRShadowFrame } from "./webxrhost.ts";
 import type { IntervalMetric } from "./intervalMetric.ts";
 import type { VrcCameraViewPose } from "./vrcCameraCalibration.ts";
+import type { VrcDepthDebugFrame } from "./vrchatDepth/debugView.ts";
 import { extractWebXRRaythreeUi, type WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";
 
 /** Optional per-section timings for `buildPayload` (Raylib overlay profiling). */
@@ -27,9 +28,15 @@ export type WebXRRaythreeBuildProbes = {
 };
 
 export type WebXRRaythreeRenderPayload = {
+  /** Small world-to-tracking fit for desktop depth foreground; no mesh payload. */
+  vrcDepthAlignment?: import("./vrchatDepth/sync.ts").WorldToTracking | null;
   delivery?: SceneDelivery;
   /** Only for `camera: "vrc"` views: the calibrated VRChat camera, or null when uncalibrated. */
   vrcCamera?: VrcCameraViewPose | null;
+  /** Status text the VRC camera layer prints over VRChat's image (VRChat depth sync). */
+  vrcDebugLines?: string[];
+  /** Only sent to the interactive depth debug window. */
+  vrcDepthDebug?: VrcDepthDebugFrame | null;
   renderGripOffsets?: Partial<Record<"left" | "right", Float32Array>>;
   frame: WebXRShadowFrame;
   background: [number, number, number, number];

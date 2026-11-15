@@ -230,6 +230,10 @@ export function anchoredLowerers(): RenderLowerer[] {
         );
         (instance as typeof instance & { vrcCameraHidden?: boolean }).vrcCameraHidden =
           object.userData.vrcCameraHidden === true;
+        Object.assign(instance, {
+          passthroughKey: object.userData.passthroughKey === true,
+          passthroughCutout: object.userData.passthroughCutout === true,
+        });
         return instance;
       }),
   }));

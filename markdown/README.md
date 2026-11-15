@@ -17,3 +17,5 @@ folder stays as history.
 - [PetPlay 2.0](./petplay-2.0/README.md) — product work: from "usable" to "an app people install".
 - [Retained raythree IR](./raythree-retained-ir/README.md) — scene stream cost proportional to
   change, not scene size: retained renderer tables, spatial nodes, delta transactions.
+- [VRChat depth](./vrchat-depth/README.md) — overlays composited with VRChat's depth: an avatar
+  shader writes depth into the desktop window, PetPlay decodes it and cuts occlusion holes.

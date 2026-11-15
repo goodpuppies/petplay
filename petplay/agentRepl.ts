@@ -69,8 +69,10 @@ new PostMan(
       state.registry = { ...(payload?.registry ?? {}) };
       return getRegistrySnapshot();
     },
+    // Main sends its whole registry each time: replace, so stopped actors (a closed view) drop out
+    // instead of lingering as names that resolve to dead actors and time out callers.
     REGISTER_ACTORS: (payload: ActorRegistry) => {
-      state.registry = { ...state.registry, ...payload };
+      state.registry = { ...payload };
       return getRegistrySnapshot();
     },
     GETREGISTRY: (_payload: null) => {

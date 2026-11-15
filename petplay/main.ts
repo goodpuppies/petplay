@@ -205,6 +205,16 @@ new PostMan(
     VRCCAMERAVIEWSTATUS: async (_payload: unknown) => {
       return await getVrcCameraViewStatus();
     },
+    /** VRChat depth intake: captures VRChat's window and decodes the debug avatar's block. */
+    STARTVRCDEPTH: async (payload: { grid?: number } | null) => {
+      return await startVrcDepth(payload);
+    },
+    STOPVRCDEPTH: async (_payload: unknown) => {
+      return await stopVrcDepth();
+    },
+    VRCDEPTHSTATUS: async (_payload: unknown) => {
+      return await getVrcDepthStatus();
+    },
   } as const,
 );
 
@@ -343,6 +353,8 @@ const clientActors = {
   desktopView: null as ActorId | null,
   /** Started on demand by `STARTVRCCAMERAVIEW` — the transparent VRChat camera layer. */
   vrcCameraView: null as ActorId | null,
+  /** Started on demand by `STARTVRCDEPTH` — VRChat window capture and depth block decode. */
+  vrchatDepth: null as ActorId | null,
 };
 
 function clientActorRegistry() {
@@ -356,6 +368,7 @@ function clientActorRegistry() {
     ...(clientActors.desktopControl ? { desktopControl: clientActors.desktopControl } : {}),
     ...(clientActors.desktopView ? { desktopView: clientActors.desktopView } : {}),
     ...(clientActors.vrcCameraView ? { vrcCameraView: clientActors.vrcCameraView } : {}),
+    ...(clientActors.vrchatDepth ? { vrchatDepth: clientActors.vrchatDepth } : {}),
     ...(supervisedActors ? { openvr: supervisedActors.ivr } : {}),
     ...(attachment
       ? {
@@ -623,6 +636,9 @@ function decoupledDesktopViewPayload(capture: DecoupledViewPayload | null = null
 
 /** Client-requested extras for the VRC camera layer (see `desktopView.ts`). */
 type VrcCameraViewPayload = {
+  x?: number;
+  y?: number;
+  depthDebug?: boolean;
   width?: number;
   height?: number;
   fovYDeg?: number;
@@ -641,6 +657,11 @@ async function startVrcCameraView(options: VrcCameraViewPayload | null) {
   const payload = {
     webxrTarget: clientActors.webxr,
     camera: "vrc" as const,
+    depthDebug: options?.depthDebug ?? false,
+    cameraOriginTarget: clientActors.cameraOrigin,
+    depthTarget: clientActors.vrchatDepth,
+    x: options?.x,
+    y: options?.y,
     width: options?.width ?? getNumberArg("--vrc-camera-view-width", width),
     height: options?.height ?? getNumberArg("--vrc-camera-view-height", height),
     fovYDeg: options?.fovYDeg ?? getNumberArg("--vrc-camera-fov", 45),
@@ -682,6 +703,48 @@ async function stopVrcCameraView() {
   registerClientActors();
   LogChannel.log("actor", "[desktop] vrc camera view stopped");
   return await getVrcCameraViewStatus();
+}
+
+async function startVrcDepth(options: { grid?: number } | null) {
+  let id = clientActors.vrchatDepth;
+  if (id != null && !(await actorIsResponsive(id, OPENVR_HEALTH_TIMEOUT_MS))) {
+    PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+    await waitForActorsStopped([id]);
+    id = clientActors.vrchatDepth = null;
+  }
+  if (id == null) {
+    const actor = await PostMan.create("./vrchatDepth.ts", import.meta.url, { worker: "process" });
+    id = clientActors.vrchatDepth = resolveActorId(actor);
+    registerClientActors();
+    LogChannel.log("actor", `[vrchat-depth] started ${id}`);
+  }
+  if (clientActors.webxr) {
+    PostMan.PostMessage({ target: id, type: "ASSIGNWEBXR", payload: clientActors.webxr });
+  }
+  return await PostMan.PostMessage({ target: id, type: "STARTVRCDEPTH", payload: options }, true);
+}
+
+async function stopVrcDepth() {
+  const id = clientActors.vrchatDepth;
+  if (id == null) return { running: false };
+  await PostMan.PostMessage({ target: id, type: "STOPVRCDEPTH", payload: null }, true).catch(() => {});
+  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await waitForActorsStopped([id]);
+  clientActors.vrchatDepth = null;
+  registerClientActors();
+  return { running: false };
+}
+
+async function getVrcDepthStatus() {
+  const id = clientActors.vrchatDepth;
+  const sync = clientActors.webxr
+    ? await PostMan.PostMessage({ target: clientActors.webxr, type: "GETVRCDEPTHSYNC", payload: null }, true)
+      .catch(() => null)
+    : null;
+  if (id == null) return { running: false, intake: null, sync };
+  const intake = await PostMan.PostMessage({ target: id, type: "GETVRCDEPTHSTATUS", payload: null }, true)
+    .catch((error) => ({ error: messageOf(error) }));
+  return { running: true, intake, sync };
 }
 
 async function getVrcCameraViewStatus() {

@@ -277,7 +277,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
           ? (
             <mesh
               renderOrder={-100}
-              userData={{ displayInstanceRayHitSurface: true }}
+              userData={{ displayInstanceRayHitSurface: true, passthroughCutout: true }}
               onPointerMove={penHandler(emitMove)}
               onPointerDown={penHandler((e: PenPointerEvent) => emitButton(e, true))}
               onPointerUp={penHandler((e: PenPointerEvent) => emitButton(e, false))}
@@ -300,16 +300,18 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
             </mesh>
           )
           : null}
-        {/*
-         * Backplate: opaque black card on the display's rear face with the logo.
-         * The card is a plain front-facing scene mesh — the 3D pass depth-tests
-         * with backface culling on, so it occludes like real geometry and shows
-         * only from behind. The logo rides the uikit snapshot (the only route
-         * that draws in both the raylib overlay and the desktop preview) inside
-         * a transparent layout-only Container, and `drawUiImage` culls its
-         * backface so it never paints over the front either. Not pickable: the
-         * grab hull and screen proxy own pointer input.
-         */}
+        {
+          /*
+           * Backplate: opaque black card on the display's rear face with the logo.
+           * The card is a plain front-facing scene mesh — the 3D pass depth-tests
+           * with backface culling on, so it occludes like real geometry and shows
+           * only from behind. The logo rides the uikit snapshot (the only route
+           * that draws in both the raylib overlay and the desktop preview) inside
+           * a transparent layout-only Container, and `drawUiImage` culls its
+           * backface so it never paints over the front either. Not pickable: the
+           * grab hull and screen proxy own pointer input.
+           */
+        }
         <group position={[0, 0, -depth / 2 - 0.001]} rotation={[0, Math.PI, 0]}>
           <mesh {...({ pointerEvents: "none" } as Record<string, unknown>)}>
             <planeGeometry args={[width, height]} />

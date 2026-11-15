@@ -50,6 +50,11 @@ export type VrcCameraCalibration = {
    * hands moved together and the choice of `hand` is weak.
    */
   otherHandRmsErrorMeters: number | null;
+  /**
+   * Where the fit came from: the held-camera solve, or the depth block's head anchor
+   * (`setDepthBlockPose`), which has no hand and no grip offset.
+   */
+  source?: "grab" | "depthBlock";
 };
 
 /** Fewer samples than this cannot separate grip offset, translation and scale reliably. */
@@ -592,6 +597,9 @@ export class VrcCameraTracker {
   private sampleRevision = 0;
   private solvedRevision = -1;
   private lastSolveAt = 0;
+  /** Until then the depth block owns the camera pose and the calibration. */
+  private depthBlockUntil = 0;
+  private depthBlockCalibration: VrcCameraCalibration | null = null;
 
   constructor(
     private readonly solver: VrcCameraSolver = (samples) =>
@@ -702,11 +710,14 @@ export class VrcCameraTracker {
       }
     }
     const next = unityPoseToRightHanded(pose);
-    if (this.worldPose == null || distance(this.worldPose.position, next.position) > 0.001) {
-      this.worldPoseMovedAt = now;
+    // The depth block reports the camera exactly, every VRChat frame; OSC lags and smooths.
+    if (now >= this.depthBlockUntil) {
+      if (this.worldPose == null || distance(this.worldPose.position, next.position) > 0.001) {
+        this.worldPoseMovedAt = now;
+      }
+      this.worldPose = next;
+      this.worldPoseAt = now;
     }
-    this.worldPose = next;
-    this.worldPoseAt = now;
     let calibrator = this.calibrator;
     if (calibrator == null) return null;
     // Once a fit is trustworthy, an unrelated hand movement must not poison its samples.
@@ -720,7 +731,7 @@ export class VrcCameraTracker {
     const held = reference ? controllers[reference.hand] : null;
     const tolerance = reference ? Math.max(0.04, reference.rmsErrorMeters * 4) : Infinity;
     this.samplingPaused = reference != null && (held == null || sampleError(reference, {
-          world: this.worldPose.position,
+          world: next.position,
           controller: held,
         }) > tolerance);
     if (this.samplingPaused) {
@@ -739,7 +750,7 @@ export class VrcCameraTracker {
       this.pausedMoves = 0;
     }
     if (
-      calibrator.add(now, this.worldPose, controllers.left, controllers.right, {
+      calibrator.add(now, next, controllers.left, controllers.right, {
         accept: !this.samplingPaused,
         hand: reference?.hand,
       })
@@ -934,6 +945,45 @@ export class VrcCameraTracker {
   }
 
   /** Solves with the samples so far; also called by an early stop. */
+  /**
+   * The camera pose and world → tracking from a decoded depth block
+   * (`classes/vrchatDepth/sync.ts`). While blocks keep arriving they replace the OSC pose and any
+   * held-camera fit; `holdMs` after the last one, OSC and the kept fit take over again.
+   */
+  setDepthBlockPose(
+    worldPose: TrackedPose,
+    worldToTracking: { yawRad: number; scale: number; translation: Vec3 },
+    fovYDeg: number,
+    now = Date.now(),
+    holdMs = 500,
+  ): void {
+    if (this.worldPose == null || distance(this.worldPose.position, worldPose.position) > 0.001) {
+      this.worldPoseMovedAt = now;
+    }
+    this.worldPose = worldPose;
+    this.worldPoseAt = now;
+    this.fovYDeg = fovYDeg;
+    this.depthBlockUntil = now + holdMs;
+    this.depthBlockCalibration = {
+      yawRad: worldToTracking.yawRad,
+      scale: worldToTracking.scale,
+      translation: [...worldToTracking.translation],
+      hand: "right",
+      gripOffset: [0, 0, 0],
+      rmsErrorMeters: 0,
+      maxErrorMeters: 0,
+      samples: 0,
+      solvedAt: now,
+      otherHandRmsErrorMeters: null,
+      source: "depthBlock",
+    };
+  }
+
+  clearDepthBlockPose(): void {
+    this.depthBlockUntil = 0;
+    this.depthBlockCalibration = null;
+  }
+
   finishCalibration(now = Date.now()): VrcCameraCalibration | null {
     if (this.live) return this.endLiveCalibration();
     const calibrator = this.calibrator;
@@ -954,7 +1004,8 @@ export class VrcCameraTracker {
    * calibrating (so the recording layer shows the alignment as it improves), else the kept one.
    */
   currentViewPose(now = Date.now()): VrcCameraViewPose | null {
-    const calibration = (this.live ? this.liveFit : null) ?? this.calibration;
+    const calibration = (now < this.depthBlockUntil ? this.depthBlockCalibration : null) ??
+      (this.live ? this.liveFit : null) ?? this.calibration;
     if (calibration == null || this.worldPose == null) return null;
     const pose = applyVrcCameraCalibration(calibration, this.worldPose);
     return { ...pose, fovYDeg: this.fovYDeg, ageMs: now - this.worldPoseAt };

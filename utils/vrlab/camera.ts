@@ -94,17 +94,25 @@ export async function pickActionMenu(
   driver: SyntheticDriver,
   direction: readonly [number, number],
   settleMs = 800,
+  /**
+   * How long the stick is held on the entry before the trigger. 400 ms was enough at the lab's
+   * default resolution; at the beyond75 profile VRChat runs slower and the highlight had not
+   * landed when the trigger came (2026-11-07), so the default is now longer.
+   */
+  holdMs = 900,
+  hand: Hand = "left",
 ): Promise<void> {
   const joystick: [number, number] = [direction[0], direction[1]];
-  await driver.setPose("left", MENU_HAND_POSE);
+  await driver.setPose(hand, MENU_HAND_POSE);
   await sleep(300);
-  await driver.setInput("left", { joystick });
+  // Flick, trigger while the stick is still on the entry, then the stick back to neutral.
+  await driver.setInput(hand, { joystick });
+  await sleep(holdMs);
+  await driver.setInput(hand, { joystick, trigger: 1 });
   await sleep(400);
-  await driver.setInput("left", { joystick, trigger: 1 });
-  await sleep(200);
-  await driver.setInput("left", { joystick });
-  await sleep(200);
-  await driver.setInput("left");
+  await driver.setInput(hand, { joystick });
+  await sleep(300);
+  await driver.setInput(hand);
   await sleep(settleMs);
 }
 

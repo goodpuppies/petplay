@@ -1,5 +1,25 @@
+import {
+  getPassthroughKey,
+  parsePassthroughKey,
+  setPassthroughKey,
+} from "../classes/environment/passthroughKeyStore.ts";
 import { initializeLinuxScheduling } from "../classes/linuxScheduling.ts";
 import { getRenderScale, subscribeRenderResolution } from "../classes/renderResolution.ts";
+import {
+  DEFAULT_HEAD_CAMERA_OFFSET,
+  HEAD_CAMERA_ZOOM,
+  headCameraPose,
+} from "../classes/vrchatDepth/headCamera.ts";
+import { DirectCameraControl } from "../classes/vrchatDepth/directCameraControl.ts";
+import {
+  environmentFromRecord,
+  setEnvironmentLighting,
+} from "../classes/vrchatDepth/environmentLighting.ts";
+import { lightVolumeCache } from "../classes/vrchatDepth/lightVolumes.ts";
+import {
+  attachDebugBallToCamera,
+  toggleDebugBallCameraFollow,
+} from "../classes/vrchatDepth/debugCameraAttachment.ts";
 import { actorState, PostMan, resolveActorId, System } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
@@ -85,6 +105,27 @@ import { getSettings, isSettingKey, loadSettings, setSetting } from "../classes/
 import { pushToast, type ToastInput } from "../classes/environment/toastStore.ts";
 import { batteryStore } from "../classes/environment/batteryStore.ts";
 import { readOpenVrBatteries } from "../classes/openVrBattery.ts";
+import {
+  alignHead,
+  AlignmentFilter,
+  applyWorldToTracking,
+  cameraWorldPose,
+  fovYDeg as vrcDepthFovYDeg,
+  headWorldPose,
+  PoseHistory,
+  unprojectDepth,
+} from "../classes/vrchatDepth/sync.ts";
+import {
+  decodeBytesBase64,
+  payloadDepth,
+  type VrcDepthFramePayload,
+} from "../classes/vrchatDepth/wire.ts";
+import { VoxelMap } from "../classes/vrchatDepth/voxelMap.ts";
+import { HeadsetDepthSource } from "../classes/vrchatDepth/headsetDepthSource.ts";
+import { type DepthFrameHeader, FLAG_DEPTH_CAMERA } from "../classes/vrchatDepth/format.ts";
+import type { DepthForegroundBlock } from "../classes/vrchatDepth/foreground.ts";
+import type { VrcDepthDebugFrame } from "../classes/vrchatDepth/debugView.ts";
+import { vrcDepthDebugStore } from "../classes/environment/vrcDepthDebugStore.ts";
 
 // Re-run for each new actor worker, including hot reload without a process restart.
 initializeLinuxScheduling();
@@ -259,6 +300,9 @@ type OverlayConfig = {
 };
 
 const state = actorState({
+  passthroughKey: parsePassthroughKey(
+    Deno.args.find((arg) => arg.startsWith("--webxr-passthrough-key="))?.split("=", 2)[1] ?? null,
+  ),
   name: "webxr",
   mainActor: null as string | null,
   host: null as WebXRHost | null,
@@ -449,6 +493,7 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
       loadSettings();
+      if (state.passthroughKey !== null) setPassthroughKey(state.passthroughKey);
     },
     __SHUTDOWN__: async (_payload: unknown) => {
       await stopWebXR();
@@ -458,6 +503,10 @@ new PostMan(
     },
     EVALJS: (payload: { code: string }) => evaluateWebXrJs(payload.code),
     GETSETTINGS: (_payload: unknown) => getSettings(),
+    SETPASSTHROUGHKEY: (payload: { color: string | null }) => {
+      state.passthroughKey = setPassthroughKey(payload?.color);
+      return { color: state.passthroughKey };
+    },
     /** Show a toast in the headset (other actors' status, e.g. capture lost). */
     TOAST: (payload: ToastInput) => {
       pushToast(payload);
@@ -471,20 +520,44 @@ new PostMan(
       return {
         started: state.startup != null || state.host != null,
         startPayload: state.lastStartPayload,
+        passthroughKey: getPassthroughKey(),
         desktopViewControlAllowed: state.desktopViewControlAllowed,
         desktopViewControlEnabled: state.desktopViewControlEnabled,
         desktopViewOffset: state.desktopViewOffset,
+        depthScan: {
+          cellSize: vrcDepth.scan.cellSize,
+          cells: [...vrcDepth.scan.cells],
+          enabled: vrcDepth.scanEnabled,
+          mesh: vrcDepthDebugStore.enabled(),
+        },
       };
     },
     __RESTORE__: (
       payload: {
         started?: boolean;
+        passthroughKey?: string | null;
         startPayload?: StartWebXRPayload | null;
         desktopViewControlAllowed?: boolean;
         desktopViewControlEnabled?: boolean;
         desktopViewOffset?: Vec3Tuple;
+        depthScan?: {
+          cellSize: number;
+          cells: [number, import("../classes/vrchatDepth/voxelMap.ts").VoxelCell][];
+          enabled: boolean;
+          mesh: boolean;
+        };
       } | null,
     ) => {
+      if (payload?.passthroughKey !== undefined) {
+        state.passthroughKey = setPassthroughKey(payload.passthroughKey);
+      }
+      if (payload?.depthScan) {
+        vrcDepth.scan.cellSize = payload.depthScan.cellSize;
+        for (const [key, cell] of payload.depthScan.cells) vrcDepth.scan.cells.set(key, cell);
+        vrcDepth.scan.revision++;
+        vrcDepth.scanEnabled = payload.depthScan.enabled;
+        vrcDepthDebugStore.setEnabled(payload.depthScan.mesh);
+      }
       state.desktopViewControlAllowed = payload?.desktopViewControlAllowed ??
         false;
       state.desktopViewControlEnabled = state.desktopViewControlAllowed &&
@@ -786,6 +859,163 @@ new PostMan(
       if (!payload) return;
       standingVrcOrigin = payload.m as Matrix34Tuple;
       applyVrcOrigin();
+    },
+    /** A decoded depth block from the `vrchatDepth` actor (`markdown/vrchat-depth/README.md`). */
+    VRCDEPTHFRAME: (payload: VrcDepthFramePayload) => {
+      onVrcDepthFrame(payload);
+    },
+    VRCDEPTHSTOPPED: (_payload: null) => {
+      lightVolumeCache.reset();
+      vrcDepthHeadset.running = false;
+      stopHeadsetDepth();
+      stopVrcDepth();
+    },
+    /** The intake's id and whether depth is running: the headset source follows it. */
+    VRCDEPTHINTAKE: (payload: { intake: string; running: boolean }) => {
+      vrcDepthHeadset.intake = payload.intake;
+      vrcDepthHeadset.running = payload.running;
+    },
+    /** VRChat's playspace scale, for frames the headset source decodes itself. */
+    VRCDEPTHSCALE: (payload: { worldScale: number | null }) => {
+      vrcDepthHeadset.reportedScale = payload.worldScale;
+    },
+    /** `latencyMs`: how long before arrival VRChat rendered a block (pairs it with the HMD). */
+    SETVRCDEPTHOPTIONS: (
+      payload: {
+        latencyMs?: number;
+        debugMesh?: boolean;
+        scan?: "on" | "off" | "clear";
+        voxelMeters?: number;
+        /** Pin VRChat's Stream camera ahead of the headset (headCamera.ts). */
+        headCamera?: boolean;
+        /** VRChat's depth occludes PetPlay's objects in the headset (`VrcDepthOccluder`). */
+        occlusion?: boolean;
+        /** Decode depth on this render thread from VRChat's window (`headsetDepthSource.ts`). */
+        headsetDecode?: boolean;
+        headCameraOffset?: number;
+      },
+    ) => {
+      if (typeof payload.occlusion === "boolean") {
+        vrcDepthDebugStore.setOcclusion(payload.occlusion);
+      }
+      if (typeof payload.headsetDecode === "boolean") {
+        vrcDepthHeadset.enabled = payload.headsetDecode;
+        if (payload.headsetDecode) vrcDepthHeadset.lastError = null;
+      }
+      if (typeof payload.headCamera === "boolean" || typeof payload.headCameraOffset === "number") {
+        setHeadCamera(payload.headCamera ?? vrcDepth.headCamera.enabled, payload.headCameraOffset);
+      }
+      if (typeof payload.latencyMs === "number") vrcDepth.latencyMs = payload.latencyMs;
+      if (typeof payload.debugMesh === "boolean") vrcDepthDebugStore.setEnabled(payload.debugMesh);
+      if (payload.scan === "on" || payload.scan === "off") {
+        vrcDepth.scanEnabled = payload.scan === "on";
+      }
+      if (payload.scan === "clear") {
+        vrcDepth.scan.clear();
+        vrcDepthDebugStore.setScan(null);
+      }
+      if (typeof payload.voxelMeters === "number" && payload.voxelMeters > 0.005) {
+        vrcDepth.scan.cellSize = payload.voxelMeters;
+        vrcDepth.scan.clear();
+        vrcDepthDebugStore.setScan(null);
+      }
+      return {
+        latencyMs: vrcDepth.latencyMs,
+        debugMesh: vrcDepthDebugStore.enabled(),
+        scan: vrcDepth.scanEnabled,
+        voxelMeters: vrcDepth.scan.cellSize,
+        cells: vrcDepth.scan.cells.size,
+        occlusion: vrcDepthDebugStore.occlusion(),
+        headset: headsetDepthStatus(),
+        headCamera: {
+          enabled: vrcDepth.headCamera.enabled,
+          offsetMeters: vrcDepth.headCamera.offsetMeters,
+          sent: vrcDepth.headCamera.sent,
+          modeSent: vrcDepth.headCamera.modeSent,
+          depthCamera: vrcDepth.depthCamera,
+          lastError: vrcDepth.headCamera.lastError,
+        },
+      };
+    },
+    GETVRCDEPTHSYNC: (_payload: void) => vrcDepthSyncStatus(),
+    GETLIGHTVOLUMES: (_payload: void) => lightVolumeCache.status(),
+    /** `lit`: a camera-attached crimson ball under VRChat's lighting instead of the fixed cube. */
+    VRCDEPTHDEBUGCUBE: (
+      payload: {
+        enabled?: boolean;
+        distance?: number;
+        lit?: boolean;
+        followCamera?: boolean;
+        toggleFollow?: boolean;
+      } | null,
+    ) => {
+      const scene = state.host?.getRaythreeSceneContext()?.scene as THREE.Scene | undefined;
+      if (!scene) throw new Error("PetPlay scene is not running");
+      const ball = scene.getObjectByName("vrc-depth-lit-sphere");
+      if (payload?.toggleFollow && ball) {
+        return {
+          enabled: true,
+          lit: true,
+          followCamera: toggleDebugBallCameraFollow(ball),
+          position: ball.position.toArray(),
+        };
+      }
+      for (const name of ["vrc-depth-foreground-cube", "vrc-depth-lit-sphere"]) {
+        const old = scene.getObjectByName(name) as THREE.Mesh | undefined;
+        if (old) {
+          old.removeFromParent();
+          old.geometry.dispose();
+          (old.material as THREE.Material).dispose();
+        }
+      }
+      if (payload?.enabled === false) return { enabled: false };
+      const alignment = vrcDepth.filter.get();
+      const header = vrcDepth.debugFrame?.header;
+      if (!alignment || !header) {
+        throw new Error("Fresh depth alignment is required to place the cube");
+      }
+      const pose = applyWorldToTracking(alignment, cameraWorldPose(header));
+      const distance = payload?.distance ?? 2;
+      if (!Number.isFinite(distance) || distance < 0.3 || distance > 20) {
+        throw new Error("Cube distance must be 0.3–20 metres");
+      }
+      if (payload?.lit) {
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.3, 48, 32),
+          new THREE.MeshStandardMaterial({ color: 0xdc143c, roughness: 0.6 }), // crimson
+        );
+        // Its own name: raythree's renderers cache geometry and material by object.
+        sphere.name = "vrc-depth-lit-sphere";
+        sphere.position.set(0, 0, -distance).applyQuaternion(
+          new THREE.Quaternion(...pose.quaternion),
+        )
+          .add(new THREE.Vector3(...pose.position));
+        scene.add(sphere);
+        if (payload.followCamera !== false) attachDebugBallToCamera(sphere, distance);
+        return {
+          enabled: true,
+          lit: true,
+          followCamera: payload.followCamera !== false,
+          distance,
+          position: sphere.position.toArray(),
+          radius: 0.3,
+        };
+      }
+      const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+      const colors = new Float32Array(24 * 3);
+      for (
+        const [face, hex] of [0xff8800, 0xff5500, 0xffbb33, 0xa64d00, 0xff9933, 0xcc6600].entries()
+      ) {
+        const color = new THREE.Color(hex);
+        for (let vertex = 0; vertex < 4; vertex++) color.toArray(colors, (face * 4 + vertex) * 3);
+      }
+      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      const cube = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ vertexColors: true }));
+      cube.name = "vrc-depth-foreground-cube";
+      cube.position.set(0, 0, -distance).applyQuaternion(new THREE.Quaternion(...pose.quaternion))
+        .add(new THREE.Vector3(...pose.position));
+      scene.add(cube);
+      return { enabled: true, position: cube.position.toArray(), size: 0.5 };
     },
     VRCCAMERADEBUGUPDATE: (
       payload: {
@@ -1556,6 +1786,579 @@ function trackVrcCameraPose(pose: VrcCameraDebugPose): void {
   if (result || Date.now() - vrcCameraPublishedAt >= 250) publishVrcCameraStatus();
 }
 
+/**
+ * VRChat depth sync: each decoded block gives VRChat's camera and the wearer's viewpoint in
+ * VRChat's world. The viewpoint against the headset's tracking pose at render time gives world →
+ * tracking, which places the camera for the VRC camera layer and the depth for the debug mesh.
+ */
+const vrcDepth = {
+  history: new PoseHistory(1500),
+  filter: new AlignmentFilter(),
+  recorder: null as ReturnType<typeof setInterval> | null,
+  lastFrameAt: 0,
+  /** VRChat render → window capture arrival; pairs a block with the headset pose it was drawn at. */
+  latencyMs: 50,
+  frames: 0,
+  unpaired: 0,
+  lastTiltDeg: null as number | null,
+  lastHeadSpeed: null as { metersPerSecond: number; degreesPerSecond: number } | null,
+  lastDecodeMs: 0,
+  worldScale: null as number | null,
+  points: new Float32Array(0),
+  debugFrame: null as Pick<VrcDepthFramePayload, "receivedAt" | "header"> | null,
+  debugSnapshot: null as VrcDepthDebugFrame | null,
+  /** The accumulated scan (VRChat world space) and when it last integrated / rebuilt. */
+  scan: new VoxelMap(),
+  /** Debug: the accumulated scan needs the full grid decoded on the CPU every frame. Off by default. */
+  scanEnabled: false,
+  /** Blocks carry the avatar's own head depth camera: VRChat's camera needn't follow the head. */
+  depthCamera: false,
+  scanIntegratedAt: 0,
+  scanBuiltAt: 0,
+  scanBuiltRevision: -1,
+  /** VRChat's Stream camera pinned ahead of the headset (headCamera.ts); opt-in. */
+  headCamera: {
+    enabled: false,
+    offsetMeters: DEFAULT_HEAD_CAMERA_OFFSET,
+    control: null as DirectCameraControl | null,
+    lastSentAt: 0,
+    sent: 0,
+    /** Stream mode + zoom re-asserted while nothing decodes (`assertHeadCameraMode`). */
+    modeTimer: null as ReturnType<typeof setInterval> | null,
+    modeSent: 0,
+    lastError: null as string | null,
+  },
+};
+const VRC_DEPTH_IDLE_MS = 1500;
+/** What the intake last heard webxr wants on the wire, and when (re-sent now and then). */
+const vrcDepthWire = { colors: null as boolean | null, sentAt: 0 };
+const VRC_DEPTH_WIRE_REFRESH_MS = 2000;
+
+/**
+ * VRChat's depth decoded where the headset draws it (`headsetDepthSource.ts`,
+ * `markdown/vrchat-depth/cpu-gpu-audit.md`): this render thread binds VRChat's window itself, the
+ * occluder decodes depth from it on the GPU, and only the header comes back to the CPU. Holds the
+ * intake's capture lease as the headset source, so no helper or ffmpeg capture runs for VR.
+ */
+const vrcDepthHeadset = {
+  /** `SETVRCDEPTHOPTIONS { headsetDecode }`; off falls back to frames relayed by the intake. */
+  enabled: true,
+  /** The intake reports depth running (`VRCDEPTHINTAKE`). */
+  running: false,
+  intake: null as string | null,
+  source: null as HeadsetDepthSource | null,
+  /** The frame the occluder draws: its header (camera pose) and its block in the shown texture. */
+  shown: null as { header: DepthFrameHeader; block: DepthForegroundBlock } | null,
+  /** VRChat's playspace scale from the intake (`VRCDEPTHSCALE`). */
+  reportedScale: null as number | null,
+  /** The latest decoded header, for the intake's block fit (camera size). */
+  lastHeader: null as DepthFrameHeader | null,
+  leaseHeld: false,
+  lastClaimAt: 0,
+  lastHeartbeatAt: 0,
+  lastError: null as string | null,
+};
+/** Samples a side of the GPU occluder grid (as the wire grid). */
+const VRC_DEPTH_GRID = 128;
+/** Tracking metres the occluder sits behind VRChat's surfaces (as `VrcDepthOccluder`). */
+const VRC_DEPTH_OCCLUDER_BIAS = 0.02;
+/** The headset source counts as live while it decoded a frame this recently. */
+const HEADSET_FRESH_MS = 1000;
+const HEADSET_CLAIM_EVERY_MS = 5000;
+const HEADSET_HEARTBEAT_MS = 1000;
+const headsetScratch = {
+  m: new THREE.Matrix4(),
+  p: new THREE.Vector3(),
+  q: new THREE.Quaternion(),
+  s: new THREE.Vector3(),
+};
+type ActorTarget = Parameters<typeof PostMan.PostMessage>[0]["target"];
+
+function headsetDepthActive(): boolean {
+  const source = vrcDepthHeadset.source;
+  return source != null && Date.now() - source.lastFrameAt < HEADSET_FRESH_MS;
+}
+
+function headsetOwner(): string {
+  return `${state.id}:headset`;
+}
+
+/** Once per headset frame on the render thread, before the eyes draw. */
+function tickHeadsetDepth(): void {
+  const h = vrcDepthHeadset;
+  if (!(h.enabled && h.running)) {
+    if (h.source) stopHeadsetDepth();
+    return;
+  }
+  try {
+    h.source ??= new HeadsetDepthSource();
+    h.source.cpuGrid = vrcDepthDebugStore.enabled() || vrcDepth.scanEnabled ? VRC_DEPTH_GRID : 0;
+    const frame = h.source.tick();
+    if (frame) {
+      h.lastHeader = frame.header;
+      handleDepthFrame({
+        receivedAt: frame.receivedAt,
+        decodeMs: frame.decodeMs,
+        header: frame.header,
+        width: frame.width,
+        height: frame.height,
+        depth: frame.depth,
+        rgba: null,
+        worldScale: h.reportedScale,
+      });
+      if (frame.block) h.shown = { header: frame.header, block: frame.block };
+    }
+    updateHeadsetOccluder();
+    keepHeadsetLease();
+  } catch (error) {
+    // GL or X trouble on the render thread: stop rather than fail every frame.
+    h.lastError = error instanceof Error ? error.stack ?? error.message : String(error);
+    LogChannel.error("webxrv2", `[webxr] headset depth source stopped: ${h.lastError}`);
+    stopHeadsetDepth();
+    h.enabled = false;
+  }
+}
+
+function updateHeadsetOccluder(): void {
+  const h = vrcDepthHeadset;
+  const overlay = state.raylibOverlayRaylib;
+  const alignment = vrcDepth.filter.get();
+  const shown = h.shown;
+  if (
+    shown == null || alignment == null || !vrcDepthDebugStore.occlusion() || !headsetDepthActive()
+  ) {
+    vrcDepthDebugStore.setGpuOcclusion(false);
+    overlay?.setDepthOccluder(null);
+    return;
+  }
+  vrcDepthDebugStore.setGpuOcclusion(true);
+  if (!overlay) return;
+  const view = applyWorldToTracking(alignment, cameraWorldPose(shown.header));
+  const { m, p, q, s } = headsetScratch;
+  m.compose(p.fromArray(view.position), q.fromArray(view.quaternion), s.setScalar(alignment.scale));
+  overlay.setDepthOccluder({
+    block: shown.block,
+    cameraToTracking: m.elements,
+    projection: shown.header.projection,
+    grid: VRC_DEPTH_GRID,
+    biasCameraUnits: VRC_DEPTH_OCCLUDER_BIAS / alignment.scale,
+  });
+}
+
+/**
+ * The intake's capture lease as the headset source: while held the intake runs no other capture
+ * for VR; heartbeats carry decode health for its block calibration. The debug view may take the
+ * lease (it captures for itself); this source keeps running and claims again later.
+ */
+function keepHeadsetLease(): void {
+  const h = vrcDepthHeadset;
+  const source = h.source;
+  if (!h.intake || !source) return;
+  const target = h.intake as ActorTarget;
+  const now = Date.now();
+  if (!h.leaseHeld && now - h.lastClaimAt >= HEADSET_CLAIM_EVERY_MS) {
+    h.lastClaimAt = now;
+    (PostMan.PostMessage({
+      target,
+      type: "CLAIMDEPTHCAPTURE",
+      payload: { owner: headsetOwner(), background: true, headset: true },
+    }, true) as Promise<unknown>).then((reply) => {
+      h.leaseHeld = reply != null && !(reply as { __actorError?: unknown }).__actorError;
+    }).catch(() => (h.leaseHeld = false));
+  }
+  if (h.leaseHeld && now - h.lastHeartbeatAt >= HEADSET_HEARTBEAT_MS) {
+    h.lastHeartbeatAt = now;
+    const capture = source.capture?.status() ?? null;
+    (PostMan.PostMessage({
+      target,
+      type: "EXTERNALDEPTHHEARTBEAT",
+      payload: {
+        owner: headsetOwner(),
+        stream: {
+          running: capture != null,
+          window: capture?.window ?? null,
+          frames: capture?.damages ?? 0,
+          restarts: 0,
+          lastError: source.openError,
+        },
+        metrics: {
+          decodeMs: source.decodeMs,
+          lastFailure: source.lastFailure ?? source.openError,
+          failures: source.failures,
+          repeats: source.repeats,
+          decoded: source.decoded,
+          lastFrameAt: source.lastFrameAt || null,
+          camera: h.lastHeader
+            ? { width: h.lastHeader.screenWidth, height: h.lastHeader.screenHeight }
+            : null,
+        },
+      },
+    }, true) as Promise<unknown>).then((reply) => {
+      if (reply === false) h.leaseHeld = false;
+    }).catch(() => {});
+  }
+}
+
+function stopHeadsetDepth(): void {
+  const h = vrcDepthHeadset;
+  h.source?.dispose();
+  h.source = null;
+  h.shown = null;
+  state.raylibOverlayRaylib?.setDepthOccluder(null);
+  vrcDepthDebugStore.setGpuOcclusion(false);
+  if (h.leaseHeld && h.intake) {
+    PostMan.PostMessage({
+      target: h.intake as ActorTarget,
+      type: "RELEASEDEPTHCAPTURE",
+      payload: { owner: headsetOwner() },
+    });
+  }
+  h.leaseHeld = false;
+}
+
+function headsetDepthStatus() {
+  const h = vrcDepthHeadset;
+  return {
+    enabled: h.enabled,
+    running: h.running,
+    active: headsetDepthActive(),
+    leaseHeld: h.leaseHeld,
+    occluding: vrcDepthDebugStore.gpuOcclusion(),
+    lastError: h.lastError,
+    source: h.source?.status() ?? null,
+  };
+}
+
+/** Colours cost half of each frame's wire; only the debug mesh and the scan use them. */
+function requestVrcDepthWire(source: string | undefined): void {
+  if (!source) return;
+  const colors = vrcDepthDebugStore.enabled() || vrcDepth.scanEnabled;
+  const now = Date.now();
+  if (colors === vrcDepthWire.colors && now - vrcDepthWire.sentAt < VRC_DEPTH_WIRE_REFRESH_MS) {
+    return;
+  }
+  vrcDepthWire.colors = colors;
+  vrcDepthWire.sentAt = now;
+  PostMan.PostMessage({
+    target: source as Parameters<typeof PostMan.PostMessage>[0]["target"],
+    type: "VRCDEPTHWANTS",
+    payload: { colors },
+  });
+}
+/** Head camera pose updates: one per headset frame at 90 Hz. */
+const HEAD_CAMERA_INTERVAL_MS = 1000 / 90;
+const HEAD_CAMERA_MODE_RETRY_MS = 2000;
+/** `/usercamera/Mode`: Stream, the mode the depth block renders in. */
+const VRC_CAMERA_MODE_STREAM = 2;
+/** VRChat's OSC input (the same port `blockLayout.ts` sends avatar parameters to). */
+const VRCHAT_OSC_ENDPOINT = { hostname: "127.0.0.1", port: 9000 };
+const VRC_DEPTH_SCAN_INTEGRATE_MS = 100;
+const VRC_DEPTH_SCAN_BUILD_MS = 250;
+
+/** sRGB byte → linear 0..1 (Three's vertex colours are linear). */
+const SRGB_TO_LINEAR = new Float32Array(256).map((_, i) => {
+  const c = i / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+});
+/** Pairings while the head moves faster than this mix two poses; they only refine slowly. */
+const VRC_DEPTH_STILL_METERS_PER_SECOND = 0.3;
+const VRC_DEPTH_STILL_DEGREES_PER_SECOND = 45;
+
+function recordVrcDepthHmd(): void {
+  if (Date.now() - vrcDepth.lastFrameAt > VRC_DEPTH_IDLE_MS) {
+    stopVrcDepth();
+    return;
+  }
+  const hmd = trackedPose(state.host?.getDirectOpenVrInputs().hmd ?? null);
+  if (hmd) vrcDepth.history.push(Date.now(), hmd);
+  if (hmd) pinHeadCamera(hmd);
+}
+
+/** Moves VRChat's Stream camera ahead of the headset, at most at headset rate. */
+function pinHeadCamera(hmd: TrackedPose): void {
+  const camera = vrcDepth.headCamera;
+  const alignment = vrcDepth.filter.get();
+  const now = performance.now();
+  if (
+    !camera.enabled || vrcDepth.depthCamera || !alignment ||
+    now - camera.lastSentAt < HEAD_CAMERA_INTERVAL_MS
+  ) return;
+  camera.lastSentAt = now;
+  const control = headCameraControl();
+  // `/usercamera/Pose` turns Flying on, which takes the player's locomotion: release it each time.
+  control.sendPose(headCameraPose(hmd, alignment, camera.offsetMeters))
+    .then(() => control.release())
+    .then(() => {
+      camera.sent++;
+    })
+    .catch((error) => {
+      camera.lastError = String(error);
+    });
+}
+
+function headCameraControl(): DirectCameraControl {
+  return vrcDepth.headCamera.control ??= new DirectCameraControl(VRCHAT_OSC_ENDPOINT);
+}
+
+/**
+ * While no block decodes, keeps the open camera in Stream mode at its widest zoom: the block only
+ * shows in Stream. VRChat's camera has to be opened by hand once (OSC can't open it).
+ */
+function assertHeadCameraMode(): void {
+  const camera = vrcDepth.headCamera;
+  if (!camera.enabled || Date.now() - vrcDepth.lastFrameAt < VRC_DEPTH_IDLE_MS) return;
+  const control = headCameraControl();
+  control.sendMode(VRC_CAMERA_MODE_STREAM)
+    .then(() => control.sendZoom(HEAD_CAMERA_ZOOM))
+    .then(() => {
+      camera.modeSent++;
+    })
+    .catch((error) => {
+      camera.lastError = String(error);
+    });
+}
+
+function setHeadCamera(enabled: boolean, offsetMeters?: number): void {
+  const camera = vrcDepth.headCamera;
+  if (typeof offsetMeters === "number" && offsetMeters >= 0 && offsetMeters <= 1) {
+    camera.offsetMeters = offsetMeters;
+  }
+  camera.enabled = enabled;
+  vrcDepthDebugStore.setHeadCameraPinned(enabled);
+  if (enabled && camera.modeTimer == null) {
+    assertHeadCameraMode();
+    camera.modeTimer = setInterval(assertHeadCameraMode, HEAD_CAMERA_MODE_RETRY_MS);
+  }
+  if (!enabled && camera.modeTimer != null) {
+    clearInterval(camera.modeTimer);
+    camera.modeTimer = null;
+  }
+  if (!enabled && camera.control) {
+    const control = camera.control;
+    camera.control = null;
+    void control.release().finally(() => control.close());
+  }
+}
+
+function stopVrcDepth(): void {
+  vrcDepth.debugFrame = null;
+  if (vrcDepth.recorder != null) clearInterval(vrcDepth.recorder);
+  vrcDepth.recorder = null;
+  vrcDepth.filter.reset();
+  vrcDepthDebugStore.setMesh(null);
+  vrcDepthDebugStore.setLines([]);
+  // The scan stays: it is in VRChat world space and still valid when blocks come back.
+  vrcCameraTracker.clearDepthBlockPose();
+}
+
+/** One decoded depth block: from the intake's wire, or from the headset source on this thread. */
+type DecodedDepthFrame = {
+  receivedAt: number;
+  decodeMs: number;
+  header: DepthFrameHeader;
+  width: number;
+  height: number;
+  /** Nearest-sampled grid in metres, or null when only the header was decoded. */
+  depth: Float32Array | null;
+  /** sRGB colour per sample, RGBA (alpha 0 = none), when sent. */
+  rgba: Uint8Array | null;
+  worldScale: number | null;
+};
+
+/** A frame relayed by the intake (`VRCDEPTHFRAME`): the path when the headset source isn't live. */
+function onVrcDepthFrame(payload: VrcDepthFramePayload): void {
+  if (payload.source) vrcDepthHeadset.intake = payload.source;
+  // The headset source reads VRChat's window itself; a relayed frame (the debug view's) is older.
+  if (headsetDepthActive()) return;
+  requestVrcDepthWire(payload.source);
+  handleDepthFrame({
+    receivedAt: payload.receivedAt,
+    decodeMs: payload.decodeMs,
+    header: payload.header,
+    width: payload.width,
+    height: payload.height,
+    depth: payloadDepth(payload),
+    rgba: payload.colorBase64 ? decodeBytesBase64(payload.colorBase64) : null,
+    worldScale: payload.worldScale,
+  });
+}
+
+function handleDepthFrame(frame: DecodedDepthFrame): void {
+  vrcDepth.debugFrame = { receivedAt: frame.receivedAt, header: frame.header };
+  const now = Date.now();
+  vrcDepth.lastFrameAt = now;
+  vrcDepth.frames++;
+  vrcDepth.depthCamera = (frame.header.flags & FLAG_DEPTH_CAMERA) !== 0;
+  vrcDepth.lastDecodeMs = frame.decodeMs;
+  if (vrcDepth.recorder == null) {
+    vrcDepth.recorder = setInterval(recordVrcDepthHmd, 5);
+    recordVrcDepthHmd();
+  }
+  const header = frame.header;
+  const head = headWorldPose(header);
+  const camera = cameraWorldPose(header);
+  const renderedAt = frame.receivedAt - vrcDepth.latencyMs;
+  const hmd = vrcDepth.history.at(renderedAt);
+  // Tracking metres per world metre: VRChat shrinks or grows the playspace to the avatar.
+  const trackingScale = frame.worldScale ? 1 / frame.worldScale : 1;
+  if (hmd == null) {
+    vrcDepth.unpaired++;
+  } else {
+    const fit = alignHead(head, hmd, trackingScale);
+    vrcDepth.lastTiltDeg = fit.tiltDeg;
+    vrcDepth.lastHeadSpeed = vrcDepth.history.speed(renderedAt);
+    const still = vrcDepth.lastHeadSpeed != null &&
+      vrcDepth.lastHeadSpeed.metersPerSecond < VRC_DEPTH_STILL_METERS_PER_SECOND &&
+      vrcDepth.lastHeadSpeed.degreesPerSecond < VRC_DEPTH_STILL_DEGREES_PER_SECOND;
+    if (still || vrcDepth.filter.get() == null) vrcDepth.filter.push(fit);
+  }
+  const alignment = vrcDepth.filter.get();
+  if (alignment == null) return;
+  vrcDepth.worldScale = frame.worldScale;
+  // PetPlay's objects take VRChat's lighting at the wearer (environmentLighting.ts).
+  if (header.lighting) {
+    setEnvironmentLighting(environmentFromRecord(header.lighting, alignment, now));
+  }
+  vrcCameraTracker.setDepthBlockPose(camera, alignment, vrcDepthFovYDeg(header), now);
+  vrcDepthDebugStore.setScanAlignment(alignment);
+
+  // The debug mesh: depth → the view's space → VRChat world → tracking.
+  // The headset source sends no grid unless the debug mesh or the scan asked for one
+  // (`HeadsetDepthSource.cpuGrid`).
+  const depth = frame.depth;
+  if (depth == null) {
+    vrcDepthDebugStore.setLines(vrcDepthDebugLines(frame, alignment));
+    return;
+  }
+  const count = frame.width * frame.height;
+  if (vrcDepth.points.length !== count * 3) vrcDepth.points = new Float32Array(count * 3);
+  const points = unprojectDepth(
+    depth,
+    frame.width,
+    frame.height,
+    header.projection,
+    vrcDepth.points,
+  );
+  const view = applyWorldToTracking(alignment, camera);
+  const q = view.quaternion;
+  const positions = new Float32Array(count * 3);
+  for (let k = 0; k < count; k++) {
+    const x = points[k * 3], y = points[k * 3 + 1], z = points[k * 3 + 2];
+    if (Number.isNaN(x)) {
+      positions[k * 3] = positions[k * 3 + 1] = positions[k * 3 + 2] = NaN;
+      continue;
+    }
+    // Rotate by q (v' = v + 2w(u×v) + 2u×(u×v)), then translate.
+    const ux = q[0], uy = q[1], uz = q[2], w = q[3];
+    const cx = uy * z - uz * y, cy = uz * x - ux * z, cz = ux * y - uy * x;
+    const ccx = uy * cz - uz * cy, ccy = uz * cx - ux * cz, ccz = ux * cy - uy * cx;
+    const sc = alignment.scale;
+    positions[k * 3] = sc * (x + 2 * (w * cx + ccx)) + view.position[0];
+    positions[k * 3 + 1] = sc * (y + 2 * (w * cy + ccy)) + view.position[1];
+    positions[k * 3 + 2] = sc * (z + 2 * (w * cz + ccz)) + view.position[2];
+  }
+  // Linear colours per sample (NaN = none), for the live mesh and the scan.
+  let colors: Float32Array | null = null;
+  if (frame.rgba) {
+    const rgba = frame.rgba;
+    colors = new Float32Array(count * 3);
+    for (let k = 0; k < count; k++) {
+      if (rgba[k * 4 + 3] === 0) {
+        colors[k * 3] = colors[k * 3 + 1] = colors[k * 3 + 2] = NaN;
+        continue;
+      }
+      colors[k * 3] = SRGB_TO_LINEAR[rgba[k * 4]];
+      colors[k * 3 + 1] = SRGB_TO_LINEAR[rgba[k * 4 + 1]];
+      colors[k * 3 + 2] = SRGB_TO_LINEAR[rgba[k * 4 + 2]];
+    }
+  }
+  vrcDepthDebugStore.setMesh({
+    width: frame.width,
+    height: frame.height,
+    positions,
+    depth,
+    colors,
+    origin: view.position,
+  });
+  vrcDepth.debugSnapshot = {
+    receivedAt: frame.receivedAt,
+    header,
+    alignment,
+    mesh: vrcDepthDebugStore.rawMesh()!,
+  };
+  if (vrcDepth.scanEnabled && now - vrcDepth.scanIntegratedAt >= VRC_DEPTH_SCAN_INTEGRATE_MS) {
+    vrcDepth.scanIntegratedAt = now;
+    vrcDepth.scan.integrate({
+      cameraPosition: camera.position,
+      cameraQuaternion: camera.quaternion,
+      points,
+      depth,
+      width: frame.width,
+      height: frame.height,
+      projection: header.projection,
+      colors,
+      now,
+    });
+  }
+  if (
+    now - vrcDepth.scanBuiltAt >= VRC_DEPTH_SCAN_BUILD_MS &&
+    vrcDepth.scan.revision !== vrcDepth.scanBuiltRevision
+  ) {
+    vrcDepth.scanBuiltAt = now;
+    vrcDepth.scanBuiltRevision = vrcDepth.scan.revision;
+    // World space: the scene places the mesh with the alignment (`setScanAlignment`).
+    const surfels = vrcDepth.scan.buildSurfels({ yawRad: 0, scale: 1, translation: [0, 0, 0] });
+    vrcDepthDebugStore.setScan(vrcDepth.scanEnabled || surfels.count ? surfels : null);
+  }
+  vrcDepthDebugStore.setLines(vrcDepthDebugLines(frame, alignment));
+}
+
+function vrcDepthDebugLines(
+  payload: DecodedDepthFrame,
+  alignment: { yawRad: number; scale: number; translation: [number, number, number] },
+): string[] {
+  const f = (v: number, digits = 2) => v.toFixed(digits);
+  const vec = (v: ArrayLike<number>) => `${f(v[0])} ${f(v[1])} ${f(v[2])}`;
+  const h = payload.header;
+  const speed = vrcDepth.lastHeadSpeed;
+  return [
+    `depth ${payload.width}x${payload.height}  decode ${f(payload.decodeMs, 0)} ms  ` +
+    `age ${
+      Date.now() - payload.receivedAt
+    } ms  frames ${vrcDepth.frames}  unpaired ${vrcDepth.unpaired}`,
+    `camera world ${vec([h.viewToWorld[3], h.viewToWorld[7], h.viewToWorld[11]])}  fov ${
+      f(vrcDepthFovYDeg(h), 1)
+    }`,
+    `head world ${vec([h.anchorToWorld[3], h.anchorToWorld[7], h.anchorToWorld[11]])}`,
+    `world->tracking yaw ${f(alignment.yawRad * 180 / Math.PI, 1)} deg  t ${
+      vec(alignment.translation)
+    }  ` +
+    `world scale ${payload.worldScale == null ? "unknown (1)" : f(payload.worldScale, 3)}`,
+    `tilt ${vrcDepth.lastTiltDeg == null ? "-" : f(vrcDepth.lastTiltDeg, 1)} deg  head ${
+      speed ? `${f(speed.metersPerSecond)} m/s ${f(speed.degreesPerSecond, 0)} deg/s` : "-"
+    }  latency ${vrcDepth.latencyMs} ms`,
+  ];
+}
+
+function vrcDepthSyncStatus() {
+  return {
+    active: vrcDepth.recorder != null,
+    frames: vrcDepth.frames,
+    unpaired: vrcDepth.unpaired,
+    latencyMs: vrcDepth.latencyMs,
+    alignment: vrcDepth.filter.get(),
+    worldScale: vrcDepth.worldScale,
+    scan: {
+      enabled: vrcDepth.scanEnabled,
+      cells: vrcDepth.scan.cells.size,
+      voxelMeters: vrcDepth.scan.cellSize,
+    },
+    tiltDeg: vrcDepth.lastTiltDeg,
+    headSpeed: vrcDepth.lastHeadSpeed,
+    lines: vrcDepthDebugStore.lines(),
+  };
+}
+
 function trackedPose(
   pose: { position: Float32Array; quaternion: Float32Array } | null,
 ): TrackedPose | null {
@@ -1626,6 +2429,8 @@ function getWebXrViewsStatus() {
  * its first real frame.
  */
 const viewAssetCache = new OverlayAssetCache();
+/** Headset-only debug meshes never need to cross the recording-view transport. */
+const cameraHiddenGeometryIds = new Set<number>();
 let viewDeliveryError: string | null = null;
 
 function rememberViewAssets(batch: AssetBatch): void {
@@ -1646,6 +2451,11 @@ function publishRaythreeFrameToViews(
   payload: WebXRRaythreeRenderPayload,
   background: [number, number, number, number],
 ): void {
+  for (const instance of payload.leftEye.frame.instances) {
+    if ((instance as typeof instance & { vrcCameraHidden?: boolean }).vrcCameraHidden) {
+      cameraHiddenGeometryIds.add(instance.geometryId);
+    }
+  }
   // Once a delta is rejected, later snapshots cannot be dependency-complete. Require a
   // producer restart rather than resume with references to the discarded asset.
   if (viewDeliveryError) return;
@@ -1689,7 +2499,12 @@ function publishRaythreeFrameToViews(
     const vrcView = view.camera === "vrc";
     const extraction = {
       ...(vrcView ? withoutVrcCameraHelpers(payload.leftEye) : payload.leftEye),
-      assets: prepared.assets,
+      assets: vrcView
+        ? {
+          ...prepared.assets,
+          geometries: prepared.assets.geometries.filter((g) => !cameraHiddenGeometryIds.has(g.id)),
+        }
+        : prepared.assets,
     };
     const outgoing: WebXRRaythreeRenderPayload = {
       ...payload,
@@ -1697,7 +2512,18 @@ function publishRaythreeFrameToViews(
       delivery: prepared.delivery,
       leftEye: extraction,
       rightEye: extraction,
-      ...(vrcView ? { vrcCamera: vrcCameraTracker.currentViewPose() } : {}),
+      ...(vrcView
+        ? {
+          vrcCamera: vrcCameraTracker.currentViewPose(),
+          vrcDebugLines: vrcDepthDebugStore.lines(),
+          vrcDepthAlignment: vrcDepth.filter.get(),
+        }
+        : {}),
+      ...(view.label === "vrc-depth-debug"
+        ? {
+          vrcDepthDebug: vrcDepth.debugSnapshot,
+        }
+        : {}),
     };
     if (view.compactWire) {
       const start = performance.now();
@@ -1733,6 +2559,7 @@ function getWebXRStatus() {
   };
   return {
     ...hostStatus,
+    passthroughKey: getPassthroughKey(),
     desktopViewControlAllowed: state.desktopViewControlAllowed,
     desktopViewControlEnabled: state.desktopViewControlEnabled,
     desktopViewOffset: state.desktopViewOffset,
@@ -2681,6 +3508,7 @@ async function uploadRaylibShadowFrame() {
       return recoverRaylibOverlayTargets("no free projection eye targets");
     }
   }
+  tickHeadsetDepth();
   const rt = state.raylibOverlayRaylib.renderRaythreeFrame(payload, { skipCombine: projection });
   const renderMs = rt.totalMs;
   // Ship the same IR the in-worker overlay just rasterized to every registered

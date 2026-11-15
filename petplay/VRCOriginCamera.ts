@@ -148,6 +148,7 @@ new PostMan(
       return await stopCameraOrigin();
     },
     GETCAMERAPOSE: (_payload: void) => state.latestCameraPose,
+    GETUSERCAMERACONTROLENDPOINT: (_payload: void) => state.driver?.controlEndpoint ?? null,
     GETCAMERAPOSITIONESTIMATE: (_payload: void) => state.positionEstimate,
     GETCAMERAPOSITIONSAMPLES: (_payload: void) => state.positionSamples,
     RESETCAMERAPOSITIONESTIMATE: (_payload: void) => {
@@ -163,6 +164,10 @@ new PostMan(
     SETUSERCAMERALOOKATME: (payload: boolean) => {
       sendCameraLookAtMe(payload);
       return true;
+    },
+    SETUSERCAMERAFLYING: (payload: boolean) => {
+      state.driver?.sendMessage("/usercamera/Flying", [payload]);
+      return state.driver != null;
     },
     SETUSERCAMERAPOSE: (payload: CameraPoseCommand) => {
       sendCameraPose(payload.position, payload.rotationDeg);
@@ -499,6 +504,9 @@ class CameraOscQueryDriver {
   ) {}
 
   get running(): boolean { return this.oscSocket != null; }
+  get controlEndpoint() {
+    return this.running ? { hostname: "127.0.0.1", port: this.options.vrchatOscPort } : null;
+  }
   get oscPort(): number | null {
     return this.oscSocket ? (this.oscSocket.addr as Deno.NetAddr).port : null;
   }

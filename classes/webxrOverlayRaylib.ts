@@ -4,7 +4,7 @@ import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { getRaylibLibraryPath } from "./nativeLibraryPaths.ts";
 import { areNativeAssetBatchesIdenticalForSync } from "./raythreeAssetBatchesForSync.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
-import { WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
+import { type DepthOccluder, WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
 import {
   getCurrentContextId,
@@ -182,6 +182,8 @@ export class WebXROverlayRaylib {
   private spareOutputTargets: raylib.RenderTexture2D[] = [];
   private combineShader: raylib.Shader | null = null;
   private sceneRenderer: WebXRRaythreeRaylibRenderer | null = null;
+  /** Kept across renderer re-creation (`resetSceneAssets`). */
+  private depthOccluder: DepthOccluder | null = null;
   private lookRotationLocation = -1;
   private halfFovLocation = -1;
   private outputUvScaleLocation = -1;
@@ -241,6 +243,7 @@ export class WebXROverlayRaylib {
     }
 
     this.sceneRenderer = new WebXRRaythreeRaylibRenderer();
+    this.sceneRenderer.setDepthOccluder(this.depthOccluder);
     this.lookRotationLocation = raylib.H.GetShaderLocation(
       this.combineShader,
       "lookRotation",
@@ -298,6 +301,13 @@ export class WebXROverlayRaylib {
   resetSceneAssets(): void {
     this.sceneRenderer?.dispose();
     this.sceneRenderer = new WebXRRaythreeRaylibRenderer();
+    this.sceneRenderer.setDepthOccluder(this.depthOccluder);
+  }
+
+  /** VRChat's depth as an occluder in both eyes (`headsetDepthSource.ts`); null stops it. */
+  setDepthOccluder(occluder: DepthOccluder | null): void {
+    this.depthOccluder = occluder;
+    this.sceneRenderer?.setDepthOccluder(occluder);
   }
 
   getTextureHandle(): number {

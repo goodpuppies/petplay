@@ -143,11 +143,19 @@ try {
       }),
     );
   }
-  const holdSeconds = Number(Deno.args.find((a) => a.startsWith("--hold-open="))?.slice(12) ?? 0);
-  if (!Number.isFinite(holdSeconds) || holdSeconds < 0 || holdSeconds > 3600) {
-    throw new Error("--hold-open must be 0..3600 seconds");
+  // --hold-open=forever holds until the process is killed (vrlab down).
+  const holdArg = Deno.args.find((a) => a.startsWith("--hold-open="))?.slice(12) ?? "0";
+  const holdSeconds = holdArg === "forever" ? Infinity : Number(holdArg);
+  if (
+    holdSeconds !== Infinity &&
+    (!Number.isFinite(holdSeconds) || holdSeconds < 0 || holdSeconds > 3600)
+  ) {
+    throw new Error("--hold-open must be 0..3600 seconds or forever");
   }
-  if (holdSeconds) {
+  if (holdSeconds === Infinity) {
+    console.error("Holding guarded synthetic overlay client open until stopped");
+    await new Promise(() => {});
+  } else if (holdSeconds) {
     console.error(`Holding guarded synthetic overlay client open for ${holdSeconds}s`);
     await new Promise((resolve) => setTimeout(resolve, holdSeconds * 1000));
   }

@@ -108,6 +108,10 @@ type Decoded =
 /** Resolve references before returning receipt credit. GPU adoption can happen later. */
 export class OverlaySceneWireDecoder {
   private stream: string | null = null;
+  /** The sender's stream identity (epoch and stream) of the last packet decoded. */
+  get streamId(): string | null {
+    return this.stream;
+  }
   private sequence = 0;
   private entries = new Map<number, Asset>();
   private retired = new Set<string>();

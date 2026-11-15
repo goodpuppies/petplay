@@ -328,5 +328,79 @@ Park the SteamVR camera integration for now. PetPlay can render the key colour i
 then use the existing WebXR AR presenter to remove it over the headset's native
 passthrough. This avoids needing a SteamVR camera reader. The user identified the existing
 VRChat depth shader system as a way to control key regions dynamically in that application.
-This alternative is recorded for the next implementation; it has not been implemented or
-validated by this camera experiment. Key-colour collisions and compression edges still apply.
+The implementation below uses this route. Key-colour collisions and compression edges still apply.
+
+
+### Live scene key and VRChat depth (2026-11-15)
+
+PetPlay now mounts an opt-in inward-facing key sphere in the 3D scene. Enable it with
+`--webxr-passthrough-key=ff00ff`, or send the `webxr` actor `SETPASSTHROUGHKEY` with
+`{"color":"ff00ff"}`; `{"color":null}` removes it. The setting survives an actor reload
+and is reported in actor health. The sphere follows the tracked head, ignores lighting and
+fog, and does not write depth or intercept pointers. Its geometry has inward winding for
+both Three and native Raylib. The eye clear and panorama shader remain unchanged.
+
+The sphere draws at order -50, after the displays' existing depth-only screen proxies
+(order -100). Those proxies leave transparent holes in PetPlay's overlay, so SteamVR's
+separately composed display overlays remain visible. Normal PetPlay geometry and UI draw
+in front of the key. A hidden-window GPU check using the actual curved display surface
+and production renderer read `[0,0,0,0]` inside the hole and `[255,0,255,255]` outside;
+removing and restoring the proxy restored and removed the key at that pixel.
+
+The existing `vrchat-depth` feature (through local commit `c79d30f`) was integrated onto
+main's current code without downgrading its submodules or changing the running SteamVR
+session. It includes the avatar exporter, intake, calibration and GPU decode/occlusion
+path; see [vrchat-depth/README.md](vrchat-depth/README.md). The already uploaded avatar
+and an open Stream camera supplied live depth. The headset source successfully decoded
+thousands of frames, held the capture lease, aligned world to tracking and used the
+avatar's own depth camera (flag 32). It sent no Stream-camera pose commands.
+
+The initial 128×128 triangle occluder was visibly coarse. The headset renderer now uses
+a depth-only fragment pass sampling the full exported depth plane, sharing the existing
+foreground decoder and its edge-aware interpolation. Each eye ray is reprojected into
+the captured camera with three fixed-point refinements; missing/out-of-view samples and
+unconverged disocclusions are discarded. This removes the 128-grid quality limit but
+cannot recover detail absent from the source camera, or surfaces its single view cannot
+see. A GPU test preserved a one-source-pixel feature at 512² even with the legacy grid
+field set to 128, and checked a 512² target inside a 1×1 hidden context.
+
+The stream page offers **Enter VR** and **Enter AR** together when the browser supports
+both modes. Exit the active session before entering the other mode. `xrMode=ar` only selects
+the browser's preferred entry prompt; it is no longer required to expose AR. Optional
+`xrKey=RRGGBB` overrides the default magenta key. Press **Enter AR**. The key becomes alpha zero over the headset's native passthrough; non-key
+pixels remain opaque. A browser/IWER GPU check of a captured live encoded VRChat frame
+found 55.4% fully transparent and 44.2% fully opaque samples, with no presenter error.
+This is an alpha-path check; the actual Quest AR appearance still needs user validation.
+
+Validation: filtered `deno task check`; 100 depth/geometry tests (the two UDP tests need
+host access); the curved-display hole GPU probe; the full-resolution depth GPU probe;
+and viewer TypeScript check. Local artifacts are `_scratch/key-skybox-holes.log`,
+`_scratch/key-pixel-quality.log`, `_scratch/depth-integration/`, and
+`_scratch/media-browser-test/key-skybox-ar.mjs`. The stream and PetPlay remain running
+without automatic expiry. `_scratch/tailnet-xr-ik6qyolp/petplay-key-session.json` records
+the owned PetPlay PID and explicit stop command. Camera transport research remains parked.
+
+
+The shared-page mode controls passed a browser fixture using the actual viewer control
+code with session callbacks stubbed: enter AR, exit, enter VR, exit, with the other button
+disabled while immersive. The live-stream IWER lifecycle attempt hit media group expiry
+and is not an end-to-end headset validation. The separate AR pixel check above passed.
+Viewer check/build pass.
+
+
+Sky controls live at **wrist menu → Settings → Render**: toggle Passthrough sky and
+adjust Sky distance with −/+ in 0.25 m steps (0.25–40 m). The default is now 2 m rather
+than 40 m. Both key colour and radius persist in settings. The sphere is unit geometry
+scaled in the scene, so distance changes do not rebuild its mesh. Display proxies also
+carry an explicit cutout role: immediately after the key draws, a zero-alpha pass clears
+their screen areas before other PetPlay geometry/UI. Screens therefore remain visible
+when they are farther away than the chosen sky distance. The GPU hole check passed at
+1 m and 40 m, with the curved screen 2 m away.
+
+
+**Sky anchor** on the same Render page defaults to **SPACE**. The sphere is fixed in
+PetPlay's playspace frame, initially centred where the head is when it first anchors.
+It no longer follows subsequent head translations. **HEAD** restores head-following;
+**HERE** moves the playspace anchor to the current head position. Anchor mode and centre
+are saved alongside the radius. PetPlay's playspace frame stays physically stable through
+VRChat playspace drags (see `classes/playspaceFrame.ts`).

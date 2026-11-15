@@ -38,6 +38,31 @@ export const VRC_CAMERA_RESOLUTIONS = ["1920x1080", "1280x720", "2560x1440"] as 
 export type VrcCameraResolution = typeof VRC_CAMERA_RESOLUTIONS[number];
 
 export const SETTINGS_SCHEMA = {
+  passthroughKey: {
+    default: null as string | null,
+    label: "Passthrough sky colour; null disables it",
+    valid: (v: unknown): v is string | null =>
+      v === null || (typeof v === "string" && /^[0-9a-f]{6}$/i.test(v)),
+  } satisfies SettingSpec<string | null>,
+  passthroughAnchor: {
+    default: "playspace" as "playspace" | "head",
+    label: "Passthrough sky anchor",
+    valid: (v: unknown): v is "playspace" | "head" => v === "playspace" || v === "head",
+  } satisfies SettingSpec<"playspace" | "head">,
+  passthroughCenter: {
+    default: null as [number, number, number] | null,
+    label: "Passthrough sky centre in PetPlay playspace metres; null recentres at the head",
+    valid: (v: unknown): v is [number, number, number] | null =>
+      v === null ||
+      (Array.isArray(v) && v.length === 3 &&
+        v.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= 10000)),
+  } satisfies SettingSpec<[number, number, number] | null>,
+  passthroughRadiusMeters: {
+    default: 2 as number,
+    label: "Passthrough sky distance in metres (0.25 to 40)",
+    valid: (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0.25 && v <= 40,
+  } satisfies SettingSpec<number>,
   glyphAaWidth: {
     default: 1 as number,
     label: "Glyph antialiasing footprint scale (1 is original; smaller is sharper)",

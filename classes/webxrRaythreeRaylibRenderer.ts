@@ -1,8 +1,22 @@
+import { GL, loadGlFunctions } from "./glFunctions.ts";
+import { environmentLighting, shadowLight } from "./vrchatDepth/environmentLighting.ts";
+import { LIGHT_VOLUME_GLSL, lightVolumeCache } from "./vrchatDepth/lightVolumes.ts";
+import { shadowFrustum, type Sphere } from "./vrchatDepth/shadowFrustum.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as THREE from "three";
 import { PathfinderTextRenderer } from "./pathfinderText.ts";
 import { GlyphTextRenderer } from "./glyphText.ts";
 import { beginUiAlphaBlend } from "./uiAlphaBlend.ts";
+import {
+  FOREGROUND_BLOCK_FRAGMENT,
+  FOREGROUND_FRAGMENT,
+  FOREGROUND_VERTEX,
+  OCCLUDER_PIXEL_FRAGMENT,
+  SHADOW_BLOCK_FRAGMENT,
+  SHADOW_CASTER_FRAGMENT,
+  SHADOW_CASTER_VERTEX,
+  SHADOW_FRAGMENT,
+} from "./vrchatDepth/foreground.ts";
 import { captureTextBatchTransforms, textBatchTransformsMatch } from "./uiTextBatchTransforms.ts";
 import {
   captureTextBatchContent,
@@ -27,6 +41,10 @@ import type {
 
 const MAX_MATERIAL_MAPS = 11;
 const ZERO_POINTER = 0n;
+/** Shadow map resolution (texels a side) and how dark a full shadow draws on VRChat's surfaces. */
+const SHADOW_MAP_SIZE = 1024;
+const SHADOW_OPACITY = 0.9;
+
 const DEFAULT_RAYLIB_CAMERA: raylibBindings.Camera3D = {
   position: { x: 0, y: 0, z: 0 },
   target: { x: 0, y: 0, z: -1 },
@@ -130,6 +148,8 @@ type NativeMaterial = {
   depthWrite: boolean;
   /** Mirrors Three `Material.colorWrite`; false draws depth-only occluders. */
   colorWrite: boolean;
+  /** Mirrors Three `Material.vertexColors`: the shader multiplies by the mesh's colours. */
+  vertexColors: boolean;
 };
 
 type LightingShader = {
@@ -141,6 +161,24 @@ type LightingShader = {
   lightIntensityLoc: number;
   lightRangeLoc: number;
   baseColorLoc: number;
+  vertexColorsLoc: number;
+  /** VRChat's lighting at the wearer (`vrchatDepth/environmentLighting.ts`). */
+  envEnabledLoc: number;
+  shLocs: number[]; // uSHAr, uSHAg, uSHAb, uSHBr, uSHBg, uSHBb
+  shCLoc: number;
+  envAxisLocs: number[]; // uEnvX, uEnvY, uEnvZ: tracking → Unity world, by column
+  mainDirLoc: number;
+  mainColorLoc: number;
+  envOriginLoc: number;
+  envScaleLoc: number;
+  vertexLightLocs: number[]; // uVLX, uVLY, uVLZ, uVLAtten
+  vertexLightColorLocs: number[]; // uVLColor0..3
+};
+
+/** Raylib's default shader plus Three's `vertexColors` switch, for unlit materials. */
+type UnlitShader = {
+  shader: raylibBindings.Shader;
+  vertexColorsLoc: number;
 };
 
 type UiPanelShader = {
@@ -371,6 +409,7 @@ const MSDF_PX_RANGE = 4;
 export class WebXRRaythreeRaylibRenderer {
   private readonly baseMaterial: raylibBindings.Material;
   private readonly lightingShader: LightingShader;
+  private readonly unlitShader: UnlitShader;
   private readonly uiPanelShader: UiPanelShader;
   private readonly uiTextShader: UiTextShader;
   private readonly uiPanelMesh: NativeMesh;
@@ -480,6 +519,633 @@ export class WebXRRaythreeRaylibRenderer {
   private glyphText: GlyphTextRenderer | null = null;
   private windfoilText: PathfinderTextRenderer | null = null;
   private textRenderer: "msdf" | "pathfinder" | "glyph" | "windfoil";
+  private foreground: import("./vrchatDepth/foreground.ts").DepthForeground | null = null;
+  private volumeGpu:
+    | { texture: raylibBindings.Texture2D; revision: number; dataRevision: number }
+    | null = null;
+  private spatialLightingEnabled = true;
+  setSpatialLightingEnabled(enabled: boolean) {
+    this.spatialLightingEnabled = enabled;
+  }
+  private spatialLightingStrength = 1;
+  setSpatialLightingStrength(strength: number) {
+    this.spatialLightingStrength = Number.isFinite(strength)
+      ? Math.max(0, Math.min(8, strength))
+      : 1;
+  }
+  private syncLightVolumes() {
+    const snapshot = this.spatialLightingEnabled && environmentLighting()
+      ? lightVolumeCache.snapshot()
+      : null;
+    const loc = raylib.H.GetShaderLocation(this.lightingShader.shader, "uLV");
+    setShaderVec4(
+      this.lightingShader.shader,
+      loc,
+      snapshot
+        ? [
+          snapshot.count,
+          snapshot.additive,
+          Number(snapshot.probesBlend),
+          Number(snapshot.sharpBounds),
+        ]
+        : [0, 0, 0, 0],
+    );
+    setShaderFloat(
+      this.lightingShader.shader,
+      raylib.H.GetShaderLocation(this.lightingShader.shader, "uLVMaxAdditive"),
+      snapshot?.maxAdditive ?? 0,
+    );
+    setShaderFloat(
+      this.lightingShader.shader,
+      raylib.H.GetShaderLocation(this.lightingShader.shader, "uLVStrength"),
+      this.spatialLightingStrength,
+    );
+    if (!snapshot) return;
+    if (this.volumeGpu?.revision === snapshot.revision) return;
+    if (
+      this.volumeGpu && this.volumeGpu.texture.width === snapshot.width &&
+      this.volumeGpu.texture.height === snapshot.height
+    ) {
+      if (this.volumeGpu.dataRevision === snapshot.dataRevision) {
+        // Animated transform/tint updates touch only the metadata table, not the atlas.
+        raylib.H.UpdateTextureRec(
+          this.volumeGpu.texture,
+          { x: 0, y: 0, width: 512, height: 1 },
+          Deno.UnsafePointer.of(snapshot.texture.subarray(0, 512 * 4)),
+        );
+      } else {raylib.H.UpdateTexture(
+          this.volumeGpu.texture,
+          Deno.UnsafePointer.of(snapshot.texture),
+        );}
+      this.volumeGpu.dataRevision = snapshot.dataRevision;
+      this.volumeGpu.revision = snapshot.revision;
+    } else {
+      if (this.volumeGpu) raylib.H.UnloadTexture(this.volumeGpu.texture);
+      const texture = raylib.H.LoadTextureFromImage(
+        {
+          data: pointerAddress(snapshot.texture),
+          width: snapshot.width,
+          height: snapshot.height,
+          mipmaps: 1,
+          format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,
+        } as unknown as raylibBindings.Image,
+      );
+      raylib.H.SetTextureFilter(texture, raylib.TextureFilter.TEXTURE_FILTER_POINT);
+      raylib.H.SetTextureWrap(texture, raylib.TextureWrap.TEXTURE_WRAP_CLAMP);
+      this.volumeGpu = {
+        texture,
+        revision: snapshot.revision,
+        dataRevision: snapshot.dataRevision,
+      };
+    }
+  }
+  private foregroundGpu: {
+    shader: raylibBindings.Shader;
+    material: raylibBindings.Material;
+    maps: Uint8Array;
+    texture: raylibBindings.Texture2D | null;
+    revision: number;
+    projectionLoc: number;
+    depthLoc: number;
+  } | null = null;
+  /** Same pass, decoding the depth block from VRChat's window texture (`DepthForeground.block`). */
+  private foregroundBlockGpu: {
+    shader: raylibBindings.Shader;
+    material: raylibBindings.Material;
+    maps: Uint8Array;
+    lut: raylibBindings.Texture2D;
+    lutBytes: Uint8Array;
+    projectionLoc: number;
+    depthLoc: number;
+    blockLoc: number;
+    layoutLoc: number;
+    bitsLoc: number;
+    calLoc: number;
+    table: raylibBindings.Texture2D | null;
+    tableRevision: number;
+  } | null = null;
+  /** VR occlusion from the depth block in VRChat's window texture (`setDepthOccluder`). */
+  private occluder: DepthOccluder | null = null;
+  /** Set when the occluder failed; it stays off for this renderer. */
+  occluderError: string | null = null;
+  private occluderGpu: {
+    shader: raylibBindings.Shader;
+    material: raylibBindings.Material;
+    maps: Uint8Array;
+    lut: raylibBindings.Texture2D;
+    lutBytes: Uint8Array;
+    table: raylibBindings.Texture2D | null;
+    tableRevision: number;
+    locs: Map<string, number>;
+  } | null = null;
+
+  /** Desktop-only opt-in; ordinary/headset renderers never allocate this pass. */
+  /**
+   * PetPlay's objects cast shadows onto VRChat's surfaces (the depth foreground's pixels) from
+   * VRChat's light (`environmentLighting.ts` `shadowLight`). Only where the depth foreground is
+   * set, and only for renderers that draw to the screen: the shadow map pass uses its own render
+   * target, which can't nest inside a caller's.
+   */
+  setShadows(enabled: boolean) {
+    this.shadowsEnabled = enabled;
+    if (!enabled) this.shadowFrame = null;
+  }
+  private shadowsEnabled = false;
+  private shadowGpu: {
+    target: raylibBindings.RenderTexture2D;
+    material: raylibBindings.Material;
+    shader: raylibBindings.Shader;
+  } | null = null;
+  /** This frame's light view, when the shadow map holds casters. */
+  private shadowFrame: { matrix: number[]; strength: number; depthRange: number } | null = null;
+  private readonly meshBounds = new WeakMap<NativeMesh, Sphere>();
+  private shadowReceivers = new Map<"texture" | "block", {
+    shader: raylibBindings.Shader;
+    locs: Map<string, number>;
+    invViewLoc: number;
+    projXYLoc: number;
+    lightLoc: number;
+    shadowLoc: number;
+  }>();
+
+  /** Renders the shadow map for this frame's lit opaque objects; sets `shadowFrame`. */
+  private renderShadowMap(frame: RenderFrame): void {
+    this.shadowFrame = null;
+    if (!this.shadowsEnabled || !this.foreground) return;
+    const env = environmentLighting();
+    const light = env && shadowLight(env);
+    if (!light) return;
+    const casters: { mesh: NativeMesh; world: ArrayLike<number> }[] = [];
+    const spheres: Sphere[] = [];
+    const m = new THREE.Matrix4();
+    for (const instance of frame.instances) {
+      if (isInstancedInstance(instance) || instance.hudOverUi) continue;
+      const mesh = this.geometries.get(instance.geometryId);
+      const material = this.materials.get(instance.materialId);
+      if (
+        !mesh || !material || !material.usesLighting || material.transparent || !material.colorWrite
+      ) continue;
+      let local = this.meshBounds.get(mesh);
+      if (!local) {
+        const box = raylib.H.GetMeshBoundingBox(mesh.mesh) as unknown as {
+          min: { x: number; y: number; z: number };
+          max: { x: number; y: number; z: number };
+        };
+        local = {
+          center: [
+            (box.min.x + box.max.x) / 2,
+            (box.min.y + box.max.y) / 2,
+            (box.min.z + box.max.z) / 2,
+          ],
+          radius: Math.hypot(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z) /
+            2,
+        };
+        this.meshBounds.set(mesh, local);
+      }
+      m.fromArray(instance.worldMatrix as unknown as number[]);
+      const center = new THREE.Vector3(...local.center).applyMatrix4(m);
+      spheres.push({ center: center.toArray(), radius: local.radius * m.getMaxScaleOnAxis() });
+      casters.push({ mesh, world: instance.worldMatrix });
+    }
+    const frustum = shadowFrustum(light.direction, spheres);
+    if (!frustum) return;
+    let gpu = this.shadowGpu;
+    if (!gpu) {
+      const shader = raylib.H.LoadShaderFromMemory(SHADOW_CASTER_VERTEX, SHADOW_CASTER_FRAGMENT);
+      const target = raylib.H.LoadRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+      raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_POINT);
+      raylib.H.SetTextureWrap(target.texture, raylib.TextureWrap.TEXTURE_WRAP_CLAMP);
+      const maps = cloneMaterialMaps(this.baseMaterial);
+      gpu = this.shadowGpu = {
+        target,
+        shader,
+        material: {
+          ...this.baseMaterial,
+          shader,
+          maps: pointerAddress(maps),
+        } as unknown as raylibBindings.Material,
+      };
+      this.shadowMapsKeepAlive = maps;
+    }
+    raylib.H.BeginTextureMode(gpu.target);
+    try {
+      raylib.H.ClearBackground(raylib.WHITE);
+      raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
+      raylib.H.rlSetMatrixProjection(this.matrixForDraw(frustum.projection.elements));
+      raylib.H.rlSetMatrixModelview(this.matrixForDraw(frustum.view.elements));
+      setUiBackfaceCullingEnabled(false);
+      try {
+        for (const caster of casters) {
+          rlFast.DrawMesh(caster.mesh.mesh, gpu.material, this.matrixForDraw(caster.world));
+        }
+      } finally {
+        setUiBackfaceCullingEnabled(true);
+      }
+      raylib.H.EndMode3D();
+    } finally {
+      raylib.H.EndTextureMode();
+    }
+    this.shadowFrame = {
+      matrix: [...frustum.matrix.elements],
+      strength: light.strength,
+      depthRange: frustum.depthRange,
+    };
+  }
+  private shadowMapsKeepAlive: Uint8Array | null = null;
+
+  /** Darkens VRChat's surfaces where PetPlay's shadow map says they're blocked. */
+  private drawForegroundShadows(
+    source: "texture" | "block",
+    depthMaterial: raylibBindings.Material,
+    depthMaps: Uint8Array,
+    projection: Float32Array,
+    viewMatrix: Float32Array,
+    uniforms: Record<string, number[]>,
+  ): void {
+    const shadow = this.shadowFrame;
+    if (!shadow || !this.shadowGpu) return;
+    let receiver = this.shadowReceivers.get(source);
+    if (!receiver) {
+      const shader = raylib.H.LoadShaderFromMemory(
+        FOREGROUND_VERTEX,
+        source === "block" ? SHADOW_BLOCK_FRAGMENT : SHADOW_FRAGMENT,
+      );
+      // raylib binds material map i to the sampler at locs[SHADER_LOC_MAP_ALBEDO + i] and only
+      // names texture0..2 itself: point map 3 (roughness) at texture3.
+      const locs = new Int32Array(
+        new Deno.UnsafePointerView(
+          Deno.UnsafePointer.create(BigInt(shader.locs as unknown as bigint))!,
+        ).getArrayBuffer(32 * 4),
+      );
+      locs[raylibBindings.ShaderLocationIndex.SHADER_LOC_MAP_ALBEDO + 3] = raylib.H
+        .GetShaderLocation(shader, "texture3");
+      receiver = {
+        shader,
+        locs: new Map(),
+        invViewLoc: raylib.H.GetShaderLocation(shader, "uInvView"),
+        projXYLoc: raylib.H.GetShaderLocation(shader, "uProjXY"),
+        lightLoc: raylib.H.GetShaderLocation(shader, "uLightMatrix"),
+        shadowLoc: raylib.H.GetShaderLocation(shader, "uShadow"),
+      };
+      this.shadowReceivers.set(source, receiver);
+    }
+    // Same decode inputs as the depth pass: its uniforms and its maps, plus the shadow map in slot 3.
+    for (const [name, value] of Object.entries(uniforms)) {
+      let loc = receiver.locs.get(name);
+      if (loc === undefined) {
+        receiver.locs.set(name, loc = raylib.H.GetShaderLocation(receiver.shader, name));
+      }
+      setShaderVec4(receiver.shader, loc, value as [number, number, number, number]);
+    }
+    const roughness = readMaterialMap(
+      depthMaps,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ROUGHNESS,
+    );
+    writeMaterialMap(depthMaps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_ROUGHNESS, {
+      ...roughness,
+      texture: this.shadowGpu.target.texture,
+    });
+    const invView = new THREE.Matrix4().fromArray(viewMatrix as unknown as number[]).invert();
+    rlFast.SetShaderValueMatrix(
+      receiver.shader,
+      receiver.invViewLoc,
+      this.matrixForDraw(invView.elements),
+    );
+    rlFast.SetShaderValueMatrix(
+      receiver.shader,
+      receiver.lightLoc,
+      this.matrixForDraw(shadow.matrix),
+    );
+    setShaderVec4(receiver.shader, receiver.projXYLoc, [
+      projection[0],
+      projection[5],
+      projection[8],
+      projection[9],
+    ]);
+    // Bias: 3 cm, in light-depth units.
+    setShaderVec4(receiver.shader, receiver.shadowLoc, [
+      shadow.strength * SHADOW_OPACITY,
+      1 / SHADOW_MAP_SIZE,
+      0.03 / shadow.depthRange,
+      0,
+    ]);
+    const material = {
+      ...(depthMaterial as unknown as object),
+      shader: receiver.shader,
+    } as unknown as raylibBindings.Material;
+    setUiDepthMaskEnabled(false);
+    setUiDepthTestEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    try {
+      rlFast.DrawMesh(this.uiPanelMesh.mesh, material, this.matrixForDraw(this.identityMatrix16));
+    } finally {
+      raylib.H.EndBlendMode();
+      setUiBackfaceCullingEnabled(true);
+      setUiDepthTestEnabled(true);
+      setUiDepthMaskEnabled(true);
+      writeMaterialMap(
+        depthMaps,
+        raylibBindings.MaterialMapIndex.MATERIAL_MAP_ROUGHNESS,
+        roughness,
+      );
+    }
+  }
+
+  setDepthForeground(frame: import("./vrchatDepth/foreground.ts").DepthForeground | null) {
+    this.foreground = frame;
+  }
+
+  private drawDepthForegroundBlock(
+    projection: Float32Array,
+    viewMatrix: Float32Array,
+    frame: import("./vrchatDepth/foreground.ts").DepthForeground,
+    block: import("./vrchatDepth/foreground.ts").DepthForegroundBlock,
+  ) {
+    let gpu = this.foregroundBlockGpu;
+    if (!gpu) {
+      const shader = raylib.H.LoadShaderFromMemory(FOREGROUND_VERTEX, FOREGROUND_BLOCK_FRAGMENT);
+      const { maps, lut, lutBytes } = createBlockInputs(this.baseMaterial);
+      gpu = this.foregroundBlockGpu = {
+        shader,
+        maps,
+        lut,
+        lutBytes,
+        projectionLoc: raylib.H.GetShaderLocation(shader, "uProjection"),
+        depthLoc: raylib.H.GetShaderLocation(shader, "uDepth"),
+        blockLoc: raylib.H.GetShaderLocation(shader, "uBlock"),
+        layoutLoc: raylib.H.GetShaderLocation(shader, "uLayout"),
+        bitsLoc: raylib.H.GetShaderLocation(shader, "uBits"),
+        calLoc: raylib.H.GetShaderLocation(shader, "uCal"),
+        table: null,
+        tableRevision: -1,
+        material: {
+          ...this.baseMaterial,
+          shader,
+          maps: pointerAddress(maps),
+        } as unknown as raylibBindings.Material,
+      };
+    }
+    const table = block.table3d;
+    bindBlockInputs(gpu, block);
+    const logRange = Math.log(block.depthFar / block.depthRef);
+    const uniforms: Record<string, number[]> = {
+      uCal: table ? [1, table.size, table.tiles, logRange] : [0, 0, 0, logRange],
+      uProjection: [
+        projection[10],
+        projection[14],
+        raylib.GetRenderWidth(),
+        raylib.GetRenderHeight(),
+      ],
+      uDepth: [frame.scale, frame.biasMeters ?? 0.02, 0, 0],
+      uBlock: [block.x0, block.y0, block.pitch, block.gridWidth],
+      uLayout: [block.dataStartRow, block.depthWidth, block.depthHeight, block.depthRef],
+      uBits: [block.bits[0], block.bits[1], block.bits[2], block.depthStartCell],
+    };
+    setShaderVec4(gpu.shader, gpu.calLoc, uniforms.uCal as [number, number, number, number]);
+    setShaderVec4(
+      gpu.shader,
+      gpu.projectionLoc,
+      uniforms.uProjection as [number, number, number, number],
+    );
+    setShaderVec4(gpu.shader, gpu.depthLoc, uniforms.uDepth as [number, number, number, number]);
+    setShaderVec4(gpu.shader, gpu.blockLoc, uniforms.uBlock as [number, number, number, number]);
+    setShaderVec4(gpu.shader, gpu.layoutLoc, [
+      block.dataStartRow,
+      block.depthWidth,
+      block.depthHeight,
+      block.depthRef,
+    ]);
+    setShaderVec4(gpu.shader, gpu.bitsLoc, [
+      block.bits[0],
+      block.bits[1],
+      block.bits[2],
+      block.depthStartCell,
+    ]);
+    setUiDepthMaskEnabled(true);
+    setUiDepthTestEnabled(true);
+    setUiColorMaskEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    try {
+      rlFast.DrawMesh(
+        this.uiPanelMesh.mesh,
+        gpu.material,
+        this.matrixForDraw(this.identityMatrix16),
+      );
+    } finally {
+      setUiBackfaceCullingEnabled(true);
+      setUiColorMaskEnabled(true);
+    }
+    this.drawForegroundShadows("block", gpu.material, gpu.maps, projection, viewMatrix, uniforms);
+  }
+
+  private drawDepthForeground(projection: Float32Array, viewMatrix: Float32Array) {
+    const frame = this.foreground;
+    if (!frame) return;
+    if (frame.block) {
+      this.drawDepthForegroundBlock(projection, viewMatrix, frame, frame.block);
+      return;
+    }
+    let gpu = this.foregroundGpu;
+    if (!gpu) {
+      const shader = raylib.H.LoadShaderFromMemory(FOREGROUND_VERTEX, FOREGROUND_FRAGMENT);
+      const maps = cloneMaterialMaps(this.baseMaterial);
+      gpu = this.foregroundGpu = {
+        shader,
+        maps,
+        texture: null,
+        revision: -1,
+        projectionLoc: raylib.H.GetShaderLocation(shader, "uProjection"),
+        depthLoc: raylib.H.GetShaderLocation(shader, "uDepth"),
+        material: {
+          ...this.baseMaterial,
+          shader,
+          maps: pointerAddress(maps),
+        } as unknown as raylibBindings.Material,
+      };
+    }
+    if (!gpu.texture || gpu.texture.width !== frame.width || gpu.texture.height !== frame.height) {
+      if (gpu.texture) raylib.H.UnloadTexture(gpu.texture);
+      // LoadTextureFromImage copies synchronously. This image points to JS memory and must not be unloaded.
+      gpu.texture = raylib.H.LoadTextureFromImage(
+        {
+          data: pointerAddress(frame.depth),
+          width: frame.width,
+          height: frame.height,
+          mipmaps: 1,
+          format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32,
+        } as unknown as raylibBindings.Image,
+      );
+      raylib.H.SetTextureFilter(gpu.texture, raylib.TextureFilter.TEXTURE_FILTER_POINT);
+      raylib.H.SetTextureWrap(gpu.texture, raylib.TextureWrap.TEXTURE_WRAP_CLAMP);
+      gpu.revision = frame.revision;
+      const map = readMaterialMap(gpu.maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO);
+      writeMaterialMap(gpu.maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO, {
+        ...map,
+        texture: gpu.texture,
+      });
+    } else if (gpu.revision !== frame.revision) {
+      raylib.H.UpdateTexture(gpu.texture, Deno.UnsafePointer.of(frame.depth));
+      gpu.revision = frame.revision;
+    }
+    const uniforms: Record<string, number[]> = {
+      uProjection: [
+        projection[10],
+        projection[14],
+        raylib.GetRenderWidth(),
+        raylib.GetRenderHeight(),
+      ],
+      uDepth: [frame.scale, frame.biasMeters ?? 0.02, 0, 0],
+    };
+    setShaderVec4(
+      gpu.shader,
+      gpu.projectionLoc,
+      uniforms.uProjection as [number, number, number, number],
+    );
+    setShaderVec4(gpu.shader, gpu.depthLoc, uniforms.uDepth as [number, number, number, number]);
+    setUiDepthMaskEnabled(true);
+    setUiDepthTestEnabled(true);
+    setUiColorMaskEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    try {
+      rlFast.DrawMesh(
+        this.uiPanelMesh.mesh,
+        gpu.material,
+        this.matrixForDraw(this.identityMatrix16),
+      );
+    } finally {
+      setUiBackfaceCullingEnabled(true);
+      setUiColorMaskEnabled(true);
+    }
+    this.drawForegroundShadows("texture", gpu.material, gpu.maps, projection, viewMatrix, uniforms);
+  }
+
+  /** VR occlusion (`DepthOccluder`); null stops drawing it. */
+  setDepthOccluder(occluder: DepthOccluder | null) {
+    this.occluder = occluder;
+  }
+
+  /** Full source depth per fragment; no 128-square triangle resampling. */
+  private readonly occluderViewport = new Int32Array(4);
+  private readonly occluderEyeToCamera = new THREE.Matrix4();
+  private drawDepthOccluder(projection: Float32Array, view: Float32Array) {
+    const occluder = this.occluder;
+    if (!occluder) return;
+    const block = occluder.block;
+    let gpu = this.occluderGpu;
+    if (!gpu) {
+      const shader = raylib.H.LoadShaderFromMemory(FOREGROUND_VERTEX, OCCLUDER_PIXEL_FRAGMENT);
+      // A failed compile falls back to raylib's default shader, which would draw the grid's raw
+      // (quad, corner) coordinates as invisible depth: refuse instead.
+      if (shader.id === (this.baseMaterial.shader as unknown as { id: number }).id) {
+        throw new Error("VR occluder shader failed to compile");
+      }
+      const { maps, lut, lutBytes } = createBlockInputs(this.baseMaterial);
+      gpu = this.occluderGpu = {
+        shader,
+        maps,
+        lut,
+        lutBytes,
+        table: null,
+        tableRevision: -1,
+        locs: new Map(),
+        material: {
+          ...this.baseMaterial,
+          shader,
+          maps: pointerAddress(maps),
+        } as unknown as raylibBindings.Material,
+      };
+    }
+    bindBlockInputs(gpu, block);
+    const loc = (name: string) => {
+      let value = gpu!.locs.get(name);
+      if (value === undefined) {
+        gpu!.locs.set(name, value = raylib.H.GetShaderLocation(gpu!.shader, name));
+      }
+      return value;
+    };
+    const p = occluder.projection;
+    const logRange = Math.log(block.depthFar / block.depthRef);
+    const table = block.table3d;
+    setShaderVec4(
+      gpu.shader,
+      loc("uCal"),
+      table ? [1, table.size, table.tiles, logRange] : [0, 0, 0, logRange],
+    );
+    setShaderVec4(gpu.shader, loc("uBlock"), [block.x0, block.y0, block.pitch, block.gridWidth]);
+    setShaderVec4(gpu.shader, loc("uLayout"), [
+      block.dataStartRow,
+      block.depthWidth,
+      block.depthHeight,
+      block.depthRef,
+    ]);
+    setShaderVec4(gpu.shader, loc("uBits"), [
+      block.bits[0],
+      block.bits[1],
+      block.bits[2],
+      block.depthStartCell,
+    ]);
+    setShaderVec4(gpu.shader, loc("uProj"), [
+      p.m00,
+      Math.abs(p.m11),
+      p.m02,
+      p.m12 * Math.sign(p.m11 || 1),
+    ]);
+    loadGlFunctions().glGetIntegerv(GL.VIEWPORT, this.occluderViewport);
+    setShaderVec4(
+      gpu.shader,
+      loc("uViewport"),
+      Array.from(this.occluderViewport) as [number, number, number, number],
+    );
+    setShaderVec4(gpu.shader, loc("uEye"), [
+      projection[0],
+      projection[5],
+      projection[8],
+      projection[9],
+    ]);
+    const scale = Math.hypot(
+      occluder.cameraToTracking[0],
+      occluder.cameraToTracking[1],
+      occluder.cameraToTracking[2],
+    );
+    setShaderVec4(gpu.shader, loc("uEyeDepth"), [
+      projection[10],
+      projection[14],
+      occluder.biasCameraUnits * scale,
+      0,
+    ]);
+    const cameraToEye = this.occluderEyeToCamera.fromArray(view as unknown as number[])
+      .multiply(new THREE.Matrix4().fromArray(occluder.cameraToTracking as number[])).invert();
+    rlFast.SetShaderValueMatrix(
+      gpu.shader,
+      loc("uEyeToCamera"),
+      this.matrixForDraw(cameraToEye.elements),
+    );
+    setUiDepthMaskEnabled(true);
+    setUiDepthTestEnabled(true);
+    setUiColorMaskEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    try {
+      rlFast.DrawMesh(
+        this.uiPanelMesh.mesh,
+        gpu.material,
+        this.matrixForDraw(this.identityMatrix16),
+      );
+    } finally {
+      setUiBackfaceCullingEnabled(true);
+      setUiColorMaskEnabled(true);
+    }
+  }
+
+  private disposeOccluderGpu() {
+    const gpu = this.occluderGpu;
+    if (!gpu) return;
+    raylib.H.UnloadTexture(gpu.lut);
+    if (gpu.table) raylib.H.UnloadTexture(gpu.table);
+    raylib.H.UnloadShader(gpu.shader);
+    this.occluderGpu = null;
+  }
+
   constructor() {
     this.pathfinderText = PathfinderTextRenderer.createIfEnabled();
     this.textRenderer = this.pathfinderText ? "pathfinder" : "msdf";
@@ -488,6 +1154,7 @@ export class WebXRRaythreeRaylibRenderer {
     if (requested === "glyph" || requested === "windfoil") this.setTextRenderer(requested);
     this.baseMaterial = raylib.H.LoadMaterialDefault();
     this.lightingShader = createLightingShader();
+    this.unlitShader = createUnlitShader();
     this.uiPanelShader = createUiPanelShader();
     this.uiTextShader = createUiTextShader();
     this.uiPanelMesh = createNativeMesh(createUiQuadGeometryAsset()) ??
@@ -652,7 +1319,7 @@ export class WebXRRaythreeRaylibRenderer {
     },
     debugContext?: string,
     ui?: WebXRRaythreeUiSnapshot,
-    options?: { skipAssetSync?: boolean },
+    options?: { skipAssetSync?: boolean; clear?: boolean },
   ): {
     textGeometryBuilds: number;
     textBatchRebuilds: number;
@@ -686,7 +1353,13 @@ export class WebXRRaythreeRaylibRenderer {
       this.syncAssets(extraction, debugContext);
     }
     const t1 = performance.now();
-    const phases = this.renderFrame(extraction.frame, background, matrices, ui);
+    const phases = this.renderFrame(
+      extraction.frame,
+      background,
+      matrices,
+      ui,
+      options?.clear !== false,
+    );
     const t2 = performance.now();
     return {
       ...this.work,
@@ -738,7 +1411,18 @@ export class WebXRRaythreeRaylibRenderer {
     for (const geometry of this.geometries.values()) {
       this.unloadNativeMesh(geometry);
     }
+    if (this.shadowGpu) {
+      raylib.H.UnloadRenderTexture(this.shadowGpu.target);
+      raylib.H.UnloadShader(this.shadowGpu.shader);
+      this.shadowGpu = null;
+    }
+    for (const receiver of this.shadowReceivers.values()) raylib.H.UnloadShader(receiver.shader);
+    this.shadowReceivers.clear();
     this.geometries.clear();
+    if (this.volumeGpu) {
+      raylib.H.UnloadTexture(this.volumeGpu.texture);
+      this.volumeGpu = null;
+    }
     this.geometryRevisions.clear();
     this.materials.clear();
     this.materialRevisions.clear();
@@ -786,7 +1470,24 @@ export class WebXRRaythreeRaylibRenderer {
     raylib.H.UnloadShader(this.uiTextBatchShader.shader);
     raylib.H.UnloadShader(this.uiPanelShader.shader);
     raylib.H.UnloadShader(this.uiPanelBatchShader.shader);
+    if (this.foregroundBlockGpu) {
+      raylib.H.UnloadTexture(this.foregroundBlockGpu.lut);
+      if (this.foregroundBlockGpu.table) raylib.H.UnloadTexture(this.foregroundBlockGpu.table);
+      raylib.H.UnloadShader(this.foregroundBlockGpu.shader);
+      this.foregroundBlockGpu = null;
+    }
+    this.disposeOccluderGpu();
+    if (this.passthroughCutoutGpu) {
+      raylib.H.UnloadShader(this.passthroughCutoutGpu.shader);
+      this.passthroughCutoutGpu = null;
+    }
+    if (this.foregroundGpu) {
+      if (this.foregroundGpu.texture) raylib.H.UnloadTexture(this.foregroundGpu.texture);
+      raylib.H.UnloadShader(this.foregroundGpu.shader);
+      this.foregroundGpu = null;
+    }
     raylib.H.UnloadShader(this.lightingShader.shader);
+    raylib.H.UnloadShader(this.unlitShader.shader);
     LogChannel.log("webxrv2", "[webxr] raylib scene dispose: complete");
   }
 
@@ -855,7 +1556,7 @@ export class WebXRRaythreeRaylibRenderer {
       changedMaterialCount++;
       this.materials.set(
         material.id,
-        createNativeMaterial(material, this.baseMaterial, this.lightingShader),
+        createNativeMaterial(material, this.baseMaterial, this.lightingShader, this.unlitShader),
       );
       this.materialRevisions.set(material.id, material.revision);
     }
@@ -869,6 +1570,49 @@ export class WebXRRaythreeRaylibRenderer {
     }
   }
 
+  private passthroughCutoutGpu:
+    | { shader: raylibBindings.Shader; material: raylibBindings.Material }
+    | null = null;
+  /** Screens remain holes even when the key sphere is nearer than their proxy geometry. */
+  private drawPassthroughCutouts(frame: RenderFrame): void {
+    const cutouts = frame.instances.filter((i) =>
+      (i as typeof i & { passthroughCutout?: boolean }).passthroughCutout
+    );
+    if (cutouts.length === 0) return;
+    if (!this.passthroughCutoutGpu) {
+      const shader = raylib.H.LoadShaderFromMemory(
+        SHADOW_CASTER_VERTEX,
+        "#version 330\nout vec4 finalColor; void main() { finalColor = vec4(0.0); }",
+      );
+      if (shader.id === this.baseMaterial.shader.id) {
+        throw new Error("Passthrough cutout shader failed");
+      }
+      this.passthroughCutoutGpu = { shader, material: { ...this.baseMaterial, shader } };
+    }
+    const gl = loadGlFunctions(), blend = gl.glIsEnabled(GL.BLEND);
+    setUiDepthMaskEnabled(false);
+    setUiDepthTestEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    gl.glDisable(GL.BLEND);
+    try {
+      for (const instance of cutouts) {
+        const mesh = this.geometries.get(instance.geometryId);
+        if (mesh) {
+          rlFast.DrawMesh(
+            mesh.mesh,
+            this.passthroughCutoutGpu.material,
+            this.matrixForDraw(instance.worldMatrix),
+          );
+        }
+      }
+    } finally {
+      if (blend) gl.glEnable(GL.BLEND);
+      setUiDepthMaskEnabled(true);
+      setUiDepthTestEnabled(true);
+      setUiBackfaceCullingEnabled(true);
+    }
+  }
+
   private renderFrame(
     frame: RenderFrame,
     background: [number, number, number, number],
@@ -877,6 +1621,7 @@ export class WebXRRaythreeRaylibRenderer {
       viewMatrix: Float32Array;
     },
     ui?: WebXRRaythreeUiSnapshot,
+    clear = true,
   ): {
     prepMs: number;
     opaqueMs: number;
@@ -892,7 +1637,10 @@ export class WebXRRaythreeRaylibRenderer {
     endMs: number;
   } {
     const tPrep0 = performance.now();
+    // Before anything draws to the caller's target: the shadow map has its own.
+    this.renderShadowMap(frame);
     applyLighting(this.lightingShader, frame);
+    this.syncLightVolumes();
     this.maybeLogProjectionSummary(frame);
     const viewMatrix = (matrices?.viewMatrix ?? frame.camera.viewMatrix) as Float32Array;
     const projectionMatrix = (matrices?.projectionMatrix ??
@@ -914,7 +1662,7 @@ export class WebXRRaythreeRaylibRenderer {
     );
     const transparentInstances = scratch;
 
-    raylib.H.ClearBackground(toRaylibColor(background));
+    if (clear) raylib.H.ClearBackground(toRaylibColor(background));
     raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
     raylib.H.rlSetMatrixProjection(
       this.matrixForDraw(
@@ -925,6 +1673,16 @@ export class WebXRRaythreeRaylibRenderer {
     raylib.H.rlSetMatrixModelview(
       this.matrixForDraw(viewMatrix),
     );
+    this.drawDepthForeground(projectionMatrix, viewMatrix);
+    if (this.occluder && !this.occluderError) {
+      try {
+        this.drawDepthOccluder(projectionMatrix, viewMatrix);
+      } catch (error) {
+        // Never take the eye down with it: drop occlusion and report.
+        this.occluderError = error instanceof Error ? error.message : String(error);
+        LogChannel.error("webxrv2", `[webxr] VR occluder disabled: ${this.occluderError}`);
+      }
+    }
     const tPrep1 = performance.now();
 
     for (const instance of frame.instances) {
@@ -938,6 +1696,9 @@ export class WebXRRaythreeRaylibRenderer {
       }
 
       this.drawInstance(nativeMesh, nativeMaterial, instance);
+      if ((instance as typeof instance & { passthroughKey?: boolean }).passthroughKey) {
+        this.drawPassthroughCutouts(frame);
+      }
     }
     const tOpq1 = performance.now();
 
@@ -961,7 +1722,7 @@ export class WebXRRaythreeRaylibRenderer {
     let uiTextDrawn = 0;
     if (ui !== undefined) {
       setUiDepthMaskEnabled(false);
-      setUiDepthTestEnabled(false);
+      setUiDepthTestEnabled(this.foreground != null);
       setUiBackfaceCullingEnabled(false);
       beginUiAlphaBlend();
       try {
@@ -1637,9 +2398,27 @@ export class WebXRRaythreeRaylibRenderer {
     material: NativeMaterial,
     worldMatrix: ArrayLike<number>,
   ): void {
-    const restoreDepthTest = !material.depthTest;
+    const restoreDepthTest = !material.depthTest && this.foreground == null;
     const restoreDepthMask = !material.depthWrite;
     const restoreColorMask = !material.colorWrite;
+    if (material.usesLighting && this.volumeGpu) {
+      const slot = raylibBindings.MaterialMapIndex.MATERIAL_MAP_ROUGHNESS;
+      const map = readMaterialMap(material.mapsBytes, slot);
+      writeMaterialMap(material.mapsBytes, slot, { ...map, texture: this.volumeGpu.texture });
+    }
+    if (material.usesLighting) {
+      setShaderFloat(
+        this.lightingShader.shader,
+        this.lightingShader.vertexColorsLoc,
+        material.vertexColors ? 1 : 0,
+      );
+    } else {
+      setShaderFloat(
+        this.unlitShader.shader,
+        this.unlitShader.vertexColorsLoc,
+        material.vertexColors ? 1 : 0,
+      );
+    }
     if (restoreDepthTest) {
       setUiDepthTestEnabled(false);
     }
@@ -2374,6 +3153,7 @@ function createNativeMaterial(
   asset: MaterialAsset,
   baseMaterial: raylibBindings.Material,
   lightingShader: LightingShader,
+  unlitShader: UnlitShader,
 ): NativeMaterial {
   // MaterialAsset.baseColor from raythree extract is sRGB 0-1 per channel (see colorToTriplet in extract).
   // Raylib map color uses 0-255; multiply here before toRaylibColor.
@@ -2398,7 +3178,7 @@ function createNativeMaterial(
 
   const usesLighting = asset.kind === "standard";
   const material = {
-    shader: usesLighting ? lightingShader.shader : baseMaterial.shader,
+    shader: usesLighting ? lightingShader.shader : unlitShader.shader,
     maps: pointerAddress(mapsBytes),
     params: [...baseMaterial.params] as [number, number, number, number],
   } as unknown as raylibBindings.Material;
@@ -2414,6 +3194,7 @@ function createNativeMaterial(
     depthTest: asset.state.depthTest !== false,
     depthWrite: asset.state.depthWrite !== false,
     colorWrite: asset.state.colorWrite !== false,
+    vertexColors: asset.vertexColors === true,
   };
 }
 
@@ -2437,6 +3218,11 @@ function createLightingShader(): LightingShader {
     LIGHTING_VERTEX_SHADER,
     LIGHTING_FRAGMENT_SHADER,
   );
+  const samplerLocs = new Int32Array(new Deno.UnsafePointerView(
+    Deno.UnsafePointer.create(BigInt(shader.locs as unknown as bigint))!,
+  ).getArrayBuffer(32 * 4));
+  samplerLocs[raylibBindings.ShaderLocationIndex.SHADER_LOC_MAP_ALBEDO + 3] = raylib.H
+    .GetShaderLocation(shader, "texture3");
 
   return {
     shader,
@@ -2447,7 +3233,31 @@ function createLightingShader(): LightingShader {
     lightIntensityLoc: raylib.H.GetShaderLocation(shader, "uLightIntensity"),
     lightRangeLoc: raylib.H.GetShaderLocation(shader, "uLightRange"),
     baseColorLoc: raylib.H.GetShaderLocation(shader, "uBaseColor"),
+    vertexColorsLoc: raylib.H.GetShaderLocation(shader, "uVertexColors"),
+    envEnabledLoc: raylib.H.GetShaderLocation(shader, "uEnvEnabled"),
+    shLocs: ["uSHAr", "uSHAg", "uSHAb", "uSHBr", "uSHBg", "uSHBb"].map((name) =>
+      raylib.H.GetShaderLocation(shader, name)
+    ),
+    shCLoc: raylib.H.GetShaderLocation(shader, "uSHC"),
+    envAxisLocs: ["uEnvX", "uEnvY", "uEnvZ"].map((name) =>
+      raylib.H.GetShaderLocation(shader, name)
+    ),
+    mainDirLoc: raylib.H.GetShaderLocation(shader, "uMainDir"),
+    mainColorLoc: raylib.H.GetShaderLocation(shader, "uMainColor"),
+    envOriginLoc: raylib.H.GetShaderLocation(shader, "uEnvOrigin"),
+    envScaleLoc: raylib.H.GetShaderLocation(shader, "uEnvScale"),
+    vertexLightLocs: ["uVLX", "uVLY", "uVLZ", "uVLAtten"].map((name) =>
+      raylib.H.GetShaderLocation(shader, name)
+    ),
+    vertexLightColorLocs: [0, 1, 2, 3].map((i) =>
+      raylib.H.GetShaderLocation(shader, `uVLColor${i}`)
+    ),
   };
+}
+
+function createUnlitShader(): UnlitShader {
+  const shader = raylib.H.LoadShaderFromMemory(UNLIT_VERTEX_SHADER, UNLIT_FRAGMENT_SHADER);
+  return { shader, vertexColorsLoc: raylib.H.GetShaderLocation(shader, "uVertexColors") };
 }
 
 function createUiPanelShader(): UiPanelShader {
@@ -2539,6 +3349,38 @@ function applyLighting(shader: LightingShader, frame: RenderFrame): void {
   setShaderVec3(shader.shader, shader.viewPositionLoc, frame.camera.position);
   setShaderFloat(shader.shader, shader.lightIntensityLoc, lightIntensity);
   setShaderFloat(shader.shader, shader.lightRangeLoc, lightRange);
+
+  // VRChat's lighting replaces the fixed ambient while a depth block keeps it fresh.
+  const env = environmentLighting();
+  setShaderFloat(shader.shader, shader.envEnabledLoc, env ? 1 : 0);
+  if (!env) return;
+  const sh = [...env.shA, ...env.shB];
+  for (let i = 0; i < 6; i++) {
+    setShaderVec4(shader.shader, shader.shLocs[i], sh[i] as [number, number, number, number]);
+  }
+  setShaderVec3(shader.shader, shader.shCLoc, env.shC as [number, number, number]);
+  for (let i = 0; i < 3; i++) {
+    setShaderVec3(
+      shader.shader,
+      shader.envAxisLocs[i],
+      env.trackingToUnity.slice(i * 3, i * 3 + 3) as [number, number, number],
+    );
+  }
+  setShaderVec3(
+    shader.shader,
+    shader.mainDirLoc,
+    (env.mainDirection ?? [0, 1, 0]) as [number, number, number],
+  );
+  setShaderVec3(shader.shader, shader.mainColorLoc, env.mainColor as [number, number, number]);
+  setShaderVec3(shader.shader, shader.envOriginLoc, env.trackingOrigin as [number, number, number]);
+  setShaderFloat(shader.shader, shader.envScaleLoc, env.trackingScale);
+  const vl = env.vertexLights;
+  [vl.x, vl.y, vl.z, vl.atten].forEach((v, i) =>
+    setShaderVec4(shader.shader, shader.vertexLightLocs[i], v as [number, number, number, number])
+  );
+  vl.colors.forEach((c, i) =>
+    setShaderVec3(shader.shader, shader.vertexLightColorLocs[i], c as [number, number, number])
+  );
 }
 
 function writeMaterialMap(
@@ -2581,6 +3423,131 @@ function cloneMaterialMaps(
 
   new Deno.UnsafePointerView(mapsPointer).copyInto(bytes);
   return bytes;
+}
+
+/** VR occlusion input (`WebXRRaythreeRaylibRenderer.setDepthOccluder`). */
+export type DepthOccluder = {
+  /** The block in VRChat's window texture, as the desktop foreground decodes it. */
+  block: import("./vrchatDepth/foreground.ts").DepthForegroundBlock;
+  /** VRChat camera space (world units) -> tracking metres, column-major (alignment scale included). */
+  cameraToTracking: ArrayLike<number>;
+  /** The block's projection terms (`DepthFrameHeader.projection`). */
+  projection: { m00: number; m11: number; m02: number; m12: number };
+  /** Samples a side of the occluder grid. */
+  grid: number;
+  /** How far behind VRChat's surfaces the occluder sits, along each ray, in camera units. */
+  biasCameraUnits: number;
+};
+
+/** The block decode's lookup textures: the 1D calibration LUT (metalness slot) and its bytes. */
+function createBlockInputs(baseMaterial: raylibBindings.Material) {
+  const maps = cloneMaterialMaps(baseMaterial);
+  const lutBytes = new Uint8Array(768);
+  // GRAYSCALE is one byte per texel: 256 levels a row, one row per channel.
+  const lut = raylib.H.LoadTextureFromImage(
+    {
+      data: pointerAddress(lutBytes),
+      width: 256,
+      height: 3,
+      mipmaps: 1,
+      format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_GRAYSCALE,
+    } as unknown as raylibBindings.Image,
+  );
+  raylib.H.SetTextureFilter(lut, raylib.TextureFilter.TEXTURE_FILTER_POINT);
+  const metal = readMaterialMap(maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_METALNESS);
+  writeMaterialMap(maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_METALNESS, {
+    ...metal,
+    texture: lut,
+  });
+  return { maps, lut, lutBytes };
+}
+
+/**
+ * Points a block decode's material at `block`: the window texture (albedo, lent by the capture),
+ * the 1D LUT bytes and the 3D table (normal slot), uploading only what changed.
+ */
+function bindBlockInputs(
+  gpu: {
+    maps: Uint8Array;
+    lut: raylibBindings.Texture2D;
+    lutBytes: Uint8Array;
+    table: raylibBindings.Texture2D | null;
+    tableRevision: number;
+  },
+  block: import("./vrchatDepth/foreground.ts").DepthForegroundBlock,
+): void {
+  const table = block.table3d;
+  if (table && table.revision !== gpu.tableRevision) {
+    if (!gpu.table || gpu.table.width !== table.width || gpu.table.height !== table.height) {
+      if (gpu.table) raylib.H.UnloadTexture(gpu.table);
+      gpu.table = raylib.H.LoadTextureFromImage(
+        {
+          data: pointerAddress(table.data),
+          width: table.width,
+          height: table.height,
+          mipmaps: 1,
+          format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+        } as unknown as raylibBindings.Image,
+      );
+      raylib.H.SetTextureFilter(gpu.table, raylib.TextureFilter.TEXTURE_FILTER_POINT);
+      const normal = readMaterialMap(gpu.maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_NORMAL);
+      writeMaterialMap(gpu.maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_NORMAL, {
+        ...normal,
+        texture: gpu.table,
+      });
+    } else raylib.H.UpdateTexture(gpu.table, Deno.UnsafePointer.of(table.data));
+    gpu.tableRevision = table.revision;
+  }
+  if (!sameBytes(gpu.lutBytes, block.luts)) {
+    gpu.lutBytes.set(block.luts);
+    raylib.H.UpdateTexture(gpu.lut, Deno.UnsafePointer.of(gpu.lutBytes));
+  }
+  // The window texture belongs to the capture; only its name is lent to the material.
+  const albedo = readMaterialMap(gpu.maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO);
+  writeMaterialMap(gpu.maps, raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO, {
+    ...albedo,
+    texture: {
+      id: block.textureId,
+      width: block.textureWidth,
+      height: block.textureHeight,
+      mipmaps: 1,
+      format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+    } as unknown as raylibBindings.Texture2D,
+  });
+}
+
+/**
+ * `OCCLUDER_VERTEX`'s grid: (grid − 1)² quads of two unshared triangles; each vertex is
+ * (quad x, quad y, corner code 0..5).
+ */
+export function createOccluderGridAsset(grid: number): GeometryAsset {
+  const quads = grid - 1;
+  const array = new Float32Array(quads * quads * 6 * 3);
+  let o = 0;
+  for (let j = 0; j < quads; j++) {
+    for (let i = 0; i < quads; i++) {
+      for (let code = 0; code < 6; code++) {
+        array[o++] = i;
+        array[o++] = j;
+        array[o++] = code;
+      }
+    }
+  }
+  return {
+    id: -2,
+    topology: "triangles",
+    revision: 1,
+    debugLabel: "vrc-depth-occluder-grid",
+    attributes: {
+      position: {
+        itemSize: 3,
+        count: array.length / 3,
+        normalized: false,
+        componentType: "Float32Array",
+        array,
+      },
+    },
+  } as unknown as GeometryAsset;
 }
 
 function createUiQuadGeometryAsset(): GeometryAsset {
@@ -3377,7 +4344,8 @@ type PreparedGeometryBuffers = {
   indices: Uint16Array | null;
 };
 
-function prepareGeometryBuffers(
+/** CPU preparation, exported for geometry/colour compatibility checks without a GL context. */
+export function prepareGeometryBuffers(
   asset: GeometryAsset,
 ): PreparedGeometryBuffers | null {
   const position = asset.attributes.position;
@@ -3393,12 +4361,18 @@ function prepareGeometryBuffers(
   const normal = asset.attributes.normal;
   const color = asset.attributes.color;
 
-  if (asset.index !== undefined) {
+  // Raylib supports unsigned-short indices. Keep small indexed meshes indexed instead of
+  // expanding the live depth grid's shared vertices sixfold on every update.
+  const nativeIndex = asset.index !== undefined && position.count <= 65536 &&
+      indicesBelow(asset.index.array, position.count)
+    ? Uint16Array.from(asset.index.array)
+    : null;
+  if (asset.index !== undefined && nativeIndex === null) {
     return expandIndexedGeometry(asset, position, texcoord, normal, color);
   }
 
   const vertexCount = position.count;
-  if (vertexCount % 3 !== 0) {
+  if ((nativeIndex?.length ?? vertexCount) % 3 !== 0) {
     return null;
   }
   const vertices = toFloat32Array(position.array);
@@ -3410,16 +4384,16 @@ function prepareGeometryBuffers(
     : toFloat32Array(normal.array);
   const colors = color === undefined
     ? buildOpaqueWhiteColors(vertexCount)
-    : toColorBytes(color.array);
+    : colorAttributeToSrgbBytes(color, vertexCount);
 
   return {
     vertexCount,
-    triangleCount: vertexCount / 3,
+    triangleCount: (nativeIndex?.length ?? vertexCount) / 3,
     vertices,
     texcoords,
     normals,
     colors,
-    indices: null,
+    indices: nativeIndex,
   };
 }
 
@@ -3449,20 +4423,30 @@ function expandIndexedGeometry(
   const texcoords = new Float32Array(expandedVertexCount * 2);
   const normals = new Float32Array(expandedVertexCount * 3);
   const colors = new Uint8Array(expandedVertexCount * 4);
+  const sourceColors = color === undefined
+    ? null
+    : colorAttributeToSrgbBytes(color, position.count);
 
   for (let expanded = 0; expanded < index.count; expanded++) {
     const source = index.array[expanded];
-    positions.set(readTuple(position.array, source, 3), expanded * 3);
+    // Live depth changes every frame: avoid allocating one tuple per expanded vertex.
+    const p = expanded * 3, s = source * 3;
+    positions[p] = position.array[s];
+    positions[p + 1] = position.array[s + 1];
+    positions[p + 2] = position.array[s + 2];
     if (texcoord !== undefined) {
-      texcoords.set(readTuple(texcoord.array, source, 2), expanded * 2);
+      texcoords[expanded * 2] = texcoord.array[source * 2];
+      texcoords[expanded * 2 + 1] = texcoord.array[source * 2 + 1];
     }
     if (normal !== undefined) {
-      normals.set(readTuple(normal.array, source, 3), expanded * 3);
+      normals[p] = normal.array[s];
+      normals[p + 1] = normal.array[s + 1];
+      normals[p + 2] = normal.array[s + 2];
     }
-    if (color !== undefined) {
-      colors.set(toColorTuple(color.array, source), expanded * 4);
+    if (sourceColors !== null) {
+      for (let c = 0; c < 4; c++) colors[expanded * 4 + c] = sourceColors[source * 4 + c];
     } else {
-      colors.set([255, 255, 255, 255], expanded * 4);
+      colors.fill(255, expanded * 4, expanded * 4 + 4);
     }
   }
 
@@ -3477,58 +4461,60 @@ function expandIndexedGeometry(
   };
 }
 
-function readTuple(
-  array: ArrayLike<number>,
-  index: number,
-  itemSize: number,
-): number[] {
-  const start = index * itemSize;
-  return Array.from(
-    { length: itemSize },
-    (_, offset) => Number(array[start + offset] ?? 0),
-  );
-}
-
 function toFloat32Array(array: ArrayLike<number>): Float32Array {
   return array instanceof Float32Array ? array.slice() : Float32Array.from(array);
 }
 
-function toColorBytes(array: ArrayLike<number>): Uint8Array {
-  if (array instanceof Uint8Array) {
-    return array.slice();
-  }
-  const bytes = new Uint8Array(array.length);
-  for (let index = 0; index < array.length; index++) {
-    const value = Number(array[index] ?? 1);
-    bytes[index] = value <= 1 ? Math.round(value * 255) : Math.round(value);
-  }
-  return bytes;
+/** Linear 0..1 → sRGB-encoded 0..255, the space `MaterialAsset.baseColor` and the shaders use. */
+function linearToSrgbByte(value: number): number {
+  const v = Math.min(1, Math.max(0, value));
+  const encoded = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  return Math.round(encoded * 255);
 }
 
-function toColorTuple(
-  array: ArrayLike<number>,
-  index: number,
-): [number, number, number, number] {
-  const offset = index * 4;
-  const rgba = [
-    array[offset],
-    array[offset + 1],
-    array[offset + 2],
-    array[offset + 3],
-  ];
-  return rgba.map((value, channelIndex) => {
-    const fallback = channelIndex === 3 ? 1 : 0;
-    const numeric = Number(value ?? fallback);
-    return numeric <= 1 ? Math.round(numeric * 255) : Math.round(numeric);
-  }) as [number, number, number, number];
+const INTEGER_COLOR_MAX: Record<string, number> = {
+  Uint8Array: 255,
+  Uint8ClampedArray: 255,
+  Uint16Array: 65535,
+  Uint32Array: 4294967295,
+  Int8Array: 127,
+  Int16Array: 32767,
+  Int32Array: 2147483647,
+};
+
+/**
+ * A Three `color` attribute as RGBA bytes per vertex. Three keeps vertex colours linear (RGB or
+ * RGBA, floats or normalized integers); they are encoded to sRGB here like the material's base
+ * colour, so `baseColor * vertexColor` in the shaders matches Three's linear product closely.
+ */
+function colorAttributeToSrgbBytes(
+  attribute: GeometryAttributeAsset,
+  vertexCount: number,
+): Uint8Array {
+  const out = new Uint8Array(vertexCount * 4);
+  const size = attribute.itemSize;
+  const array = attribute.array;
+  const max = attribute.normalized ? INTEGER_COLOR_MAX[attribute.componentType] ?? 1 : 1;
+  for (let v = 0; v < vertexCount; v++) {
+    const at = v * size;
+    for (let c = 0; c < 3; c++) {
+      out[v * 4 + c] = linearToSrgbByte(Number(array[at + c] ?? 1) / max);
+    }
+    out[v * 4 + 3] = size >= 4
+      ? Math.round(Math.min(1, Math.max(0, Number(array[at + 3] ?? max) / max)) * 255)
+      : 255;
+  }
+  return out;
 }
 
 function buildOpaqueWhiteColors(vertexCount: number): Uint8Array {
-  const colors = new Uint8Array(vertexCount * 4);
-  for (let index = 0; index < vertexCount; index++) {
-    colors.set([255, 255, 255, 255], index * 4);
-  }
-  return colors;
+  return new Uint8Array(vertexCount * 4).fill(255);
+}
+
+/** Every index addresses a vertex (and so fits 16 bits when `count` ≤ 65536). */
+function indicesBelow(indices: ArrayLike<number>, count: number): boolean {
+  for (let i = 0; i < indices.length; i++) if (!(indices[i] < count)) return false;
+  return true;
 }
 
 function isInstancedInstance(
@@ -3780,11 +4766,50 @@ uniform vec3 uAmbientColor;
 uniform vec3 uViewPosition;
 uniform float uLightIntensity;
 uniform float uLightRange;
+uniform float uVertexColors;
+// VRChat's lighting at the wearer (vrchatDepth/environmentLighting.ts): Unity's probe SH and main
+// light in Unity world space, linear; uEnvX..Z turn a tracking-space normal into Unity's frame.
+uniform float uEnvEnabled;
+uniform vec4 uSHAr, uSHAg, uSHAb, uSHBr, uSHBg, uSHBb;
+uniform vec3 uSHC;
+uniform vec3 uEnvX, uEnvY, uEnvZ;
+uniform vec3 uMainDir;
+uniform vec3 uMainColor;
+// Tracking position → Unity world: mat3(uEnvX..Z) * (p - uEnvOrigin) / uEnvScale. Unity's four
+// per-vertex point lights (unity_4LightPosX0.., unity_4LightAtten0, unity_LightColor[0..3]).
+uniform vec3 uEnvOrigin;
+uniform float uEnvScale;
+uniform vec4 uVLX, uVLY, uVLZ, uVLAtten;
+uniform vec3 uVLColor0, uVLColor1, uVLColor2, uVLColor3;
+${LIGHT_VOLUME_GLSL}
 
 out vec4 finalColor;
 
+vec3 shadeSH9(vec3 n) {
+  vec4 n1 = vec4(n, 1.0);
+  vec3 x1 = vec3(dot(uSHAr, n1), dot(uSHAg, n1), dot(uSHAb, n1));
+  vec4 vB = n.xyzz * n.yzzx;
+  vec3 x2 = vec3(dot(uSHBr, vB), dot(uSHBg, vB), dot(uSHBb, vB));
+  return max(x1 + x2 + uSHC * (n.x * n.x - n.y * n.y), vec3(0.0));
+}
+// Unity's Shade4PointLights.
+vec3 shade4PointLights(vec3 pos, vec3 n) {
+  vec4 toX = uVLX - pos.x, toY = uVLY - pos.y, toZ = uVLZ - pos.z;
+  vec4 lengthSq = max(toX * toX + toY * toY + toZ * toZ, vec4(0.000001));
+  vec4 ndotl = max((toX * n.x + toY * n.y + toZ * n.z) * inversesqrt(lengthSq), vec4(0.0));
+  vec4 diff = ndotl / (1.0 + lengthSq * uVLAtten);
+  return uVLColor0 * diff.x + uVLColor1 * diff.y + uVLColor2 * diff.z + uVLColor3 * diff.w;
+}
+vec3 srgbToLinear(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+vec3 linearToSrgb(vec3 c) {
+  c = max(c, vec3(0.0));
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
 void main() {
-  vec4 albedo = texture(texture0, fragTexCoord) * uBaseColor * fragColor;
+  vec4 albedo = texture(texture0, fragTexCoord) * uBaseColor * mix(vec4(1.0), fragColor, uVertexColors);
   if (albedo.a <= 0.001) discard;
   vec3 normal = normalize(fragNormal);
   vec3 lightVector = uLightPosition - fragPosition;
@@ -3801,8 +4826,54 @@ void main() {
   vec3 halfVector = normalize(lightDirection + viewDirection);
   float specular = pow(max(dot(normal, halfVector), 0.0), 24.0) * 0.18;
 
-  vec3 lighting = uAmbientColor + uLightColor * (diffuse + specular) * uLightIntensity * attenuation;
+  vec3 local = uLightColor * (diffuse + specular) * uLightIntensity * attenuation;
+  if (uEnvEnabled > 0.5) {
+    // As Unity's ForwardBase diffuse: albedo * (ShadeSH9(n) + _LightColor0 * max(n·l, 0)), in
+    // linear. The world's lighting replaces PetPlay's own lights: those are tuned for the bare
+    // overlay and outshine any VRChat world (saturated white over the chamber's L0 0.36).
+    mat3 toUnity = mat3(uEnvX, uEnvY, uEnvZ);
+    vec3 n = normalize(toUnity * normal);
+    vec3 pos = toUnity * ((fragPosition - uEnvOrigin) / uEnvScale);
+    vec3 world = shadeVolumes(pos, n, shadeSH9(n)) + uMainColor * max(dot(n, uMainDir), 0.0) + shade4PointLights(pos, n);
+    finalColor = vec4(linearToSrgb(srgbToLinear(albedo.rgb) * world), albedo.a);
+    return;
+  }
+  vec3 lighting = uAmbientColor + local;
   finalColor = vec4(albedo.rgb * lighting, albedo.a);
+}
+`;
+
+// Raylib's default shader, plus Three's vertexColors switch: unlit meshes ignore a colour
+// attribute unless their material asks for it.
+const UNLIT_VERTEX_SHADER = /*glsl*/ `#version 330
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec4 vertexColor;
+
+uniform mat4 mvp;
+
+out vec2 fragTexCoord;
+out vec4 fragColor;
+
+void main() {
+  fragTexCoord = vertexTexCoord;
+  fragColor = vertexColor;
+  gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+`;
+
+const UNLIT_FRAGMENT_SHADER = /*glsl*/ `#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+uniform float uVertexColors;
+
+out vec4 finalColor;
+
+void main() {
+  finalColor = texture(texture0, fragTexCoord) * colDiffuse * mix(vec4(1.0), fragColor, uVertexColors);
 }
 `;
 
@@ -4194,3 +5265,9 @@ void main() {
   finalColor = vec4(rgb, outOpacity);
 }
 `;
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}

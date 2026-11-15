@@ -109,6 +109,17 @@ function help(): string {
     "             --fov=<deg> until VRChat reports its zoom, --diagnostics, --stop)",
     "             `camera calibrate [--seconds=10]`: hold the VRChat camera and turn",
     "             it slowly; redo after locomotion. `camera status` reads both",
+    "  vrcdepth   VRChat depth sync from the debug avatar's block in VRChat's window:",
+    "             `vrcdepth start [--grid=128]`, `vrcdepth stop`, `vrcdepth status`;",
+    "             `vrcdepth set --latency=<ms> --mesh=on|off --real-eye-height=<m>|auto",
+    "             `vrcdepth set --calibration=auto|1d|3d`: block colour calibration (auto by default)",
+    "             `vrcdepth set --head-camera=on|off [--head-camera-offset=0.15]`: pin VRChat's Stream",
+    "             camera ahead of the headset (VR occlusion source)",
+    "             `vrcdepth set --occlusion=on|off`: VRChat's depth hides PetPlay objects in the headset",
+    "             `vrcdepth set --headset-decode=on|off`: decode depth in the headset renderer (default on)",
+    "             --scan=on|off|clear --voxel=<m>`",
+    "             (markdown/vrchat-depth)",
+    "             `vrcdepth debug [--stop]`: desktop MKB fly camera, live depth + player pose",
     "  repair     repair the XR presentation in place (--restart restarts the stack)",
     "  reboot     stop the server, start it again with the same arguments, and",
     "             bring the desktop surface back (--no-detach skips the SteamVR",
@@ -645,6 +656,90 @@ async function cmdDev(): Promise<number> {
   return 0;
 }
 
+/** `vrcdepth` drives the VRChat depth intake and shows its sync (`petplay/vrchatDepth.ts`). */
+async function cmdVrcDepth(): Promise<number> {
+  const health = await requireServer();
+  const main = health.actors?.main;
+  const webxr = health.actors?.webxr;
+  if (main == null || webxr == null) {
+    throw new Error("server has no `main`/`webxr` actor registered");
+  }
+  const sub = Deno.args.filter((arg) => !arg.startsWith("-"))[1] ?? "status";
+  if (sub === "debug") {
+    if (hasFlag("--stop")) {
+      const view = health.actors?.vrcCameraView;
+      if (view) console.log(JSON.stringify(await sendMessage(view, "STARTDESKTOPVIEW", { depthDebug: false }), null, 2));
+      return 0;
+    }
+    const intake = await sendMessage<{ window?: { width: number; height: number; x?: number; y?: number } | null }>(main, "STARTVRCDEPTH", null);
+    const existingView = health.actors?.vrcCameraView;
+    console.log(JSON.stringify(await sendMessage(existingView ?? main, existingView ? "STARTDESKTOPVIEW" : "STARTVRCCAMERAVIEW", {
+      depthDebug: true,
+      cameraOriginTarget: health.actors?.cameraOrigin,
+      depthTarget: health.actors?.vrchatDepth ?? undefined,
+      width: numberFlag("--width") ?? (existingView ? undefined : intake.window?.width),
+      height: numberFlag("--height") ?? (existingView ? undefined : intake.window?.height),
+      x: existingView ? undefined : intake.window?.x,
+      y: existingView ? undefined : intake.window?.y,
+    }), null, 2));
+    return 0;
+  }
+  if (sub === "start") {
+    const grid = numberFlag("--grid");
+    console.log(JSON.stringify(
+      await sendMessage(main, "STARTVRCDEPTH", grid ? { grid } : null),
+      null,
+      2,
+    ));
+    return 0;
+  }
+  if (sub === "stop") {
+    console.log(JSON.stringify(await sendMessage(main, "STOPVRCDEPTH"), null, 2));
+    return 0;
+  }
+  if (sub === "set") {
+    const mesh = Deno.args.find((arg) => arg.startsWith("--mesh="))?.slice(7);
+    const eyeHeight = Deno.args.find((arg) => arg.startsWith("--real-eye-height="))?.slice(18);
+    const calibrationPolicy = Deno.args.find((arg) => arg.startsWith("--calibration="))?.slice(14);
+    const headCamera = Deno.args.find((arg) => arg.startsWith("--head-camera="))?.slice(14);
+    const occlusion = Deno.args.find((arg) => arg.startsWith("--occlusion="))?.slice(12);
+    const headsetDecode = Deno.args.find((arg) => arg.startsWith("--headset-decode="))?.slice(17);
+    if (calibrationPolicy != null) {
+      const intake = health.actors?.vrchatDepth;
+      if (intake == null) throw new Error("vrcdepth is not running");
+      await sendMessage(intake, "SETVRCDEPTHCALIBRATION", { policy: calibrationPolicy });
+    }
+    if (eyeHeight != null) {
+      const intake = health.actors?.vrchatDepth;
+      if (intake == null) throw new Error("vrcdepth is not running");
+      await sendMessage(intake, "SETVRCDEPTHREALEYEHEIGHT", {
+        meters: eyeHeight === "auto" ? null : Number(eyeHeight),
+      });
+    }
+    console.log(JSON.stringify(
+      await sendMessage(webxr, "SETVRCDEPTHOPTIONS", {
+        latencyMs: numberFlag("--latency") ?? undefined,
+        debugMesh: mesh == null ? undefined : mesh === "on",
+        scan: Deno.args.find((arg) => arg.startsWith("--scan="))?.slice(7),
+        voxelMeters: numberFlag("--voxel") ?? undefined,
+        headCamera: headCamera == null ? undefined : headCamera === "on",
+        occlusion: occlusion == null ? undefined : occlusion === "on",
+        headsetDecode: headsetDecode == null ? undefined : headsetDecode === "on",
+        headCameraOffset: numberFlag("--head-camera-offset") ?? undefined,
+      }),
+      null,
+      2,
+    ));
+    return 0;
+  }
+  if (sub === "status") {
+    console.log(JSON.stringify(await sendMessage(main, "VRCDEPTHSTATUS"), null, 2));
+    return 0;
+  }
+  console.error(`${LOG_PREFIX} vrcdepth: unknown subcommand "${sub}"`);
+  return 2;
+}
+
 async function main(): Promise<number> {
   const command = Deno.args.find((arg) => !arg.startsWith("-")) ?? "status";
   switch (command) {
@@ -656,6 +751,8 @@ async function main(): Promise<number> {
       return await cmdCapture();
     case "camera":
       return await cmdCamera();
+    case "vrcdepth":
+      return await cmdVrcDepth();
     case "repair":
       return await cmdRepair();
     case "reboot":

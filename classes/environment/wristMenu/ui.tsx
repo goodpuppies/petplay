@@ -352,6 +352,9 @@ function WristSettingsView({ onBack }: { onBack: () => void }) {
 function RenderSettingsView({ onBack }: { onBack: () => void }) {
   const { key, scale, eye } = useRenderResolution();
   const capped = eye === MAX_EYE_SIZE;
+  const passthrough = useSetting("passthroughKey");
+  const radius = useSetting("passthroughRadiusMeters");
+  const anchor = useSetting("passthroughAnchor");
   return (
     <Container flexDirection="column" gap={INNER_GAP} width={448}>
       <Container flexDirection="row" alignItems="center" gap={INNER_GAP}>
@@ -385,6 +388,85 @@ function RenderSettingsView({ onBack }: { onBack: () => void }) {
           : `SteamVR asks ${key} per eye. Rendering ${eye}x${eye}${
             capped ? ` (the ${MAX_EYE_SIZE} limit)` : ""
           }. Saved for ${key} only.`}
+      </Text>
+      <PillRow
+        label="Passthrough sky"
+        value={passthrough === null ? "OFF" : "ON"}
+        onClick={() => setSetting("passthroughKey", passthrough === null ? "ff00ff" : null)}
+      />
+      <Container
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="space-between"
+        padding={INNER_GAP}
+      >
+        <Text fontSize={14} color={COLOR.ink}>Sky distance</Text>
+        <Container flexDirection="row" gap={INNER_GAP}>
+          <Pill
+            slots={1}
+            units={2}
+            fontSize={14}
+            disabled={radius <= 0.25}
+            onClick={() => setSetting("passthroughRadiusMeters", Math.max(0.25, radius - 0.25))}
+          >
+            −
+          </Pill>
+          <Pill slots={1} units={2} fontSize={13}>{radius.toFixed(2)} m</Pill>
+          <Pill
+            slots={1}
+            units={2}
+            fontSize={14}
+            disabled={radius >= 40}
+            onClick={() => setSetting("passthroughRadiusMeters", Math.min(40, radius + 0.25))}
+          >
+            +
+          </Pill>
+        </Container>
+      </Container>
+      <Container
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="space-between"
+        padding={INNER_GAP}
+      >
+        <Text fontSize={14} color={COLOR.ink}>Sky anchor</Text>
+        <Container flexDirection="row" gap={INNER_GAP}>
+          <Pill
+            slots={1}
+            units={2}
+            fontSize={12}
+            tone={anchor === "playspace" ? "accent" : "outline"}
+            onClick={() => {
+              if (anchor !== "playspace") {
+                setSetting("passthroughCenter", null);
+                setSetting("passthroughAnchor", "playspace");
+              }
+            }}
+          >
+            SPACE
+          </Pill>
+          <Pill
+            slots={1}
+            units={2}
+            fontSize={12}
+            tone={anchor === "head" ? "accent" : "outline"}
+            onClick={() => setSetting("passthroughAnchor", "head")}
+          >
+            HEAD
+          </Pill>
+          <Pill
+            slots={1}
+            units={2}
+            fontSize={12}
+            disabled={anchor !== "playspace"}
+            onClick={() => setSetting("passthroughCenter", null)}
+          >
+            HERE
+          </Pill>
+        </Container>
+      </Container>
+      <Text fontSize={12} color={COLOR.inkDim}>
+        Nearer VRChat surfaces stay visible. Use Enter AR in the browser.
       </Text>
     </Container>
   );

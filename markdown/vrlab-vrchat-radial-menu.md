@@ -1,5 +1,28 @@
 # VRChat radial menu from the synthetic lab: the working workflow
 
+## Saved recovery command (2026-11-07)
+
+Run `deno task vrlab:camera-recover` to reopen Stream mode without restarting VRChat.
+It defaults to the **right hand**, waits 3.5 seconds after menu actions, checks camera
+mode after each selection, restores the depth layout and requires fresh live GPU decodes.
+An already-open camera is preserved, so retrying does not toggle it shut.
+After fresh decoding the recovery command returns the camera one metre ahead of the
+avatar; `--keep-camera` preserves its position instead. In the desktop debug window,
+**Home** performs the same return. **R** only reasserts the existing fly-camera pose.
+
+Close any Quick Menu first. For an already-open radial on Tools use
+`deno task vrlab:camera-recover --menu-open --page=tools --hand=right`.
+Use `--hand=left` when the radial is on the left, and `--settle-ms=5000` for longer delays.
+The command does not infer menu pages from images; its options explicitly describe that state.
+If camera opening succeeds but depth calibration fails, it reports that separately and exits 2.
+Do not keep toggling menus to fix a decoder failure. The shared `pickActionMenu` helper now
+accepts a hand argument; existing callers retain their left-hand default.
+
+CyberLove's colour processing merged the previous 4-bit calibration levels (margin 0).
+`deno task vrlab:camera-recover --bits=2 --inset=48` uses the verified alternative:
+an exact window capture decoded 512² depth successfully with calibration margin 28.
+This increases the block height/payload area; it does not reduce depth-grid resolution.
+
 Reconstructed from the first, working session (2026-10-18, 11:07–11:09 UTC, VRChat log
 `output_log_2026-10-18_13-56-13.txt`). Every pose, timing and observation below is from that run.
 Nothing here is inferred. Positions are driver (raw tracking) space. The lab's synthetic head is

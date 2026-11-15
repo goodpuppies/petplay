@@ -57,7 +57,7 @@ export async function sceneReady(): Promise<boolean> {
   try {
     return await evalIn(
       "webxr",
-      "Boolean(host?.running && host?.rootStore?.getState()?.scene && host?.getStatus().frameCount > 0 && host?.directOpenVrInputSource?.inputReady)",
+      "Boolean(state.host?.running && state.host?.rootStore?.getState()?.scene && state.host?.getStatus().frameCount > 0 && state.host?.directOpenVrInputSource?.inputReady)",
     ) === "true";
   } catch {
     return false;

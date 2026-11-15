@@ -114,12 +114,19 @@ export function inWorld(): boolean {
   return /Entering Room:/.test(readLog());
 }
 
-/** Launches VRChat through Steam (VR mode, since SteamVR is running) and waits for a world. */
-export async function launch(timeoutMs = 240_000): Promise<string> {
+/**
+ * Launches VRChat through Steam (VR mode, since SteamVR is running) and waits for a world.
+ * `instance` (`wrld_…:id~…`) joins that instance instead of the home world, through the same
+ * `vrchat://launch` URL a web link uses.
+ */
+export async function launch(timeoutMs = 240_000, instance?: string): Promise<string> {
   if (!isRunning()) {
     const previous = latestLog();
+    const url = instance
+      ? [`vrchat://launch?ref=vrchat.com&id=${instance}`]
+      : [];
     new Deno.Command(`${Deno.env.get("HOME")}/.local/share/Steam/steam.sh`, {
-      args: ["-applaunch", String(VRCHAT_APP_ID)],
+      args: ["-applaunch", String(VRCHAT_APP_ID), ...url],
       env: desktopEnv(),
       stdin: "null",
       stdout: "null",

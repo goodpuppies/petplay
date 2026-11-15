@@ -142,8 +142,18 @@ function loadGlReadPixels() {
     try {
       const library = Deno.dlopen(path, {
         glReadPixels: { parameters: ["i32", "i32", "i32", "i32", "u32", "u32", "buffer"], result: "void" },
+        glReadBuffer: { parameters: ["u32"], result: "void" },
+        glGetIntegerv: { parameters: ["u32", "buffer"], result: "void" },
       });
-      glReadPixels = library.symbols.glReadPixels;
+      glReadPixels = (x, y, w, h, format, type, out) => {
+        // Called after EndDrawing swaps buffers. GL_BACK can now be empty; read the presented
+        // front buffer explicitly, preserving the caller's read-buffer state.
+        const previous = new Int32Array(1);
+        library.symbols.glGetIntegerv(0x0c02, previous); // GL_READ_BUFFER
+        library.symbols.glReadBuffer(0x0404); // GL_FRONT
+        try { library.symbols.glReadPixels(x, y, w, h, format, type, out); }
+        finally { library.symbols.glReadBuffer(previous[0]); }
+      };
       return glReadPixels;
     } catch {
       // Try the next candidate.

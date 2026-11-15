@@ -9,8 +9,11 @@ import {
   type UseFrameNextOptions,
   useThree,
 } from "@react-three/fiber/webgpu";
+import { getPassthroughKey, subscribePassthroughKey } from "./passthroughKeyStore.ts";
 import { vrcCameraStore } from "./vrcCameraStore.ts";
 import { readVrcCameraDebugSnapshot } from "../vrcCameraDebugState.ts";
+import { updateDepthSurface, updateOccluderSurface } from "../vrchatDepth/surface.ts";
+import { vrcDepthDebugStore } from "./vrcDepthDebugStore.ts";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
 import {
   DEFAULT_DISPLAY_DEPTH,
@@ -200,7 +203,7 @@ const SHOW_VRC_CAMERA_DEBUG = Deno.env.get("PETPLAY_VRC_CAMERA_DEBUG") === "1";
 function VrcCameraCalibrationBall() {
   const ref = useRef<THREE.Mesh>(null!);
   useFrame(() => {
-    const pose = vrcCameraStore.predicted();
+    const pose = vrcDepthDebugStore.headCameraPinned() ? null : vrcCameraStore.predicted();
     ref.current.visible = pose != null;
     if (pose) ref.current.position.fromArray(pose.position);
   });
@@ -214,6 +217,140 @@ function VrcCameraCalibrationBall() {
     >
       <sphereGeometry args={[0.025, 16, 12]} />
       <meshBasicMaterial color="#36ff68" />
+    </mesh>
+  );
+}
+
+/**
+ * VRChat's decoded depth as a coloured surface in tracking space (`vrcDepthDebugStore`). Drawn in the
+ * headset and in the VRC camera layer: lying exactly on VRChat's geometry means the block's
+ * camera pose, the head alignment and the unprojection are all right.
+ */
+function VrcDepthDebugMesh() {
+  const ref = useRef<THREE.Mesh>(null!);
+  const state = React.useMemo(() => ({ revision: -1 }), []);
+  const geometry = React.useMemo(() => new THREE.BufferGeometry(), []);
+  React.useEffect(() => () => geometry.dispose(), [geometry]);
+  useFrame(() => {
+    const data = vrcDepthDebugStore.mesh();
+    ref.current.visible = data != null;
+    if (data == null || data.revision === state.revision) return;
+    state.revision = data.revision;
+    updateDepthSurface(geometry, data);
+  });
+  return (
+    <mesh
+      ref={ref}
+      name="vrc-depth-debug-mesh"
+      geometry={geometry}
+      visible={false}
+      frustumCulled={false}
+      pointerEvents="none"
+      userData={{ vrcCameraHidden: true }}
+    >
+      <meshBasicMaterial vertexColors side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+/**
+ * VRChat's depth as an invisible occluder in the headset: drawn first, depth only, so PetPlay's
+ * objects behind VRChat's surfaces (walls, furniture, the wearer's own avatar body) don't draw.
+ * The surface is in tracking space, so each eye reprojects it by drawing it from its own pose.
+ * Hidden from the VRChat camera layer, which has its own per-pixel foreground.
+ */
+function VrcDepthOccluder() {
+  const ref = useRef<THREE.Mesh>(null!);
+  const state = React.useMemo(() => ({ revision: -1 }), []);
+  const geometry = React.useMemo(() => new THREE.BufferGeometry(), []);
+  React.useEffect(() => () => geometry.dispose(), [geometry]);
+  useFrame(() => {
+    const data = vrcDepthDebugStore.occlusion() && !vrcDepthDebugStore.gpuOcclusion()
+      ? vrcDepthDebugStore.rawMesh()
+      : null;
+    ref.current.visible = data != null;
+    if (data == null || data.revision === state.revision) return;
+    state.revision = data.revision;
+    updateOccluderSurface(geometry, data, VRC_DEPTH_OCCLUDER_BIAS);
+  });
+  return (
+    <mesh
+      ref={ref}
+      name="vrc-depth-occluder"
+      geometry={geometry}
+      visible={false}
+      renderOrder={-1000}
+      frustumCulled={false}
+      pointerEvents="none"
+      userData={{ vrcCameraHidden: true }}
+    >
+      <meshBasicMaterial colorWrite={false} depthWrite side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+/** Tracking metres behind VRChat's surfaces, as the desktop foreground's bias. */
+const VRC_DEPTH_OCCLUDER_BIAS = 0.02;
+
+/**
+ * The accumulated VRChat depth scan (`VoxelMap` surfels, in VRChat world space), placed in tracking
+ * space by the current world → tracking alignment on the mesh's own transform.
+ */
+function VrcDepthScanMesh() {
+  const ref = useRef<THREE.Mesh>(null!);
+  const state = React.useMemo(() => ({ revision: -1, capacity: 0 }), []);
+  const geometry = React.useMemo(() => new THREE.BufferGeometry(), []);
+  React.useEffect(() => () => geometry.dispose(), [geometry]);
+  useFrame(() => {
+    const scan = vrcDepthDebugStore.scan();
+    const alignment = vrcDepthDebugStore.scanAlignment();
+    const mesh = ref.current;
+    mesh.visible = scan != null && scan.count > 0 && alignment != null;
+    if (!mesh.visible) return;
+    mesh.position.fromArray(alignment!.translation);
+    mesh.rotation.set(0, alignment!.yawRad, 0);
+    mesh.scale.setScalar(alignment!.scale);
+    if (scan!.revision === state.revision) return;
+    state.revision = scan!.revision;
+    const needed = scan!.positions.length;
+    if (needed > state.capacity) {
+      // Grow in steps; unused vertices stay at zero, degenerate triangles that draw nothing.
+      state.capacity = Math.max(needed, state.capacity * 2, 6 * 3 * 1024);
+      const previous = [geometry.getAttribute("position"), geometry.getAttribute("color")];
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(state.capacity), 3),
+      );
+      geometry.setAttribute(
+        "color",
+        new THREE.BufferAttribute(new Float32Array(state.capacity), 3),
+      );
+      // Keep the geometry's revision (the sum of attribute versions) moving forward.
+      for (const [i, name] of ["position", "color"].entries()) {
+        (geometry.getAttribute(name) as THREE.BufferAttribute).version =
+          ((previous[i] as THREE.BufferAttribute | undefined)?.version ?? 0) + 1;
+      }
+    }
+    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    const color = geometry.getAttribute("color") as THREE.BufferAttribute;
+    const p = position.array as Float32Array, c = color.array as Float32Array;
+    p.set(scan!.positions);
+    p.fill(0, needed);
+    c.set(scan!.colors);
+    position.needsUpdate = true;
+    color.needsUpdate = true;
+    geometry.computeBoundingSphere();
+  });
+  return (
+    <mesh
+      ref={ref}
+      name="vrc-depth-scan"
+      geometry={geometry}
+      visible={false}
+      frustumCulled={false}
+      pointerEvents="none"
+      userData={{ vrcCameraHidden: true }}
+    >
+      <meshBasicMaterial vertexColors side={THREE.DoubleSide} />
     </mesh>
   );
 }
@@ -2097,6 +2234,57 @@ function SpatialControlGlyph({ action }: { action: ControlSpatialNode["action"] 
   );
 }
 
+/** Inward-facing key sphere: ordinary scene geometry, behind the windows and controls. */
+function PassthroughSkybox() {
+  const key = React.useSyncExternalStore(subscribePassthroughKey, getPassthroughKey);
+  const radius = useSetting("passthroughRadiusMeters");
+  const anchor = useSetting("passthroughAnchor");
+  const center = useSetting("passthroughCenter");
+  const mesh = React.useRef<THREE.Mesh>(null);
+  const geometry = React.useMemo(() => {
+    // Encode inward winding in the geometry so both native Raylib and Three draw the inside.
+    return new THREE.SphereGeometry(1, 32, 16).scale(-1, 1, 1);
+  }, []);
+  React.useEffect(() => () => geometry.dispose(), [geometry]);
+  const color = React.useMemo(() =>
+    new THREE.Color().setRGB(
+      parseInt(key?.slice(0, 2) ?? "00", 16) / 255,
+      parseInt(key?.slice(2, 4) ?? "00", 16) / 255,
+      parseInt(key?.slice(4, 6) ?? "00", 16) / 255,
+    ), [key]);
+  useFrame(({ camera, gl }) => {
+    if (!mesh.current) return;
+    if (anchor === "playspace" && center !== null) {
+      mesh.current.position.fromArray(center);
+    } else {
+      getHeadObject(gl, camera as unknown as THREE.Camera).getWorldPosition(mesh.current.position);
+      if (anchor === "playspace") setSetting("passthroughCenter", mesh.current.position.toArray());
+    }
+  });
+  if (key === null) return null;
+  return (
+    <mesh
+      ref={mesh}
+      name="passthrough-key-skybox"
+      userData={{ passthroughKey: true }}
+      scale={radius}
+      // Screen proxies write depth at -100 without painting colour. Draw after them so
+      // they leave transparent holes for the separate SteamVR display overlays.
+      renderOrder={-50}
+      geometry={geometry}
+      {...({ pointerEvents: "none" } as Record<string, unknown>)}
+    >
+      <meshBasicMaterial
+        key={key}
+        color={color}
+        depthWrite={false}
+        fog={false}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
 export function WebXRScene(
   {
     XROrigin: _XROrigin,
@@ -2141,12 +2329,16 @@ export function WebXRScene(
     <>
       <color attach="background" args={[0x091018]} />
       <fog attach="fog" args={["#091018", 4, 10]} />
+      <PassthroughSkybox />
       <ambientLight intensity={0.8} />
       <directionalLight intensity={2.8} position={[2, 3, 2]} />
       <pointLight intensity={8} position={[0, 1.9, -1.25]} color="#ffb347" />
       {/* <XROrigin /> */}
 
       <VrcCameraCalibrationBall />
+      <VrcDepthDebugMesh />
+      <VrcDepthOccluder />
+      <VrcDepthScanMesh />
       {SHOW_VRC_CAMERA_DEBUG && <VrcCameraDebugVisuals />}
 
       <WindowLayer

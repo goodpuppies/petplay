@@ -145,7 +145,7 @@ export async function up(options: UpOptions = {}): Promise<void> {
       "--display-profile",
       options.displayProfile ?? "lab",
       "--seconds",
-      String(options.seconds ?? 3600),
+      String(options.seconds ?? 0), // 0: until `vrlab down`
     ], "lab.log");
     await waitFor("vrcompositor", () => pidsNamed("vrcompositor").length > 0, 40_000, 200);
   }
@@ -155,7 +155,7 @@ export async function up(options: UpOptions = {}): Promise<void> {
       "run",
       "-A",
       "utils/petplay-ovrdriver-lab-probe.ts",
-      `--hold-open=${options.seconds ?? 3600}`,
+      `--hold-open=${options.seconds ? options.seconds : "forever"}`,
     ], "keepalive.log");
     await waitFor("the keepalive to hold the runtime", () => {
       try {

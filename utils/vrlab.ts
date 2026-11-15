@@ -3,7 +3,7 @@
  * scriptable. Library in `utils/vrlab/`; the camera-layer check is `utils/vrlab-camera-check.ts`.
  *
  * ```sh
- * deno task vrlab up [--seconds=3600] [--real-config] [--no-vrchat] [--no-eye-capture]
+ * deno task vrlab up [--seconds=N] [--real-config] [--no-vrchat] [--no-eye-capture]
  *                                          # lab → keepalive → PetPlay → VRChat
  * deno task vrlab down [--stop-petplay]      # reverse; the lab restores SteamVR settings
  * deno task vrlab status
@@ -14,6 +14,7 @@
  * deno task vrlab stick left -0.8 0.6 [ms]   # hold the joystick, then centre it
  *
  * deno task vrlab vrchat restart|launch|quit  # restart resets menus, camera and position
+ * deno task vrlab vrchat join wrld_…:id~…     # restart VRChat into that instance
  *
  * deno task vrlab osc /input/LookRight i:1   # raw OSC to VRChat (i:, f:, s:, T, F, or numbers)
  * deno task vrlab tap Jump                   # /input/<name> press and release
@@ -114,7 +115,7 @@ async function main(): Promise<void> {
   switch (command) {
     case "up":
       return await up({
-        seconds: Number(option("seconds") ?? 3600),
+        seconds: Number(option("seconds") ?? 0), // 0: run until `vrlab down`
         realConfig: flag("real-config"),
         vrchat: !flag("no-vrchat"),
         eyeCapture: !flag("no-eye-capture"),
@@ -153,6 +154,12 @@ async function main(): Promise<void> {
       if (sub === "restart") return await freshVrchat();
       if (sub === "launch") return print(`VRChat in a world (${await vrchat.launch()})`);
       if (sub === "quit") return await vrchat.quit();
+      if (sub === "join") {
+        // Restarts VRChat into an instance: a running VRChat ignores a second launch.
+        if (!args[2]?.startsWith("wrld_")) throw new Error("usage: vrchat join wrld_…:instance");
+        await vrchat.quit();
+        return print(`VRChat in a world (${await vrchat.launch(240_000, args[2])})`);
+      }
       break;
     case "osc":
       return await sendOsc(sub, ...args.slice(2).map(parseOscArg));
