@@ -5,6 +5,8 @@ import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
 import { type GpuMediaFrame, GpuMediaSocket } from "../classes/gpuMediaSocket.ts";
 import { EglMediaTexture } from "../classes/eglMediaTexture.ts";
+import { RemoteDisplayBinding, type RemoteDisplaySync } from "../classes/remoteDisplayBinding.ts";
+import { runWindowsMedia } from "./remoteMediaWindows.ts";
 import { fromFileUrl } from "@std/path";
 export type RemoteMediaRequest = {
   code?: string;
@@ -12,6 +14,8 @@ export type RemoteMediaRequest = {
   address?: string;
   widthMeters?: number;
   distance?: number;
+  feedId?: string;
+  name?: string;
 };
 const state = actorState({
   name: "remoteMedia",
@@ -19,9 +23,12 @@ const state = actorState({
   starting: false,
   lastError: null as string | null,
   frames: 0,
+  feedId: "desktop",
+  feedName: "Remote desktop",
   width: 0,
   height: 0,
 });
+const displayBinding = new RemoteDisplayBinding();
 let stopRequested = false;
 let task: Promise<void> | null = null;
 new PostMan(
@@ -29,11 +36,13 @@ new PostMan(
   {
     __INIT__: () => {},
     __HEALTH__: () => ({ ...state }),
+    SYNCVIRTUALDISPLAY: (sync: RemoteDisplaySync) => displayBinding.sync(sync),
+    REMOVEVIRTUALDISPLAY: (payload: { id: string }) => displayBinding.remove(payload.id),
     STARTMEDIA: (request: RemoteMediaRequest) => {
       if (task) throw Error("Remote media is already running");
-      if (Deno.build.os !== "linux") {
+      if (Deno.build.os !== "linux" && Deno.build.os !== "windows") {
         throw Error(
-          "GPU remote media receiver is currently implemented on Linux only",
+          "GPU remote media receiver is implemented on Linux and Windows",
         );
       }
       const width = request.widthMeters ?? 1.2, distance = request.distance ?? 1.5;
@@ -46,13 +55,18 @@ new PostMan(
           "A share code or iroh URL plus address is required",
         );
       }
+      state.feedId = request.feedId?.trim().slice(0, 128) || "desktop";
+      state.feedName = request.name?.trim().slice(0, 128) || "Remote desktop";
       stopRequested = false;
       state.starting = true;
       state.lastError = null;
       state.frames = 0;
       state.width = 0;
       state.height = 0;
-      task = run(request, width, distance).catch((error) => {
+      const receive = Deno.build.os === "windows"
+        ? runWindowsMedia(request, width, distance, state, () => stopRequested, displayBinding)
+        : run(request, width, distance);
+      task = receive.catch((error) => {
         state.lastError = String(error);
         console.error("[remote-media]", error);
       }).finally(() => {
@@ -169,6 +183,7 @@ async function run(request: RemoteMediaRequest, width: number, distance: number)
       ),
       "overlay placement",
     );
+    displayBinding.attach(overlay, handle);
     importer = new EglMediaTexture();
     const texture = importer.texture;
     consumer = new GpuMediaSocket(socket);
@@ -207,13 +222,14 @@ async function run(request: RemoteMediaRequest, width: number, distance: number)
           ),
           "SetOverlayTexture",
         );
-        if (state.frames === 0) ok(overlay.ShowOverlay(handle), "ShowOverlay");
+        displayBinding.presented();
         state.frames++;
         state.width = latest.width;
         state.height = latest.height;
       } else await sleep(5);
     }
   } finally {
+    displayBinding.detach();
     if (overlay && handle) {
       overlay.HideOverlay(handle);
       overlay.ClearOverlayTexture(handle);

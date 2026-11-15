@@ -160,6 +160,12 @@ export function DisplayInstance(
   );
 
   React.useEffect(() => {
+    // A new feed/provider must receive the pose even if the display itself did not move.
+    lastSentHmd.current = null;
+    lastSentWidth.current = null;
+  }, [displayOverlayHostActor, virtualDisplayId]);
+
+  React.useEffect(() => {
     if (!displayOverlayHostActor || !virtualDisplayId) return;
     return () => {
       try {
@@ -294,7 +300,14 @@ export function DisplayInstance(
           : {
             target: targetActor,
             type: "SYNCDISPLAYPOSE",
-            payload: { hmd, widthMeters, opacity: sentOpacity, curvature, deviceIndex, rawUniverse },
+            payload: {
+              hmd,
+              widthMeters,
+              opacity: sentOpacity,
+              curvature,
+              deviceIndex,
+              rawUniverse,
+            },
           },
       );
     } catch {

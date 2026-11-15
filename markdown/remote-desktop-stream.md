@@ -28,8 +28,8 @@ MoQ over iroh, and a receiver.
 
 - **M1 — a desktop feed reaches the encoder.** Done, including real capture; see below.
 - **M2 — remote iroh.** Implemented and tested locally; a two-machine NAT test remains. See below.
-- **M3 — a receiver inside PetPlay.** Linux GPU path implemented and locally tested; Windows
-  native decoding remains open. See below.
+- **M3 — a receiver inside PetPlay.** Linux overlay path and Windows GPU reception implemented and tested; Windows
+  SteamVR presentation still needs a headset target. See below.
 - **M4 — pairing in PetPlay, both directions, more than one stream.**
 
 Input is deliberately out of scope for now. `screen-streamer` already injects through
@@ -41,10 +41,12 @@ changing the media path. Audio does not exist anywhere in this stack and is its 
 
 The intended path keeps raw frames off the CPU on both platforms:
 
-- **Windows (planned):** hardware Media Foundation H.264 decode in D3D11 mode, followed by
-  GPU color conversion into an RGB shared texture. PetPlay can submit a compatible shared
-  handle as `TextureType_DXGISharedHandle`. The exact allocation, ownership and synchronization
-  contract still needs implementation and runtime validation.
+- **Windows (implemented):** the inbox Media Foundation H.264 MFT uses a D3D11 device manager.
+  Output must be NV12 hardware decoder textures; CPU-backed output is rejected. D3D11 video
+  processing converts into private BGRA storage, then `CopyResource` updates a persistent shared
+  BGRA texture atomically. PetPlay passes its legacy DXGI handle as `TextureType_DXGISharedHandle`.
+  No GL interop or raw frame transfer through Deno is involved. The Windows GPU/transport path
+  is validated; actual OpenVR submission awaits an HMD or synthetic Windows driver.
 - **Linux (implemented):** `moq-vaapi::decode_exported` yields an NV12 DMA-BUF. VA-API VPP
   converts it into a three-slot RGB GBM pool, and a process-owned PetPlay actor imports each
   descriptor with EGL. It blits on GPU into its own GL texture and finishes the read before
@@ -222,5 +224,150 @@ ran alongside the user's live VR session. Artifacts: `_scratch/m3-openvr-result.
 `_scratch/m3-actor-result.log`, and the private synthetic test directory named by the first log.
 
 `deno task check`, Linux Rust tests with `decode`, and the Windows GNU browser-gateway
-cross-check pass. This does not validate Windows native reception, two-machine NAT traversal,
-physical display latency, sustained 4K reception or the visible quad's placement in-headset.
+cross-check pass. At this stage Windows native reception was not yet tested; the subsequent
+Windows validation is below. Physical display latency, sustained 4K reception and the visible
+quad's placement in-headset remain unmeasured.
+
+
+## M3 Windows implementation and two-machine validation
+
+Build natively on Windows with:
+
+```sh
+cargo build --release --no-default-features --features decode-windows
+```
+
+The native `receive SHARE_CODE --stdio` command reads `STOP` from stdin (EOF also stops it).
+Stdout emits `WINDOWS_MEDIA_FRAME` JSON records containing version, decimal-string legacy DXGI
+handle, dimensions, sequence and source timestamp. There is one persistent presentation texture;
+its handle stays fixed across reference resets. Pixels stay in native GPU resources. Use a local
+pipe for this metadata; a handle is usable only by processes on the same machine/adapter, never
+by the remote peer.
+
+The PetPlay actor now selects a Windows helper, using the same `STARTREMOTEMEDIA`, status and
+stop messages. Set `PETPLAY_MEDIA_BINARY` to the receiver executable if it is not at
+`submodules/petplay_mediatransport/target/release/petplay-media.exe`. It asks SteamVR for the DXGI
+adapter index and passes `PETPLAY_DXGI_ADAPTER` to the native worker, which matters on hybrid
+laptops. The native default is the default hardware adapter. The overlay is cleared and destroyed
+before the native process is asked to stop and release its texture.
+
+Valve's [shared-handle contract](https://github.com/ValveSoftware/openvr/blob/master/headers/openvr.h)
+says the renderer reads this texture directly and updates must use an atomic copy or resolve.
+Therefore VPP never writes directly into the shared presentation texture. After the copy, an
+event query confirms GPU completion before publishing frame metadata. This is GPU conversion
+plus a GPU presentation copy, not a copy-free pipeline. No keyed mutex or timed reuse guess is
+used. The native process retains ownership throughout the session.
+
+On the Windows machine `ahtij@100.99.6.30`, a local synthetic H.264 fixture decoded **120/120**
+frames into D3D11 decoder surfaces. A second process opened the legacy shared handle and its
+1,228,800-byte diagnostic BGRA image exactly matched the owner's snapshot. The image was also
+inspected for orientation and color. The DXGI adapters available to the SSH session both
+reported AMD Radeon Graphics; both passed 120-frame decode and exact cross-process image checks.
+The NVIDIA adapter listed by Windows has not been separately validated. A flush/restart test
+also decoded 240 frames across two passes while asserting that the shared handle never changed. These explicit test commands (`decode-test` and `shared-test`)
+can read back a diagnostic image; the live receive command never does.
+
+A second test sent a synthetic 640×480 feed from Linux through the real share-code Iroh/MoQ
+path to Windows. `RECEIVER_DIRECT` preceded the first video frame. Windows decoded **63 frames**,
+a second Windows process opened the live shared texture, and `STOP` shut the receiver down
+cleanly. No real desktop was captured. This verifies two machines over their reachable routes;
+it does not establish traversal through two unrelated NATs, sustained 4K, or end-to-end latency.
+
+The executable was cross-compiled on Linux for `x86_64-pc-windows-gnu`, using Zig for C/linking
+and LLVM dlltool for Rust's raw imports, then copied by SSH. The executable imports only Windows
+system DLLs. Zig's linker shim maps winapi import aliases, uses libc/libunwind in place of the
+GCC runtime libraries, and handles Rust's module-definition arguments. The exact tested shim
+and build logs are retained in `_scratch/windows-link.py` and `_scratch/windows-mf-final-build.log`.
+A normal Windows MSVC build does not need these cross-linker adaptations.
+
+Artifacts: `_scratch/windows-mf-runtime.log`, `_scratch/windows-adapter-results.log`,
+`_scratch/windows-reset-result.log`, `_scratch/windows-live-result.log`, the private
+fixture directory named in that log, and `_scratch/windows-live-shared.png`. Windows test files
+live at `C:\Users\jaask\source\petplay-media-test`; no full PetPlay checkout was copied and
+SteamVR was not launched. The SSH process is in Windows session 0, while the logged-in desktop
+is session 1. Actual PetPlay/OpenVR testing will need the interactive session plus a headset or
+Windows synthetic driver. The existing Linux live VR session was left running.
+
+The subscription and bounded encoded-input queue are now shared between both native receivers.
+The Linux 60-frame hidden OpenVR test, pool ACK protection, and disconnect check passed again
+after that extraction. Windows decoder recovery flushes references while retaining the same
+D3D device and shared texture, rather than invalidating the handle held by the overlay.
+
+
+## Windows desktop sender: normal-session Rust capture
+
+The active sender prototype now uses PetPlay's normal Rust `screen-streamer` (scap / Windows
+Graphics Capture), with `--single-monitor` to avoid stitching the whole Windows workspace.
+The native media worker accepts its existing BGRA chunked TCP protocol on localhost port
+12346. It starts one FFmpeg 8.0.1 NVENC encoder, reads encoded Annex-B access units from that
+child, and publishes them on the same mono Iroh/MoQ tracks. The output is 1280×720 with aspect
+ratio preserved and black bars as needed, nominally 30 fps at 8 Mbps. Raw frames stay on the
+Windows machine, but this capture path does use CPU BGRA, CPU scaling and an encoder upload.
+It is the ordinary capture path, not the planned all-GPU Windows sender.
+
+The installed FFmpeg 8.1.2 requires NVENC API 13.1 while this machine's driver provides 13.0.
+A portable FFmpeg 8.0.1 was placed inside the experiment directory solely as the hardware
+encoder. The installed FFmpeg and GPU drivers were not changed. Earlier FFmpeg capture and
+multi-process capture experiments were stopped; their scheduled task was removed.
+
+On Windows, from the interactive desktop session, run:
+
+```powershell
+& "$env:USERPROFILE\source\petplay-media-test\Run-RustDesktopStream.cmd"
+```
+
+`Start-RustDesktopStream.ps1` starts the native publisher first, waits for its listener, then
+starts the normal capturer. It prints the share code and keeps running until Ctrl+C or either
+process exits. Cleanup terminates both owned process trees, including the encoder. Logs are
+`rust-publisher.log`, `rust-encoder-errors.log`, `rust-capture.log`, and
+`rust-capture-errors.log` in the same folder. The publisher log contains the bearer share code;
+no raw or encoded desktop frames are recorded.
+
+Local PetPlay was cleanly restarted through the SteamVR launcher on 2026-11-13; SteamVR itself
+was left running. `_scratch/watch-windows-rust-stream.py` is detached and waits for a new share
+code in the Windows publisher log, then starts the local remote-media overlay at 1.6 m width
+and 1.6 m distance. It has no expiry. Its PID is `_scratch/windows-rust-watch.pid`, and its log
+is `_scratch/windows-rust-watch.log`. To stop this experiment, stop the watcher, send
+`STOPREMOTEMEDIA` to local `main`, and close the Windows launcher with Ctrl+C.
+
+The user is to start capture in the regular Windows session. No successful live desktop
+presentation is claimed yet. The normal-session launcher was syntax-checked; the Rust
+capturer executable passed `--version`; and a finite 30-frame synthetic test of the exact
+chunked frame protocol, NVENC encoding and Iroh publication passed over SSH. Artifacts:
+`_scratch/windows-rust-launcher-check.log`, `_scratch/windows-rust-pipeline-result.log`.
+
+
+## Remote media as a display-instance feed
+
+Connected native receivers now appear as **Remote desktop** in the display's **Feed** selector,
+alongside local monitor outputs. The normal workspace/spatial graph assigns the feed to one
+display instance. Its move, resize, hinge/anchor placement, opacity, curvature and auto-hide
+updates are sent directly to the receiver's overlay using `SYNCVIRTUALDISPLAY`. The existing
+standalone quad is reused when assigned, not duplicated. Once managed, unassigning or deleting
+the display hides the remote overlay; incoming video does not make an unassigned quad reappear.
+
+Discovery uses Stageforge's local actor control plane (`INSPECT` and receiver health), not the
+agent REPL HTTP server. The graph persists `remote:<feedId>` and its friendly name. Provider
+actor IDs are runtime metadata only, so restarting the receiver does not invalidate the saved
+feed assignment. A stopped/disconnected receiver disappears from available feeds, while its
+saved assignment remains disconnected rather than turning into a local desktop. The current
+main API still owns one stream; `STARTREMOTEMEDIA` can optionally supply `feedId` and `name`.
+
+Remote feeds are view-only. The scene does not forward their pointer clicks to the local
+workspace and does not offer the local mouse-input settings for them. Remote keyboard/input
+transport remains a separate feature.
+
+`classes/remoteDisplayBinding.ts` implements the display host pose/style contract on both Linux
+and Windows receivers. It supports standing/raw tracking and controller-relative carry. A
+250-ms unmount grace matches the existing desktop host's React cleanup behavior, and a new
+assignment cancels stale removal. Display instances invalidate their cached pose when switching
+providers, ensuring that an unchanged window still sends its pose to the new feed.
+
+The existing live PetPlay scene hot-reloaded safely, and only the remote receiver was reconnected
+to load its new handlers. The live layout catalog confirms the remote feed assigned to a normal
+display instance (`display-41`). Seven feed/workspace/binding tests passed, including stable feed
+identity across provider restarts, input suppression (including the catalog/graph reconciliation gap), raw/controller pose dispatch and stale
+cleanup protection. A hidden OpenVR overlay accepted the real binding's pose, width, opacity,
+curvature and crop calls without becoming visible. `deno task check` passes.
+Artifacts: `_scratch/remote-feed-live-catalog.json`, `_scratch/remote-feed-tests.log`,
+`_scratch/remote-feed-openvr.log` and `_scratch/remote-feed-check.log`.

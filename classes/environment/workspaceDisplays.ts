@@ -7,6 +7,9 @@ export type WorkspaceRect = {
 };
 
 export type WorkspaceOutput = {
+  /** Runtime provider override; omitted for the local workspace host. Never saved in the graph. */
+  overlayHostActor?: string;
+  input?: "none";
   id: string;
   name: string;
   priority: number;

@@ -96,6 +96,7 @@ import {
   swapDisplayToolbarSide,
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
+import { discoverRemoteDisplayFeeds, resolveDisplayFeedProvider } from "./remoteDisplayFeeds.ts";
 import { loadWorkspaceOutputs, type WorkspaceOutput } from "./workspaceDisplays.ts";
 import { publishWorkspaceLayout, registerWorkspaceLayoutActions } from "./workspaceLayoutStore.ts";
 import {
@@ -628,9 +629,34 @@ function WindowLayer({
   );
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>("display-1");
   const handleStores = React.useMemo(() => new Map<string, HandleStore<unknown>>(), []);
-  const [workspaceOutputs, setWorkspaceOutputs] = React.useState<
+  const [localWorkspaceOutputs, setWorkspaceOutputs] = React.useState<
     Awaited<ReturnType<typeof loadWorkspaceOutputs>>
   >([]);
+  const [remoteOutputs, setRemoteOutputs] = React.useState<WorkspaceOutput[]>([]);
+  const workspaceOutputs = React.useMemo(() => [...localWorkspaceOutputs, ...remoteOutputs], [
+    localWorkspaceOutputs,
+    remoteOutputs,
+  ]);
+  React.useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const outputs = await discoverRemoteDisplayFeeds();
+        if (!cancelled) {
+          setRemoteOutputs((current) =>
+            JSON.stringify(current) === JSON.stringify(outputs) ? current : outputs
+          );
+        }
+      } catch { /* Keep the last catalog through a transient control-plane failure. */ }
+      if (!cancelled) timer = setTimeout(() => void poll(), 2000);
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
   const [persistenceReady, setPersistenceReady] = React.useState(Deno.build.os !== "linux");
   const workspaceOutputsInitialized = React.useRef(false);
   const layoutPositionInitialized = React.useRef(layoutBootstrap.restored);
@@ -1313,7 +1339,12 @@ function DisplaySpatialNodeView({
   const children = getSpatialChildren(graph, node.id);
   const attachmentRole = getDisplayAttachmentRole(graph, node.id);
   const outputConnected = node.workspaceOutputId != null && node.workspaceOutputConnected !== false;
-  const activeDisplayOverlayHostActor = outputConnected ? displayOverlayHostActor : null;
+  const selectedFeed = workspaceOutputs.find((output) => output.id === node.workspaceOutputId);
+  const { actor: activeDisplayOverlayHostActor, acceptsMouse: feedAcceptsMouse } =
+    resolveDisplayFeedProvider(
+      outputConnected ? selectedFeed : undefined,
+      displayOverlayHostActor,
+    );
   const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
   const mouseButtonForPointer = React.useCallback((event: PenPointerEvent) => {
     const handedness = (event.pointerState as { inputSource?: { handedness?: XRHandedness } })
@@ -1423,7 +1454,7 @@ function DisplaySpatialNodeView({
         opacity={node.opacity}
         curvature={node.curvature}
         autoHide={node.autoHide}
-        onMouse={activeDisplayOverlayHostActor != null && !node.mouseBlocked
+        onMouse={activeDisplayOverlayHostActor != null && feedAcceptsMouse && !node.mouseBlocked
           ? croppedMouseSink
           : undefined}
         mouseButtonForPointer={mouseButtonForPointer}
@@ -1465,7 +1496,7 @@ function DisplaySpatialNodeView({
           actions={contextActions}
           settings={
             <>
-              <SpatialSettingsSection label="Physical output">
+              <SpatialSettingsSection label="Feed">
                 {workspaceOutputs.map((output) => (
                   <SpatialSettingsButton
                     key={output.id}
@@ -1480,7 +1511,7 @@ function DisplaySpatialNodeView({
               </SpatialSettingsSection>
               <AnchorSettingsSection graph={graph} node={node} setGraph={setGraph} />
               <OpacitySettingsSection node={node} setGraph={setGraph} />
-              <MouseSettingsSection node={node} setGraph={setGraph} />
+              {feedAcceptsMouse ? <MouseSettingsSection node={node} setGraph={setGraph} /> : null}
               <AutoHideSettingsSection node={node} setGraph={setGraph} />
               <CurvatureSettingsSection node={node} setGraph={setGraph} />
               <SpatialSettingsSection
