@@ -10,6 +10,7 @@ folder stays as history.
 - `<topic>.md` — a single-file note.
 - `<topic>/README.md` — a multi-file plan; the README is its index and holds the decisions.
 - [`issues/`](./issues/README.md) — bug and task tracking without GitHub. One folder per issue.
+- [`sec/`](./sec/README.md) — triaged security and dependency alerts, and why each was decided.
 
 ## Active
 
