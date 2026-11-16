@@ -24,6 +24,8 @@ advisories that only affect 32-bit builds are dismissed.
 - **Decision:** dismissed. The bug only affects 32-bit targets, and the crate is built only for
   x86_64 Linux (`utils/build-pathfinder-text.ts`). The Pathfinder renderer is an experimental
   comparison renderer kept as research reference, not a shipped path.
+- **Lock:** `native/pathfinderText/src/lib.rs` has a `compile_error!` for any target where
+  `target_pointer_width != "64"`, so the crate cannot be built 32-bit by accident.
 - **Revisit if:** we add a 32-bit target, or Pathfinder becomes a shipped renderer. Dropping the
   `pathfinder_renderer` dependency (keeping Windfoil, which only needs `pathfinder_geometry`)
   also removes it.

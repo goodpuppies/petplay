@@ -1,5 +1,10 @@
 //! Experimental vector text pass for PetPlay's raythree renderer. All calls stay on the GL owner.
 #![allow(deprecated)] // Upstream Pathfinder's current perspective/clip API.
+
+// 64-bit only: pathfinder_renderer pins crossbeam-utils 0.7, whose AtomicCell<u64> arithmetic is
+// unsound on 32-bit targets (markdown/sec/FIXED-crossbeam-utils-32.md).
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("petplay-pathfinder-text supports 64-bit targets only");
 mod glyph;
 mod windfoil;
 use font_kit::{font::Font, hinting::HintingOptions, outline::OutlineSink};
