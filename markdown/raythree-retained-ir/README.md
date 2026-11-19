@@ -1,5 +1,9 @@
 # Retained raythree IR
 
+> **Superseded (19 November 2026)** by [scene-stream](../scene-stream/README.md), which keeps
+> this plan's decisions and adds a glTF-aligned schema, the IR as a reactive store, and network
+> streaming to a browser. The prior-art, review and baseline notes here still apply.
+
 > **Status (16 October 2026): deferred.** Smaller changes covered the measured need first, as
 > suggested in [review.md](./review.md):
 > - The worker skips publishing unchanged scenes (`classes/overlaySceneFingerprint.ts`), so
