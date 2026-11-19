@@ -89,6 +89,7 @@ function wait(ms: number): Promise<void> {
 
 type RaylibPointerBridge = {
   update(): void;
+  cancel(): void;
 };
 
 function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge {
@@ -97,6 +98,7 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
   let initialized = false;
   let leftDown = false;
   let rightDown = false;
+  let middleDown = false;
   let overSent = false;
   const emitPointer = (
     type: string,
@@ -119,9 +121,20 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
       movementY,
     });
   };
+  const cancel = () => {
+    if (!overSent) return;
+    emitPointer("pointercancel", -1, 0, lastX, lastY, 0, 0);
+    emitPointer("pointerleave", -1, 0, lastX, lastY, 0, 0);
+    initialized = overSent = leftDown = rightDown = middleDown = false;
+  };
 
   return {
+    cancel,
     update() {
+      if (!raylib.IsWindowFocused()) {
+        cancel();
+        return;
+      }
       const mouse = raylib.H.GetMousePosition();
       const clientX = mouse.x;
       const clientY = mouse.y;
@@ -132,8 +145,10 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
       }
       const movementX = clientX - lastX;
       const movementY = clientY - lastY;
-      const buttons = (raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_LEFT) ? 1 : 0) |
-        (raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_RIGHT) ? 2 : 0);
+      const nextLeftDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_LEFT);
+      const nextRightDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_RIGHT);
+      const nextMiddleDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_MIDDLE);
+      const buttons = (nextLeftDown ? 1 : 0) | (nextRightDown ? 2 : 0) | (nextMiddleDown ? 4 : 0);
 
       if (!overSent) {
         emitPointer("pointerover", -1, buttons, clientX, clientY, 0, 0);
@@ -144,13 +159,11 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
         emitPointer("pointermove", -1, buttons, clientX, clientY, movementX, movementY);
       }
 
-      const nextLeftDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_LEFT);
       if (nextLeftDown !== leftDown) {
         emitPointer(nextLeftDown ? "pointerdown" : "pointerup", 0, buttons, clientX, clientY, 0, 0);
         leftDown = nextLeftDown;
       }
 
-      const nextRightDown = raylib.H.IsMouseButtonDown(raylib.MouseButton.MOUSE_BUTTON_RIGHT);
       if (nextRightDown !== rightDown) {
         emitPointer(
           nextRightDown ? "pointerdown" : "pointerup",
@@ -171,6 +184,11 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
           });
         }
         rightDown = nextRightDown;
+      }
+
+      if (nextMiddleDown !== middleDown) {
+        emitPointer(nextMiddleDown ? "pointerdown" : "pointerup", 1, buttons, clientX, clientY, 0, 0);
+        middleDown = nextMiddleDown;
       }
 
       const wheel = raylib.H.GetMouseWheelMove();
@@ -453,6 +471,7 @@ export async function runRaylibR3FViewerApp(
     console.error(`${p} Error in main loop:`, error);
     throw error;
   } finally {
+    pointerBridge.cancel();
     await releaseWindowsSyntheticKeyboardState();
     forwarded?.destroy();
     r3f.dispose();

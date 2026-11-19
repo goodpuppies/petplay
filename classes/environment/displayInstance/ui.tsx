@@ -1,4 +1,4 @@
-import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
+import type { PointerEvent as PenPointerEvent, WheelEvent as PenWheelEvent } from "@pmndrs/pointer-events";
 import React, { forwardRef, useCallback, useEffect, useMemo, useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
@@ -10,6 +10,7 @@ import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
 import { createMainControllerGate } from "../mainController.ts";
 import type { DisplayMouseButton, DisplayMouseSink } from "./mouse.ts";
 import { penHandler } from "../penEvents.ts";
+import { isDesktopMousePointerType } from "../spatialPointer.ts";
 import type { HandleOptions, HandleStore } from "@pmndrs/handle";
 import {
   DEFAULT_DISPLAY_DEPTH,
@@ -81,7 +82,7 @@ function pointerButton(button: number | undefined): DisplayMouseButton {
   }
 }
 
-function displayCoordsFromPointerEvent(e: PenPointerEvent): { x: number; y: number } | null {
+function displayCoordsFromPointerEvent(e: Pick<PenPointerEvent, "uv">): { x: number; y: number } | null {
   const uv = e.uv;
   if (uv == null) return null;
   return {
@@ -142,6 +143,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         videoFeed?.opacity, surfaceGeometry],
     );
     const pendingClickRef = useRef<PendingDisplayClick | null>(null);
+    const desktopMoves = useRef(new WeakSet<object>());
     const mainControllerGate = useMemo(() => createMainControllerGate(), []);
 
     const clearPendingTimer = useCallback((pending: PendingDisplayClick) => {
@@ -176,11 +178,17 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
 
     const emitMove = useCallback((e: PenPointerEvent) => {
       if (onMouse == null) return;
+      if (isDesktopMousePointerType(e.pointerType)) {
+        // The forwarding bridge can replay the last native move each scene frame.
+        if (desktopMoves.current.has(e.nativeEvent)) return;
+        desktopMoves.current.add(e.nativeEvent);
+      }
       if (mainControllerGate.move(e.pointerState) !== "emit") return;
       const coords = displayCoordsFromPointerEvent(e);
       if (coords == null) return;
       const pending = pendingClickRef.current;
-      if (pending != null && pending.pointerId === e.pointerId) {
+      if (pending != null) {
+        if (pending.pointerId !== e.pointerId) return;
         pending.latest = coords;
         if (pending.dragStarted) {
           onMouse({ kind: "move", ...coords });
@@ -192,7 +200,9 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
 
     const emitButton = useCallback((e: PenPointerEvent, pressed: boolean, cancelled = false) => {
       if (onMouse == null) return;
-      const coords = displayCoordsFromPointerEvent(e);
+      const current = pendingClickRef.current;
+      const coords = displayCoordsFromPointerEvent(e) ??
+        (!pressed && current?.pointerId === e.pointerId ? current.latest : null);
       if (coords == null) return;
       e.stopPropagation();
       const gated = pressed
@@ -238,9 +248,9 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         pending.timer = setTimeout(() => beginDrag(pending), STABLE_CLICK_HOLD_MS);
         pendingClickRef.current = pending;
       } else {
-        object.releasePointerCapture?.(e.pointerId);
         const pending = pendingClickRef.current;
         if (pending != null && pending.pointerId === e.pointerId) {
+          object.releasePointerCapture?.(e.pointerId);
           pendingClickRef.current = null;
           clearPendingTimer(pending);
           if (pending.dragStarted) {
@@ -251,14 +261,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
             onMouse({ kind: "button", button: pending.button, pressed: true, ...pending.start });
             onMouse({ kind: "button", button: pending.button, pressed: false, ...pending.start });
           }
-          return;
         }
-        onMouse({
-          kind: "button",
-          button: mouseButtonForPointer?.(e) ?? pointerButton(e.nativeEvent.button),
-          pressed: false,
-          ...coords,
-        });
       }
     }, [
       beginDrag,
@@ -268,6 +271,14 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       onMouse,
       releasePendingClick,
     ]);
+
+    const emitWheel = useCallback((e: PenWheelEvent) => {
+      if (onMouse == null || !isDesktopMousePointerType(e.pointerType)) return;
+      const coords = displayCoordsFromPointerEvent(e);
+      if (coords == null || e.deltaY === 0) return;
+      e.stopPropagation();
+      onMouse({ kind: "wheel", deltaY: e.deltaY / 100, ...coords });
+    }, [onMouse]);
 
     return (
       <GrabBox
@@ -295,9 +306,11 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
               onPointerDown={penHandler((e: PenPointerEvent) => emitButton(e, true))}
               onPointerUp={penHandler((e: PenPointerEvent) => emitButton(e, false))}
               onPointerCancel={penHandler((e: PenPointerEvent) => emitButton(e, false, true))}
+              onWheel={penHandler(emitWheel)}
               {...({
                 pointerEvents: "auto",
-                pointerEventsType: { allow: "ray" },
+                // Browser and native desktop views both forward DOM-style mouse rays.
+                pointerEventsType: { allow: onMouse == null ? "ray" : ["ray", "screen-mouse", "mouse"] },
                 // Prefer the screen proxy over the surrounding GrabBox
                 // hull, even though the hull is a little closer to the hand.
                 pointerEventsOrder: 1,
