@@ -110,6 +110,7 @@ import {
   spatialLayoutPersistenceEnabled,
 } from "./spatialLayoutPersistence.ts";
 import { isDesktopMousePointerType } from "./spatialPointer.ts";
+import { controllerHandOfPointerState } from "./mainController.ts";
 import type { DirectOpenVrInputSource } from "../directOpenVrInputSource.ts";
 import { penHandler } from "./penEvents.ts";
 import { ToastOverlay } from "./toastOverlay.tsx";
@@ -1484,11 +1485,8 @@ function DisplaySpatialNodeView({
     );
   const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
   const mouseButtonForPointer = React.useCallback((event: PenPointerEvent) => {
-    const handedness = (event.pointerState as { inputSource?: { handedness?: XRHandedness } })
-      .inputSource?.handedness;
-    return handedness === "left" || handedness === "right"
-      ? directOpenVrInputSource?.getDesktopMouseButton(handedness)
-      : undefined;
+    const hand = controllerHandOfPointerState(event.pointerState);
+    return hand == null ? undefined : directOpenVrInputSource?.getDesktopMouseButton(hand);
   }, [directOpenVrInputSource]);
   const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
     onMouse({
