@@ -6,6 +6,11 @@
  * most one delta in flight per client. Tracked poses travel separately as small JSON messages, so
  * they never dirty the store.
  *
+ * Clients may also send pointer input as `{ pointer: ViewPointerMessage }`: ordinary pointer
+ * events plus the camera the client drew with. They go through pmndrs on the live scene
+ * (`viewRemotePointer.ts`), the same interaction path as the desktop window and VR controllers;
+ * the results (hover, presses, drags) come back through the store like any other change.
+ *
  * HTTP on the same port: `/` the viewer page, `/viewer.js` its bundle
  * (`deno task scene-stream:build`), `/scene` the WebSocket. Loopback only unless a hostname is
  * given; expose remote access deliberately (for example through `tailscale serve`).
@@ -20,6 +25,7 @@ import { encodeDelta, type TrackedSpace } from "../submodules/raythree/src/store
 import type { OverlayAssetCache } from "./overlaySceneDelivery.ts";
 import type { RenderAnchorSpace } from "./overlayRenderTracking.ts";
 import { PetplaySceneStoreWriter } from "./sceneStoreWriter.ts";
+import { createViewRemotePointer, type ViewRemotePointer } from "./viewRemotePointer.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 
 export interface SceneStreamOptions {
@@ -57,7 +63,11 @@ type Client = {
   ack: number | null;
   inFlightSince: number | null;
   lastPoses: string;
+  /** Created on the client's first pointer message. */
+  pointer: ViewRemotePointer | null;
 };
+
+let nextClient = 1;
 
 class SceneStream {
   readonly writer = new PetplaySceneStoreWriter();
@@ -68,6 +78,7 @@ class SceneStream {
   private anchors = new Map<RenderAnchorSpace, THREE.Object3D>();
   private anchorsFoundAt = -Infinity;
   private poses = "{}";
+  private scene: THREE.Object3D | null = null;
   framesPublished = 0;
   deltasSent = 0;
   bytesSent = 0;
@@ -97,6 +108,8 @@ class SceneStream {
       this.assetVersion = assets.version;
       this.writer.write(extraction, payload.ui);
       this.framesPublished++;
+      this.scene = scene;
+      for (const client of this.clients) client.pointer?.update();
       this.poses = JSON.stringify({ poses: this.collectPoses(payload, scene) });
       for (const client of this.clients) this.pump(client);
       this.truncateJournal();
@@ -119,7 +132,10 @@ class SceneStream {
   }
 
   async stop(): Promise<void> {
-    for (const client of this.clients) client.socket.close();
+    for (const client of this.clients) {
+      client.pointer?.destroy();
+      client.socket.close();
+    }
     this.clients.clear();
     await this.server.shutdown();
   }
@@ -153,17 +169,28 @@ class SceneStream {
 
   private attach(socket: WebSocket): void {
     socket.binaryType = "arraybuffer";
-    const client: Client = { socket, ack: null, inFlightSince: null, lastPoses: "" };
+    const client: Client = { socket, ack: null, inFlightSince: null, lastPoses: "", pointer: null };
+    const label = `scene-view-${nextClient++}`;
     socket.onopen = () => {
       this.clients.add(client);
       this.pump(client);
     };
     socket.onmessage = (event) => {
       if (typeof event.data !== "string") return;
-      let message: { ack?: unknown; resync?: unknown };
+      let message: { ack?: unknown; resync?: unknown; pointer?: unknown };
       try {
         message = JSON.parse(event.data);
       } catch {
+        return;
+      }
+      if (message.pointer !== undefined) {
+        try {
+          if (!this.scene) throw Error("Scene not ready");
+          client.pointer ??= createViewRemotePointer(this.scene, label);
+          client.pointer.receive(message.pointer);
+        } catch (error) {
+          this.lastError = `pointer: ${error}`;
+        }
         return;
       }
       if (typeof message.ack === "number" && Number.isFinite(message.ack)) {
@@ -176,6 +203,9 @@ class SceneStream {
       this.pump(client);
     };
     const drop = () => {
+      // A closed view must not leave a drag or hover held in the scene.
+      client.pointer?.destroy();
+      client.pointer = null;
       this.clients.delete(client);
       this.truncateJournal();
     };

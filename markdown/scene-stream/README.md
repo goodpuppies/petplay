@@ -237,6 +237,35 @@ Pointer and ray input back to the server with the drawn tick and view. `videoSur
 display feeds over the media path. Exit: a desktop display can be seen and clicked from the
 browser.
 
+**Pointer input done 2026-11-19** (video remains), following the unified view controls below.
+The browser sends ordinary pointer events plus the camera it drew with; `classes/viewRemotePointer.ts`
+poses a per-view camera from that and drives the same pmndrs `forwardHtmlEvents` bridge as the
+local raylib window, one bridge per connected view, updated every published frame and destroyed
+(cancelling drags) when the view disconnects. Sending the drawn camera, rather than a frame id,
+makes picking match what was seen without the server keeping camera history. Verified in the
+vrlab: hovering a keycap from headless Chromium came back as that key's `uiQuad` and `textRun`
+changes (the hover highlight) within one delta. Presses were not tested in the lab: on Linux the
+keyboard sink injects real keystrokes through uinput.
+
+### Unified view controls
+
+Desktop and VR control are both first-class in pmndrs, and PetPlay keeps it that way across
+every view: the SteamVR overlay, the raylib desktop preview, the browser.
+
+- **Interaction is the scene's.** Hover, press, drag and grab are pmndrs pointer events on the
+  server's scene. VR controllers are ray pointers; a desktop view is `forwardHtmlEvents` over
+  its own camera. Each view only forwards events with its camera; results return through the
+  store. There is one interaction code path, whatever the view.
+- **Navigation is the view's.** A view owns its camera (decision 4), so orbiting or panning
+  never moves the scene's rendering pose (the `SETDESKTOPVIEWOFFSET` desync in
+  `docs/ARCHITECTURE.md` §9 does not arise). `web/scene-stream/viewControls.ts` is the shared,
+  DOM-free controller and binding table: left button interacts; right drag orbits; middle or
+  shift+right drag pans; wheel scrolls the scene's UI, ctrl+wheel (or a pinch) dollies; F
+  toggles the headset's view, G frames the content. Adapters turn platform input into these calls.
+- **Next:** the raylib desktop preview (`desktopView`) adopts the same controller and the same
+  pointer path, replacing `desktopControl`'s second scene and `SETDESKTOPVIEWOFFSET`; touch
+  (one-finger interact, two-finger orbit and pinch) for phones; keyboard focus for text fields.
+
 ### P6: network transport
 
 Assets and state tracks over MoQ, viewer acks, keyframe-style groups for broadcast. Exit: a

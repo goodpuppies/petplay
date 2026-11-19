@@ -4,11 +4,14 @@
  *
  * A replica `SceneStore` receives binary deltas over a WebSocket and acks each one; a listener
  * on the replica keeps a three.js scene in step with exactly the rows that changed. Tracked nodes
- * (head, hands) take their poses from the separate pose messages. The camera follows the head;
- * F toggles a free orbit camera.
+ * (head, hands) take their poses from the separate pose messages.
+ *
+ * Input follows `viewControls.ts`: navigation stays here, everything else is sent to the scene's
+ * pmndrs pointer events together with the camera this view drew, so the server picks exactly
+ * what the user sees.
  */
 import * as THREE from "npm:three@0.186.1";
-import { OrbitControls } from "npm:three@0.186.1/examples/jsm/controls/OrbitControls.js";
+import { dragAction, ViewCameraController, wheelNavigates } from "./viewControls.ts";
 import {
   decodeDelta,
   type GeometryData,
@@ -577,15 +580,17 @@ function msdfMaterial(d: TextRunData, atlas: THREE.Texture): THREE.ShaderMateria
 
 const replica = new SceneStore();
 const view = new SceneView(replica);
-const stats = { deltas: 0, bytes: 0, resyncs: 0, lastDeltaBytes: 0, connected: false };
+const stats = { deltas: 0, bytes: 0, resyncs: 0, lastDeltaBytes: 0, connected: false, pointerEvents: 0 };
+let socket: WebSocket | null = null;
 
 function connect(): void {
   const url = new URL("scene", location.href);
   url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(url);
-  socket.binaryType = "arraybuffer";
-  socket.onopen = () => stats.connected = true;
-  socket.onmessage = (event) => {
+  const ws = new WebSocket(url);
+  socket = ws;
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => stats.connected = true;
+  ws.onmessage = (event) => {
     if (typeof event.data === "string") {
       const message = JSON.parse(event.data);
       if (message.poses) view.setPoses(message.poses);
@@ -598,15 +603,16 @@ function connect(): void {
     try {
       const delta = decodeDelta(bytes);
       replica.apply(delta);
-      socket.send(JSON.stringify({ ack: delta.toTick }));
+      ws.send(JSON.stringify({ ack: delta.toTick }));
     } catch (error) {
       if (!(error instanceof StoreDivergence)) console.error("scene-stream:", error);
       stats.resyncs++;
-      socket.send(JSON.stringify({ resync: true }));
+      ws.send(JSON.stringify({ resync: true }));
     }
   };
-  socket.onclose = () => {
+  ws.onclose = () => {
     stats.connected = false;
+    if (socket === ws) socket = null;
     setTimeout(connect, 1000);
   };
 }
@@ -617,12 +623,11 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(devicePixelRatio);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.append(renderer.domElement);
+const canvas = renderer.domElement;
 
-const camera = new THREE.PerspectiveCamera(80, 1, 0.01, 200);
+const camera = new THREE.PerspectiveCamera(70, 1, 0.01, 200);
 camera.matrixAutoUpdate = false;
-let freeCamera = false;
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enabled = false;
+const controller = new ViewCameraController(camera);
 
 function resize(): void {
   renderer.setSize(innerWidth, innerHeight);
@@ -632,17 +637,11 @@ function resize(): void {
 addEventListener("resize", resize);
 resize();
 
-function setFreeCamera(on: boolean): void {
-  freeCamera = on;
-  controls.enabled = on;
-  camera.matrixAutoUpdate = on;
-}
-
 /**
- * Free camera in front of the scene's world-placed content: centred on its bounds, backed off
- * along the facing direction of the largest UI quad (the panel most likely to be read).
+ * Frames the scene's world-placed content: centred on its bounds, backed off along the facing
+ * direction of the largest UI quad (the panel most likely to be read).
  */
-function frameContent(): void {
+function frameContent(): boolean {
   const bounds = new THREE.Box3();
   let facing: THREE.Vector3 | null = null;
   let largest = 0;
@@ -651,69 +650,124 @@ function frameContent(): void {
     if (!(object as THREE.Mesh).isMesh || object.parent?.parent !== view.scene) return; // world node only
     bounds.expandByPoint(new THREE.Vector3().setFromMatrixPosition(object.matrixWorld));
     const material = (object as THREE.Mesh).material as THREE.ShaderMaterial;
-    const size = material.uniforms?.uSize?.value as THREE.Vector2 | undefined;
-    if (!size) return;
-    const area = new THREE.Vector3().setFromMatrixScale(object.matrixWorld);
-    if (area.x * area.y > largest) {
-      largest = area.x * area.y;
+    if (!material.uniforms?.uSize) return;
+    const scale = new THREE.Vector3().setFromMatrixScale(object.matrixWorld);
+    if (scale.x * scale.y > largest) {
+      largest = scale.x * scale.y;
       facing = new THREE.Vector3().setFromMatrixColumn(object.matrixWorld, 2).normalize();
     }
   });
-  if (bounds.isEmpty()) return;
-  const center = bounds.getCenter(new THREE.Vector3());
+  if (bounds.isEmpty()) return false;
   const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.3);
-  setFreeCamera(true);
-  camera.position.copy(center).addScaledVector(facing ?? new THREE.Vector3(0, 0, 1), radius * 1.8);
-  controls.target.copy(center);
-  controls.update();
+  controller.frame(bounds.getCenter(new THREE.Vector3()), facing ?? new THREE.Vector3(0, 0, 1), radius * 1.8);
+  return true;
 }
 
+// Open framed on the content: the headset may be facing anywhere. F switches to its view.
+const opening = setInterval(() => {
+  if (replica.size("items") > 0 && frameContent()) clearInterval(opening);
+}, 200);
+
 addEventListener("keydown", (event: KeyboardEvent) => {
-  if (event.key === "g" || event.key === "G") return frameContent();
-  if (event.key !== "f" && event.key !== "F") return;
-  setFreeCamera(!freeCamera);
-  if (freeCamera) {
-    // Start the orbit where the head is, looking at a point a metre ahead of it.
-    camera.matrix.decompose(camera.position, camera.quaternion, camera.scale);
-    controls.target.copy(new THREE.Vector3(0, 0, -1).applyMatrix4(camera.matrix));
-    controls.update();
+  if (event.key === "g" || event.key === "G") {
+    frameContent();
+  } else if (event.key === "f" || event.key === "F") {
+    const head = view.pose("viewer");
+    if (controller.mode === "head" && head) controller.freeFrom(head);
+    else controller.mode = "head";
   }
 });
-if (new URLSearchParams(location.search).get("view") === "fit") {
-  // Once the first snapshot has arrived.
-  const wait = setInterval(() => {
-    if (replica.size("items") === 0) return;
-    clearInterval(wait);
-    setTimeout(frameContent, 300);
-  }, 100);
+
+// ---- input: navigation here, interaction to the scene ----
+
+let sequence = 0;
+/** Drags that navigate, by DOM pointer id; those events never reach the scene. */
+const navigating = new Map<number, ReturnType<typeof dragAction>>();
+
+function sendPointer(
+  type: "pointermove" | "pointerdown" | "pointerup" | "pointercancel" | "pointerleave" | "wheel",
+  event: PointerEvent | WheelEvent,
+  deltaY?: number,
+): void {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  const rect = canvas.getBoundingClientRect();
+  stats.pointerEvents++;
+  socket.send(JSON.stringify({
+    pointer: {
+      version: 1,
+      viewport: "scene-view",
+      sequence: sequence++,
+      type,
+      pointerId: "pointerId" in event ? event.pointerId : 1,
+      pointerType: "pointerType" in event && event.pointerType ? event.pointerType : "mouse",
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height,
+      button: type === "pointermove" || type === "wheel" ? -1 : event.button,
+      buttons: event.buttons & 1, // only the interaction button is the scene's
+      ...(deltaY !== undefined ? { deltaY } : {}),
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+      camera: { matrixWorld: camera.matrixWorld.toArray(), projection: camera.projectionMatrix.toArray() },
+    },
+  }));
 }
+
+canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+canvas.addEventListener("pointerdown", (event) => {
+  const action = dragAction(event.button, event.shiftKey);
+  canvas.setPointerCapture(event.pointerId);
+  if (action === "scene") sendPointer("pointerdown", event);
+  else navigating.set(event.pointerId, action);
+});
+canvas.addEventListener("pointermove", (event) => {
+  const action = navigating.get(event.pointerId);
+  if (action === "orbit") controller.orbit(event.movementX, event.movementY);
+  else if (action === "pan") {
+    controller.pan(event.movementX, event.movementY, canvas.clientHeight, THREE.MathUtils.degToRad(camera.fov));
+  } else sendPointer("pointermove", event);
+});
+const endPointer = (type: "pointerup" | "pointercancel") => (event: PointerEvent) => {
+  if (navigating.delete(event.pointerId)) return;
+  sendPointer(type, event);
+};
+canvas.addEventListener("pointerup", endPointer("pointerup"));
+canvas.addEventListener("pointercancel", endPointer("pointercancel"));
+canvas.addEventListener("pointerleave", (event) => {
+  if (!navigating.has(event.pointerId)) sendPointer("pointerleave", event);
+});
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const pixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+  if (wheelNavigates(event.ctrlKey, event.metaKey)) controller.dolly(Math.exp(pixels * 0.002));
+  else sendPointer("wheel", event, pixels);
+}, { passive: false });
+// Leaving the page must not leave a press held in the scene.
+addEventListener("blur", () => {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  sendPointer("pointercancel", new PointerEvent("pointercancel", { pointerId: 1 }));
+});
 
 const hud = document.getElementById("hud")!;
 let hudAt = 0;
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
-  if (!freeCamera) {
-    const head = view.pose("viewer");
-    if (head) camera.matrix.copy(head);
-    camera.matrixWorld.copy(camera.matrix);
-    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-  } else {
-    controls.update();
-    camera.updateMatrixWorld();
-  }
+  controller.apply(view.pose("viewer"));
   view.update(camera);
   renderer.render(view.scene, camera);
   if (now - hudAt > 250) {
     hudAt = now;
     hud.textContent = `${stats.connected ? "connected" : "connecting…"} · tick ${replica.sourceTick} · ` +
       `${replica.size("items")} items · ${stats.deltas} deltas, ${(stats.bytes / 1024).toFixed(0)} KiB ` +
-      `(last ${stats.lastDeltaBytes} B) · resyncs ${stats.resyncs} · ${freeCamera ? "free camera" : "head camera"} (F, G frames content)`;
+      `(last ${stats.lastDeltaBytes} B) · ${controller.mode === "head" ? "head view" : "free view"} · ` +
+      `left: interact · right: orbit · middle: pan · ctrl+wheel: zoom · F head · G frame`;
   }
 }
 
 /** For inspection from the console or a test harness. */
-(globalThis as { sceneStream?: unknown }).sceneStream = { replica, view, camera, controls, renderer, stats, THREE };
+(globalThis as { sceneStream?: unknown }).sceneStream = { replica, view, camera, controller, renderer, stats, THREE };
 
 connect();
 requestAnimationFrame(frame);
