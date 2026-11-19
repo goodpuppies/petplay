@@ -99,6 +99,8 @@ class SceneStream {
   private assetVersion = 0;
   private anchors = new Map<RenderAnchorSpace, THREE.Object3D>();
   private anchorsFoundAt = -Infinity;
+  /** Wrist menu mounts and the tracked space carrying each (desktop views make them a HUD). */
+  private mounts: { object: THREE.Object3D; anchor: THREE.Object3D; space: TrackedSpace }[] = [];
   private poses = "{}";
   private scene: THREE.Object3D | null = null;
   private media: DesktopMediaFeed | null = null;
@@ -223,7 +225,8 @@ class SceneStream {
           client.socket.send(JSON.stringify({ view }));
         }
       }
-      this.poses = JSON.stringify({ poses: this.collectPoses(payload, scene) });
+      const poses = this.collectPoses(payload, scene);
+      this.poses = JSON.stringify({ poses, mounts: this.collectMounts() });
       for (const client of this.clients) this.pump(client);
       this.truncateJournal();
     } catch (error) {
@@ -374,6 +377,18 @@ class SceneStream {
     this.store.truncateJournal(oldest);
   }
 
+  /** Each wrist menu mount in its carrying space's frame (anchor⁻¹ · mount), by space. */
+  private collectMounts(): Partial<Record<TrackedSpace, number[]>> {
+    const out: Partial<Record<TrackedSpace, number[]>> = {};
+    const inverse = new THREE.Matrix4();
+    for (const { object, anchor, space } of this.mounts) {
+      if (!object.parent) continue;
+      inverse.copy(anchor.matrixWorld).invert();
+      out[space] = inverse.multiply(object.matrixWorld).toArray().map((v) => Math.round(v * 1e6) / 1e6);
+    }
+    return out;
+  }
+
   /**
    * The exact poses the producer placed anchored items from: the head from the frame, the hands
    * from the scene objects tagged `renderTrackingAnchor` (found again once a second).
@@ -396,10 +411,22 @@ class SceneStream {
       if (now - this.anchorsFoundAt > 1000) {
         this.anchorsFoundAt = now;
         this.anchors = new Map();
+        const mounts: THREE.Object3D[] = [];
         scene.traverse((object) => {
           const space = object.userData?.renderTrackingAnchor as RenderAnchorSpace | undefined;
           if (space && space in ANCHOR_SPACE && !this.anchors.has(space)) this.anchors.set(space, object);
+          if (object.userData?.wristMenuMount) mounts.push(object);
         });
+        this.mounts = [];
+        for (const object of mounts) {
+          for (let o = object.parent; o; o = o.parent) {
+            const space = o.userData?.renderTrackingAnchor as RenderAnchorSpace | undefined;
+            if (space && space in ANCHOR_SPACE) {
+              this.mounts.push({ object, anchor: o, space: ANCHOR_SPACE[space] });
+              break;
+            }
+          }
+        }
       }
       for (const [space, object] of this.anchors) {
         if (space === "head" && out.viewer) continue;

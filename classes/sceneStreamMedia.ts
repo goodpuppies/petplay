@@ -63,6 +63,9 @@ export class DesktopMediaFeed {
         "--bitrate",
         String(options.bitrate ?? 8_000_000),
         "--persist",
+        // Whatever the producer sends, the GPU encodes at most the feed's rate.
+        "--max-fps",
+        String(options.fps ?? 30),
       ],
       stdout: "piped",
       stderr: "piped",

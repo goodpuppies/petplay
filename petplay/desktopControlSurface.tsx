@@ -5,6 +5,7 @@ import * as THREE from "three/webgpu";
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { childProcessArgs } from "../classes/childModule.ts";
 import { NativeHudPanel } from "../classes/environment/nativeFrontend.tsx";
+import { desktopWristHudTransform } from "../classes/environment/wristMenu/hud.ts";
 import { WebXRScene } from "../classes/environment/scene.tsx";
 import { VREnvironmentPlaceholder } from "../classes/environment/vrEnvironmentPlaceholder.tsx";
 import { getAgentReplBaseUrl } from "../classes/utils.ts";
@@ -36,26 +37,8 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/**
- * Head-locked placement for the wrist HUD in desktop mode. Pulled in close and
- * squared up so the panel can be read and iterated on while designing; the XR
- * path keeps its own wrist-relative transform in `wristMenu/logic.tsx`.
- *
- * Tunable without a rebuild via PETPLAY_WRIST_HUD_{DISTANCE,SCALE,X,Y}, since a
- * restart costs far more than the tweak being tried.
- */
-const WRIST_HUD_TRANSFORM = {
-  position: [
-    envNumber("PETPLAY_WRIST_HUD_X", 0),
-    envNumber("PETPLAY_WRIST_HUD_Y", -0.04),
-    -Math.abs(envNumber("PETPLAY_WRIST_HUD_DISTANCE", 0.35)),
-  ] as [number, number, number],
-  rotation: [0, 0, 0] as [number, number, number],
-  scale: (() => {
-    const s = envNumber("PETPLAY_WRIST_HUD_SCALE", 0.5);
-    return [s, s, s] as [number, number, number];
-  })(),
-};
+/** Head-locked placement for the wrist HUD in desktop mode, shared with browser scene views. */
+const WRIST_HUD_TRANSFORM = desktopWristHudTransform();
 
 const CHILD_ARG = "--desktop-control-child";
 const IS_CHILD = Deno.args.includes(CHILD_ARG);

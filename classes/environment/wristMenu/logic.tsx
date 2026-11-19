@@ -251,7 +251,8 @@ export function WristMenuPanel(
   const opacity = useSetting("wristMenuOpacity");
   const savedOffset = useSetting("wristMenuOffset");
   const offsetHand = hostHandedness ?? "right";
-  const offset = savedOffset == null ? null : wristOffsetForHand(savedOffset, offsetHand);
+  // Where the menu sits on the wrist; a desktop HUD isn't on one and stays square to the view.
+  const offset = savedOffset == null || !attached ? null : wristOffsetForHand(savedOffset, offsetHand);
   const offsetRef = useRef<THREE.Group>(null);
   const dragging = useRef(false);
   /** A resize was saved to `wristMenuScale`; the grab's own scale resets when that arrives. */
@@ -382,6 +383,9 @@ export function WristMenuPanel(
         ref={offsetRef}
         position={offset?.position ?? [0, 0, 0]}
         quaternion={offset?.rotation ?? [0, 0, 0, 1]}
+        // The panel's own frame: desktop views put it at the HUD transform (`hud.ts`), without
+        // the wrist offset, as the raylib desktop HUD does.
+        userData={{ wristMenuMount: true }}
       >
         {typeof Deno !== "undefined" && Deno.args.includes("--wrist-motion-probe") && attached && (
           <mesh

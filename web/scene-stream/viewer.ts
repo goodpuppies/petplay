@@ -46,6 +46,7 @@ import {
   type Receiver,
   type ReceiverStats,
 } from "../../submodules/petplay_mediatransport/web/src/receiver.ts";
+import { cornerWristHud } from "../../classes/environment/wristMenu/hud.ts";
 
 // ---- three.js scene mirroring the replica ----
 
@@ -89,12 +90,32 @@ class SceneView {
     return this.poses[space];
   }
 
+  /**
+   * Where this view draws a tracked space instead of its real pose (the desktop wrist HUD).
+   * Pairs keep following the real poses.
+   */
+  readonly drawnPoses: Partial<Record<TrackedSpace, THREE.Matrix4>> = {};
+
+  /** The nearest of this view's meshes in a tracked space hit by `raycaster`, if any. */
+  raycastSpace(space: TrackedSpace, raycaster: THREE.Raycaster): THREE.Intersection | null {
+    for (const [id, tracked] of this.tracked) {
+      if (tracked !== space) continue;
+      const node = this.nodes.get(id);
+      if (!node?.visible) continue;
+      const hits = raycaster.intersectObject(node, true).filter((hit) => isShown(hit.object));
+      if (hits.length) return hits[0];
+    }
+    return null;
+  }
+
   /** Per frame: tracked node poses, then the UI draw order for this camera. */
   update(camera: THREE.Camera): void {
     for (const [id, tracked] of this.tracked) {
       const node = this.nodes.get(id);
       if (!node) continue;
-      const pose = typeof tracked === "string" ? this.poses[tracked] : pairFrame(this.poses, tracked);
+      const pose = typeof tracked === "string"
+        ? this.drawnPoses[tracked] ?? this.poses[tracked]
+        : pairFrame(this.poses, tracked);
       node.visible = pose != null;
       if (pose) node.matrix.copy(pose);
     }
@@ -436,6 +457,11 @@ function wrap(mode: TextureMeta["wrapS"]): THREE.Wrapping {
 }
 
 /** The two-hand carry frame: as PetPlay's `followFrame`. */
+function isShown(object: THREE.Object3D): boolean {
+  for (let o: THREE.Object3D | null = object; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+
 function pairFrame(poses: Partial<Record<TrackedSpace, THREE.Matrix4>>, pair: TrackedPair): THREE.Matrix4 | undefined {
   const a = poses[pair.first], b = poses[pair.second];
   if (!a || !b) return undefined;
@@ -680,6 +706,7 @@ function connect(): void {
       const message = JSON.parse(event.data);
       if (message.poses) view.setPoses(message.poses);
       if (Array.isArray(message.view)) serverView.fromArray(message.view);
+      if (message.mounts) setMounts(message.mounts);
       if (message.media?.feeds) updateFeeds(message.media.feeds);
       return;
     }
@@ -778,6 +805,58 @@ const serverView = new THREE.Matrix4().makeTranslation(0, 1.2, 2);
 /** F: follow the headset instead (local; navigating leaves it). */
 let headView = false;
 
+// ---- the wrist menu as a desktop HUD ----
+//
+// In the desktop view the wrist menu is a corner HUD (`wristMenu/hud.ts`): its carrying space is
+// drawn so the menu's own frame lands bottom right in front of the camera, square to it. The
+// server still has the menu on the hand, so a pointer over the HUD menu is sent with the camera
+// moved by the same rigid map from the HUD placement back to the real grip: the server's ray then
+// meets the real menu at the point the user aimed at.
+
+let mounts: Partial<Record<TrackedSpace, THREE.Matrix4>> = {};
+/** Per HUD space this frame: drawn pose · real pose⁻¹ inverted, i.e. real · drawn⁻¹. */
+const hudToReal = new Map<TrackedSpace, THREE.Matrix4>();
+
+function setMounts(list: Partial<Record<TrackedSpace, number[]>>): void {
+  mounts = {};
+  for (const [space, m] of Object.entries(list)) {
+    if (m) mounts[space as TrackedSpace] = new THREE.Matrix4().fromArray(m);
+  }
+}
+
+/** Per frame, before drawing: HUD spaces follow the camera in the desktop view. */
+function placeHud(): void {
+  hudToReal.clear();
+  for (const space of Object.keys(view.drawnPoses) as TrackedSpace[]) delete view.drawnPoses[space];
+  if (headView) return;
+  const t = cornerWristHud(camera.fov, camera.aspect);
+  const wristHud = new THREE.Matrix4().compose(
+    new THREE.Vector3(...t.position),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation)),
+    new THREE.Vector3(...t.scale),
+  );
+  for (const [space, mount] of Object.entries(mounts) as [TrackedSpace, THREE.Matrix4][]) {
+    const real = view.pose(space);
+    if (!real) continue;
+    // camera · hud = drawn · mount, so drawn = camera · hud · mount⁻¹.
+    const drawn = camera.matrixWorld.clone().multiply(wristHud).multiply(mount.clone().invert());
+    view.drawnPoses[space] = drawn;
+    hudToReal.set(space, real.clone().multiply(drawn.clone().invert()));
+  }
+}
+
+const hudRaycaster = new THREE.Raycaster();
+/** Pointers whose press began on the HUD menu keep its camera mapping until released. */
+const hudPointers = new Map<number, TrackedSpace>();
+
+/** The HUD space under the pointer, if the pointer is over a HUD-placed menu. */
+function hudSpaceAt(x: number, y: number): TrackedSpace | null {
+  if (hudToReal.size === 0) return null;
+  hudRaycaster.setFromCamera(new THREE.Vector2(x * 2 - 1, 1 - y * 2), camera);
+  for (const space of hudToReal.keys()) if (view.raycastSpace(space, hudRaycaster)) return space;
+  return null;
+}
+
 function resize(): void {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
@@ -796,31 +875,56 @@ function aim(position: THREE.Vector3, target: THREE.Vector3): boolean {
   return send({ aim: { position: position.toArray(), target: target.toArray() } });
 }
 
+/** World items further than this from the content's median position are not content. */
+const CONTENT_RADIUS = 10;
+
 /**
- * Aims at the scene's world-placed content: centred on its bounds, backed off along the facing
- * direction of the largest UI quad (the panel most likely to be read).
+ * The opening view, and G: square on to the main surface (the largest by world area, normally a
+ * display), level, far enough back to see the content around it, orbiting its centre. Content
+ * faces the user, so this is roughly their own view, without depending on where the headset
+ * happens to point (or stand).
  */
 function frameContent(): boolean {
-  const bounds = new THREE.Box3();
-  let facing: THREE.Vector3 | null = null;
-  let largest = 0;
+  // World-placed meshes, around their median: a few items sit far outside the content (parked
+  // or degenerate placements, ~100 m away in the lab) and would drag a plain bounding box off.
+  const placed: { position: THREE.Vector3; mesh: THREE.Mesh }[] = [];
   view.scene.updateMatrixWorld(true);
   view.scene.traverse((object) => {
     if (!(object as THREE.Mesh).isMesh || object.parent?.parent !== view.scene) return; // world node only
-    bounds.expandByPoint(new THREE.Vector3().setFromMatrixPosition(object.matrixWorld));
-    const material = (object as THREE.Mesh).material as THREE.ShaderMaterial;
-    if (!material.uniforms?.uSize) return;
-    const scale = new THREE.Vector3().setFromMatrixScale(object.matrixWorld);
-    if (scale.x * scale.y > largest) {
-      largest = scale.x * scale.y;
-      facing = new THREE.Vector3().setFromMatrixColumn(object.matrixWorld, 2).normalize();
-    }
+    placed.push({ position: new THREE.Vector3().setFromMatrixPosition(object.matrixWorld), mesh: object as THREE.Mesh });
   });
-  if (bounds.isEmpty()) return false;
-  const center = bounds.getCenter(new THREE.Vector3());
-  const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.3);
+  if (placed.length === 0) return false;
+  const median = (axis: "x" | "y" | "z") => {
+    const values = placed.map((p) => p.position[axis]).sort((a, b) => a - b);
+    return values[values.length >> 1];
+  };
+  const middle = new THREE.Vector3(median("x"), median("y"), median("z"));
+  const bounds = new THREE.Box3();
+  let main: THREE.Mesh | null = null;
+  let largest = 0;
+  for (const { position, mesh } of placed) {
+    if (position.distanceTo(middle) > CONTENT_RADIUS) continue;
+    bounds.expandByPoint(position);
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const size = mesh.geometry.boundingBox!.getSize(new THREE.Vector3())
+      .multiply(new THREE.Vector3().setFromMatrixScale(mesh.matrixWorld));
+    const area = size.x * size.y;
+    if (area > largest) {
+      largest = area;
+      main = mesh;
+    }
+  }
+  if (bounds.isEmpty() || !main) return false;
+  const target = bounds.getCenter(new THREE.Vector3());
+  const toward = new THREE.Vector3().setFromMatrixColumn(main.matrixWorld, 2).setY(0);
+  if (toward.lengthSq() < 1e-6) toward.set(0, 0, 1);
+  toward.normalize();
+  // Far enough that the content's extent across the view fits, with a little room.
+  const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.5);
+  const fov = THREE.MathUtils.degToRad(camera.fov) * Math.min(1, camera.aspect);
+  const position = target.clone().addScaledVector(toward, (radius / Math.tan(fov / 2)) * 1.1);
   headView = false;
-  return aim(center.clone().addScaledVector(facing ?? new THREE.Vector3(0, 0, 1), radius * 1.8), center);
+  return aim(position, target);
 }
 
 /** Leaves the head view where the head is, orbiting a point a metre ahead. */
@@ -857,6 +961,16 @@ function sendPointer(
   deltaY?: number,
 ): void {
   const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / rect.width;
+  const y = (event.clientY - rect.top) / rect.height;
+  const pointerId = "pointerId" in event ? event.pointerId : 1;
+  // Over the HUD menu (or dragging from it): the camera as seen from the real grip's frame.
+  let space: TrackedSpace | null | undefined = hudPointers.get(pointerId);
+  if (space === undefined) space = hudSpaceAt(x, y);
+  if (type === "pointerdown" && space) hudPointers.set(pointerId, space);
+  if (type === "pointerup" || type === "pointercancel" || type === "pointerleave") hudPointers.delete(pointerId);
+  const map = space ? hudToReal.get(space) : undefined;
+  const cameraWorld = map ? map.clone().multiply(camera.matrixWorld) : camera.matrixWorld;
   const sent = send({
     pointer: {
       version: 1,
@@ -865,8 +979,8 @@ function sendPointer(
       type,
       pointerId: "pointerId" in event ? event.pointerId : 1,
       pointerType: "pointerType" in event && event.pointerType ? event.pointerType : "mouse",
-      x: (event.clientX - rect.left) / rect.width,
-      y: (event.clientY - rect.top) / rect.height,
+      x,
+      y,
       button: type === "pointermove" || type === "wheel" ? -1 : event.button,
       buttons: event.buttons,
       ...(deltaY !== undefined ? { deltaY } : {}),
@@ -874,7 +988,7 @@ function sendPointer(
       shiftKey: event.shiftKey,
       altKey: event.altKey,
       metaKey: event.metaKey,
-      camera: { matrixWorld: camera.matrixWorld.toArray(), projection: camera.projectionMatrix.toArray() },
+      camera: { matrixWorld: cameraWorld.toArray(), projection: camera.projectionMatrix.toArray() },
     },
   });
   if (sent) stats.pointerEvents++;
@@ -908,6 +1022,7 @@ function frame(now: number): void {
   camera.matrix.copy(headView && head ? head : serverView);
   camera.matrixWorld.copy(camera.matrix);
   camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  placeHud();
   view.update(camera);
   const replaced = presentFeeds(now);
   renderer.render(view.scene, camera);
