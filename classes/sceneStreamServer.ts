@@ -13,6 +13,11 @@
  * Navigation is the shared `desktopNavigation.ts`, run here per view: the client renders with
  * the `{ view: matrixWorld }` it is sent, and places it with `{ aim: { position, target } }`.
  *
+ * With `media`, displays' pixels stream too: a native encoder (`sceneStreamMedia.ts`) is fed by
+ * the display overlay host's capture, and clients are told `{ media: { feeds } }` (port and
+ * certificate fingerprint per feed id) so they receive it over WebTransport themselves. The store
+ * only says where a feed appears (`videoSurface` items).
+ *
  * HTTP on the same port: `/` the viewer page, `/viewer.js` its bundle
  * (`deno task scene-stream:build`), `/scene` the WebSocket. Loopback only unless a hostname is
  * given; expose remote access deliberately (for example through `tailscale serve`).
@@ -22,6 +27,8 @@
  * `import(new URL("../classes/sceneStreamServer.ts", moduleUrl).href).then((m) => m.startSceneStream({ port: 3993 }))`.
  */
 import * as THREE from "three";
+import { PostMan } from "../submodules/stageforge/mod.ts";
+import { DesktopMediaFeed, type MediaFeedInfo } from "./sceneStreamMedia.ts";
 import type { ExtractionResult } from "../submodules/raythree/src/lib.ts";
 import { encodeDelta, type TrackedSpace } from "../submodules/raythree/src/store/mod.ts";
 import type { OverlayAssetCache } from "./overlaySceneDelivery.ts";
@@ -33,6 +40,16 @@ import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 export interface SceneStreamOptions {
   port: number;
   hostname?: string;
+  /** Stream the desktop feed for displays (needs a VA-API GPU encoder). */
+  media?: {
+    port: number;
+    /** Where browsers reach the encoder; defaults to `hostname`. */
+    host?: string;
+    fps?: number;
+    bitrate?: number;
+    /** Publish the display overlay host's capture to it (default true). */
+    attachDesktopCapture?: boolean;
+  };
 }
 
 export interface SceneStreamStatus {
@@ -44,12 +61,15 @@ export interface SceneStreamStatus {
   deltasSent: number;
   bytesSent: number;
   lastError: string | null;
+  media: { feeds: Record<string, MediaFeedInfo>; state: string; attachedTo: string | null; restarts: number };
 }
 
 const VIEWER_DIR = new URL("../web/scene-stream/", import.meta.url);
 const BUNDLE = new URL("../dist/scene-stream/viewer.js", import.meta.url);
 /** A client that has not acked for this long gets a snapshot next. */
 const ACK_TIMEOUT_MS = 5000;
+/** Delay before replacing a media worker that exited; doubles while starts keep failing. */
+const MEDIA_RESTART_MS = 1000;
 
 const ANCHOR_SPACE: Readonly<Record<RenderAnchorSpace, TrackedSpace>> = {
   head: "viewer",
@@ -81,6 +101,14 @@ class SceneStream {
   private anchorsFoundAt = -Infinity;
   private poses = "{}";
   private scene: THREE.Object3D | null = null;
+  private media: DesktopMediaFeed | null = null;
+  private mediaState = "off";
+  private mediaMessage = JSON.stringify({ media: { feeds: {} } });
+  private mediaAttachedTo: string | null = null;
+  private mediaRestarts = 0;
+  /** Restarts since a worker last came up; backs the retry delay off. */
+  private mediaFailures = 0;
+  private stopped = false;
   framesPublished = 0;
   deltasSent = 0;
   bytesSent = 0;
@@ -92,6 +120,77 @@ class SceneStream {
       hostname: options.hostname ?? "127.0.0.1",
       onListen: () => {},
     }, (request) => this.handle(request));
+    if (options.media) void this.startMedia(options.media);
+  }
+
+  /** The media socket of the encoder, once running; the host attaches its capture to it. */
+  private async startMedia(media: NonNullable<SceneStreamOptions["media"]>, directory?: string): Promise<void> {
+    this.mediaState = "starting";
+    try {
+      const feed = await DesktopMediaFeed.start({
+        host: media.host ?? this.options.hostname ?? "127.0.0.1",
+        port: media.port,
+        fps: media.fps,
+        bitrate: media.bitrate,
+        directory,
+      });
+      if (this.stopped) {
+        await feed.stop();
+        return;
+      }
+      this.media = feed;
+      this.mediaState = "running";
+      this.mediaFailures = 0;
+      this.setFeeds({ desktop: feed.info });
+      void feed.exited.then((status) => {
+        if (this.media !== feed) return;
+        this.media = null;
+        this.mediaState = `exited (${status.code}), restarting`;
+        this.lastError = `media: ${feed.log.at(-1) ?? "exited"}`;
+        this.setFeeds({});
+        this.restartMedia(media, feed.directoryPath);
+      });
+    } catch (error) {
+      this.mediaState = "failed, retrying";
+      this.lastError = `media: ${error}`;
+      this.restartMedia(media, directory);
+    }
+  }
+
+  /**
+   * A replacement worker on the same socket path: the capture helper stays attached and
+   * reconnects by itself. Browsers see the new certificate in the next media message.
+   */
+  private restartMedia(media: NonNullable<SceneStreamOptions["media"]>, directory?: string): void {
+    this.mediaRestarts++;
+    const delay = Math.min(30_000, MEDIA_RESTART_MS * 2 ** Math.min(this.mediaFailures++, 5));
+    setTimeout(() => {
+      if (!this.stopped && !this.media) void this.startMedia(media, directory);
+    }, delay);
+  }
+
+  private setFeeds(feeds: Record<string, MediaFeedInfo>): void {
+    this.mediaMessage = JSON.stringify({ media: { feeds } });
+    for (const client of this.clients) {
+      if (client.socket.readyState === WebSocket.OPEN) client.socket.send(this.mediaMessage);
+    }
+  }
+
+  /** Once the overlay host is known, its capture also feeds the encoder. */
+  private attachDesktopCapture(host: string | null): void {
+    if (!this.media || !host || this.mediaAttachedTo === host) return;
+    if (this.options.media?.attachDesktopCapture === false) return;
+    PostMan.PostMessage({ target: host, type: "SETDESKTOPMEDIASOCKET", payload: { path: this.media.socketPath } });
+    this.mediaAttachedTo = host;
+  }
+
+  private detachDesktopCapture(): void {
+    const host = this.mediaAttachedTo;
+    this.mediaAttachedTo = null;
+    if (!host) return;
+    try {
+      PostMan.PostMessage({ target: host, type: "SETDESKTOPMEDIASOCKET", payload: { path: null } });
+    } catch { /* host gone */ }
   }
 
   get url(): string {
@@ -99,8 +198,14 @@ class SceneStream {
   }
 
   /** One frame from the webxr worker. Never throws into the frame loop. */
-  publish(payload: WebXRRaythreeRenderPayload, assets: OverlayAssetCache, scene: THREE.Object3D | null) {
+  publish(
+    payload: WebXRRaythreeRenderPayload,
+    assets: OverlayAssetCache,
+    scene: THREE.Object3D | null,
+    displayOverlayHost: string | null = null,
+  ) {
     try {
+      this.attachDesktopCapture(displayOverlayHost);
       // The extractor's asset batches are deltas; the cache holds their union, so a stream started
       // late still gets every asset the scene uses.
       const extraction: ExtractionResult = {
@@ -108,7 +213,7 @@ class SceneStream {
         assets: assets.since(this.assetVersion),
       };
       this.assetVersion = assets.version;
-      this.writer.write(extraction, payload.ui);
+      this.writer.write(extraction, payload.ui, scene);
       this.framesPublished++;
       this.scene = scene;
       for (const client of this.clients) {
@@ -136,10 +241,21 @@ class SceneStream {
       deltasSent: this.deltasSent,
       bytesSent: this.bytesSent,
       lastError: this.lastError,
+      media: {
+        feeds: JSON.parse(this.mediaMessage).media.feeds,
+        state: this.mediaState,
+        attachedTo: this.mediaAttachedTo,
+        restarts: this.mediaRestarts,
+      },
     };
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
+    this.detachDesktopCapture();
+    const media = this.media;
+    this.media = null;
+    await media?.stop();
     for (const client of this.clients) {
       client.pointer?.destroy();
       client.socket.close();
@@ -181,6 +297,7 @@ class SceneStream {
     const label = `scene-view-${nextClient++}`;
     socket.onopen = () => {
       this.clients.add(client);
+      socket.send(this.mediaMessage);
       this.pump(client);
     };
     socket.onmessage = (event) => {
@@ -318,8 +435,15 @@ export function activeSceneStream(): SceneStream | null {
 export function startSceneStreamFromEnv(): void {
   const port = Number(Deno.env.get("PETPLAY_SCENE_STREAM_PORT"));
   if (!Number.isInteger(port) || port <= 0 || active) return;
+  const mediaPort = Number(Deno.env.get("PETPLAY_SCENE_STREAM_MEDIA_PORT"));
   try {
-    startSceneStream({ port, hostname: Deno.env.get("PETPLAY_SCENE_STREAM_HOST") || undefined });
+    startSceneStream({
+      port,
+      hostname: Deno.env.get("PETPLAY_SCENE_STREAM_HOST") || undefined,
+      media: Number.isInteger(mediaPort) && mediaPort > 0
+        ? { port: mediaPort, host: Deno.env.get("PETPLAY_SCENE_STREAM_MEDIA_HOST") || undefined }
+        : undefined,
+    });
   } catch (error) {
     console.error(`[scene-stream] could not start on ${port}: ${error}`);
   }

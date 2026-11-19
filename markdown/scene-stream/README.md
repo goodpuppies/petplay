@@ -247,6 +247,42 @@ vrlab: hovering a keycap from headless Chromium came back as that key's `uiQuad`
 changes (the hover highlight) within one delta. Presses were not tested in the lab: on Linux the
 keyboard sink injects real keystrokes through uinput.
 
+**Video done 2026-11-19**: displays show their feed in the browser.
+
+- **Where:** a display marks its surface (`userData.videoSurface` on a child of the frame, set from
+  `scene.tsx`: feed `desktop` for local monitors, which are crops of the one capture, or the
+  remote output's id) and the writer turns markers into `videoSurface` items. The item holds its
+  feed id, crop (normalized, as the OpenVR overlay's texture bounds) and opacity, and refers to a
+  geometry row with the display's real (possibly curved) surface, so curvature is defined once.
+  Markers are found once a second and re-read every frame; still displays commit nothing.
+- **Pixels:** never through the store. `classes/sceneStreamMedia.ts` runs `petplay-media --persist`,
+  the existing VA-API H.264 encoder serving WebTransport directly. The display overlay host
+  publishes its capture to it (`SETDESKTOPMEDIASOCKET`, a capture-helper restart through the
+  existing fps-restart path), and browsers get `{ media: { feeds } }`, port and certificate
+  fingerprint per feed. The viewer receives with the media transport's own receiver
+  (`petplay_mediatransport/web/src/receiver.ts`, extracted from the stream page so both share
+  it), uploads each due picture once into a texture shared by that feed's surfaces, and samples
+  the crop in a small unlit shader.
+- **Robustness**, because the capture also drives the local VR overlay: `screen-streamer` no
+  longer exits when the media socket fails (it reconnects each second), the worker serves
+  successive producers with `--persist`, a worker that exits is replaced on the same socket path
+  (backing off to 30 s while starts fail), and the viewer retries a feed every 2 s and follows a
+  replacement's new certificate. Verified in the lab over the tailnet with the synthetic pattern
+  producer: a producer restart kept the browser's connection; a killed worker was replaced and
+  the browser was showing pictures again within ~2 s.
+- **UI is one-sided**, as in the overlay (raylib culls UI back faces): a display's rear logo
+  painted over the video through depth-test-free UI otherwise.
+
+Run: `PETPLAY_SCENE_STREAM_MEDIA_PORT=4480` with the stream's port; for the tailnet also
+`PETPLAY_SCENE_STREAM_MEDIA_HOST=<tailscale ip -4>`, since WebTransport is UDP and
+`tailscale serve` only proxies the page. From the REPL:
+`startSceneStream({ port: 3993, media: { port: 4480, host: "100.x.y.z" } })`.
+
+Not yet verified: attaching a real desktop capture (the lab's portal is unavailable, and no
+screen content was captured for these tests), remote feeds (`remote:*` surfaces show black: only
+`desktop` is served), audio, and input onto the desktop from the browser (the display's ray
+surface takes VR rays only).
+
 ### Desktop controls: one implementation
 
 Desktop and VR control are both first-class in pmndrs, and PetPlay has one implementation of

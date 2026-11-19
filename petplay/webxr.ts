@@ -2474,6 +2474,7 @@ function publishRaythreeFrameToViews(
     payload,
     viewAssetCache,
     state.host?.getScene() ?? null,
+    state.displayOverlayHostActor,
   );
   if (state.views.size === 0) {
     return;

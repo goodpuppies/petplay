@@ -10,6 +10,11 @@
  * picks exactly what the user sees. Navigation is not implemented here: the server runs PetPlay's
  * one desktop navigation (`classes/desktopNavigation.ts`, the same as the raylib viewers) for
  * this view and sends back the camera to render with.
+ *
+ * Video: `videoSurface` items show part of a media feed. The server lists its feeds in a
+ * `{ media: { feeds } }` message; each is received with the media transport's own receiver
+ * (`petplay_mediatransport/web/src/receiver.ts`, the stream page's code) over WebTransport and
+ * uploaded once per new picture into a texture all surfaces of that feed share.
  */
 import * as THREE from "npm:three@0.186.1";
 import {
@@ -32,8 +37,15 @@ import {
   type TrackedSpace,
   type UiOrder,
   type UiQuadData,
+  type VideoSurfaceData,
   WORLD_NODE,
 } from "../../submodules/raythree/src/store/mod.ts";
+import {
+  connectReceiver,
+  createReceiverStats,
+  type Receiver,
+  type ReceiverStats,
+} from "../../submodules/petplay_mediatransport/web/src/receiver.ts";
 
 // ---- three.js scene mirroring the replica ----
 
@@ -54,6 +66,8 @@ class SceneView {
   private readonly tracked = new Map<RowId, TrackedSpace | TrackedPair>();
   private poses: Partial<Record<TrackedSpace, THREE.Matrix4>> = {};
   private readonly quadGeometry = new THREE.PlaneGeometry(1, 1);
+  /** One texture per media feed, shared by every surface showing it. */
+  private readonly feeds = new Map<string, THREE.Texture>();
 
   constructor(private readonly store: SceneStore) {
     this.scene.background = new THREE.Color(0x15171c);
@@ -259,6 +273,40 @@ class SceneView {
     this.lights.set(row.id, object);
   }
 
+  /** The texture surfaces of `feed` sample; black until its first picture. */
+  feedTexture(feed: string): THREE.Texture {
+    let texture = this.feeds.get(feed);
+    if (!texture) {
+      const black = new OffscreenCanvas(2, 2);
+      black.getContext("2d")!.fillRect(0, 0, 2, 2);
+      texture = new THREE.Texture(black as unknown as HTMLCanvasElement);
+      // Rows upload top first: the shader maps the crop (y down) without a flip.
+      texture.flipY = false;
+      texture.generateMipmaps = false;
+      texture.minFilter = THREE.LinearFilter;
+      texture.colorSpace = THREE.NoColorSpace;
+      texture.needsUpdate = true;
+      this.feeds.set(feed, texture);
+    }
+    return texture;
+  }
+
+  /** Shows `frame` on the feed's surfaces; returns the picture it replaced, to close once drawn. */
+  setFeedFrame(feed: string, frame: VideoFrame): VideoFrame | null {
+    const texture = this.feedTexture(feed);
+    const previous = typeof VideoFrame !== "undefined" && texture.image instanceof VideoFrame ? texture.image : null;
+    // WebGL2 storage is immutable: a new picture size needs a new GPU texture (the placeholder
+    // first, then any change of the feed's geometry). Materials keep the same Texture object.
+    const size = `${frame.displayWidth}x${frame.displayHeight}`;
+    if (texture.userData.size !== size) {
+      texture.userData.size = size;
+      texture.dispose();
+    }
+    texture.image = frame;
+    texture.needsUpdate = true;
+    return previous;
+  }
+
   private syncItem(row: TouchedRow): void {
     const old = this.items.get(row.id);
     if (row.removed) {
@@ -305,6 +353,12 @@ class SceneView {
         const mesh = new THREE.Mesh(this.quadGeometry, uiQuadMaterial(d, d.image ? this.textures.get(d.image.texture) ?? null : null));
         this.ui.set(id, { object: mesh, order: d.uiOrder });
         return mesh;
+      }
+      case "videoSurface": {
+        const d = data as VideoSurfaceData;
+        const geometry = this.geometries.get(d.geometry);
+        if (!geometry) return null;
+        return new THREE.Mesh(geometry, videoMaterial(this.feedTexture(d.feed), d));
       }
       case "textRun": {
         const d = data as TextRunData;
@@ -426,7 +480,9 @@ function uiQuadMaterial(d: UiQuadData, image: THREE.Texture | null): THREE.Shade
     transparent: true,
     depthTest: false,
     depthWrite: false,
-    side: THREE.DoubleSide,
+    // UI is one-sided, as in the overlay: with depth testing off, a back face (a display's
+    // rear logo) would otherwise paint over whatever is in front of it.
+    side: THREE.FrontSide,
     uniforms: {
       uSize: { value: new THREE.Vector2(...d.size) },
       uBorder: { value: new THREE.Vector4(...d.borderWidth) },
@@ -516,6 +572,35 @@ function uiQuadMaterial(d: UiQuadData, image: THREE.Texture | null): THREE.Shade
   return material;
 }
 
+/** A video surface: the feed's picture through the item's crop (normalized, y down), unlit. */
+function videoMaterial(feed: THREE.Texture, d: VideoSurfaceData): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uFeed: { value: feed },
+      uCrop: { value: new THREE.Vector4(d.crop.x, d.crop.y, d.crop.width, d.crop.height) },
+      uOpacity: { value: d.opacity },
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    // The picture is sRGB and so is the output: no conversion either way.
+    fragmentShader: /* glsl */ `
+      uniform sampler2D uFeed;
+      uniform vec4 uCrop;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      void main() {
+        vec2 uv = vec2(uCrop.x + vUv.x * uCrop.z, uCrop.y + (1.0 - vUv.y) * uCrop.w);
+        gl_FragColor = vec4(texture2D(uFeed, uv).rgb, uOpacity);
+      }`,
+    transparent: d.opacity < 1,
+    side: THREE.FrontSide,
+  });
+}
+
 function glyphGeometry(glyphs: Float32Array): THREE.BufferGeometry {
   const count = glyphs.length / 8;
   const position = new Float32Array(count * 12);
@@ -540,7 +625,7 @@ function msdfMaterial(d: TextRunData, atlas: THREE.Texture): THREE.ShaderMateria
     transparent: true,
     depthTest: false,
     depthWrite: false,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide, // one-sided, like uiQuadMaterial
     uniforms: {
       uAtlas: { value: atlas },
       uColor: { value: new THREE.Vector4(...d.color) },
@@ -595,6 +680,7 @@ function connect(): void {
       const message = JSON.parse(event.data);
       if (message.poses) view.setPoses(message.poses);
       if (Array.isArray(message.view)) serverView.fromArray(message.view);
+      if (message.media?.feeds) updateFeeds(message.media.feeds);
       return;
     }
     const bytes = new Uint8Array(event.data as ArrayBuffer);
@@ -616,6 +702,65 @@ function connect(): void {
     if (socket === ws) socket = null;
     setTimeout(connect, 1000);
   };
+}
+
+// ---- media feeds ----
+
+type FeedInfo = { port: number; fingerprint: string };
+type Feed = { key: string; receiver: Receiver | null; stats: ReceiverStats; status: string };
+const feeds = new Map<string, Feed>();
+const mediaOptions = new URLSearchParams(location.search);
+/** The server's latest list; a feed that fails or ends is retried against it. */
+let listedFeeds: Record<string, FeedInfo> = {};
+const FEED_RETRY_MS = 2000;
+
+/** Connects to every feed the server lists, once per (feed, encoder instance). */
+function updateFeeds(listed: Record<string, FeedInfo>): void {
+  listedFeeds = listed;
+  for (const [name, info] of Object.entries(listed)) {
+    const key = `${info.port}:${info.fingerprint}`;
+    if (feeds.get(name)?.key === key) continue;
+    const feed: Feed = { key, receiver: null, stats: createReceiverStats(mediaOptions), status: "connecting" };
+    feeds.set(name, feed);
+    // The encoder serves on the stream's host; `?media=HOST` overrides, as on the stream page.
+    const url = new URL(`https://${mediaOptions.get("media") ?? location.hostname}:${info.port}/`);
+    connectReceiver({
+      url,
+      fingerprint: info.fingerprint,
+      stats: feed.stats,
+      bufferMs: Number(mediaOptions.get("buffer") ?? 20),
+      software: mediaOptions.has("software"),
+      onStatus: (text) => feed.status = text,
+    }).then(async (receiver) => {
+      if (feeds.get(name) !== feed) return;
+      feed.receiver = receiver;
+      feed.status = `${receiver.meta.width}×${receiver.meta.height}`;
+      await receiver.run();
+    }).catch((error) => {
+      feed.status = `error: ${error}`;
+      console.warn(`scene-stream: feed ${name}:`, error);
+    }).finally(() => {
+      if (feeds.get(name) !== feed) return;
+      feed.receiver = null;
+      feed.key = ""; // stale: the retry (or the next media message) connects again
+      setTimeout(() => {
+        if (feeds.get(name) === feed) updateFeeds(listedFeeds);
+      }, FEED_RETRY_MS);
+    });
+  }
+  for (const name of [...feeds.keys()]) if (!(name in listed)) feeds.delete(name);
+}
+
+/** Per animation frame: the due picture of each feed into its texture. Returns pictures to close. */
+function presentFeeds(now: number): VideoFrame[] {
+  const replaced: VideoFrame[] = [];
+  for (const [name, feed] of feeds) {
+    const frame = feed.receiver?.takeDue(now);
+    if (!frame) continue;
+    const previous = view.setFeedFrame(name, frame);
+    if (previous) replaced.push(previous);
+  }
+  return replaced;
 }
 
 // ---- rendering ----
@@ -764,18 +909,34 @@ function frame(now: number): void {
   camera.matrixWorld.copy(camera.matrix);
   camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
   view.update(camera);
+  const replaced = presentFeeds(now);
   renderer.render(view.scene, camera);
+  // Uploaded by the render above; the texture keeps the pixels.
+  for (const frame of replaced) frame.close();
   if (now - hudAt > 250) {
     hudAt = now;
     hud.textContent = `${stats.connected ? "connected" : "connecting…"} · tick ${replica.sourceTick} · ` +
       `${replica.size("items")} items · ${stats.deltas} deltas, ${(stats.bytes / 1024).toFixed(0)} KiB ` +
       `(last ${stats.lastDeltaBytes} B) · ${headView ? "head view" : "desktop view"} · ` +
-      `on empty space: left pan, right orbit, wheel zoom · F head · G frame`;
+      `on empty space: left pan, right orbit, wheel zoom · F head · G frame` +
+      [...feeds].map(([name, feed]) => ` · ${name}: ${feed.status}`).join("");
   }
 }
 
 /** For inspection from the console or a test harness. */
-(globalThis as { sceneStream?: unknown }).sceneStream = { replica, view, camera, serverView, renderer, stats, THREE };
+(globalThis as { sceneStream?: unknown }).sceneStream = {
+  replica,
+  view,
+  camera,
+  serverView,
+  renderer,
+  stats,
+  feeds,
+  THREE,
+  /** Places this view's camera at `position` looking at `target` (the shared navigation). */
+  aim: (position: THREE.Vector3Tuple, target: THREE.Vector3Tuple) =>
+    aim(new THREE.Vector3(...position), new THREE.Vector3(...target)),
+};
 
 connect();
 requestAnimationFrame(frame);

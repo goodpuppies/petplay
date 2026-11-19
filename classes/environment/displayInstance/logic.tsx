@@ -330,6 +330,9 @@ export function DisplayInstance(
       <DisplayInstanceFrame
         ref={handleRef}
         {...frameProps}
+        videoFeed={frameProps.videoFeed && workspaceCrop
+          ? { ...frameProps.videoFeed, crop: workspaceCrop, opacity }
+          : null}
         {...(raysOff ? { rayHitSurface: false, shellRayPickable: false, onMouse: undefined } : {})}
         curvature={curvature}
         manipulationTargetRef={manipulationTargetRef}

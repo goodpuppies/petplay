@@ -8,6 +8,8 @@
  *   over today's UI snapshot; binding to uikit's signals directly comes later.
  * - Atlases and UI images go into the `textures` table with their PNG bytes, so a remote renderer
  *   needs nothing from this machine's disk.
+ * - Displays become `videoSurface` items (see {@link VideoSurfaceMarker}): where a feed appears and
+ *   which part of it. The pixels travel over the media transport, not through the store.
  */
 import * as THREE from "three";
 import type { ExtractionResult, RenderInstance } from "../submodules/raythree/src/lib.ts";
@@ -23,6 +25,7 @@ import {
   type TrackedSpace,
   type UiOrder,
   type UiQuadData,
+  type VideoSurfaceData,
   WORLD_NODE,
 } from "../submodules/raythree/src/store/mod.ts";
 import {
@@ -60,6 +63,21 @@ const TRACKED_SPACE: Readonly<Record<RenderAnchorSpace, TrackedSpace>> = {
 const FIRST_PAIR_NODE = 100;
 const FIRST_UI_ITEM = 0x2000_0000;
 const FIRST_UI_TEXTURE = 0x4000_0000;
+const FIRST_VIDEO_ITEM = 0x3000_0000;
+const FIRST_VIDEO_GEOMETRY = 0x5000_0000;
+/** How often the scene is searched for video surface markers; between searches they are re-read. */
+const VIDEO_SURFACE_SCAN_MS = 1000;
+
+/**
+ * `userData.videoSurface` on an object in the scene: a display showing (part of) a media feed.
+ * The object's world matrix places `geometry`, whose UVs span the shown `crop` of the feed.
+ */
+export type VideoSurfaceMarker = {
+  feed: string;
+  geometry: THREE.BufferGeometry;
+  crop: { x: number; y: number; width: number; height: number };
+  opacity: number;
+};
 
 /** MSDF atlases by font id, as the raylib renderer and `msdf-text.tsx` know them. */
 const ATLAS_PATHS: Record<string, URL> = {
@@ -99,6 +117,13 @@ export class PetplaySceneStoreWriter {
   private nextTexture = FIRST_UI_TEXTURE;
   private readonly glyphCache = new Map<number, { revision: number; glyphs: Float32Array }>();
 
+  private videoMarkers: THREE.Object3D[] = [];
+  private videoScannedAt = -Infinity;
+  private readonly videoItems = new Map<THREE.Object3D, RowId>();
+  private nextVideoItem = FIRST_VIDEO_ITEM;
+  private readonly videoGeometries = new Map<THREE.BufferGeometry, RowId>();
+  private nextVideoGeometry = FIRST_VIDEO_GEOMETRY;
+
   constructor(readonly store: SceneStore = new SceneStore()) {
     this.meshes = new ExtractionStoreWriter(store, {
       place: (instance) => this.place(instance as PetplayInstance),
@@ -114,12 +139,16 @@ export class PetplaySceneStoreWriter {
     });
   }
 
-  /** Writes one frame: the extraction (eye invariant, so the left eye's) and the UI snapshot. */
-  write(extraction: ExtractionResult, ui?: WebXRRaythreeUiSnapshot): void {
+  /**
+   * Writes one frame: the extraction (eye invariant, so the left eye's), the UI snapshot, and, given
+   * the scene, its video surfaces.
+   */
+  write(extraction: ExtractionResult, ui?: WebXRRaythreeUiSnapshot, scene?: THREE.Object3D | null): void {
     this.store.transaction(() => {
       this.usedPairs = new Set();
       this.meshes.write(extraction);
       if (ui) this.writeUi(ui);
+      if (scene) this.writeVideoSurfaces(scene);
       for (const [key, id] of this.pairNodes) {
         if (this.usedPairs.has(key)) continue;
         this.store.remove("nodes", id);
@@ -239,6 +268,87 @@ export class PetplaySceneStoreWriter {
     }
   }
 
+  // ---- video surfaces ----
+
+  private writeVideoSurfaces(scene: THREE.Object3D): void {
+    const now = performance.now();
+    if (now - this.videoScannedAt > VIDEO_SURFACE_SCAN_MS) {
+      this.videoScannedAt = now;
+      this.videoMarkers = [];
+      scene.traverse((object) => {
+        if (object.userData?.videoSurface) this.videoMarkers.push(object);
+      });
+    }
+    const seen = new Set<THREE.Object3D>();
+    const usedGeometries = new Set<RowId>();
+    for (const object of this.videoMarkers) {
+      const marker = object.userData.videoSurface as VideoSurfaceMarker | undefined;
+      if (!marker || !shownIn(object, scene)) continue;
+      seen.add(object);
+      let id = this.videoItems.get(object);
+      if (id === undefined) {
+        id = this.nextVideoItem++;
+        this.videoItems.set(object, id);
+      }
+      const geometry = this.videoGeometry(marker.geometry);
+      usedGeometries.add(geometry);
+      const data: VideoSurfaceData = {
+        feed: marker.feed,
+        geometry,
+        crop: { ...marker.crop },
+        opacity: marker.opacity,
+      };
+      this.store.write("items", id, {
+        header: { kind: "videoSurface", node: WORLD_NODE },
+        transform: Float64Array.from(object.matrixWorld.elements),
+        state: { visible: true, layerMask: 1, order: 0, depthSorted: marker.opacity < 1 },
+        data,
+      });
+    }
+    for (const [object, id] of this.videoItems) {
+      if (seen.has(object)) continue;
+      this.store.remove("items", id);
+      this.videoItems.delete(object);
+    }
+    for (const [geometry, id] of this.videoGeometries) {
+      if (usedGeometries.has(id)) continue;
+      this.store.remove("geometries", id);
+      this.videoGeometries.delete(geometry);
+    }
+  }
+
+  /** A display's surface geometry, written once per geometry object (it is rebuilt on change). */
+  private videoGeometry(geometry: THREE.BufferGeometry): RowId {
+    let id = this.videoGeometries.get(geometry);
+    if (id !== undefined) return id;
+    id = this.nextVideoGeometry++;
+    this.videoGeometries.set(geometry, id);
+    const attributes: Record<string, { itemSize: number; normalized: boolean; array: Float32Array }> = {};
+    for (const name of ["position", "normal", "uv"]) {
+      const attribute = geometry.getAttribute(name) as THREE.BufferAttribute | undefined;
+      if (!attribute) continue;
+      attributes[name] = {
+        itemSize: attribute.itemSize,
+        normalized: attribute.normalized,
+        array: Float32Array.from(attribute.array as ArrayLike<number>),
+      };
+    }
+    const index = geometry.getIndex();
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const sphere = geometry.boundingSphere!;
+    this.store.write("geometries", id, {
+      data: {
+        topology: "triangles",
+        attributes,
+        index: index
+          ? (index.count > 65535 ? Uint32Array : Uint16Array).from(index.array as ArrayLike<number>)
+          : null,
+        bounds: { center: sphere.center.toArray(), radius: sphere.radius },
+      },
+    });
+    return id;
+  }
+
   /** The node an item hangs under, its matrix there, and the node's world pose at capture. */
   private nodeFrame(item: Anchored & { worldMatrix: ArrayLike<number> }): NodeFrame {
     const anchor = item.renderAnchor;
@@ -306,6 +416,15 @@ type NodeFrame = {
   /** The node's world matrix the producer used; null for the world node (identity). */
   nodeWorld: THREE.Matrix4 | null;
 };
+
+/** Still in `scene` and not hidden by itself or an ancestor. */
+function shownIn(object: THREE.Object3D, scene: THREE.Object3D): boolean {
+  for (let o: THREE.Object3D | null = object; o; o = o.parent) {
+    if (!o.visible) return false;
+    if (o === scene) return true;
+  }
+  return false;
+}
 
 function uiOrder(
   root: number,

@@ -55,6 +55,11 @@ const state = actorState({
   restartTimerId: null as ReturnType<typeof setTimeout> | null,
   visible: false,
   shuttingDown: false,
+  /**
+   * A media worker's frame socket the capture also publishes to (GPU encode for streaming);
+   * `PETPLAY_DESKTOP_MEDIA_SOCKET` or `SETDESKTOPMEDIASOCKET` (the scene stream's desktop feed).
+   */
+  mediaSocketPath: (Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOCKET") || null) as string | null,
 });
 
 let warmCapturePromise: Promise<ScreenCapturer> | null = null;
@@ -346,6 +351,14 @@ new PostMan(
         scheduleDeferredStartRetry(payload);
       });
     },
+    /** `{ path }`: also publish captured frames to this media worker socket; `null` stops. */
+    SETDESKTOPMEDIASOCKET: (payload: { path: string | null }) => {
+      const path = typeof payload?.path === "string" && payload.path ? payload.path : null;
+      void applyMediaSocket(path).catch((error) =>
+        LogChannel.error("actor", `[displayOverlayHost] media socket change failed: ${error}`)
+      );
+      return getDisplayOverlayHostStatus();
+    },
     CONFIGUREDESKTOP: (payload: StartDesktopPayload) => {
       state.lastStartConfig = payload;
       // The capturer is warmed at actor startup, before this config arrives, so
@@ -623,7 +636,7 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
     // Opt in by pointing this at a media worker that is already listening, the same
     // way the remote scene controls are enabled. Capture and the local overlay behave
     // identically without it; see markdown/remote-desktop-stream.md.
-    mediaSocketPath: Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOCKET") || undefined,
+    mediaSocketPath: state.mediaSocketPath ?? undefined,
     onExit: (status) => {
       state.screenCapturer = null;
       warmCapturePromise = null;
@@ -662,10 +675,24 @@ async function applyCaptureFps(fps: number): Promise<void> {
   state.captureFps = fps;
   const capturer = state.screenCapturer;
   if (capturer == null || capturer.getFps() === fps) return;
-  LogChannel.log(
-    "actor",
-    `[displayOverlayHost] restarting screen capture at ${fps} fps (was ${capturer.getFps()})`,
-  );
+  await restartCapture(`at ${fps} fps (was ${capturer.getFps()})`);
+}
+
+/**
+ * Publish capture to a media worker's frame socket as well (null stops). The socket is a
+ * process argument of the capture helper, so a running helper is re-launched.
+ */
+async function applyMediaSocket(path: string | null): Promise<void> {
+  if (state.mediaSocketPath === path) return;
+  state.mediaSocketPath = path;
+  if (state.screenCapturer == null) return;
+  await restartCapture(path ? `publishing to ${path}` : "without media publishing");
+}
+
+async function restartCapture(reason: string): Promise<void> {
+  const capturer = state.screenCapturer;
+  if (capturer == null) return;
+  LogChannel.log("actor", `[displayOverlayHost] restarting screen capture ${reason}`);
   state.screenCapturer = null;
   warmCapturePromise = null;
   try {

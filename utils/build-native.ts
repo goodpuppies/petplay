@@ -26,8 +26,12 @@ export async function buildNative(target: NativeBuildTarget): Promise<string> {
   }).output();
   if (!result.success) throw new Error(`screen-streamer build failed (${result.code})`);
   await Deno.mkdir(fromFileUrl(new URL(`dist/native/${target}/`, root)), { recursive: true });
-  await Deno.copyFile(built, output);
-  if (!target.includes("windows")) await Deno.chmod(output, 0o755);
+  // Install by rename: a running capture helper keeps its own copy, where writing into the
+  // file it executes from fails ("text file busy") on Linux.
+  const staged = `${output}.new`;
+  await Deno.copyFile(built, staged);
+  if (!target.includes("windows")) await Deno.chmod(staged, 0o755);
+  await Deno.rename(staged, output);
   if (target === nativeBuildTarget()) {
     const probe = await new Deno.Command(output, { args: ["--version"] }).output();
     if (!probe.success || !new TextDecoder().decode(probe.stdout).startsWith("screen-streamer ")) {

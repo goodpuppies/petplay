@@ -52,6 +52,12 @@ export type DisplayInstanceFrameProps = {
   rayHitSurface?: boolean;
   /** OpenVR overlay curvature; the ray proxy bends to match (`curvedSurface.ts`). */
   curvature?: number;
+  /**
+   * The media feed this display shows and which part of it, for renderers that draw the picture
+   * in the scene themselves (the scene stream's `videoSurface`, `classes/sceneStoreWriter.ts`).
+   * The OpenVR overlay path does not use it.
+   */
+  videoFeed?: { feed: string; crop: { x: number; y: number; width: number; height: number }; opacity: number } | null;
   /** Optional display-space mouse sink; receives normalized 0..1 coordinates on the screen plane. */
   onMouse?: DisplayMouseSink;
   mouseButtonForPointer?: (event: PenPointerEvent) => DisplayMouseButton | undefined;
@@ -109,6 +115,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       shellRayPickable = false,
       rayHitSurface = true,
       curvature = 0,
+      videoFeed = null,
       onMouse,
       mouseButtonForPointer,
       manipulationTargetRef,
@@ -129,6 +136,11 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       [width, height, curvature],
     );
     useEffect(() => () => surfaceGeometry.dispose(), [surfaceGeometry]);
+    const videoSurface = useMemo(
+      () => videoFeed ? { ...videoFeed, geometry: surfaceGeometry } : null,
+      [videoFeed?.feed, videoFeed?.crop.x, videoFeed?.crop.y, videoFeed?.crop.width, videoFeed?.crop.height,
+        videoFeed?.opacity, surfaceGeometry],
+    );
     const pendingClickRef = useRef<PendingDisplayClick | null>(null);
     const mainControllerGate = useMemo(() => createMainControllerGate(), []);
 
@@ -273,6 +285,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         onSpatialHoverChange={onSpatialHoverChange}
         grabFilter={(event) => event.pointerType !== "ray" && event.pointerType !== "poker"}
       >
+        {videoSurface ? <group userData={{ videoSurface }} /> : null}
         {rayHitSurface
           ? (
             <mesh

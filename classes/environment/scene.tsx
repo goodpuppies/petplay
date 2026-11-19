@@ -1588,6 +1588,14 @@ function DisplaySpatialNodeView({
         virtualDisplayId={node.id}
         virtualDisplayName={node.workspaceOutputName ?? `PetPlay ${node.id}`}
         workspaceCrop={workspaceCrop}
+        videoFeed={activeDisplayOverlayHostActor != null
+          ? {
+            // Local monitors are crops of the one desktop capture; a remote output is its own feed.
+            feed: selectedFeed?.overlayHostActor ? selectedFeed.id : "desktop",
+            crop: workspaceCrop,
+            opacity: node.opacity ?? 1,
+          }
+          : null}
         opacity={node.opacity}
         curvature={node.curvature}
         autoHide={node.autoHide}
