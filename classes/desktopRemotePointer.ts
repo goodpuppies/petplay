@@ -29,6 +29,8 @@ const types = new Set([
 ]);
 export class DesktopRemotePointer {
   private pointers = new Map<number, SyntheticEventInit>();
+  /** Pointer ids this input has issued to its surface, for views sharing a scene (`desktopNavigation.ts`). */
+  readonly issued = new Set<number>();
   private sequence = -1;
   constructor(private surface: SyntheticCanvas, readonly viewport = "desktop-control") {}
   receive(value: unknown): void {
@@ -51,6 +53,7 @@ export class DesktopRemotePointer {
     if (!previous) {
       if (this.pointers.size >= 16) throw Error("Too many pointers");
       previous = { type: "pointerover", pointerId: nextPointerId++, pointerType: m.pointerType };
+      this.issued.add(previous.pointerId!);
     }
     const rect = this.surface.getBoundingClientRect();
     const event: SyntheticEventInit = {

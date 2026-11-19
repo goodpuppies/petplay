@@ -6,12 +6,12 @@
  * on the replica keeps a three.js scene in step with exactly the rows that changed. Tracked nodes
  * (head, hands) take their poses from the separate pose messages.
  *
- * Input follows `viewControls.ts`: navigation stays here, everything else is sent to the scene's
- * pmndrs pointer events together with the camera this view drew, so the server picks exactly
- * what the user sees.
+ * Input: every pointer and wheel event goes to the server with the camera this view drew, so it
+ * picks exactly what the user sees. Navigation is not implemented here: the server runs PetPlay's
+ * one desktop navigation (`classes/desktopNavigation.ts`, the same as the raylib viewers) for
+ * this view and sends back the camera to render with.
  */
 import * as THREE from "npm:three@0.186.1";
-import { dragAction, ViewCameraController, wheelNavigates } from "./viewControls.ts";
 import {
   decodeDelta,
   type GeometryData,
@@ -594,6 +594,7 @@ function connect(): void {
     if (typeof event.data === "string") {
       const message = JSON.parse(event.data);
       if (message.poses) view.setPoses(message.poses);
+      if (Array.isArray(message.view)) serverView.fromArray(message.view);
       return;
     }
     const bytes = new Uint8Array(event.data as ArrayBuffer);
@@ -627,7 +628,10 @@ const canvas = renderer.domElement;
 
 const camera = new THREE.PerspectiveCamera(70, 1, 0.01, 200);
 camera.matrixAutoUpdate = false;
-const controller = new ViewCameraController(camera);
+/** The camera the server's navigation for this view sends. */
+const serverView = new THREE.Matrix4().makeTranslation(0, 1.2, 2);
+/** F: follow the headset instead (local; navigating leaves it). */
+let headView = false;
 
 function resize(): void {
   renderer.setSize(innerWidth, innerHeight);
@@ -637,8 +641,18 @@ function resize(): void {
 addEventListener("resize", resize);
 resize();
 
+function send(message: unknown): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(message));
+  return true;
+}
+
+function aim(position: THREE.Vector3, target: THREE.Vector3): boolean {
+  return send({ aim: { position: position.toArray(), target: target.toArray() } });
+}
+
 /**
- * Frames the scene's world-placed content: centred on its bounds, backed off along the facing
+ * Aims at the scene's world-placed content: centred on its bounds, backed off along the facing
  * direction of the largest UI quad (the panel most likely to be read).
  */
 function frameContent(): boolean {
@@ -658,9 +672,21 @@ function frameContent(): boolean {
     }
   });
   if (bounds.isEmpty()) return false;
+  const center = bounds.getCenter(new THREE.Vector3());
   const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.3);
-  controller.frame(bounds.getCenter(new THREE.Vector3()), facing ?? new THREE.Vector3(0, 0, 1), radius * 1.8);
-  return true;
+  headView = false;
+  return aim(center.clone().addScaledVector(facing ?? new THREE.Vector3(0, 0, 1), radius * 1.8), center);
+}
+
+/** Leaves the head view where the head is, orbiting a point a metre ahead. */
+function leaveHeadView(): void {
+  const head = view.pose("viewer");
+  headView = false;
+  if (!head) return;
+  const position = new THREE.Vector3().setFromMatrixPosition(head);
+  const ahead = new THREE.Vector3(0, 0, -1).transformDirection(head).add(position);
+  aim(position, ahead);
+  serverView.copy(head); // until the server's answer arrives
 }
 
 // Open framed on the content: the headset may be facing anywhere. F switches to its view.
@@ -669,30 +695,24 @@ const opening = setInterval(() => {
 }, 200);
 
 addEventListener("keydown", (event: KeyboardEvent) => {
-  if (event.key === "g" || event.key === "G") {
-    frameContent();
-  } else if (event.key === "f" || event.key === "F") {
-    const head = view.pose("viewer");
-    if (controller.mode === "head" && head) controller.freeFrom(head);
-    else controller.mode = "head";
+  if (event.key === "g" || event.key === "G") frameContent();
+  else if (event.key === "f" || event.key === "F") {
+    if (headView) leaveHeadView();
+    else headView = true;
   }
 });
 
-// ---- input: navigation here, interaction to the scene ----
+// ---- input: all of it to the scene ----
 
 let sequence = 0;
-/** Drags that navigate, by DOM pointer id; those events never reach the scene. */
-const navigating = new Map<number, ReturnType<typeof dragAction>>();
 
 function sendPointer(
   type: "pointermove" | "pointerdown" | "pointerup" | "pointercancel" | "pointerleave" | "wheel",
   event: PointerEvent | WheelEvent,
   deltaY?: number,
 ): void {
-  if (socket?.readyState !== WebSocket.OPEN) return;
   const rect = canvas.getBoundingClientRect();
-  stats.pointerEvents++;
-  socket.send(JSON.stringify({
+  const sent = send({
     pointer: {
       version: 1,
       viewport: "scene-view",
@@ -703,7 +723,7 @@ function sendPointer(
       x: (event.clientX - rect.left) / rect.width,
       y: (event.clientY - rect.top) / rect.height,
       button: type === "pointermove" || type === "wheel" ? -1 : event.button,
-      buttons: event.buttons & 1, // only the interaction button is the scene's
+      buttons: event.buttons,
       ...(deltaY !== undefined ? { deltaY } : {}),
       ctrlKey: event.ctrlKey,
       shiftKey: event.shiftKey,
@@ -711,63 +731,51 @@ function sendPointer(
       metaKey: event.metaKey,
       camera: { matrixWorld: camera.matrixWorld.toArray(), projection: camera.projectionMatrix.toArray() },
     },
-  }));
+  });
+  if (sent) stats.pointerEvents++;
 }
 
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("pointerdown", (event) => {
-  const action = dragAction(event.button, event.shiftKey);
+  // Navigation (decided by the server) moves the server's camera, not the headset's.
+  if (headView) leaveHeadView();
   canvas.setPointerCapture(event.pointerId);
-  if (action === "scene") sendPointer("pointerdown", event);
-  else navigating.set(event.pointerId, action);
+  sendPointer("pointerdown", event);
 });
-canvas.addEventListener("pointermove", (event) => {
-  const action = navigating.get(event.pointerId);
-  if (action === "orbit") controller.orbit(event.movementX, event.movementY);
-  else if (action === "pan") {
-    controller.pan(event.movementX, event.movementY, canvas.clientHeight, THREE.MathUtils.degToRad(camera.fov));
-  } else sendPointer("pointermove", event);
-});
-const endPointer = (type: "pointerup" | "pointercancel") => (event: PointerEvent) => {
-  if (navigating.delete(event.pointerId)) return;
-  sendPointer(type, event);
-};
-canvas.addEventListener("pointerup", endPointer("pointerup"));
-canvas.addEventListener("pointercancel", endPointer("pointercancel"));
-canvas.addEventListener("pointerleave", (event) => {
-  if (!navigating.has(event.pointerId)) sendPointer("pointerleave", event);
-});
+canvas.addEventListener("pointermove", (event) => sendPointer("pointermove", event));
+canvas.addEventListener("pointerup", (event) => sendPointer("pointerup", event));
+canvas.addEventListener("pointercancel", (event) => sendPointer("pointercancel", event));
+canvas.addEventListener("pointerleave", (event) => sendPointer("pointerleave", event));
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
-  const pixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-  if (wheelNavigates(event.ctrlKey, event.metaKey)) controller.dolly(Math.exp(pixels * 0.002));
-  else sendPointer("wheel", event, pixels);
+  if (headView) leaveHeadView();
+  sendPointer("wheel", event, event.deltaMode === 1 ? event.deltaY * 33 : event.deltaY);
 }, { passive: false });
 // Leaving the page must not leave a press held in the scene.
-addEventListener("blur", () => {
-  if (socket?.readyState !== WebSocket.OPEN) return;
-  sendPointer("pointercancel", new PointerEvent("pointercancel", { pointerId: 1 }));
-});
+addEventListener("blur", () => sendPointer("pointercancel", new PointerEvent("pointercancel", { pointerId: 1 })));
 
 const hud = document.getElementById("hud")!;
 let hudAt = 0;
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
-  controller.apply(view.pose("viewer"));
+  const head = view.pose("viewer");
+  camera.matrix.copy(headView && head ? head : serverView);
+  camera.matrixWorld.copy(camera.matrix);
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
   view.update(camera);
   renderer.render(view.scene, camera);
   if (now - hudAt > 250) {
     hudAt = now;
     hud.textContent = `${stats.connected ? "connected" : "connecting…"} · tick ${replica.sourceTick} · ` +
       `${replica.size("items")} items · ${stats.deltas} deltas, ${(stats.bytes / 1024).toFixed(0)} KiB ` +
-      `(last ${stats.lastDeltaBytes} B) · ${controller.mode === "head" ? "head view" : "free view"} · ` +
-      `left: interact · right: orbit · middle: pan · ctrl+wheel: zoom · F head · G frame`;
+      `(last ${stats.lastDeltaBytes} B) · ${headView ? "head view" : "desktop view"} · ` +
+      `on empty space: left pan, right orbit, wheel zoom · F head · G frame`;
   }
 }
 
 /** For inspection from the console or a test harness. */
-(globalThis as { sceneStream?: unknown }).sceneStream = { replica, view, camera, controller, renderer, stats, THREE };
+(globalThis as { sceneStream?: unknown }).sceneStream = { replica, view, camera, serverView, renderer, stats, THREE };
 
 connect();
 requestAnimationFrame(frame);

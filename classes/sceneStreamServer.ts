@@ -10,6 +10,8 @@
  * events plus the camera the client drew with. They go through pmndrs on the live scene
  * (`viewRemotePointer.ts`), the same interaction path as the desktop window and VR controllers;
  * the results (hover, presses, drags) come back through the store like any other change.
+ * Navigation is the shared `desktopNavigation.ts`, run here per view: the client renders with
+ * the `{ view: matrixWorld }` it is sent, and places it with `{ aim: { position, target } }`.
  *
  * HTTP on the same port: `/` the viewer page, `/viewer.js` its bundle
  * (`deno task scene-stream:build`), `/scene` the WebSocket. Loopback only unless a hostname is
@@ -109,7 +111,13 @@ class SceneStream {
       this.writer.write(extraction, payload.ui);
       this.framesPublished++;
       this.scene = scene;
-      for (const client of this.clients) client.pointer?.update();
+      for (const client of this.clients) {
+        client.pointer?.update();
+        const view = client.pointer?.takeViewMatrix();
+        if (view && client.socket.readyState === WebSocket.OPEN) {
+          client.socket.send(JSON.stringify({ view }));
+        }
+      }
       this.poses = JSON.stringify({ poses: this.collectPoses(payload, scene) });
       for (const client of this.clients) this.pump(client);
       this.truncateJournal();
@@ -177,17 +185,23 @@ class SceneStream {
     };
     socket.onmessage = (event) => {
       if (typeof event.data !== "string") return;
-      let message: { ack?: unknown; resync?: unknown; pointer?: unknown };
+      let message: {
+        ack?: unknown;
+        resync?: unknown;
+        pointer?: unknown;
+        aim?: { position?: unknown; target?: unknown };
+      };
       try {
         message = JSON.parse(event.data);
       } catch {
         return;
       }
-      if (message.pointer !== undefined) {
+      if (message.pointer !== undefined || message.aim !== undefined) {
         try {
           if (!this.scene) throw Error("Scene not ready");
           client.pointer ??= createViewRemotePointer(this.scene, label);
-          client.pointer.receive(message.pointer);
+          if (message.aim) client.pointer.aim(message.aim.position, message.aim.target);
+          else client.pointer.receive(message.pointer);
         } catch (error) {
           this.lastError = `pointer: ${error}`;
         }

@@ -4,8 +4,8 @@ import {
 } from "../classes/desktopPointerSurface.ts";
 import React, { createContext, useContext } from "react";
 import * as THREE from "three";
-import { useThree } from "@react-three/fiber/webgpu";
-import { OrbitHandles } from "@react-three/handle";
+import { useFrame, useThree } from "@react-three/fiber/webgpu";
+import { createDesktopNavigation } from "../classes/desktopNavigation.ts";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { getRaylibLibraryPath } from "../classes/nativeLibraryPaths.ts";
 import { forwardHtmlEvents } from "@pmndrs/pointer-events";
@@ -243,46 +243,26 @@ export function SceneCameraAim(
   return null;
 }
 
+/** Desktop navigation (`classes/desktopNavigation.ts`, shared with every desktop view). */
 export function OrbitHandlesView(
-  { controlsStore, logPrefix }: { controlsStore: RaylibR3FViewerControlsStore; logPrefix: string },
+  { controlsStore }: { controlsStore: RaylibR3FViewerControlsStore; logPrefix: string },
 ) {
-  console.log(`${logPrefix} OrbitHandlesView rendering`);
-  try {
-    return (
-      <OrbitHandles
-        store={controlsStore}
-        damping={false}
-        rotate={{ filter: filterOrbitOutsideGrabBox }}
-        pan={{ filter: filterPanOutsideGrabBox }}
-      />
-    );
-  } catch (e) {
-    console.error(`${logPrefix} Error rendering OrbitHandles:`, e);
-    return null;
-  }
-}
-
-type ScreenHandleMap = Parameters<typeof filterForOnePointerLeftClick>[0];
-
-function startsInsideGrabBox(map: ScreenHandleMap): boolean {
-  for (const entry of map.values()) {
-    let object: THREE.Object3D | null = entry.initialEvent.intersection.object;
-    while (object != null) {
-      if (object.userData?.grabbox === true || object.userData?.desktopControl === true) {
-        return true;
-      }
-      object = object.parent;
-    }
-  }
-  return false;
-}
-
-function filterPanOutsideGrabBox(map: ScreenHandleMap): boolean {
-  return !startsInsideGrabBox(map) && filterForOnePointerLeftClick(map);
-}
-
-function filterOrbitOutsideGrabBox(map: ScreenHandleMap): boolean {
-  return !startsInsideGrabBox(map) && filterForOnePointerRightClickOrTwoPointer(map);
+  const canvas = useThree((state) => state.gl.domElement);
+  const scene = useThree((state) => state.scene);
+  const getState = useThree((state) => state.get);
+  const navigation = React.useMemo(
+    () =>
+      createDesktopNavigation({
+        canvas: canvas as HTMLCanvasElement,
+        scene,
+        getCamera: () => getState().camera as THREE.PerspectiveCamera,
+        store: controlsStore,
+      }),
+    [canvas, scene, getState, controlsStore],
+  );
+  React.useEffect(() => () => navigation.destroy(), [navigation]);
+  useFrame((_, delta) => navigation.update(delta * 1000));
+  return null;
 }
 
 export type RunRaylibR3FViewerAppOptions = {
