@@ -53,6 +53,8 @@ import { cornerWristHud } from "../../classes/environment/wristMenu/hud.ts";
 const UI_RENDER_ORDER_BASE = 1000;
 const OVERLAY_RENDER_ORDER = 1_000_000;
 
+let sceneDirty = true;
+
 type UiEntry = { object: THREE.Mesh; order: UiOrder };
 
 class SceneView {
@@ -80,6 +82,7 @@ class SceneView {
   }
 
   setPoses(poses: Partial<Record<TrackedSpace, number[]>>): void {
+    sceneDirty = true;
     this.poses = {};
     for (const [space, m] of Object.entries(poses)) {
       if (m) this.poses[space as TrackedSpace] = new THREE.Matrix4().fromArray(m);
@@ -135,6 +138,7 @@ class SceneView {
 
   // Rows arrive in dependency order (assets before items) within each transaction.
   private sync(touched: TouchedRow[]): void {
+    sceneDirty = true;
     for (const row of touched) {
       try {
         switch (row.table) {
@@ -192,6 +196,7 @@ class SceneView {
         .then((bitmap) => {
           texture.image = bitmap;
           texture.needsUpdate = true;
+          sceneDirty = true;
         })
         .catch((error) => console.error(`scene-stream: texture ${row.id}`, error));
     }
@@ -788,16 +793,17 @@ function updateFeeds(listed: Record<string, FeedInfo>): void {
   for (const name of [...feeds.keys()]) if (!(name in listed)) feeds.delete(name);
 }
 
-/** Per animation frame: the due picture of each feed into its texture. Returns pictures to close. */
-function presentFeeds(now: number): VideoFrame[] {
-  const replaced: VideoFrame[] = [];
+/** Update textures with due pictures and collect the previous pictures for release after drawing. */
+function presentFeeds(now: number, replaced: VideoFrame[]): boolean {
+  let updated = false;
   for (const [name, feed] of feeds) {
     const frame = feed.receiver?.takeDue(now);
     if (!frame) continue;
+    updated = true;
     const previous = view.setFeedFrame(name, frame);
     if (previous) replaced.push(previous);
   }
-  return replaced;
+  return updated;
 }
 
 // ---- rendering ----
@@ -807,6 +813,7 @@ renderer.setPixelRatio(devicePixelRatio);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.append(renderer.domElement);
 const canvas = renderer.domElement;
+canvas.addEventListener("webglcontextrestored", () => sceneDirty = true);
 
 const camera = new THREE.PerspectiveCamera(70, 1, 0.01, 200);
 camera.matrixAutoUpdate = false;
@@ -828,6 +835,7 @@ let mounts: Partial<Record<TrackedSpace, THREE.Matrix4>> = {};
 const hudToReal = new Map<TrackedSpace, THREE.Matrix4>();
 
 function setMounts(list: Partial<Record<TrackedSpace, number[]>>): void {
+  sceneDirty = true;
   mounts = {};
   for (const [space, m] of Object.entries(list)) {
     if (m) mounts[space as TrackedSpace] = new THREE.Matrix4().fromArray(m);
@@ -871,6 +879,7 @@ function resize(): void {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  sceneDirty = true;
 }
 addEventListener("resize", resize);
 resize();
@@ -961,6 +970,7 @@ function surfaceHeading(mesh: THREE.Mesh): THREE.Vector3 {
 function leaveHeadView(): void {
   const head = view.pose("viewer");
   headView = false;
+  sceneDirty = true;
   if (!head) return;
   const position = new THREE.Vector3().setFromMatrixPosition(head);
   const ahead = new THREE.Vector3(0, 0, -1).transformDirection(head).add(position);
@@ -976,11 +986,17 @@ const opening = setInterval(() => {
 addEventListener("keydown", (event: KeyboardEvent) => {
   if (event.key === "g" || event.key === "G") {
     clearInterval(opening);
-    if (frameContent()) headView = false;
+    if (frameContent() && headView) {
+      headView = false;
+      sceneDirty = true;
+    }
   } else if (event.key === "f" || event.key === "F") {
     clearInterval(opening);
     if (headView) leaveHeadView();
-    else headView = true;
+    else {
+      headView = true;
+      sceneDirty = true;
+    }
   }
 });
 
@@ -1052,19 +1068,28 @@ addEventListener("blur", () => sendPointer("pointercancel", new PointerEvent("po
 
 const hud = document.getElementById("hud")!;
 let hudAt = 0;
+const replacedFrames: VideoFrame[] = [];
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
   const head = view.pose("viewer");
-  camera.matrix.copy(headView && head ? head : serverView);
-  camera.matrixWorld.copy(camera.matrix);
-  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-  placeHud();
-  view.update(camera);
-  const replaced = presentFeeds(now);
-  renderer.render(view.scene, camera);
-  // Uploaded by the render above; the texture keeps the pixels.
-  for (const frame of replaced) frame.close();
+  const nextCamera = headView && head ? head : serverView;
+  const sceneChanged = sceneDirty || !camera.matrix.equals(nextCamera);
+  if (sceneChanged) {
+    sceneDirty = false;
+    camera.matrix.copy(nextCamera);
+    camera.matrixWorld.copy(nextCamera);
+    camera.matrixWorldInverse.copy(nextCamera).invert();
+    placeHud();
+    view.update(camera);
+  }
+  const videoChanged = presentFeeds(now, replacedFrames);
+  if (sceneChanged || videoChanged) {
+    renderer.render(view.scene, camera);
+    // Uploaded by the render above; the texture keeps the pixels.
+    for (const frame of replacedFrames) frame.close();
+    replacedFrames.length = 0;
+  }
   if (now - hudAt > 250) {
     hudAt = now;
     hud.textContent = `${stats.connected ? "connected" : "connecting…"} · tick ${replica.sourceTick} · ` +
