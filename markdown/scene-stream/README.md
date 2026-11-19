@@ -150,18 +150,35 @@ kind, changes per frame, extract/encode/decode time. Add which three materials, 
 attributes and texture sources actually occur, since that bounds what the first schema must
 cover. Turn the probes into one command.
 
-### P1: node-local items in today's payload
+### P1: node-local items (folded into P2)
 
-As in the old plan, but writing the future schema's shape: `nodes` with tracked spaces, items
-with `node` + local matrix + node-local clip. Exit: under the hand sweep, items changing per
-frame for hand-anchored UI drop to ~0, and text batches stop rebuilding on hand motion.
+The producer already skipped anchor-derived fields when deciding whether to resend
+(`classes/overlaySceneFingerprint.ts`), and the only consumer of anchors is the decoupled
+projection renderer (`petplay/overlayRenderOwner.ts`). Reworking today's payload would have been
+replaced by the store anyway, so node-local items were built directly into it. The renderer-side
+half (text batches that stop rebuilding on hand motion) lands when a renderer moves onto the store.
 
 ### P2: the store and the schema, in raythree
 
-`SceneStore` (tables, ticks, transactions, tombstones), the snapshot and delta codec, the
-equivalence test harness, and the incremental state hash. The extractor becomes a polled
-writer into the store. Core item kinds: `mesh`, `instancedMesh`; material models: unlit,
-metallic-roughness.
+**Done 2026-11-19**, in `submodules/raythree/src/store/`:
+
+- `schema.ts`: tables, field groups and value types (glTF-aligned; tracked spaces named as WebXR's).
+- `store.ts`: `SceneStore` with compare-before-mark writes, per-group change ticks, transactions,
+  the change journal, `changesSince` / `snapshot` / `truncateJournal`, replica `apply`, and the
+  incremental 64-bit state hash.
+- `codec.ts`: one slab per delta; typed arrays 8-byte aligned and decoded as views.
+- `extractionWriter.ts`: the polled writer from `ExtractionResult` with pluggable placement.
+- `store.test.ts`: a randomized lossy-link equivalence test through the codec (drops, journal
+  truncation forcing snapshots), plus targeted cases. Mutation-checked: breaking the journal's
+  remove or re-create handling fails the suite.
+
+PetPlay's writer is `classes/sceneStoreWriter.ts` (anchors onto tracked nodes, two-hand carries
+as pair nodes, PetPlay flags as extensions). Live results are in [baseline.md](./baseline.md).
+
+Deferred from P2: SoA column storage (rows are objects behind the same API; switch when the
+10k-entity benchmarks need it), content hashes as asset keys (asset ids are the producer's for
+now; the network assets track keys by hash in P6), and asset garbage collection (the extractor
+never reports a dropped asset).
 
 ### P3: UI as item kinds
 

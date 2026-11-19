@@ -76,3 +76,26 @@ camera and depth views, and real desktop displays (holes in this scene; their pi
 OpenVR overlays). The October measurement with VRChat and a real headset is in
 [raythree-retained-ir/baseline.md](../raythree-retained-ir/baseline.md) (114 KB, the same 16
 anchored panels changing).
+
+## 2026-11-19: the scene store, meshes only (P2)
+
+Same lab and phases, measured with `run.ts --probe=store.js`: each live frame is extracted again
+by a fresh extractor, written into a `SceneStore` through `classes/sceneStoreWriter.ts`, encoded,
+decoded and applied to a replica. UI kinds are not in the store yet (P3), so this covers
+instances, lights and their assets.
+
+| | Idle | Right hand sweeping | Left hand sweeping |
+| --- | ---: | ---: | ---: |
+| commits per frame | 0 | 0 | 0 |
+| delta bytes | 0 | 0 | 0 |
+| writer ms (p50 / p95) | 0.079 / 0.201 | 0.075 / 0.094 | 0.075 / 0.100 |
+| encode ms (p50) | 0.015 | 0.014 | 0.018 |
+| replica apply ms (p50) | 0.011 | 0.010 | 0.011 |
+
+- The hand-anchored mesh is stored under the right-grip node with a constant local matrix, so
+  the sweep that changed it in 0.8 of every frame of today's payload commits nothing.
+- The replica's state hash matched the producer's after every frame.
+- Snapshot: 17,152 bytes (12 geometries 8.4 KB, 12 materials 2.9 KB, 12 items 4.0 KB, 6 nodes
+  1.5 KB, 3 lights 1.2 KB).
+- The writer's cost is the per-frame compare (polled writer). The fresh extraction it runs on
+  (0.3 ms p50) is probe overhead; in production it reuses the bridge's extraction.
