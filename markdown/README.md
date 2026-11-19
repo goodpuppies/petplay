@@ -20,3 +20,5 @@ folder stays as history.
   change, not scene size: retained renderer tables, spatial nodes, delta transactions.
 - [VRChat depth](./vrchat-depth/README.md) — overlays composited with VRChat's depth: an avatar
   shader writes depth into the desktop window, PetPlay decodes it and cuts occlusion holes.
+- [What screen-relay offers](./screen-relay-lessons.md) — ideas for remote desktop and web
+  streaming from `research/screen-relay`: adaptive bitrate, encode on change, input protocol.
