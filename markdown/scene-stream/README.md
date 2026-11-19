@@ -78,6 +78,17 @@ consumer has acknowledged past it). "Everything changed since tick N" is the del
 consumer, whether it is the in-process renderer, a lagging viewer or a late joiner. This is
 Bevy's `Changed<T>` model. A signal object per field would cost too much at 10k entities.
 
+**A change journal indexes the ticks.** Finding "changed since N" must not scan the tables.
+Each transaction appends `(tick, table, row, fieldGroupMask)` entries to a journal; values are
+never copied into it, so it is an index into the current store, not a log of intermediate
+values. A row is journaled at most once per tick: if its `changedTick` already equals the
+current tick, the write ORs into that entry's mask. A consumer acked at N gets the journal range
+(N, now] merged per row, with values read from the store, so building a delta is
+O(changes since N). The journal is truncated below the oldest consumer's ack; a consumer whose
+range would exceed the store's size (a late joiner, or one far behind) gets a snapshot instead,
+which bounds what a slow viewer can cost. Applying a transaction on a replica yields the same
+touched-row list, which drives the renderer's incremental derived state directly.
+
 **Writes compare before they mark.** A write with an equal value changes nothing, so a rerun
 effect or a polled source that produced the same value emits nothing.
 
@@ -130,10 +141,10 @@ already makes a socket look like a worker, so a tab can be an actor). The protoc
 
 ## Phases
 
-### P0: measure
+### P0: measure (done 2026-11-19, see [baseline.md](./baseline.md))
 
 Rerun `utils/petplay-ir-probe-sections.js` and `utils/petplay-ir-probe-changes.js` against a
-live session and record in a `baseline.md` here (the October numbers are in
+live session and record in [baseline.md](./baseline.md) (the October numbers are in
 [raythree-retained-ir/baseline.md](../raythree-retained-ir/baseline.md)): bytes by section, entity counts by
 kind, changes per frame, extract/encode/decode time. Add which three materials, geometry
 attributes and texture sources actually occur, since that bounds what the first schema must
