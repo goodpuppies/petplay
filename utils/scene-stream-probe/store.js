@@ -1,11 +1,13 @@
 // Scene-stream store probe: run through run.ts --probe=store.js. For FRAMES calls of the live
 // buildPayload it extracts the same scene with a fresh extractor (full assets on its first call,
-// no updateMatrixWorld, a throwaway camera), writes it into a SceneStore through PetPlay's writer,
-// and ships each delta through the binary codec into a replica, which checks the state hash.
+// no updateMatrixWorld, a throwaway camera), writes it and the live UI snapshot into a SceneStore
+// through PetPlay's writer, and ships each delta through the binary codec into a replica, which
+// checks the state hash.
 // The wrapped function is restored afterwards; nothing is left on `state`.
 const FRAMES = 60;
 const url = (p) => new URL(p, moduleUrl).href;
-const { PetplaySceneStoreWriter } = await import(url("../classes/sceneStoreWriter.ts"));
+// Cache-busted: the worker keeps modules from earlier runs.
+const { PetplaySceneStoreWriter } = await import(`${url("../classes/sceneStoreWriter.ts")}?probe=${Date.now()}`);
 const { decodeDelta, encodeDelta, SceneStore, TABLES } = await import(url("../submodules/raythree/src/store/mod.ts"));
 const { RaythreeExtractor } = await import(url("../submodules/raythree/src/lib.ts"));
 const { anchoredLowerers } = await import(url("../classes/overlayRenderTracking.ts"));
@@ -30,7 +32,7 @@ await new Promise((resolve) => {
       const extraction = extractor.extract(scene, camera, { skipSceneMatrixWorldUpdate: true });
       const t1 = performance.now();
       const before = replica.sourceTick;
-      writer.write(extraction);
+      writer.write(extraction, p.ui);
       const t2 = performance.now();
       const delta = snapshot == null ? store.snapshot() : store.changesSince(before);
       const bytes = encodeDelta(delta);
