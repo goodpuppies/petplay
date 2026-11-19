@@ -1967,6 +1967,11 @@ export class WebXRHost {
     };
   }
 
+  /** The live r3f scene, or null before the root has mounted. */
+  getScene(): THREE.Scene | null {
+    return (this.rootStore?.getState() as { scene?: THREE.Scene } | undefined)?.scene ?? null;
+  }
+
   getRaythreeSceneContext(): {
     renderGripOffsets: Partial<Record<"left" | "right", Float32Array>>;
     scene: THREE.Scene;

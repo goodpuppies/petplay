@@ -182,17 +182,52 @@ never reports a dropped asset).
 
 ### P3: UI as item kinds
 
-uikit writers for `uiQuad` and `textRun` (bound to signals), font atlases as assets, glyph
-runs instead of glyph geometry. The raylib renderer moves onto them, and the separate UI
-snapshot is deleted. Exit: the overlay looks identical (compare captures) and the UI payload is
-a fraction of today's 97 KB.
+**P3a done 2026-11-19.** `uiQuad` and `textRun` are in raythree's schema; PetPlay's writer
+(`classes/sceneStoreWriter.ts`) turns the UI snapshot into them:
+
+- uikit's packed panel block becomes named fields in UI pixels: size, border widths, corner radii
+  (unpacked from base 50 and scaled by height), border bend, sRGB colours.
+- World clip planes move into node space (p_node = Nᵀ p_world, tested).
+- MSDF geometry becomes 8 floats per glyph. Atlases and UI images are textures carrying their
+  PNG bytes; atlases are flagged `flipY` (three-msdf-text-utils' upload convention).
+- `UiOrder` makes the draw order explicit: roots back to front, then layer (quads, text),
+  renderOrder, uikit's order keys, slot. An image fill is resolved at write time to the slot right
+  after the panel it fills, replacing the renderer's geometric matching.
+- Snapshot objects that are identical to last frame's are skipped (the UI snapshot never mutates
+  one it handed out): 0.19 ms per frame for 215 items idle.
+
+It is still a polled writer over the snapshot. Remaining for P3b: bind uikit's signals directly,
+move the raylib renderer onto the store, and delete the separate UI snapshot. The items table
+is 104 KB, about today's UI payload: the generic codec spends tags and keys per field, which the
+SoA wire (deferred) removes.
 
 ### P4: browser renderer
 
-A three.js consumer of the store in `submodules/raythree` (or next to the media viewer):
-WebSocket transport, snapshot then deltas, desktop camera and an optional WebXR session with
-local tracked spaces. Exit: the live PetPlay UI is legible and correctly layered in a browser
-with `--novr`.
+**First slice done 2026-11-19**: the live PetPlay UI renders in a browser, legibly and correctly
+layered, from the scene store.
+
+- `classes/sceneStreamServer.ts` runs in the webxr worker, fed from
+  `publishRaythreeFrameToViews` (primed from the view asset cache, so a late start has every
+  asset). One WebSocket per client, at most one delta in flight, "latest since ack" or a
+  snapshot; the journal is truncated to the oldest ack. Tracked poses go as separate JSON pose
+  messages: the head from the frame, hands from the scene's `renderTrackingAnchor` objects (the
+  exact poses the producer placed items from).
+- `web/scene-stream/viewer.ts` (build: `deno task scene-stream:build`) keeps a replica store
+  and updates a three.js scene from each transaction's touched rows: unlit/PBR meshes, a GLSL
+  rounded-rect shader for `uiQuad` (border, cover-fit image, node-space clip), an MSDF shader for
+  `textRun`, per-frame UI sort. Head camera by default; F free camera; G or `?view=fit` frames
+  the world-placed content. `globalThis.sceneStream` exposes the internals.
+- Verified in the vrlab with headless Chromium: keyboard legends (fi layout, icon glyphs),
+  wrist menu (image fill, live clock), displays' logo fills. A clock change arrived as a
+  1,096-byte delta. 475 frames published moved the store 3 ticks.
+
+Run it: start PetPlay with `PETPLAY_SCENE_STREAM_PORT=3993` (or from the REPL in the webxr
+worker: `import(new URL("../classes/sceneStreamServer.ts", moduleUrl).href).then((m) =>
+m.startSceneStream({ port: 3993 }))`), build the viewer once, open `http://127.0.0.1:3993/`.
+Loopback only; `PETPLAY_SCENE_STREAM_HOST` binds elsewhere.
+
+Not yet: WebXR in the viewer, input back to the server (P5), display pixels (P5), the
+4 MB snapshot (the wallpaper PNG is 3.4 MB of it; re-encode or downscale for the network).
 
 ### P5: input and video
 

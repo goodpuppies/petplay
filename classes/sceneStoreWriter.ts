@@ -272,7 +272,8 @@ export class PetplaySceneStoreWriter {
             format: "rgba8",
             // MSDF distances are data, not color.
             colorSpace: kind === "atlas" ? "linear" : "srgb",
-            flipY: false,
+            // three-msdf-text-utils bakes glyph UVs against a flipY upload of the atlas.
+            flipY: kind === "atlas",
             generateMipmaps: kind === "image",
             wrapS: "clamp",
             wrapT: "clamp",

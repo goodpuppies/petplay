@@ -126,9 +126,12 @@ import { type DepthFrameHeader, FLAG_DEPTH_CAMERA } from "../classes/vrchatDepth
 import type { DepthForegroundBlock } from "../classes/vrchatDepth/foreground.ts";
 import type { VrcDepthDebugFrame } from "../classes/vrchatDepth/debugView.ts";
 import { vrcDepthDebugStore } from "../classes/environment/vrcDepthDebugStore.ts";
+import { activeSceneStream, startSceneStreamFromEnv } from "../classes/sceneStreamServer.ts";
 
 // Re-run for each new actor worker, including hot reload without a process restart.
 initializeLinuxScheduling();
+// Browser scene stream (markdown/scene-stream), when PETPLAY_SCENE_STREAM_PORT is set.
+startSceneStreamFromEnv();
 
 const WEBXR_SHUTDOWN_TIMEOUT_MS = 2_000;
 
@@ -2467,6 +2470,11 @@ function publishRaythreeFrameToViews(
     viewDeliveryError = String(error);
     return;
   }
+  activeSceneStream()?.publish(
+    payload,
+    viewAssetCache,
+    state.host?.getScene() ?? null,
+  );
   if (state.views.size === 0) {
     return;
   }

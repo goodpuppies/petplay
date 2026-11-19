@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PetPlay scene stream</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; }
+    canvas { display: block; }
+    #hud {
+      position: fixed; left: 8px; bottom: 8px; padding: 4px 8px; border-radius: 4px;
+      font: 12px/1.4 system-ui, sans-serif; color: #cfd3dc; background: #0008; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">loading…</div>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>
