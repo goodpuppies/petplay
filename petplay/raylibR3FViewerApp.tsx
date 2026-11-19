@@ -119,6 +119,8 @@ function createRaylibPointerBridge(canvas: SyntheticCanvas): RaylibPointerBridge
       clientY,
       movementX,
       movementY,
+      altKey: type !== "pointercancel" && type !== "pointerleave" &&
+        (raylib.IsKeyDown(raylib.KeyboardKey.KEY_LEFT_ALT) || raylib.IsKeyDown(raylib.KeyboardKey.KEY_RIGHT_ALT)),
     });
   };
   const cancel = () => {

@@ -1095,7 +1095,7 @@ function frame(now: number): void {
     hud.textContent = `${stats.connected ? "connected" : "connecting…"} · tick ${replica.sourceTick} · ` +
       `${replica.size("items")} items · ${stats.deltas} deltas, ${(stats.bytes / 1024).toFixed(0)} KiB ` +
       `(last ${stats.lastDeltaBytes} B) · ${headView ? "head view" : "desktop view"} · ` +
-      `on empty space: left pan, right orbit, wheel zoom · F head · G frame` +
+      `on empty space: left pan, right orbit, wheel zoom · Alt + drag display · F head · G frame` +
       [...feeds].map(([name, feed]) => ` · ${name}: ${feed.status}`).join("");
   }
 }

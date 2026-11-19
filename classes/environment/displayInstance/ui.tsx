@@ -82,6 +82,10 @@ function pointerButton(button: number | undefined): DisplayMouseButton {
   }
 }
 
+function isDesktopDisplayGrab(e: PenPointerEvent): boolean {
+  return isDesktopMousePointerType(e.pointerType) && e.nativeEvent.altKey && e.nativeEvent.button === 0;
+}
+
 function displayCoordsFromPointerEvent(e: Pick<PenPointerEvent, "uv">): { x: number; y: number } | null {
   const uv = e.uv;
   if (uv == null) return null;
@@ -144,6 +148,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     );
     const pendingClickRef = useRef<PendingDisplayClick | null>(null);
     const desktopMoves = useRef(new WeakSet<object>());
+    const desktopGrabs = useRef(new Set<number>());
     const mainControllerGate = useMemo(() => createMainControllerGate(), []);
 
     const clearPendingTimer = useCallback((pending: PendingDisplayClick) => {
@@ -182,6 +187,8 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         // The forwarding bridge can replay the last native move each scene frame.
         if (desktopMoves.current.has(e.nativeEvent)) return;
         desktopMoves.current.add(e.nativeEvent);
+        if (desktopGrabs.current.has(e.pointerId)) return;
+        if (e.nativeEvent.altKey && pendingClickRef.current?.pointerId !== e.pointerId) return;
       }
       if (mainControllerGate.move(e.pointerState) !== "emit") return;
       const coords = displayCoordsFromPointerEvent(e);
@@ -199,6 +206,13 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     }, [mainControllerGate, onMouse]);
 
     const emitButton = useCallback((e: PenPointerEvent, pressed: boolean, cancelled = false) => {
+      if (pressed && isDesktopDisplayGrab(e)) {
+        desktopGrabs.current.add(e.pointerId);
+        return;
+      }
+      if (!pressed && desktopGrabs.current.delete(e.pointerId)) return;
+      // A display still owns the press when its desktop input is unavailable or blocked.
+      if (isDesktopMousePointerType(e.pointerType)) e.stopPropagation();
       if (onMouse == null) return;
       const current = pendingClickRef.current;
       const coords = displayCoordsFromPointerEvent(e) ??
@@ -273,10 +287,11 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     ]);
 
     const emitWheel = useCallback((e: PenWheelEvent) => {
-      if (onMouse == null || !isDesktopMousePointerType(e.pointerType)) return;
+      if (!isDesktopMousePointerType(e.pointerType)) return;
+      e.stopPropagation();
+      if (onMouse == null) return;
       const coords = displayCoordsFromPointerEvent(e);
       if (coords == null || e.deltaY === 0) return;
-      e.stopPropagation();
       onMouse({ kind: "wheel", deltaY: e.deltaY / 100, ...coords });
     }, [onMouse]);
 
@@ -294,7 +309,10 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         manipulationStoreRef={manipulationStoreRef}
         onSpatialFocus={onSpatialFocus}
         onSpatialHoverChange={onSpatialHoverChange}
-        grabFilter={(event) => event.pointerType !== "ray" && event.pointerType !== "poker"}
+        grabFilter={(event) =>
+          isDesktopMousePointerType(event.pointerType)
+            ? isDesktopDisplayGrab(event)
+            : event.pointerType !== "ray" && event.pointerType !== "poker"}
       >
         {videoSurface ? <group userData={{ videoSurface }} /> : null}
         {rayHitSurface
@@ -310,7 +328,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
               {...({
                 pointerEvents: "auto",
                 // Browser and native desktop views both forward DOM-style mouse rays.
-                pointerEventsType: { allow: onMouse == null ? "ray" : ["ray", "screen-mouse", "mouse"] },
+                pointerEventsType: { allow: ["ray", "screen-mouse", "mouse"] },
                 // Prefer the screen proxy over the surrounding GrabBox
                 // hull, even though the hull is a little closer to the hand.
                 pointerEventsOrder: 1,
