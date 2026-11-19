@@ -90,6 +90,16 @@ class SceneView {
     return this.poses[space];
   }
 
+  /** Visible meshes placed directly in world space, with their source kind. */
+  *worldMeshes() {
+    const world = this.nodes.get(WORLD_NODE);
+    for (const [id, object] of this.items) {
+      if (object instanceof THREE.Mesh && object.parent === world && object.visible) {
+        yield { mesh: object, kind: this.store.get("items", id)!.header.kind };
+      }
+    }
+  }
+
   /**
    * Where this view draws a tracked space instead of its real pose (the desktop wrist HUD).
    * Pairs keep following the real poses.
@@ -846,8 +856,8 @@ function placeHud(): void {
 }
 
 const hudRaycaster = new THREE.Raycaster();
-/** Pointers whose press began on the HUD menu keep its camera mapping until released. */
-const hudPointers = new Map<number, TrackedSpace>();
+/** Presses keep the camera mapping of their starting surface until released. */
+const pointerSpaces = new Map<number, TrackedSpace | null>();
 
 /** The HUD space under the pointer, if the pointer is over a HUD-placed menu. */
 function hudSpaceAt(x: number, y: number): TrackedSpace | null {
@@ -875,25 +885,49 @@ function aim(position: THREE.Vector3, target: THREE.Vector3): boolean {
   return send({ aim: { position: position.toArray(), target: target.toArray() } });
 }
 
-/** World items further than this from the content's median position are not content. */
+/** Ignore distant world items when framing a scene without a display. */
 const CONTENT_RADIUS = 10;
 
 /**
- * The opening view, and G: square on to the main surface (the largest by world area, normally a
- * display), level, far enough back to see the content around it, orbiting its centre. Content
- * faces the user, so this is roughly their own view, without depending on where the headset
- * happens to point (or stand).
+ * The opening view, and G: face the largest visible display and orbit its centre.
+ * With no display, frame the nearby world content around its largest surface.
  */
 function frameContent(): boolean {
-  // World-placed meshes, around their median: a few items sit far outside the content (parked
-  // or degenerate placements, ~100 m away in the lab) and would drag a plain bounding box off.
-  const placed: { position: THREE.Vector3; mesh: THREE.Mesh }[] = [];
   view.scene.updateMatrixWorld(true);
-  view.scene.traverse((object) => {
-    if (!(object as THREE.Mesh).isMesh || object.parent?.parent !== view.scene) return; // world node only
-    placed.push({ position: new THREE.Vector3().setFromMatrixPosition(object.matrixWorld), mesh: object as THREE.Mesh });
+  const placed = [...view.worldMeshes()].flatMap(({ mesh, kind }) => {
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const box = mesh.geometry.boundingBox!;
+    if (box.isEmpty()) return [];
+    const size = box.getSize(new THREE.Vector3())
+      .multiply(new THREE.Vector3().setFromMatrixScale(mesh.matrixWorld));
+    return [{
+      mesh, kind, box, area: size.x * size.y,
+      position: box.getCenter(new THREE.Vector3()).applyMatrix4(mesh.matrixWorld),
+    }];
   });
   if (placed.length === 0) return false;
+  const display = placed.reduce<(typeof placed)[number] | null>((largest, item) =>
+    item.kind === "videoSurface" && item.area > (largest?.area ?? 0) ? item : largest, null);
+  const tanY = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const tanX = tanY * camera.aspect;
+  if (display) {
+    const { mesh, position: target, box } = display;
+    const toward = surfaceHeading(mesh);
+    const right = new THREE.Vector3(toward.z, 0, -toward.x);
+    let distance = 0.25;
+    // Fit the full surface in a level view, including its tilt and curvature.
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) {
+          const offset = new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld).sub(target);
+          const fit = Math.max(Math.abs(offset.dot(right)) / tanX, Math.abs(offset.y) / tanY);
+          distance = Math.max(distance, offset.dot(toward) + fit * 1.15 + camera.near);
+        }
+      }
+    }
+    return aim(target.clone().addScaledVector(toward, distance), target);
+  }
+
   const median = (axis: "x" | "y" | "z") => {
     const values = placed.map((p) => p.position[axis]).sort((a, b) => a - b);
     return values[values.length >> 1];
@@ -902,13 +936,9 @@ function frameContent(): boolean {
   const bounds = new THREE.Box3();
   let main: THREE.Mesh | null = null;
   let largest = 0;
-  for (const { position, mesh } of placed) {
+  for (const { position, mesh, area } of placed) {
     if (position.distanceTo(middle) > CONTENT_RADIUS) continue;
     bounds.expandByPoint(position);
-    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-    const size = mesh.geometry.boundingBox!.getSize(new THREE.Vector3())
-      .multiply(new THREE.Vector3().setFromMatrixScale(mesh.matrixWorld));
-    const area = size.x * size.y;
     if (area > largest) {
       largest = area;
       main = mesh;
@@ -916,15 +946,15 @@ function frameContent(): boolean {
   }
   if (bounds.isEmpty() || !main) return false;
   const target = bounds.getCenter(new THREE.Vector3());
-  const toward = new THREE.Vector3().setFromMatrixColumn(main.matrixWorld, 2).setY(0);
-  if (toward.lengthSq() < 1e-6) toward.set(0, 0, 1);
-  toward.normalize();
   // Far enough that the content's extent across the view fits, with a little room.
   const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.5);
-  const fov = THREE.MathUtils.degToRad(camera.fov) * Math.min(1, camera.aspect);
-  const position = target.clone().addScaledVector(toward, (radius / Math.tan(fov / 2)) * 1.1);
-  headView = false;
+  const position = target.clone().addScaledVector(surfaceHeading(main), (radius / Math.min(tanX, tanY)) * 1.1);
   return aim(position, target);
+}
+
+function surfaceHeading(mesh: THREE.Mesh): THREE.Vector3 {
+  const toward = new THREE.Vector3().setFromMatrixColumn(mesh.matrixWorld, 2).setY(0);
+  return toward.lengthSq() < 1e-6 ? toward.set(0, 0, 1) : toward.normalize();
 }
 
 /** Leaves the head view where the head is, orbiting a point a metre ahead. */
@@ -944,8 +974,11 @@ const opening = setInterval(() => {
 }, 200);
 
 addEventListener("keydown", (event: KeyboardEvent) => {
-  if (event.key === "g" || event.key === "G") frameContent();
-  else if (event.key === "f" || event.key === "F") {
+  if (event.key === "g" || event.key === "G") {
+    clearInterval(opening);
+    if (frameContent()) headView = false;
+  } else if (event.key === "f" || event.key === "F") {
+    clearInterval(opening);
     if (headView) leaveHeadView();
     else headView = true;
   }
@@ -965,10 +998,9 @@ function sendPointer(
   const y = (event.clientY - rect.top) / rect.height;
   const pointerId = "pointerId" in event ? event.pointerId : 1;
   // Over the HUD menu (or dragging from it): the camera as seen from the real grip's frame.
-  let space: TrackedSpace | null | undefined = hudPointers.get(pointerId);
-  if (space === undefined) space = hudSpaceAt(x, y);
-  if (type === "pointerdown" && space) hudPointers.set(pointerId, space);
-  if (type === "pointerup" || type === "pointercancel" || type === "pointerleave") hudPointers.delete(pointerId);
+  const pressedSpace = pointerSpaces.get(pointerId);
+  const space = pressedSpace === undefined ? hudSpaceAt(x, y) : pressedSpace;
+  if (type === "pointerup" || type === "pointercancel" || type === "pointerleave") pointerSpaces.delete(pointerId);
   const map = space ? hudToReal.get(space) : undefined;
   const cameraWorld = map ? map.clone().multiply(camera.matrixWorld) : camera.matrixWorld;
   const sent = send({
@@ -977,7 +1009,7 @@ function sendPointer(
       viewport: "scene-view",
       sequence: sequence++,
       type,
-      pointerId: "pointerId" in event ? event.pointerId : 1,
+      pointerId,
       pointerType: "pointerType" in event && event.pointerType ? event.pointerType : "mouse",
       x,
       y,
@@ -991,11 +1023,15 @@ function sendPointer(
       camera: { matrixWorld: cameraWorld.toArray(), projection: camera.projectionMatrix.toArray() },
     },
   });
-  if (sent) stats.pointerEvents++;
+  if (sent) {
+    stats.pointerEvents++;
+    if (type === "pointerdown") pointerSpaces.set(pointerId, space);
+  }
 }
 
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("pointerdown", (event) => {
+  clearInterval(opening);
   // Navigation (decided by the server) moves the server's camera, not the headset's.
   if (headView) leaveHeadView();
   canvas.setPointerCapture(event.pointerId);
@@ -1006,6 +1042,7 @@ canvas.addEventListener("pointerup", (event) => sendPointer("pointerup", event))
 canvas.addEventListener("pointercancel", (event) => sendPointer("pointercancel", event));
 canvas.addEventListener("pointerleave", (event) => sendPointer("pointerleave", event));
 canvas.addEventListener("wheel", (event) => {
+  clearInterval(opening);
   event.preventDefault();
   if (headView) leaveHeadView();
   sendPointer("wheel", event, event.deltaMode === 1 ? event.deltaY * 33 : event.deltaY);
