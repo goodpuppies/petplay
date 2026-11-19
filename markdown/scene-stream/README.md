@@ -224,7 +224,9 @@ layered, from the scene store.
 Run it: start PetPlay with `PETPLAY_SCENE_STREAM_PORT=3993` (or from the REPL in the webxr
 worker: `import(new URL("../classes/sceneStreamServer.ts", moduleUrl).href).then((m) =>
 m.startSceneStream({ port: 3993 }))`), build the viewer once, open `http://127.0.0.1:3993/`.
-Loopback only; `PETPLAY_SCENE_STREAM_HOST` binds elsewhere.
+Loopback only; `PETPLAY_SCENE_STREAM_HOST` binds elsewhere. For a browser on the tailnet,
+proxy it instead: `tailscale serve --bg --https=8453 http://127.0.0.1:3993` (the viewer switches
+to `wss:` on an HTTPS page; remove with `tailscale serve --https=8453 off`).
 
 Not yet: WebXR in the viewer, input back to the server (P5), display pixels (P5), the
 4 MB snapshot (the wallpaper PNG is 3.4 MB of it; re-encode or downscale for the network).
