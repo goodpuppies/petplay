@@ -12,9 +12,16 @@ multiplexing apps easy to build on PetPlay. Actors live in `rdp/`.
 2. **Actors negotiate their own transports.** Ordinary actor messages (through `PostalService`) are
    the control and signaling channel. Bulk or latency-sensitive data moves over a transport the two
    actors establish between themselves, chosen from a modular registry. See [Transports](#transports).
-3. **Discovery goes through topics, independent of iroh.** The topic server
-   (`submodules/petplayserver`) stays a dumb relay so it can be replaced by a DHT. A topic record
-   carries transport-neutral routes. See [Topics](#topics).
+3. **Topics make the first, dumb connection; transports are negotiated over it.** The topic
+   server (`submodules/petplayserver`) is public and stays a dumb relay so it can be replaced by a
+   DHT. A topic record only says how to reach an actor at all. Anything better (WebSocket,
+   WebTransport, Unix sockets, shared memory) is negotiated afterwards, as actor messages over
+   that first connection, never advertised on the topic server. See [Topics](#topics).
+4. **Iroh is the bootstrap route, including in browsers.** Iroh connections are end-to-end
+   encrypted and authenticated by node id, so a node id is safe to publish and is all a topic
+   record needs. The usual sequence is: connect over iroh (through a relay if need be) → negotiate
+   a WebSocket or other transport over it → optionally move the actor route onto the new transport
+   and close the iroh connection.
 
 ## Composition
 
@@ -81,10 +88,18 @@ Transport.accept("rdp.input", (channel, from) => { channel.onmessage = ... });
 | `webtransport` / `moq` | network / browser | media tracks | `petplay_mediatransport` gateway |
 | `iroh` | network, NAT traversal | streams | `submodules/irohworker` |
 
-- **The actor route itself is one negotiated transport.** Stageforge's existing
-  `registerProxyTransport` / `connectProxy` stays the mechanism that turns a channel into a
-  message route for a remote actor. A browser joins by opening one WebSocket to the gateway, which
-  becomes its actor route; everything else is negotiated over that.
+- **Negotiation needs an existing connection.** `Transport.open` runs over an actor route that
+  already exists (a local Worker, an IPC child, or a remote proxy from a topic). It never
+  discovers peers itself; that is what topics are for.
+- **The actor route can be replaced by a negotiated transport.** Stageforge's existing
+  `registerProxyTransport` / `connectProxy` turns a channel into a message route for a remote
+  actor. Once a WebSocket is up, the route moves onto it and the iroh connection can be closed (or
+  kept as a fallback). Messages in flight during the switch must not be lost or reordered: the
+  old route is drained before it is closed.
+- **Descriptors carry secrets, so they only travel over the encrypted route.** A WebSocket
+  descriptor is `{url, token}`. The token is single-use and binds the new socket to the peer that
+  negotiated it, so the WebSocket inherits the iroh connection's peer identity instead of trusting
+  whoever connects to the URL.
 
 ## Topics
 
@@ -101,6 +116,9 @@ takes the first route whose kind it has a proxy transport factory for and calls 
 Iroh becomes one registered factory (`"iroh"` → `{nodeId}`). `ADDCONTACTNODE` carries routes too.
 Local topic membership (`ADDCONTACT`) is unchanged.
 
+The format stays transport-neutral so the server can be swapped for a DHT. In practice only routes
+that are safe to publish go in: iroh node ids. WebSocket URLs and tokens never do.
+
 **Deployed 2026-11-20:** `wss://topic.petplay.fi` runs `submodules/petplayserver` on cachyos under
 ldeploy (`~/git/deno-ldeploy/ldeploy.local.jsonc`, app `petplay-topic`, polls `main` every 2 min),
 through the `ldeploy` cloudflared tunnel. PetPlay's `--stageforge-networking` uses it by default
@@ -112,12 +130,32 @@ record reveals the actor ids and routes it carries.
 The browser page is the scene-stream viewer, extended into a stageforge peer:
 
 1. Load from the gateway over the tailnet (`tailscale serve` for HTTPS).
-2. Open one WebSocket: the page's actor route.
-3. Negotiate the scene-stream channel (store deltas, pose and view messages, pointer input) and
+2. Reach the `rdp` actor over iroh, by node id from a topic or from the page URL.
+3. Negotiate a WebSocket to the gateway over iroh and move the actor route onto it.
+4. Negotiate the scene-stream channel (store deltas, pose and view messages, pointer input) and
    media (WebTransport to `petplay-media`, which needs a direct UDP bind on the Tailscale IP since
    `tailscale serve` only proxies TCP).
-4. Render the `rdpApp` UI and its video surface; pointer events go back through the scene, where
+5. Render the `rdpApp` UI and its video surface; pointer events go back through the scene, where
    the app turns hits on the video surface into `desktopInput` messages.
+
+### Iroh in the browser
+
+Iroh builds for browsers as WebAssembly, but **relay-only**: a browser can't send UDP, so there is
+no hole punching and every packet goes through a relay. That is acceptable for a bootstrap route
+and is the reason to move onto a direct WebSocket afterwards. There is no general-purpose
+browser JavaScript API; iroh's guidance is a small application-specific Rust crate that wraps the
+endpoint with `wasm-bindgen` (connect, accept, bidirectional streams). Sources:
+[iroh wasm/browser docs](https://docs.iroh.computer/deployment/wasm-browser-support),
+[iroh 0.33 release notes](https://iroh.computer/blog/iroh-0-33-0-browsers-and-discovery-and-0-RTT-oh-my).
+
+Version skew to resolve first: `submodules/irohworker` uses `npm:@number0/iroh` 0.35 (NAPI
+bindings to native iroh, locked in `deno.lock`). Iroh has since reached 1.0, and
+`petplay_mediatransport` uses iroh in Rust through `moq-tokio`. The browser wrapper and the Deno
+side must speak the same iroh protocol version and agree on one ALPN for actor routes. One option
+is a single Rust crate built twice: as wasm for browsers and as a Deno FFI library for the server.
+
+Relays: public n0 relays work for development. A self-hosted `iroh-relay` could later sit next to
+the topic server.
 
 ## Open questions
 
@@ -131,8 +169,11 @@ The browser page is the scene-stream viewer, extended into a stageforge peer:
 
 ## Phases
 
-1. Transport API in stageforge with `messageport` and `websocket` kinds, plus tests.
-2. Transport-neutral topic records; iroh as a registered kind.
+1. Transport API in stageforge with `messageport` and `websocket` kinds, plus tests: negotiation
+   over an existing route, single-use tokens, and moving an actor route onto a new transport
+   without losing or reordering messages.
+2. Transport-neutral topic records; iroh as a registered kind; only node ids published.
+2b. Iroh in the browser: a wasm wrapper crate on the same iroh version as the Deno side.
 3. `desktopSource` and `desktopInput` split out of `displayOverlayHost`; the overlay host consumes them.
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.
