@@ -200,6 +200,16 @@ the topic server.
    20/20 repeated runs after fixing a race where the leader's marker beat the follower's
    adoption. Not yet: reconnecting a link whose only carrier dropped.
 2. Transport-neutral topic records; iroh as a registered kind; only node ids published.
+   **Done 2026-11-20**, built on links rather than per-actor proxies: a record is
+   `{type, topic, actorId, hub, routes}`; a hub hearing a join links to the joining hub through a
+   registered `LinkCarrierKind` (only `publishable` kinds are put in records), attaches the
+   actor, and swaps the topic's members with that hub over the link (`TOPICINTRO`). Duplicate
+   links from simultaneous dials resolve to the one dialed by the smaller hub id; routes on the
+   dropped link move over. Tested across processes with a stand-in relay and a test-only
+   WebSocket carrier, in both join orders, including leave. The old iroh coupling is gone:
+   `getIrohAddr`, `ADDREMOTE`/`ADDCONTACTNODE`, `debugMode`, and PetPlay wrapping every actor in
+   `IrohWebWorker` under `--stageforge-networking`. Until 2b provides an iroh carrier, networked
+   PetPlay publishes records with no routes, so other hubs see them but cannot reach it.
 2b. Iroh in the browser: a wasm wrapper crate on the same iroh version as the Deno side.
 3. `desktopSource` and `desktopInput` split out of `displayOverlayHost`; the overlay host consumes them.
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.

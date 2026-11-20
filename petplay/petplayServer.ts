@@ -230,37 +230,23 @@ export async function startPetplayServer(
   };
 
   const stageforgeNetworkingEnabled = isStageforgeNetworkingEnabled();
-  const postalservice = stageforgeNetworkingEnabled
-    ? await createNetworkedPostalService()
-    : new PostalService();
+  const postalservice = new PostalService();
   postalservice.registerWorker("process", IPCWorker);
   // `{ worker: "process" }` actors (the display overlay host, the decoupled desktop view) are
   // separate processes: a compiled build reaches them by dispatching itself, a checkout through the
   // Deno CLI. See [childModule](../classes/childModule.ts).
   setWorkerChildArgs(childProcessArgs);
 
-  PostalService.debugMode = false;
   PostalService.performanceLoggingActive = false;
   if (stageforgeNetworkingEnabled) {
+    // Topic records reach other hubs, but a hub is only reachable through a registered
+    // publishable link carrier (iroh, markdown/rdp/README.md phase 2b); none exists yet.
     console.log(`Stageforge networking enabled (${STAGEFORGE_SIGNALING_URL})`);
     postalservice.initSignalingClient(STAGEFORGE_SIGNALING_URL);
   } else {
     console.log(
       "Stageforge networking disabled. Enable it with --stageforge-networking or PETPLAY_STAGEFORGE_NETWORKING=1.",
     );
-  }
-
-  /**
-   * Iroh is only needed when Stageforge is allowed to create remote actor proxies.
-   * Keeping the import and worker wrapper behind this opt-in keeps local actors on
-   * Deno's native Worker implementation.
-   */
-  async function createNetworkedPostalService(): Promise<PostalService> {
-    const { IrohWebWorker, setupIrohDebugMode } = await import(
-      "../submodules/irohworker/IrohWorker.ts"
-    );
-    setupIrohDebugMode(false);
-    return new PostalService(IrohWebWorker);
   }
 
   const mainAddress = await postalservice.add("./main.ts", import.meta.url);

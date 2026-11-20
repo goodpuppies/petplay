@@ -5,8 +5,6 @@ import { wait } from "../../classes/utils.ts";
 // Enable debug mode for Iroh WebWorker
 setupIrohDebugMode(true);
 const postalservice = new PostalService(IrohWebWorker);
-// Enable debug mode for PostalService
-PostalService.debugMode = true;
 postalservice.initSignalingClient("ws://petplay.ddns.net:8080");
 
 const mainAddress = await postalservice.add("./main.ts");
