@@ -1,6 +1,17 @@
 # Desktops on other machines, and sharing between PetPlay users
 
-Status: design, 2026-11-20. Builds on `README.md` and `connection.md`.
+Status: design, 2026-11-20; the household and its agent are built (below). Builds on
+`README.md` and `connection.md`.
+
+**Built 2026-11-20.** `.secret` (gitignored) makes a household (`rdp/classes/household.ts`):
+its desktopSource and desktopInput join a topic derived from it and take requests only as
+`GUARDED` with `HMAC(secret, recipient actor id)`. `rdp/agent.ts` offers a machine's desktop with
+no page (`deno task rdp:agent:build` compiles it with its helpers into `dist/agent/`); cachyos
+runs it as the transient user unit `petplay-agent` from `~/.local/share/petplay-agent/`. The rdp
+UI lists every household desktop with a picker; the browser takes the video straight from that
+machine's encoder, and input goes to its desktopInput as guarded messages over iroh. Still open
+from below: grants and prompts, binding actor ids to iroh node ids (a relaying actor could pass
+proofs through), the iroh feed for PetPlay.
 
 Two cases, one mechanism:
 
