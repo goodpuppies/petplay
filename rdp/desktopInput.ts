@@ -13,7 +13,7 @@
  * Linux only for now; Windows injection exists in the scene (`SendInput` sinks) and would move
  * behind this same API.
  */
-import { actorState, PostMan, Transport } from "../submodules/stageforge/mod.ts";
+import { actorState, messages, PostMan, Transport } from "../submodules/stageforge/mod.ts";
 import { screenStreamerPath } from "./classes/helperPaths.ts";
 
 export type InputEvent =
@@ -130,10 +130,11 @@ new PostMan(
   {
     __INIT__: () => {
       Transport.accept("rdp.input", (transport) => {
-        transport.onmessage = (event) => {
+        const input = messages(transport);
+        input.onmessage = (event) => {
           inject(event as InputEvent);
         };
-        transport.onclose = () => releaseAll();
+        input.onclose = () => releaseAll();
       });
     },
     __HEALTH__: () => ({ ...state, heldButtons: [...heldButtons], heldKeys: [...heldKeys] }),
