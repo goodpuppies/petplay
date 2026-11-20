@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PetPlay desktop</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; }
+      #tab { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; outline: none; }
+      #status {
+        position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+        font: 13px system-ui, sans-serif; color: #c9d1dc; background: #1f232bcc;
+        padding: 6px 12px; border-radius: 8px; pointer-events: none;
+      }
+      #status:empty { display: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="tab" tabindex="0"></canvas>
+    <div id="status"></div>
+    <script type="module" src="./page.js"></script>
+  </body>
+</html>

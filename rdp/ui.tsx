@@ -1,9 +1,10 @@
 /**
  * rdp UI actor: renders the remote desktop app for a browser tab.
  *
- * It joins the session topic, so the tab's client actor finds it, and accepts one `rdp.ui`
+ * It joins the session's topic, so the tab's client actor finds it, and accepts one `rdp.ui`
  * transport at a time (a WebSocket the tab connects to; the descriptor travels over the actor
- * route, never the topic). The app runs in a headless browser tab sized to the real one
+ * route, never the topic). A tab must present the session secret in its offer
+ * (`classes/session.ts`); any other transport is closed before anything is sent. The app runs in a headless browser tab sized to the real one
  * (`classes/browserTab.ts`); the tab's DOM events are dispatched into it, and its scene is sent
  * back as raythree store deltas, "latest since ack" (`classes/sceneFeed.ts`).
  *
@@ -34,11 +35,12 @@ import {
   UI_PURPOSE,
 } from "./classes/tabProtocol.ts";
 import { DESKTOP_FEED, type DesktopInputSink, RdpApp } from "./app.tsx";
+import { sameSecret, sessionTopic } from "./classes/session.ts";
 import type { InputEvent } from "./desktopInput.ts";
 
 export type UiStart = {
-  /** Session topic; the tab joins the same one. */
-  topic: string;
+  /** The session secret; the topic is derived from it, and tabs must present it. */
+  secret: string;
   /** Where the tab's WebSocket reaches this actor (a tailnet address); default loopback. */
   websocket?: { hostname?: string; port?: number; publicUrl?: string };
   source?: ActorId;
@@ -64,6 +66,7 @@ const state = actorState({
 });
 
 let config: UiStart | null = null;
+let secret = "";
 let browserTab: BrowserTab | null = null;
 let session: { tab: TransportMessages; feed: SceneFeed } | null = null;
 let feedSize: { width: number; height: number } | null = null;
@@ -87,7 +90,7 @@ function render(): void {
   const status = !config?.source
     ? "no desktop source"
     : state.feed
-    ? feedSize ? `${feedSize.width}×${feedSize.height}` : "connecting video…"
+    ? feedSize ? `${feedSize.width}x${feedSize.height}` : "connecting video..."
     : "desktop feed not running";
   browserTab.render(
     <RdpApp
@@ -159,6 +162,11 @@ async function connectInput(): Promise<void> {
 }
 
 async function onTab(transport: Transport): Promise<void> {
+  if (!sameSecret(transport.info.params.secret, secret)) {
+    state.rejected++;
+    transport.close("not part of this session");
+    return;
+  }
   // One tab: a new one replaces the old.
   session?.tab.close("replaced by a newer tab");
   const tab = messages(transport);
@@ -218,15 +226,20 @@ new PostMan(
     __INIT__: () => {},
     __HEALTH__: () => ({ ...state }),
     START: async (payload: UiStart) => {
-      if (config) return { topic: config.topic };
-      if (typeof payload?.topic !== "string" || payload.topic.length < 8) {
-        throw new Error("START needs a session topic (8+ characters)");
+      if (config) return { topic: state.topic };
+      if (typeof payload?.secret !== "string" || payload.secret.length < 16) {
+        throw new Error("START needs the session secret (16+ characters)");
       }
       config = payload;
+      secret = payload.secret;
+      const topic = await sessionTopic(secret);
       registerTransportKind(webSocketTransport({
         hostname: payload.websocket?.hostname ?? "127.0.0.1",
         port: payload.websocket?.port,
         publicUrl: payload.websocket?.publicUrl,
+        // The address is where browsers reach this machine (loopback for one on it), and a
+        // browser is always "network" away.
+        reach: "network",
       }));
       Transport.accept(UI_PURPOSE, (transport) => onTab(transport));
       frameTimer = setInterval(frame, FRAME_MS);
@@ -235,9 +248,9 @@ new PostMan(
         feedTimer = setInterval(() => void pollFeed(), FEED_POLL_MS);
       }
       await connectInput();
-      PostMan.setTopic(payload.topic);
-      state.topic = payload.topic;
-      return { topic: payload.topic };
+      PostMan.setTopic(topic);
+      state.topic = topic;
+      return { topic };
     },
     __SHUTDOWN__: () => stop(),
   } as const,

@@ -47,13 +47,13 @@ sequenceDiagram
   participant T as topic server
   participant U as UI actor (desktop)
 
-  U->>T: join t {actorId, iroh {id, relay}}
+  U->>T: join hash(secret) {actorId, iroh {id, relay}}
   Note over C: page opens later
-  C->>T: join t {actorId, iroh {id, relay}}
+  C->>T: join hash(secret) {actorId, iroh {id, relay}}
   T-->>U: client's record
   U->>C: dial iroh, send own record (TOPICRECORD)
   Note over C,U: both are contacts now; messages route over iroh
-  C->>U: Transport.open(U, purpose "rdp.ui")
+  C->>U: Transport.open(U, purpose "rdp.ui", params {secret})
   U-->>C: answer: websocket, UI actor listens
   C->>U: WebSocket connect (direct over the tailnet)
   C->>U: viewport, DOM events
@@ -64,9 +64,14 @@ The topic server only ever sees `{actorId, iroh id, relay}`. Everything else, in
 WebSocket descriptor and its token, travels over the iroh connection, which is end-to-end
 encrypted.
 
+## Access
+
+The link's fragment is a random session secret, never sent to the page's host. The topic is a
+hash of it, because the public topic server relays topic names in the clear. Anyone can still
+dial the UI actor's process once they see the hash; the UI actor closes any `rdp.ui` transport
+whose offer lacks the secret, and the offer travels only over the encrypted iroh connection.
+
 ## Open
 
-- **Access control.** Anyone who hears the topic can dial. Use an unguessable topic name kept
-  in the page's URL fragment, plus a check before the UI actor answers.
 - **`wss`.** WebTransport needs an https page, and an https page cannot open `ws://`. The
   WebSocket kind needs a certificate (`tailscale cert` for the machine's `*.ts.net` name).

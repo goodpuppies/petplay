@@ -264,5 +264,24 @@ the page dialed through its relay), `rdp/test/`.
 Kinds are modules registered per actor like worker wrappers: `messageport` by default,
 `websocket` opt-in, application kinds (PetPlay's WebTransport) alongside.
 
+**One tab, end to end (2026-11-20).** `deno task rdp:build` builds the page into `dist/rdp`;
+`deno task rdp [--host=<tailnet address>]` runs a standalone desktop process (`rdp/main.ts`: a
+PostalService with the iroh carrier, spawning `rdp`) and prints the link.
+- `rdp/rdp.ts` composes desktopSource, desktopInput, `rdp/ui.tsx` and `rdp/site.ts` (static
+  page). The link's fragment is a session secret; the topic is its hash, and a tab proves the
+  secret in its `rdp.ui` offer, over iroh (`rdp/classes/session.ts`).
+- `rdp/ui.tsx` runs the app (`rdp/app.tsx`) in a headless browser tab
+  (`rdp/classes/browserTab.ts`): the real tab's size and DPR, its DOM events through r3f's own
+  event system, scene deltas back latest-since-ack (`rdp/classes/sceneFeed.ts`).
+- The page (`web/rdp/page.ts`) is the browser process's main thread: PostalService with the
+  wasm iroh carrier, then the client actor (`web/rdp/client.ts`), which renders the replica into
+  an OffscreenCanvas with the scene viewer's `SceneView` (now `web/scene-stream/sceneView.ts`,
+  with `mediaFeeds.ts`).
+- Tests: `rdp/test/ui.test.ts` (a test actor as the tab; a wrong secret gets nothing) and
+  `rdp/test/browser.test.ts` (headless Chromium: topic → iroh via a dev relay → WebSocket → the
+  app drawn → a click and a key reach desktopInput on a stand-in helper; 6 s).
+Not yet tried against real capture and input (both act on the live desktop), nor over the
+tailnet. Open: `wss` for an https page, and the empty feed drawing white in headless Chromium.
+
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.

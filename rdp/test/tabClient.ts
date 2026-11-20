@@ -28,8 +28,14 @@ let feeds: unknown = null;
 
 new PostMan(state, {
   __INIT__: () => registerTransportKind(webSocketTransport()),
-  OPEN: async ({ ui, viewport }: { ui: string; viewport: TabViewport }) => {
-    const transport = await Transport.open(ui, { purpose: "rdp.ui", kinds: ["websocket"] });
+  OPEN: async (
+    { ui, viewport, secret }: { ui: string; viewport: TabViewport; secret: string },
+  ) => {
+    const transport = await Transport.open(ui, {
+      purpose: "rdp.ui",
+      kinds: ["websocket"],
+      params: { secret },
+    });
     kind = transport.kind;
     tab = messages(transport);
     tab.onmessage = (raw) => {

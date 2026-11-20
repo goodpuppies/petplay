@@ -125,13 +125,13 @@ export function RdpApp({ input, feed, status }: RdpAppProps) {
           <Text fontSize={13} color="#9aa3b2">{status}</Text>
           <Container flexGrow={1} />
           <Text fontSize={13} color={focused ? "#8fd18f" : "#9aa3b2"}>
-            {focused ? "keyboard → desktop" : input ? "click the desktop to type" : "view only"}
+            {focused ? "keyboard -> desktop" : input ? "click the desktop to type" : "view only"}
           </Text>
         </Container>
         {!rect
           ? (
             <Container flexGrow={1} alignItems="center" justifyContent="center">
-              <Text fontSize={15} color="#9aa3b2">Waiting for the desktop feed…</Text>
+              <Text fontSize={15} color="#9aa3b2">Waiting for the desktop feed...</Text>
             </Container>
           )
           : null}

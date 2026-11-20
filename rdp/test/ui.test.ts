@@ -72,12 +72,25 @@ Deno.test({
     const source = await postal.add("./fakeSource.ts", import.meta.url);
     const ui = await postal.add("../ui.tsx", import.meta.url);
     const tab = await postal.add("./tabClient.ts", import.meta.url);
+    const stranger = await postal.add("./tabClient.ts", import.meta.url);
     const lines = async () =>
       (await Deno.readTextFile(`${dir}/stdin`).catch(() => "")).split("\n").filter(Boolean);
     try {
-      await call(ui, "START", { topic: "rdp-test-session", source, input });
+      await call(ui, "START", { secret: "rdp-test-session-secret", source, input });
+      // Without the session's secret a tab gets nothing.
+      await call(stranger, "OPEN", {
+        ui,
+        viewport: { width: 800, height: 600, dpr: 1 },
+        secret: "rdp-a-wrong-guess-at-it",
+      });
+      await sleep(300);
+      assertEquals((await call<TabState>(stranger, "STATE")).deltas, 0, "a stranger gets no deltas");
       assertEquals(
-        await call(tab, "OPEN", { ui, viewport: { width: 800, height: 600, dpr: 1 } }),
+        await call(tab, "OPEN", {
+          ui,
+          viewport: { width: 800, height: 600, dpr: 1 },
+          secret: "rdp-test-session-secret",
+        }),
         "websocket",
       );
       const first = await eventually(
@@ -94,7 +107,7 @@ Deno.test({
       await call(tab, "FEEDSIZE", { width: 1112, height: 556 });
       const fitted = await eventually(
         () => call<TabState>(tab, "STATE"),
-        (s) => Math.round(s.videos[0]?.transform[5] ?? 0) === 400 && s.texts.includes("1112×556"),
+        (s) => Math.round(s.videos[0]?.transform[5] ?? 0) === 400 && s.texts.includes("1112x556"),
         "the video is refitted to the feed's aspect",
       );
       const t = fitted.videos[0].transform;
@@ -118,7 +131,7 @@ Deno.test({
       assert(written.includes("M,0.5,0.5"), written.join(" "));
       assert(written.includes("M,0.25,0"), written.join(" "));
       const health = await call<{ rejected: number; domEvents: number }>(ui, "__HEALTH__");
-      assertEquals(health.rejected, 0);
+      assertEquals(health.rejected, 1, "only the stranger was rejected");
       assertEquals(health.domEvents, 5);
     } finally {
       await call(tab, "CLOSE").catch(() => {});
@@ -126,7 +139,9 @@ Deno.test({
         await postal.PostMessage({ target: actor, type: "SHUTDOWN", payload: null }, true)
           .catch(() => {});
       }
-      for (const actor of [ui, input, source, tab]) PostalService.actors.get(actor)?.worker.terminate();
+      for (const actor of [ui, input, source, tab, stranger]) {
+        PostalService.actors.get(actor)?.worker.terminate();
+      }
       PostalService.actors.clear();
       Deno.env.delete("PETPLAY_SCREEN_STREAMER");
       await Deno.remove(dir, { recursive: true });
