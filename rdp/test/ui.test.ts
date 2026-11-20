@@ -95,7 +95,7 @@ Deno.test({
       );
       const first = await eventually(
         () => call<TabState>(tab, "STATE"),
-        (s) => s.texts.includes("Desktop") && s.videos.length === 1 && !!s.feeds?.desktop,
+        (s) => s.texts.includes(`${Deno.hostname()} (here)`) && s.videos.length === 1 && !!s.feeds?.desktop,
         "the tab receives the app, its video surface and the feed",
       );
       assert(first.uiQuads > 0, "the toolbar's panel arrives");

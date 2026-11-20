@@ -10,6 +10,9 @@
  * Pressed buttons, keys and latched modifiers are tracked and released on `RELEASEALL`, when a
  * transport closes and on shutdown, so a dropped sender cannot leave anything held.
  *
+ * In a household (`SETHOUSEHOLD`, `classes/household.ts`) it takes requests only as `GUARDED`
+ * with a proof, and an `rdp.input` transport only with the proof in its params.
+ *
  * `PETPLAY_INPUT_X11_WHEEL=0` turns off the discrete X11 wheel (tests, so nothing scrolls the
  * real desktop).
  */
@@ -17,6 +20,11 @@ import { actorState, messages, PostMan, Transport } from "../submodules/stagefor
 import { type InputEvent, isInputEvent } from "./classes/input/inputEvent.ts";
 import type { DesktopInjector } from "./classes/input/injector.ts";
 import { LinuxDesktopInput } from "./classes/input/linuxDesktopInput.ts";
+import {
+  guardedDispatch,
+  HouseholdGuard,
+  refuseWhenGuarded,
+} from "./classes/household.ts";
 import { WindowsDesktopInput } from "./classes/input/windowsDesktopInput.ts";
 
 export type { InputEvent } from "./classes/input/inputEvent.ts";
@@ -31,6 +39,7 @@ const state = actorState({
 });
 
 let injector: DesktopInjector | null = null;
+const guard = new HouseholdGuard();
 const heldButtons = new Set<"left" | "right" | "middle">();
 /** Held keys by identity, with the event that pressed them. */
 const heldKeys = new Map<string, Extract<InputEvent, { t: "key" }>>();
@@ -88,6 +97,15 @@ export function inject(event: unknown): boolean {
   return true;
 }
 
+function injectAll(events: InputEvent[]): number {
+  return Array.isArray(events) ? events.filter((event) => inject(event)).length : 0;
+}
+
+async function releaseAllAndReply(): Promise<true> {
+  await releaseAll();
+  return true;
+}
+
 export async function releaseAll(): Promise<void> {
   for (const button of [...heldButtons]) inject({ t: "button", button, down: false });
   for (const key of [...heldKeys.values()]) inject({ ...key, down: false });
@@ -100,6 +118,10 @@ new PostMan(
   {
     __INIT__: () => {
       Transport.accept("rdp.input", (transport) => {
+        if (guard.active && !guard.check(transport.info.params.proof)) {
+          transport.close("not part of this household");
+          return;
+        }
         const input = messages(transport);
         input.onmessage = (event) => {
           inject(event);
@@ -113,14 +135,23 @@ new PostMan(
       heldButtons: [...heldButtons],
       heldKeys: [...heldKeys.keys()],
       activeModifiers: [...activeModifiers],
+      household: guard.active,
+      rejectedProofs: guard.rejected,
     }),
-    INPUT: (event: InputEvent) => inject(event),
-    INPUTS: (events: InputEvent[]) =>
-      Array.isArray(events) ? events.filter((event) => inject(event)).length : 0,
-    RELEASEALL: async () => {
-      await releaseAll();
+    INPUT: refuseWhenGuarded(guard, (event: InputEvent) => inject(event)),
+    INPUTS: refuseWhenGuarded(guard, injectAll),
+    RELEASEALL: refuseWhenGuarded(guard, releaseAllAndReply),
+    /** Join the household: its topic, and proofs from here on. Once. */
+    SETHOUSEHOLD: refuseWhenGuarded(guard, async (payload: { secret: string; topic: string }) => {
+      await guard.enable(payload.secret, state.id);
+      PostMan.setTopic(payload.topic);
       return true;
-    },
+    }),
+    GUARDED: guardedDispatch(guard, {
+      INPUT: (event) => inject(event),
+      INPUTS: (events) => injectAll(events as InputEvent[]),
+      RELEASEALL: () => releaseAllAndReply(),
+    }),
     __SHUTDOWN__: async () => {
       await releaseAll();
       await injector?.close();

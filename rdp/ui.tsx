@@ -9,9 +9,11 @@
  * (`classes/browserTab.ts`); the tab's DOM events are dispatched into it, and its scene is sent
  * back as raythree store deltas, "latest since ack" (`classes/sceneFeed.ts`).
  *
- * With `source` (desktopSource) the tab is told where to receive the desktop's video; with
- * `input` (desktopInput) pointer and keys on the video drive the desktop, over a negotiated
- * `rdp.input` transport.
+ * Desktops: this machine's (`source`, `input`), and with a household (`classes/household.ts`)
+ * every desktopSource on its topic, other machines' included. The tab shows one, picked in the
+ * toolbar: it receives that desktop's video straight from its encoder, and pointer and keys on
+ * the video drive its desktopInput (over `rdp.input` in this process, as messages over iroh to
+ * another machine). Household desktops are asked through `GUARDED` with a proof.
  */
 import React from "react";
 import {
@@ -39,6 +41,7 @@ import {
 } from "./classes/tabProtocol.ts";
 import { DESKTOP_FEED, type DesktopInputSink, RdpApp } from "./app.tsx";
 import { sameSecret, sessionTopic } from "./classes/session.ts";
+import { householdProof } from "./classes/household.ts";
 import type { InputEvent } from "./desktopInput.ts";
 
 export type UiStart = {
@@ -53,6 +56,18 @@ export type UiStart = {
   webtransport?: { hostname?: string; port?: number; publicHost?: string } | false;
   source?: ActorId;
   input?: ActorId;
+  /** Find other machines' desktops on the household topic, and ask them with proofs. */
+  household?: { secret: string; topic: string };
+};
+
+type Desktop = {
+  source: ActorId;
+  input: ActorId | null;
+  machine: string;
+  /** This process's own; the rest are reached over iroh. */
+  local: boolean;
+  feed: FeedInfo | null;
+  startRequested: boolean;
 };
 
 const FRAME_MS = 16;
@@ -72,6 +87,8 @@ const state = actorState({
   tabKind: null as string | null,
   webtransport: false,
   feed: null as FeedInfo | null,
+  desktops: [] as Array<{ source: string; machine: string; local: boolean; feed: boolean }>,
+  selected: null as string | null,
   inputConnected: false,
   lastError: null as string | null,
 });
@@ -82,6 +99,11 @@ let browserTab: BrowserTab | null = null;
 let session: { tab: TransportMessages; feed: SceneFeed } | null = null;
 let feedSize: { width: number; height: number } | null = null;
 let input: TransportMessages | null = null;
+/** Input for a desktop on another machine: messages to its desktopInput. */
+let remoteInput: ActorId | null = null;
+const desktops = new Map<ActorId, Desktop>();
+let selected: ActorId | null = null;
+const proofs = new Map<string, Promise<string>>();
 let lastCamera = "";
 let frameTimer: ReturnType<typeof setInterval> | null = null;
 let certTimer: ReturnType<typeof setTimeout> | null = null;
@@ -90,8 +112,38 @@ let feedTimer: ReturnType<typeof setInterval> | null = null;
 const inputSink: DesktopInputSink = {
   send(event: InputEvent) {
     if (input && !input.isClosed) input.send(event);
+    else if (remoteInput) void request(remoteInput, "INPUT", event).catch(() => {});
   },
 };
+
+function proof(actor: string): Promise<string> {
+  let made = proofs.get(actor);
+  if (!made) proofs.set(actor, made = householdProof(config!.household!.secret, actor));
+  return made;
+}
+
+/** Ask a desktop's actor: `GUARDED` with a proof in a household (this machine's too), else directly. */
+async function request<T>(target: ActorId, type: string, payload: unknown = null): Promise<T> {
+  if (config?.household) {
+    return await PostMan.PostMessage({
+      target,
+      type: "GUARDED",
+      payload: { proof: await proof(target), type, payload },
+    }, true) as T;
+  }
+  return await PostMan.PostMessage({ target, type, payload }, true) as T;
+}
+
+function summarize(): void {
+  state.desktops = [...desktops.values()].map((d) => ({
+    source: d.source,
+    machine: d.machine,
+    local: d.local,
+    feed: d.feed != null,
+  }));
+  state.selected = selected;
+  state.feed = selected ? desktops.get(selected)?.feed ?? null : null;
+}
 
 function send(message: ToTab): void {
   if (session && !session.tab.isClosed) session.tab.send(message);
@@ -99,16 +151,23 @@ function send(message: ToTab): void {
 
 function render(): void {
   if (!browserTab) return;
-  const status = !config?.source
-    ? "no desktop source"
-    : state.feed
+  const desktop = selected ? desktops.get(selected) : undefined;
+  const status = !desktop
+    ? "no desktop found yet"
+    : desktop.feed
     ? feedSize ? `${feedSize.width}x${feedSize.height}` : "connecting video..."
-    : "desktop feed not running";
+    : "starting the desktop's video...";
   browserTab.render(
     <RdpApp
-      input={input ? inputSink : null}
-      feed={state.feed ? feedSize ?? { width: 16, height: 9 } : null}
+      input={input || remoteInput ? inputSink : null}
+      feed={desktop?.feed ? feedSize ?? { width: 16, height: 9 } : null}
       status={status}
+      desktops={[...desktops.values()].map((d) => ({
+        id: d.source,
+        label: d.local ? `${d.machine} (here)` : d.machine,
+      }))}
+      selected={selected}
+      onSelect={(id) => void select(id as ActorId)}
     />,
   );
 }
@@ -140,29 +199,109 @@ function frame(): void {
   }
 }
 
+/** Find desktops: this process's, and the household topic's desktopSources. */
+async function discover(): Promise<void> {
+  if (config?.source && !desktops.has(config.source)) {
+    desktops.set(config.source, {
+      source: config.source,
+      input: config.input ?? null,
+      machine: Deno.hostname(),
+      local: true,
+      feed: null,
+      startRequested: true, // this process started it
+    });
+  }
+  if (config?.household) {
+    for (const contact of state.addressBook) {
+      const id = String(contact) as ActorId;
+      if (!id.startsWith("desktopSource@") || desktops.has(id)) continue;
+      try {
+        const described = await request<{ machine: string; input: ActorId | null }>(id, "DESCRIBE");
+        desktops.set(id, {
+          source: id,
+          input: described.input,
+          machine: described.machine,
+          local: false,
+          feed: null,
+          startRequested: false,
+        });
+      } catch (error) {
+        state.lastError = `DESCRIBE ${id}: ${error}`;
+      }
+    }
+  }
+  if (!selected && desktops.size) await select([...desktops.keys()][0]);
+  summarize();
+}
+
+/** Keep the selected desktop's feed current, starting its encoder when it is not running. */
 async function pollFeed(): Promise<void> {
-  if (!config?.source) return;
+  await discover();
+  const desktop = selected ? desktops.get(selected) : undefined;
+  if (!desktop) return render();
   let feed: FeedInfo | null = null;
   try {
-    feed = await PostMan.PostMessage(
-      { target: config.source, type: "FEED", payload: null },
-      true,
-    ) as FeedInfo | null;
+    feed = await request<FeedInfo | null>(desktop.source, "FEED");
+    if (!feed && !desktop.startRequested) {
+      desktop.startRequested = true;
+      feed = await request<FeedInfo>(desktop.source, "START");
+    }
   } catch (error) {
-    state.lastError = `FEED: ${error}`;
+    state.lastError = `FEED ${desktop.machine}: ${error}`;
   }
-  if (JSON.stringify(feed) === JSON.stringify(state.feed)) return;
-  state.feed = feed;
-  send({ media: { feeds: feed ? { [DESKTOP_FEED]: feed } : {} } });
+  if (JSON.stringify(feed) === JSON.stringify(desktop.feed)) return;
+  desktop.feed = feed;
+  summarize();
+  sendMedia();
   render();
 }
 
+function sendMedia(): void {
+  const feed = selected ? desktops.get(selected)?.feed : null;
+  send({ media: { feeds: feed ? { [DESKTOP_FEED]: feed } : {} } });
+}
+
+/** Show another desktop: its video, and input to its desktopInput. */
+async function select(id: ActorId): Promise<void> {
+  if (selected === id || !desktops.has(id)) return;
+  releaseInput("switched desktops");
+  selected = id;
+  feedSize = null;
+  summarize();
+  sendMedia();
+  render();
+  await connectInput();
+  void pollFeed();
+}
+
+function releaseInput(reason: string): void {
+  input?.close(reason);
+  input = null;
+  if (remoteInput) void request(remoteInput, "RELEASEALL").catch(() => {});
+  remoteInput = null;
+  state.inputConnected = false;
+}
+
 async function connectInput(): Promise<void> {
-  if (!config?.input || (input && !input.isClosed)) return;
-  try {
-    input = messages(await Transport.open(config.input, { purpose: "rdp.input" }));
+  const desktop = selected ? desktops.get(selected) : undefined;
+  if (!desktop?.input || input || remoteInput) return;
+  if (!desktop.local) {
+    remoteInput = desktop.input;
     state.inputConnected = true;
-    input.onclose = () => {
+    return render();
+  }
+  try {
+    const opened = messages(
+      await Transport.open(desktop.input, {
+        purpose: "rdp.input",
+        params: config?.household ? { proof: await proof(desktop.input) } : {},
+      }),
+    );
+    if (selected !== desktop.source) return opened.close("switched desktops");
+    input = opened;
+    state.inputConnected = true;
+    opened.onclose = () => {
+      if (input !== opened) return;
       state.inputConnected = false;
       input = null;
       render();
@@ -191,6 +330,8 @@ async function onTab(transport: Transport): Promise<void> {
     if (session !== current) return;
     session = null;
     state.tabConnected = false;
+    // Nothing may stay held on a desktop nobody is looking at.
+    if (remoteInput) void request(remoteInput, "RELEASEALL").catch(() => {});
   };
   tab.onmessage = async (raw) => {
     const message = raw as ToUi;
@@ -218,7 +359,7 @@ async function onTab(transport: Transport): Promise<void> {
     }
   };
   // What the tab needs before its first frame.
-  send({ media: { feeds: state.feed ? { [DESKTOP_FEED]: state.feed } : {} } });
+  sendMedia();
 }
 
 /**
@@ -253,8 +394,7 @@ function stop(): void {
   frameTimer = feedTimer = null;
   session?.tab.close("ui stopped");
   session = null;
-  input?.close("ui stopped");
-  input = null;
+  releaseInput("ui stopped");
   browserTab?.dispose();
   browserTab = null;
 }
@@ -283,11 +423,10 @@ new PostMan(
       if (payload.webtransport !== false) await listenWebTransport(payload.webtransport);
       Transport.accept(UI_PURPOSE, (transport) => onTab(transport));
       frameTimer = setInterval(frame, FRAME_MS);
-      if (payload.source) {
-        void pollFeed();
-        feedTimer = setInterval(() => void pollFeed(), FEED_POLL_MS);
-      }
-      await connectInput();
+      if (payload.household) PostMan.setTopic(payload.household.topic);
+      await discover();
+      void pollFeed();
+      feedTimer = setInterval(() => void pollFeed(), FEED_POLL_MS);
       PostMan.setTopic(topic);
       state.topic = topic;
       return { topic };

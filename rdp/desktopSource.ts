@@ -17,6 +17,11 @@
  * consumer change (opening the desktop again) retries. Subscribers (`SUBSCRIBESTATUS`) get
  * `CAPTURESTATUS {event: "lost" | "recovered" | "unavailable", message?}`.
  *
+ * For other machines: `CONFIGURE {host, port}` sets where the encoder serves, so `START` needs no
+ * payload; `SETINPUT` pairs the desktopInput that drives this desktop; `DESCRIBE` returns
+ * `{machine, input, feed}`. In a household (`SETHOUSEHOLD`, `classes/household.ts`) requests
+ * come only as `GUARDED` with a proof, and the local-only messages are refused.
+ *
  * `LAYOUT` returns the monitors as crops of the capture (`workspaceDisplays.ts`).
  *
  * The encoder is Linux only (the media socket); frame sinks work wherever the helper does.
@@ -31,6 +36,7 @@ import {
   stopStaleScreenStreamer,
 } from "../classes/ScreenCapturer/screenStreamerPath.ts";
 import { configDir } from "../classes/appPaths.ts";
+import { guardedDispatch, HouseholdGuard, refuseWhenGuarded } from "./classes/household.ts";
 import {
   loadWorkspaceOutputs,
   type WorkspaceOutput,
@@ -45,6 +51,7 @@ export type SourceRequest = {
 };
 
 export type FeedInfo = { host: string; port: number; fingerprint: string };
+export type DesktopDescription = { machine: string; input: string | null; feed: FeedInfo | null };
 export type CaptureStatus = { event: "lost" | "recovered" | "unavailable"; message?: string };
 
 const RESTART_MIN_MS = 1_000;
@@ -69,6 +76,9 @@ const state = actorState({
 let frameSink: { port: number; fps: number } | null = null;
 let externalMediaSocket: string | null = Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOCKET") || null;
 let feedRequest: SourceRequest | null = null;
+let feedDefaults: SourceRequest | null = null;
+let pairedInput: string | null = null;
+const guard = new HouseholdGuard();
 let encoder: DesktopMediaFeed | null = null;
 const subscribers = new Set<string>();
 
@@ -227,6 +237,26 @@ async function stopFeed(): Promise<void> {
   await feed?.stop();
 }
 
+async function startFeed(payload?: Partial<SourceRequest>): Promise<FeedInfo> {
+  if (Deno.build.os !== "linux") {
+    throw new Error("desktopSource encodes through the Linux media socket only");
+  }
+  if (encoder && state.feed) return state.feed;
+  const request = { ...feedDefaults, ...payload } as SourceRequest;
+  if (typeof request.host !== "string" || !Number.isInteger(request.port)) {
+    throw new Error("START needs {host, port}, or CONFIGURE first");
+  }
+  shuttingDown = false;
+  feedRequest = request;
+  await startEncoder();
+  await consumersChanged();
+  return state.feed!;
+}
+
+function describe(): DesktopDescription {
+  return { machine: Deno.hostname(), input: pairedInput, feed: state.feed };
+}
+
 new PostMan(
   state,
   {
@@ -239,54 +269,68 @@ new PostMan(
       lastHelperError: helper?.lastError ?? null,
     }),
     /** Stream RGBA frames to this `FrameReceiver` port (one sink; a new one replaces it). */
-    ADDFRAMESINK: async (payload: { port: number; fps?: number }) => {
+    ADDFRAMESINK: refuseWhenGuarded(guard, async (payload: { port: number; fps?: number }) => {
       if (!Number.isInteger(payload?.port) || payload.port <= 0) {
         throw new Error("ADDFRAMESINK needs {port}");
       }
       frameSink = { port: payload.port, fps: clampCaptureFps(payload.fps ?? DEFAULT_CAPTURE_FPS) };
       await consumersChanged();
       return { ...state };
-    },
-    REMOVEFRAMESINK: async (payload: { port: number }) => {
+    }),
+    REMOVEFRAMESINK: refuseWhenGuarded(guard, async (payload: { port: number }) => {
       if (frameSink && frameSink.port === payload?.port) {
         frameSink = null;
         await reconcile();
       }
       return true;
-    },
+    }),
     /** Publish to an encoder someone else runs (null stops). The own feed (`START`) wins. */
-    SETMEDIASOCKET: async (payload: { path: string | null }) => {
+    SETMEDIASOCKET: refuseWhenGuarded(guard, async (payload: { path: string | null }) => {
       externalMediaSocket = typeof payload?.path === "string" && payload.path ? payload.path : null;
       await consumersChanged();
       return { ...state };
-    },
-    SUBSCRIBESTATUS: (actor: string) => {
+    }),
+    SUBSCRIBESTATUS: refuseWhenGuarded(guard, (actor: string) => {
       if (typeof actor === "string") subscribers.add(actor);
       return true;
-    },
+    }),
+    /** Where the encoder serves when `START` comes without a payload. */
+    CONFIGURE: refuseWhenGuarded(guard, (payload: SourceRequest) => {
+      feedDefaults = { ...payload };
+      return true;
+    }),
+    /** The desktopInput that drives this desktop, for `DESCRIBE`. */
+    SETINPUT: refuseWhenGuarded(guard, (actor: string | null) => {
+      pairedInput = typeof actor === "string" ? actor : null;
+      return true;
+    }),
+    /** Join the household: its topic, and proofs from here on. Once, after the above. */
+    SETHOUSEHOLD: refuseWhenGuarded(guard, async (payload: { secret: string; topic: string }) => {
+      await guard.enable(payload.secret, state.id);
+      PostMan.setTopic(payload.topic);
+      return true;
+    }),
+    DESCRIBE: refuseWhenGuarded(guard, describe),
+    GUARDED: guardedDispatch(guard, {
+      DESCRIBE: describe,
+      START: (payload) => startFeed(payload as Partial<SourceRequest> | undefined),
+      FEED: () => state.feed,
+      STOP: async () => {
+        await stopFeed();
+        return true;
+      },
+      LAYOUT: () => loadWorkspaceOutputs(),
+    }),
     /** Start the encoder feed; returns where receivers reach it. */
-    START: async (payload: SourceRequest): Promise<FeedInfo> => {
-      if (Deno.build.os !== "linux") {
-        throw new Error("desktopSource encodes through the Linux media socket only");
-      }
-      if (encoder && state.feed) return state.feed;
-      if (typeof payload?.host !== "string" || !Number.isInteger(payload.port)) {
-        throw new Error("START needs {host, port}");
-      }
-      shuttingDown = false;
-      feedRequest = { ...payload };
-      await startEncoder();
-      await consumersChanged();
-      return state.feed!;
-    },
-    FEED: (): FeedInfo | null => state.feed,
+    START: refuseWhenGuarded(guard, (payload?: Partial<SourceRequest>) => startFeed(payload)),
+    FEED: refuseWhenGuarded(guard, (): FeedInfo | null => state.feed),
     /** The monitors, as crops of the capture: KDE, Windows, or GNOME (hardcoded for now). */
-    LAYOUT: (): Promise<WorkspaceOutput[]> => loadWorkspaceOutputs(),
+    LAYOUT: refuseWhenGuarded(guard, (): Promise<WorkspaceOutput[]> => loadWorkspaceOutputs()),
     /** Stop the encoder feed; frame sinks keep capturing. */
-    STOP: async () => {
+    STOP: refuseWhenGuarded(guard, async () => {
       await stopFeed();
       return true;
-    },
+    }),
     __SHUTDOWN__: async () => {
       shuttingDown = true;
       frameSink = null;

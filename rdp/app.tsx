@@ -29,6 +29,10 @@ export type RdpAppProps = {
   /** The feed's intrinsic size once the tab knows it; null until the desktop feed is up. */
   feed: { width: number; height: number } | null;
   status: string;
+  /** Desktops to pick from (more than one shows a picker). */
+  desktops?: Array<{ id: string; label: string }>;
+  selected?: string | null;
+  onSelect?: (id: string) => void;
 };
 
 /** Where the video sits in tab pixels: the area below the toolbar, fitted to the feed's aspect. */
@@ -46,7 +50,9 @@ export function videoRect(
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
-export function RdpApp({ input, feed, status }: RdpAppProps) {
+export function RdpApp(
+  { input, feed, status, desktops = [], selected = null, onSelect }: RdpAppProps,
+) {
   const tab = useTabSize();
   // The ref is what key handling reads: it changes at once, while state waits for a render.
   const [focused, setFocused] = useState(false);
@@ -121,7 +127,29 @@ export function RdpApp({ input, feed, status }: RdpAppProps) {
           backgroundColor="#1f232b"
           onClick={unfocus}
         >
-          <Text fontSize={16} color="#e8ebf1">Desktop</Text>
+          {desktops.length > 1
+            ? desktops.map((desktop) => (
+              <Container
+                key={desktop.id}
+                paddingX={10}
+                paddingY={5}
+                borderRadius={6}
+                backgroundColor={desktop.id === selected ? "#3b4252" : "#2a2f39"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelect?.(desktop.id);
+                }}
+              >
+                <Text fontSize={14} color={desktop.id === selected ? "#e8ebf1" : "#9aa3b2"}>
+                  {desktop.label}
+                </Text>
+              </Container>
+            ))
+            : (
+              <Text fontSize={16} color="#e8ebf1">
+                {desktops[0]?.label ?? "Desktop"}
+              </Text>
+            )}
           <Text fontSize={13} color="#9aa3b2">{status}</Text>
           <Container flexGrow={1} />
           <Text fontSize={13} color={focused ? "#8fd18f" : "#9aa3b2"}>

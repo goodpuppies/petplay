@@ -17,6 +17,7 @@ import {
   resolveActorId,
 } from "../submodules/stageforge/mod.ts";
 import { newSessionSecret, sessionTopic } from "./classes/session.ts";
+import { householdSecret, householdTopic } from "./classes/household.ts";
 
 export type RdpStart = {
   /** Where browsers reach this machine (its tailnet address); default 127.0.0.1. */
@@ -32,6 +33,8 @@ export type RdpStart = {
   actors?: { source?: ActorId; input?: ActorId };
   /** A fixed session secret instead of a random one (tests). */
   secret?: string;
+  /** False: no household even if this machine has `.secret`. */
+  household?: false;
 };
 
 const state = actorState({
@@ -61,6 +64,17 @@ new PostMan(state, {
     if (!input && payload.input !== false) {
       input = actors.input = resolveActorId(await PostMan.create("./desktopInput.ts", import.meta.url));
     }
+    // With a household, this desktop is offered to its other machines, and theirs show here.
+    const homeSecret = payload.household === false ? null : householdSecret();
+    const household = homeSecret
+      ? { secret: homeSecret, topic: await householdTopic(homeSecret) }
+      : undefined;
+    if (household) {
+      if (source && actors.source) await call(source, "SETINPUT", input ?? null);
+      for (const actor of [actors.source, actors.input]) {
+        if (actor) await call(actor, "SETHOUSEHOLD", household);
+      }
+    }
     const ui = actors.ui = resolveActorId(await PostMan.create("./ui.tsx", import.meta.url));
     await call(ui, "START", {
       secret,
@@ -68,6 +82,7 @@ new PostMan(state, {
       webtransport: { hostname: host },
       source,
       input,
+      household,
     });
 
     let base = "";
