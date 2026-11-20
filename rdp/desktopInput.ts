@@ -1,128 +1,98 @@
 /**
- * desktopInput: pointer and keyboard injection into this machine's desktop, as an actor.
+ * desktopInput: pointer and keyboard injection into this machine's desktop, as an actor. The one
+ * injector every sender uses: the VR scene's displays and keyboard, an rdp tab, a peer.
  *
- * Runs `screen-streamer --input-only` (uinput on Linux) and feeds it the helper's stdin verbs,
- * so injection needs no capture session and no OpenVR. Callers send typed messages, or open a
- * negotiated transport (purpose `rdp.input`) for high-rate pointer motion that skips the hub.
+ * Events are `InputEvent`s (`classes/input/inputEvent.ts`); each platform injects through its own
+ * class (`LinuxDesktopInput`: uinput helper; `WindowsDesktopInput`: `SendInput`). Needs no
+ * capture session and no OpenVR. Callers send `INPUT` / `INPUTS`, or open a negotiated transport
+ * (purpose `rdp.input`) for high-rate pointer motion that skips the hub.
  *
- * Coordinates are normalized 0..1 over the whole workspace (the helper's absolute pointer
- * device), which is what a client gets from a pointer position over a full-desktop capture.
- * Pressed buttons and keys are tracked and released on `RELEASEALL`, when a transport closes and on
- * shutdown, so a dropped client cannot leave a key held.
+ * Pressed buttons, keys and latched modifiers are tracked and released on `RELEASEALL`, when a
+ * transport closes and on shutdown, so a dropped sender cannot leave anything held.
  *
- * Linux only for now; Windows injection exists in the scene (`SendInput` sinks) and would move
- * behind this same API.
+ * `PETPLAY_INPUT_X11_WHEEL=0` turns off the discrete X11 wheel (tests, so nothing scrolls the
+ * real desktop).
  */
 import { actorState, messages, PostMan, Transport } from "../submodules/stageforge/mod.ts";
-import { screenStreamerPath } from "./classes/helperPaths.ts";
+import { type InputEvent, isInputEvent } from "./classes/input/inputEvent.ts";
+import type { DesktopInjector } from "./classes/input/injector.ts";
+import { LinuxDesktopInput } from "./classes/input/linuxDesktopInput.ts";
+import { WindowsDesktopInput } from "./classes/input/windowsDesktopInput.ts";
 
-export type InputEvent =
-  | { t: "pointer"; x: number; y: number }
-  | { t: "button"; button: "left" | "right" | "middle"; down: boolean }
-  | { t: "wheel"; delta: number }
-  | { t: "key"; scan: string; down: boolean };
+export type { InputEvent } from "./classes/input/inputEvent.ts";
 
 const state = actorState({
   name: "desktopInput",
+  platform: Deno.build.os,
   helperRunning: false,
   events: 0,
   rejected: 0,
   lastError: null as string | null,
 });
 
-let helper: Deno.ChildProcess | null = null;
-let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
-const encoder = new TextEncoder();
-const heldButtons = new Set<string>();
-const heldKeys = new Set<string>();
+let injector: DesktopInjector | null = null;
+const heldButtons = new Set<"left" | "right" | "middle">();
+/** Held keys by identity, with the event that pressed them. */
+const heldKeys = new Map<string, Extract<InputEvent, { t: "key" }>>();
+const activeModifiers = new Set<Extract<InputEvent, { t: "modifier" }>["modifier"]>();
 
-function ensureHelper(): WritableStreamDefaultWriter<Uint8Array> {
-  if (writer) return writer;
-  if (Deno.build.os !== "linux") {
-    throw new Error("desktopInput injects through uinput on Linux only");
+function platform(): DesktopInjector {
+  if (injector) return injector;
+  if (Deno.build.os === "linux") {
+    injector = new LinuxDesktopInput({
+      x11Wheel: Deno.env.get("PETPLAY_INPUT_X11_WHEEL") === "0" ? false : undefined,
+    });
+  } else if (Deno.build.os === "windows") {
+    injector = new WindowsDesktopInput();
+  } else {
+    throw new Error(`desktopInput: no injector for ${Deno.build.os}`);
   }
-  const child = new Deno.Command(screenStreamerPath(), {
-    args: ["--input-only"],
-    stdin: "piped",
-    stdout: "null",
-    stderr: "piped",
-  }).spawn();
-  helper = child;
-  writer = child.stdin.getWriter();
-  state.helperRunning = true;
-  void (async () => {
-    for await (const chunk of child.stderr.pipeThrough(new TextDecoderStream())) {
-      const line = chunk.trim().split("\n").at(-1);
-      if (line) state.lastError = line;
-    }
-  })().catch(() => {});
-  void child.status.then(() => {
-    if (helper !== child) return;
-    helper = null;
-    writer = null;
-    state.helperRunning = false;
-  });
-  return writer;
+  return injector;
 }
 
-function write(line: string): void {
-  void ensureHelper().write(encoder.encode(`${line}\n`)).catch((error) => {
-    state.lastError = String(error);
-  });
-}
-
-const BUTTONS = new Set(["left", "right", "middle"]);
-const SCAN = /^(?:e0)?[0-9a-f]{1,4}$/i;
+const keyId = (e: Extract<InputEvent, { t: "key" }>) =>
+  `${e.scan?.toLowerCase() ?? ""}|${e.key?.toUpperCase() ?? ""}|${e.char ?? ""}`;
 
 /** Validate and inject one event. Returns false (and counts it) for a malformed event. */
-export function inject(event: InputEvent): boolean {
-  switch (event?.t) {
-    case "pointer": {
-      const { x, y } = event;
-      if (!Number.isFinite(x) || !Number.isFinite(y)) break;
-      write(`M,${Math.min(1, Math.max(0, x))},${Math.min(1, Math.max(0, y))}`);
-      state.events++;
-      return true;
-    }
-    case "button": {
-      if (!BUTTONS.has(event.button) || typeof event.down !== "boolean") break;
+export function inject(event: unknown): boolean {
+  if (!isInputEvent(event)) {
+    state.rejected++;
+    return false;
+  }
+  switch (event.t) {
+    case "button":
       if (event.down) heldButtons.add(event.button);
       else heldButtons.delete(event.button);
-      write(`B,${event.button},${event.down ? 1 : 0}`);
-      state.events++;
-      return true;
-    }
-    case "wheel": {
-      const delta = Math.trunc(event.delta);
-      if (!Number.isFinite(delta) || Math.abs(delta) > 100) break;
-      write(`W,${delta}`);
-      state.events++;
-      return true;
-    }
-    case "key": {
-      if (
-        typeof event.scan !== "string" || !SCAN.test(event.scan) || typeof event.down !== "boolean"
-      ) {
-        break;
+      break;
+    case "key":
+      if (event.down === true) heldKeys.set(keyId(event), event);
+      else if (event.down === false) heldKeys.delete(keyId(event));
+      break;
+    case "modifier":
+      if (event.modifier !== "caps") {
+        if (event.active) activeModifiers.add(event.modifier);
+        else activeModifiers.delete(event.modifier);
       }
-      const scan = event.scan.toLowerCase();
-      if (event.down) heldKeys.add(scan);
-      else heldKeys.delete(scan);
-      write(`K,${scan},${event.down ? 1 : 0}`);
-      state.events++;
-      return true;
-    }
+      break;
   }
-  state.rejected++;
-  return false;
+  try {
+    const target = platform();
+    target.inject(event);
+    state.helperRunning = target.status.running;
+    state.lastError = target.status.lastError;
+  } catch (error) {
+    state.lastError = String(error);
+    return false;
+  }
+  state.events++;
+  return true;
 }
 
-export function releaseAll(): void {
-  if (!writer && heldButtons.size === 0 && heldKeys.size === 0) return;
-  for (const button of [...heldButtons]) {
-    inject({ t: "button", button: button as "left", down: false });
-  }
-  for (const scan of [...heldKeys]) inject({ t: "key", scan, down: false });
+export async function releaseAll(): Promise<void> {
+  for (const button of [...heldButtons]) inject({ t: "button", button, down: false });
+  for (const key of [...heldKeys.values()]) inject({ ...key, down: false });
+  for (const modifier of [...activeModifiers]) inject({ t: "modifier", modifier, active: false });
+  await injector?.releaseAll?.();
 }
 
 new PostMan(
@@ -132,26 +102,29 @@ new PostMan(
       Transport.accept("rdp.input", (transport) => {
         const input = messages(transport);
         input.onmessage = (event) => {
-          inject(event as InputEvent);
+          inject(event);
         };
-        input.onclose = () => releaseAll();
+        input.onclose = () => void releaseAll();
       });
     },
-    __HEALTH__: () => ({ ...state, heldButtons: [...heldButtons], heldKeys: [...heldKeys] }),
+    __HEALTH__: () => ({
+      ...state,
+      helperRunning: injector?.status.running ?? false,
+      heldButtons: [...heldButtons],
+      heldKeys: [...heldKeys.keys()],
+      activeModifiers: [...activeModifiers],
+    }),
     INPUT: (event: InputEvent) => inject(event),
-    INPUTS: (events: InputEvent[]) => events.filter((event) => inject(event)).length,
-    RELEASEALL: () => {
-      releaseAll();
+    INPUTS: (events: InputEvent[]) =>
+      Array.isArray(events) ? events.filter((event) => inject(event)).length : 0,
+    RELEASEALL: async () => {
+      await releaseAll();
       return true;
     },
     __SHUTDOWN__: async () => {
-      releaseAll();
-      const child = helper;
-      const open = writer;
-      helper = null;
-      writer = null;
-      await open?.close().catch(() => {});
-      await child?.status;
+      await releaseAll();
+      await injector?.close();
+      injector = null;
       state.helperRunning = false;
     },
   } as const,

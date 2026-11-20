@@ -80,6 +80,8 @@ type StartOptions = {
   wristMenuActor?: string | null;
   /** PetPlay display-overlay host actor id — syncs scene displays with presentation overlays. */
   displayOverlayHostActor?: string | null;
+  /** The desktopInput actor the scene's displays and keyboard inject through. */
+  desktopInputActor?: string | null;
   /**
    * When the OpenVR ghost uses only the Raylib path (`overlayRenderMode: "raylib"`), the WebGPU
    * projection layer does not need a full scene draw — Raythree reads the Three graph and
@@ -1558,6 +1560,7 @@ export class WebXRHost {
           React.createElement(WebXRScene, {
             XROrigin,
             displayOverlayHostActor: options.displayOverlayHostActor ?? null,
+            desktopInputActor: options.desktopInputActor ?? null,
             directOpenVrInputSource: this.directOpenVrInputSource,
           }),
         ),

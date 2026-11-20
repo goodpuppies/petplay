@@ -258,6 +258,7 @@ type StartWebXRPayload = {
   wristMenuActor?: string | null;
   mainActor?: string | null;
   displayOverlayHostActor?: string | null;
+  desktopInputActor?: string | null;
   sessionMode?: SupportedSessionMode;
   alpha?: boolean;
   overlayKey?: string;
@@ -833,6 +834,7 @@ new PostMan(
               : payload?.vrChaperoneSetupPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayOverlayHostActor: payload?.displayOverlayHostActor,
+            desktopInputActor: payload?.desktopInputActor ?? null,
             sessionMode: payload?.sessionMode,
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,

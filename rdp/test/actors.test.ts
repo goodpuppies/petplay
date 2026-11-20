@@ -31,6 +31,63 @@ const lines = async (path: string) =>
   (await Deno.readTextFile(path).catch(() => "")).split("\n").filter(Boolean);
 
 Deno.test({
+  name: "desktopInput takes the VR scene's events: positions, taps, modifiers, virtual keys",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    const dir = await Deno.makeTempDir({ prefix: "pp-rdp-input-scene-" });
+    Deno.env.set("PETPLAY_SCREEN_STREAMER", await standIn(dir));
+    Deno.env.set("PETPLAY_INPUT_X11_WHEEL", "0");
+    PostalService.actors.clear();
+    const postal = new PostalService();
+    const input = await postal.add("../desktopInput.ts", import.meta.url);
+    const call = <T>(type: string, payload: unknown = null) =>
+      postal.PostMessage({ target: input, type, payload }, true) as Promise<T>;
+    try {
+      const events = [
+        // What classes/environment/desktopInputSink.ts sends for a display click and wheel.
+        { t: "button", button: "right", down: true, x: 0.5, y: 0.25 },
+        { t: "wheel", delta: 2, x: 0.5, y: 0.25 },
+        // A latched shift, a tap of X, a virtual key (no scan), caps.
+        { t: "modifier", modifier: "shift", active: true },
+        { t: "key", scan: "2D" },
+        { t: "key", key: "F1", down: true },
+        { t: "modifier", modifier: "caps", active: true },
+      ];
+      assertEquals(await call("INPUTS", events), events.length);
+      await call("RELEASEALL");
+      await eventually(async () => (await lines(`${dir}/stdin`)).length >= 11, "events written");
+      assertEquals(await lines(`${dir}/stdin`), [
+        "M,0.5,0.25",
+        "B,right,1",
+        "M,0.5,0.25",
+        "W,2",
+        "K,2A,1",
+        "K,2D,1",
+        "K,2D,0",
+        // F1 has no entry in the Linux virtual-key table: nothing written, as before.
+        "K,3A,1",
+        "K,3A,0",
+        // Released: the button and the latched shift (caps is a toggle, never held).
+        "B,right,0",
+        "K,2A,0",
+      ]);
+      const health = await call<{ heldButtons: string[]; heldKeys: string[]; activeModifiers: string[] }>(
+        "__HEALTH__",
+      );
+      assertEquals([health.heldButtons, health.heldKeys, health.activeModifiers], [[], [], []]);
+    } finally {
+      await postal.PostMessage({ target: input, type: "SHUTDOWN", payload: null }, true);
+      PostalService.actors.get(input)?.worker.terminate();
+      PostalService.actors.clear();
+      Deno.env.delete("PETPLAY_SCREEN_STREAMER");
+      Deno.env.delete("PETPLAY_INPUT_X11_WHEEL");
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
   name: "desktopInput validates, injects, and releases what is held when a transport closes",
   sanitizeResources: false,
   sanitizeOps: false,
@@ -59,10 +116,10 @@ Deno.test({
       assertEquals(await lines(`${dir}/stdin`), [
         "M,0.25,1",
         "B,left,1",
-        "K,1e,1",
+        "K,1E,1",
         "W,-2",
         "B,left,0",
-        "K,1e,0",
+        "K,1E,0",
       ]);
       assertEquals(await lines(`${dir}/args`), ["--input-only"]);
       const health = await call<{ rejected: number; heldKeys: string[] }>("__HEALTH__");

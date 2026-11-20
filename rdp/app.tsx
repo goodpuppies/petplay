@@ -171,9 +171,9 @@ export function RdpApp({ input, feed, status }: RdpAppProps) {
                 const deltaY = (event.nativeEvent as WheelEvent).deltaY;
                 if (!deltaY) return;
                 toDesktop(event);
-                // A wheel notch is ~100 px; positive deltaY scrolls down, which is a negative notch.
+                // A wheel notch is ~100 px; positive scrolls down, as in the DOM.
                 const notches = Math.max(1, Math.round(Math.abs(deltaY) / 100));
-                inputRef.current?.send({ t: "wheel", delta: deltaY > 0 ? -notches : notches });
+                inputRef.current?.send({ t: "wheel", delta: deltaY > 0 ? notches : -notches });
               }}
             >
               <primitive object={geometry} attach="geometry" />

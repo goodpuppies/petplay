@@ -121,12 +121,12 @@ Deno.test({
         key("keydown", "KeyA"),
         key("keyup", "KeyA"),
       ]);
-      const written = await eventually(lines, (l) => l.includes("K,1e,0"), "input reaches the helper");
+      const written = await eventually(lines, (l) => l.includes("K,1E,0"), "input reaches the helper");
       assertEquals(written.filter((l) => !l.startsWith("M,")), [
         "B,left,1",
         "B,left,0",
-        "K,1e,1",
-        "K,1e,0",
+        "K,1E,1",
+        "K,1E,0",
       ]);
       assert(written.includes("M,0.5,0.5"), written.join(" "));
       assert(written.includes("M,0.25,0"), written.join(" "));

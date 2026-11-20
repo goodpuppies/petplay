@@ -282,6 +282,8 @@ type SupervisedSceneActors = {
   cameraOrigin: ActorId;
   webxr: ActorId;
   agentRepl: ActorId;
+  /** This machine's desktop input injector (`rdp/desktopInput.ts`); needs no OpenVR. */
+  desktopInput: ActorId;
   desktopControlEnabled: boolean;
 };
 
@@ -347,6 +349,7 @@ const clientActors = {
   webxr: null as ActorId | null,
   agentRepl: null as ActorId | null,
   cameraOrigin: null as ActorId | null,
+  desktopInput: null as ActorId | null,
   /** Started on demand by `STARTDESKTOPCONTROL` — the interactive desktop view actor. */
   desktopControl: null as ActorId | null,
   /** Started on demand by `STARTDESKTOPVIEW` — the decoupled IR-consumer view actor. */
@@ -365,6 +368,7 @@ function clientActorRegistry() {
     ...(clientActors.webxr ? { webxr: clientActors.webxr } : {}),
     ...(clientActors.agentRepl ? { agentRepl: clientActors.agentRepl } : {}),
     ...(clientActors.cameraOrigin ? { cameraOrigin: clientActors.cameraOrigin } : {}),
+    ...(clientActors.desktopInput ? { desktopInput: clientActors.desktopInput } : {}),
     ...(clientActors.desktopControl ? { desktopControl: clientActors.desktopControl } : {}),
     ...(clientActors.desktopView ? { desktopView: clientActors.desktopView } : {}),
     ...(clientActors.vrcCameraView ? { vrcCameraView: clientActors.vrcCameraView } : {}),
@@ -481,6 +485,7 @@ function registerSceneActors(actors: SupervisedSceneActors): void {
   clientActors.webxr = actors.webxr;
   clientActors.agentRepl = actors.agentRepl;
   clientActors.cameraOrigin = actors.cameraOrigin;
+  clientActors.desktopInput = actors.desktopInput;
   registerClientActors();
 }
 
@@ -556,6 +561,7 @@ function desktopViewPayload() {
   return {
     wristMenuActor: clientActors.wristMenu,
     displayOverlayHostActor: supervisor.attachment?.displayOverlayHost ?? null,
+    desktopInputActor: clientActors.desktopInput,
     webxrTarget: "webxr",
   };
 }
@@ -843,6 +849,7 @@ function startWebXr(
       controllerActor: null,
       wristMenuActor: actors.wristMenu,
       displayOverlayHostActor,
+      desktopInputActor: actors.desktopInput,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,
@@ -897,6 +904,7 @@ async function createSupervisedScene() {
   const cameraOrigin = await PostMan.create("./VRCOriginCamera.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
   const agentRepl = await PostMan.create("./agentRepl.ts", import.meta.url);
+  const desktopInput = await PostMan.create("../rdp/desktopInput.ts", import.meta.url);
   const desktopControlEnabled = getDesktopControlEnabled();
   const actors: SupervisedSceneActors = {
     ivr: resolveActorId(ivr),
@@ -904,6 +912,7 @@ async function createSupervisedScene() {
     cameraOrigin: resolveActorId(cameraOrigin),
     webxr: resolveActorId(webxr),
     agentRepl: resolveActorId(agentRepl),
+    desktopInput: resolveActorId(desktopInput),
     desktopControlEnabled,
   };
   console.log("[petplay boot] control-plane actors created");
@@ -1200,6 +1209,11 @@ async function createNoOpenVrScene() {
 
   const wristMenu = await PostMan.create("./wristMenu.ts", import.meta.url);
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
+  // A --novr server injects nothing into the real desktop (playtests click displays and press
+  // keys) unless asked: PETPLAY_NOVR_DESKTOP_INPUT=1, for tests with a stand-in helper.
+  const desktopInput = Deno.env.get("PETPLAY_NOVR_DESKTOP_INPUT") === "1"
+    ? resolveActorId(await PostMan.create("../rdp/desktopInput.ts", import.meta.url))
+    : null;
   const desktopControlEnabled = getDesktopControlEnabled();
   const cameraOrigin = desktopControlEnabled
     ? await PostMan.create("./VRCOriginCamera.ts", import.meta.url)
@@ -1212,6 +1226,7 @@ async function createNoOpenVrScene() {
   clientActors.webxr = resolveActorId(webxr);
   clientActors.agentRepl = agentRepl ? resolveActorId(agentRepl) : null;
   clientActors.cameraOrigin = cameraOrigin ? resolveActorId(cameraOrigin) : null;
+  clientActors.desktopInput = desktopInput;
   registerClientActors();
 
   PostMan.PostMessage({
@@ -1230,6 +1245,7 @@ async function createNoOpenVrScene() {
       controllerActor: null,
       wristMenuActor: wristMenu,
       displayOverlayHostActor: null,
+      desktopInputActor: desktopInput,
       overlayRenderMode: "raylib" as OverlayRenderMode,
       nativeRaylibDebug: false,
       nativeRaylibDebugWithHost: false,

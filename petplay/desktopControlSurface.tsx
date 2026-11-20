@@ -23,6 +23,7 @@ import {
 type StartDesktopControlPayload = {
   wristMenuActor?: string | null;
   displayOverlayHostActor?: string | null;
+  desktopInputActor?: string | null;
   webxrTarget?: string | null;
 };
 
@@ -51,6 +52,7 @@ const state = actorState({
   lastError: null as string | null,
   wristMenuActor: null as string | null,
   displayOverlayHostActor: null as string | null,
+  desktopInputActor: null as string | null,
   webxrTarget: null as string | null,
   runPromise: null as Promise<void> | null,
   child: null as Deno.ChildProcess | null,
@@ -89,7 +91,11 @@ function DesktopControlScene(
       </React.Suspense>
       <DesktopViewOffsetBridge controlsStore={controlsStore} logPrefix={logPrefix} />
       <VREnvironmentPlaceholder />
-      <WebXRScene XROrigin={() => null} displayOverlayHostActor={state.displayOverlayHostActor} />
+      <WebXRScene
+        XROrigin={() => null}
+        displayOverlayHostActor={state.displayOverlayHostActor}
+        desktopInputActor={state.desktopInputActor}
+      />
       <DesktopWristMenuHud actorId={state.wristMenuActor} />
     </>
   );
@@ -121,6 +127,7 @@ function DesktopWristMenuHud({ actorId }: { actorId: string | null }) {
 function startDesktopControl(payload: StartDesktopControlPayload): void {
   state.wristMenuActor = payload.wristMenuActor ?? state.wristMenuActor;
   state.displayOverlayHostActor = payload.displayOverlayHostActor ?? null;
+  state.desktopInputActor = payload.desktopInputActor ?? null;
   state.webxrTarget = payload.webxrTarget ?? state.webxrTarget ?? "webxr";
   if (!IS_CHILD) {
     startDesktopControlChild();
@@ -170,6 +177,7 @@ function startDesktopControlChild(): void {
       `--webxr-target=${state.webxrTarget ?? "webxr"}`,
       `--wrist-menu-actor=${state.wristMenuActor ?? ""}`,
       `--display-overlay-host-actor=${state.displayOverlayHostActor ?? ""}`,
+      `--desktop-input-actor=${state.desktopInputActor ?? ""}`,
     ]),
     cwd: Deno.cwd(),
     stdin: "null",
@@ -223,6 +231,7 @@ function getDesktopControlStatus() {
     lastError: state.lastError,
     wristMenuActor: state.wristMenuActor,
     displayOverlayHostActor: state.displayOverlayHostActor,
+    desktopInputActor: state.desktopInputActor,
     webxrTarget: state.webxrTarget,
     childPid: state.child?.pid ?? null,
   };
@@ -277,6 +286,7 @@ if (IS_CHILD) {
     webxrTarget: getStringArg("webxr-target", "webxr"),
     wristMenuActor: getStringArg("wrist-menu-actor", "") || null,
     displayOverlayHostActor: getStringArg("display-overlay-host-actor", "") || null,
+    desktopInputActor: getStringArg("desktop-input-actor", "") || null,
   });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     try {

@@ -29,6 +29,7 @@ import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.ts
 import { tryLinuxX11Scroll } from "./displayInstance/linuxX11Scroll.ts";
 import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
+import { createDesktopInputSinks } from "./desktopInputSink.ts";
 import { createLinuxKeyboardSink } from "./keyboard/linuxSystemKeyboard.ts";
 import type { KeyboardSink } from "./keyboard/types.ts";
 import { KEYBOARD_LOCALES, useKeyboardLocale } from "./keyboard/keyboardLocale.ts";
@@ -165,6 +166,8 @@ declare module "@react-three/fiber/webgpu" {
 type WebXRSceneProps = {
   XROrigin: React.ComponentType;
   displayOverlayHostActor?: string | null;
+  /** The desktopInput actor every display and the keyboard inject through. */
+  desktopInputActor?: string | null;
   directOpenVrInputSource?: DirectOpenVrInputSource;
 };
 
@@ -2295,23 +2298,38 @@ export function WebXRScene(
   {
     XROrigin: _XROrigin,
     displayOverlayHostActor = null,
+    desktopInputActor = null,
     directOpenVrInputSource,
   }: WebXRSceneProps,
 ) {
   void _XROrigin;
+  const desktopInputSinks = React.useMemo(
+    () =>
+      desktopInputActor
+        ? createDesktopInputSinks(
+          desktopInputActor,
+          Deno.build.os === "linux" ? displayOverlayHostActor : null,
+        )
+        : null,
+    [desktopInputActor, displayOverlayHostActor],
+  );
+  // Without a desktopInput (a server started before it existed, hot-reloading this scene), the
+  // previous path: input through the overlay host's capture helper, or SendInput from here.
   const rawDisplayMouseSink = React.useMemo(
     () =>
-      Deno.build.os === "linux" && displayOverlayHostActor
-        ? createLinuxMouseSink(displayOverlayHostActor)
-        : windowsSystemDisplayMouseSink,
-    [displayOverlayHostActor],
+      desktopInputSinks?.mouse ??
+        (Deno.build.os === "linux" && displayOverlayHostActor
+          ? createLinuxMouseSink(displayOverlayHostActor)
+          : windowsSystemDisplayMouseSink),
+    [desktopInputSinks, displayOverlayHostActor],
   );
   const rawKeyboardSink = React.useMemo(
     () =>
-      Deno.build.os === "linux" && displayOverlayHostActor
-        ? createLinuxKeyboardSink((command) => postInputControl(displayOverlayHostActor, command))
-        : windowsSystemKeyboardSink,
-    [displayOverlayHostActor],
+      desktopInputSinks?.keyboard ??
+        (Deno.build.os === "linux" && displayOverlayHostActor
+          ? createLinuxKeyboardSink((command) => postInputControl(displayOverlayHostActor, command))
+          : windowsSystemKeyboardSink),
+    [desktopInputSinks, displayOverlayHostActor],
   );
 
   const { onMouse: displayMouseSink, onKey: keyboardSink } = React.useMemo(

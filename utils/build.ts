@@ -73,6 +73,9 @@ const args = [
   "./petplay/",
   "--include",
   "./classes/",
+  // desktopInput is spawned by main; its own imports come with it.
+  "--include",
+  "./rdp/desktopInput.ts",
   "--include",
   "./resources/",
   "--include",

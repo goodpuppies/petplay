@@ -86,10 +86,17 @@ remote desktops differ only in those ids.
 
 ## Order
 
+The pattern throughout: the actor is the high level (messages, validation, lifecycle), with a
+class per job, and a class per platform where platforms differ (as `desktopInput` does:
+`LinuxDesktopInput`, `WindowsDesktopInput`).
+
 Each step leaves the VR desktop working. displayOverlayHost runs in the live session, so changes
 there are tested in a novr server first (`petplay-test-server-isolation`) and land in one step.
 
-1. **Input through desktopInput.**
+1. **Input through desktopInput.** (In progress, 2026-11-20: the actor and its platform classes
+   in `rdp/classes/input/`, the scene's sink in `classes/environment/desktopInputSink.ts`; main
+   spawns it. The scene keeps the old path as a fallback until the server restarts, then the
+   capture helper gets `--no-input` and the fallback goes.)
    - Widen `InputEvent` to what the scene sends: key taps, modifier latches as scan keys, wheel
      in the scene's units.
    - Give desktopInput platform backends: the Linux helper plus the X11 discrete wheel (moved
@@ -117,7 +124,19 @@ there are tested in a novr server first (`petplay-test-server-isolation`) and la
    - `WorkspaceOutput` gets `inputActor` instead of `input: "none"`, and display instances
      route mouse and keyboard to it.
    - Discovery covers topic contacts as well as local actors.
-5. **One scene server** (later). The scene stream becomes a `SceneFeed` behind a Transport, with
+5. **One overlay host.**
+   - displayOverlayHost and remoteMediaOverlay become one actor, run once per source, each
+     instance in its own process (one GL context per process). The actor is the high level:
+     messages, lifecycle, health. Underneath it, a class per job:
+     - frame input: `CpuFrameInput` (RGBA over the helper's TCP socket), `DmabufFrameInput`
+       (`GpuMediaSocket` + `EglMediaTexture`), `D3d11FrameInput` (Windows shared texture);
+     - `OverlaySet`: one OpenVR overlay per virtual display, cropping the shared texture, placed
+       by `SYNCVIRTUALDISPLAY` (today's two copies: displayOverlayHost's entries and
+       `RemoteDisplayBinding`);
+     - `CursorCompositor`, on wherever pointer positions arrive.
+   - A local desktop is one instance fed by desktopSource, a remote one an instance fed by a
+     receiver. Remote desktops gain the cursor and several virtual displays from one feed.
+6. **One scene server** (later). The scene stream becomes a `SceneFeed` behind a Transport, with
    topics and the secret. Its pointer-plus-camera input stays a different input kind from the
    rdp tab's DOM events, since VR views and 2D tabs need both.
 

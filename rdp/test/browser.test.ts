@@ -115,7 +115,7 @@ Deno.test({
       // 16:9 until the feed's size is known: the video spans x 0..800, y 97..547.
       await page.mouse.click(400, 322);
       await page.keyboard.press("KeyA");
-      const written = await eventually(lines, (l) => l.includes("K,1e,0"), "input reaches the helper");
+      const written = await eventually(lines, (l) => l.includes("K,1E,0"), "input reaches the helper");
       assert(written.includes("B,left,1") && written.includes("B,left,0"), written.join(" "));
       assert(written.some((l) => l === "M,0.5,0.5"), written.join(" "));
 
