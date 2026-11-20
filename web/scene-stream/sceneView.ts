@@ -2,7 +2,7 @@
 /**
  * Browser rendering of a raythree scene store (markdown/scene-stream): a three.js scene kept in
  * step with a replica `SceneStore`, updating exactly the rows each transaction touched. Shared by
- * the scene stream viewer (`viewer.ts`) and the RDP tab client (`web/rdp/client.ts`). Works in a
+ * the scene stream viewer (`viewer.ts`) and the RDP tab client (`rdp/browser/client.ts`). Works in a
  * page or a worker (textures decode through `createImageBitmap`).
  */
 import * as THREE from "npm:three@0.186.1";

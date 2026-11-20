@@ -28,8 +28,8 @@ import {
   SceneStore,
   StoreDivergence,
 } from "../../submodules/raythree/src/store/mod.ts";
-import { SceneView, viewState } from "../scene-stream/sceneView.ts";
-import { MediaFeeds } from "../scene-stream/mediaFeeds.ts";
+import { SceneView, viewState } from "../../web/scene-stream/sceneView.ts";
+import { MediaFeeds } from "../../web/scene-stream/mediaFeeds.ts";
 import {
   type TabDomEvent,
   type TabViewport,
@@ -37,8 +37,8 @@ import {
   type ToUi,
   UI_ACTOR_NAME,
   UI_PURPOSE,
-} from "../../rdp/classes/tabProtocol.ts";
-import { sessionTopic } from "../../rdp/classes/session.ts";
+} from "../classes/tabProtocol.ts";
+import { sessionTopic } from "../classes/session.ts";
 
 type Attach = {
   canvas: OffscreenCanvas;

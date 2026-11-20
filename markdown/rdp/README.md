@@ -273,8 +273,8 @@ PostalService with the iroh carrier, spawning `rdp`) and prints the link.
 - `rdp/ui.tsx` runs the app (`rdp/app.tsx`) in a headless browser tab
   (`rdp/classes/browserTab.ts`): the real tab's size and DPR, its DOM events through r3f's own
   event system, scene deltas back latest-since-ack (`rdp/classes/sceneFeed.ts`).
-- The page (`web/rdp/page.ts`) is the browser process's main thread: PostalService with the
-  wasm iroh carrier, then the client actor (`web/rdp/client.ts`), which renders the replica into
+- The page (`rdp/browser/page.ts`) is the browser process's main thread: PostalService with the
+  wasm iroh carrier, then the client actor (`rdp/browser/client.ts`), which renders the replica into
   an OffscreenCanvas with the scene viewer's `SceneView` (now `web/scene-stream/sceneView.ts`,
   with `mediaFeeds.ts`).
 - Tests: `rdp/test/ui.test.ts` (a test actor as the tab; a wrong secret gets nothing) and

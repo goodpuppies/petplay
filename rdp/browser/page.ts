@@ -11,7 +11,7 @@
  */
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import { irohWebCarrier, type IrohWebModule } from "../../classes/irohWebCarrier.ts";
-import type { TabDomEvent, TabViewport } from "../../rdp/classes/tabProtocol.ts";
+import type { TabDomEvent, TabViewport } from "../classes/tabProtocol.ts";
 import type { ToPage } from "./client.ts";
 
 const params = new URLSearchParams(location.search);
