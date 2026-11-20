@@ -19,6 +19,8 @@ folder stays as history.
 - [Scene stream](./scene-stream/README.md) — the raythree IR as a glTF-aligned, reactive,
   replicated store, streamed to the overlay, desktop views and a browser client. Supersedes
   [retained raythree IR](./raythree-retained-ir/README.md).
+- [RDP](./rdp/README.md) — remote desktop to a browser as a composition of actors: transports
+  negotiated over actor messages, transport-neutral topics, server-rendered uikit UI.
 - [VRChat depth](./vrchat-depth/README.md) — overlays composited with VRChat's depth: an avatar
   shader writes depth into the desktop window, PetPlay decodes it and cuts occlusion holes.
 - [What screen-relay offers](./screen-relay-lessons.md) — ideas for remote desktop and web

@@ -7,7 +7,8 @@ import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
 
 const EXIT_STABILIZE_MS = 3000;
-const STAGEFORGE_SIGNALING_URL = "ws://petplay.ddns.net:8080";
+/** Topic server (submodules/petplayserver), deployed on ldeploy; override with PETPLAY_TOPIC_URL. */
+const STAGEFORGE_SIGNALING_URL = Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
 
 /**
  * Boots the server: temp dir, supervision, actors, and the optional stdin bridge.
