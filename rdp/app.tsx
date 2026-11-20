@@ -147,6 +147,9 @@ export function RdpApp({ input, feed, status }: RdpAppProps) {
             <mesh
               position={[center[0], center[1], 2]}
               scale={[rect.width, rect.height, 1]}
+              // Only for hit testing: the scene bridge must not ship it (it ignores
+              // material.visible, and would draw a white quad over the video).
+              userData={{ bridge: { kind: "skip" } }}
               onPointerMove={toDesktop}
               onPointerDown={(event) => {
                 (event.target as unknown as { setPointerCapture(id: number): void })

@@ -288,8 +288,9 @@ PostalService with the iroh carrier, spawning `rdp`) and prints the link.
   `rdp/test/browser.test.ts` (headless Chromium: topic → iroh via a dev relay → WebTransport → the
   app drawn → a click and a key reach desktopInput on a stand-in helper; 6 s).
 Not yet tried against real capture and input (both act on the live desktop), nor over the
-tailnet. Open: hosting the page on an https site, and the empty feed drawing white in headless
-Chromium.
+tailnet. Open: hosting the page on an https site. (The "white feed" was the hit-test mesh: the scene
+bridge ignores `material.visible`, so it shipped as a white quad over the video; it is now
+`userData.bridge = {kind: "skip"}`.)
 
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.
