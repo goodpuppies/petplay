@@ -22,7 +22,7 @@ export class DesktopRemoteServer {
     this.socket?.close(1000, "Viewport closed");
     this.socket = null;
   }
-  handle(req: Request, allowedOrigin?: string): Response {
+  handle(req: Request, allowedOrigin?: string, controllerButtons = false): Response {
     if (!this.createSession) return new Response("Viewport not ready", { status: 503 });
     if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket required", { status: 426 });
@@ -70,6 +70,7 @@ export class DesktopRemoteServer {
         JSON.stringify({
           version: 1,
           viewport: "steamvr-stereo",
+          controllerButtons,
         }),
       );
     };

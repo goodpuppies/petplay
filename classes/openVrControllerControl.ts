@@ -78,6 +78,8 @@ export async function connectControllerControl(socket: string) {
   return {
     state: () => send<ControllerSnapshot>("GETCONTROLLERSTATE"),
     writer,
+    setInput: (hand: ControllerHand, input: { system?: boolean; trigger?: number }) =>
+      send("SETCONTROLLERINPUT", { hand, ...input }),
     close: () => postal.murder(id),
   };
 }

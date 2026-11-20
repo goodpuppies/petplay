@@ -8,16 +8,45 @@ import {
   type ControllerSnapshot,
   controllerTrackingPose,
 } from "../openVrControllerControl.ts";
+import { playspaceFrame } from "../playspaceFrame.ts";
 import { penHandler } from "./penEvents.ts";
 
-/** Mount under the raw tracking-space origin. The socket is an explicit opt-in. */
-export function ControllerPoseGizmos({ socket }: { socket: string }) {
+export type ControllerButton = "dashboard" | "left-trigger" | "right-trigger";
+
+/** The driver uses raw tracking poses, while the scene uses the anchored PetPlay frame. */
+export function ControllerPoseGizmos(
+  { socket, onButton }: {
+    socket: string;
+    onButton: React.Ref<((button: ControllerButton) => Promise<void>) | null>;
+  },
+) {
   const [snapshot, setSnapshot] = React.useState<ControllerSnapshot | null>(null);
   const [selected, setSelected] = React.useState<ControllerHand>("right");
+  const controlsRoot = React.useRef<THREE.Group>(null);
   const connection = React.useRef<Awaited<ReturnType<typeof connectControllerControl>> | null>(
     null,
   );
   const [error, setError] = React.useState<string | null>(null);
+  const pressing = React.useRef(new Map<ControllerHand, Promise<void>>());
+  React.useImperativeHandle(onButton, () => async (button) => {
+    const client = connection.current;
+    const hand = button === "right-trigger" ? "right" : "left";
+    if (!client || pressing.current.has(hand)) return;
+    const pulse = (async () => {
+      try {
+        await client.setInput(hand, button === "dashboard" ? { system: true } : { trigger: 1 });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      } finally {
+        await client.setInput(hand, {});
+      }
+    })();
+    pressing.current.set(hand, pulse);
+    try {
+      await pulse;
+    } finally {
+      pressing.current.delete(hand);
+    }
+  }, []);
   React.useEffect(() => {
     let disposed = false;
     void connectControllerControl(socket).then(async (client) => {
@@ -42,14 +71,16 @@ export function ControllerPoseGizmos({ socket }: { socket: string }) {
       disposed = true;
       const client = connection.current;
       connection.current = null;
-      void client?.close().catch(console.warn);
+      if (client) {
+        void Promise.allSettled(pressing.current.values())
+          .then(() => client.close()).catch(console.warn);
+      }
     };
   }, [socket]);
   const apply = React.useCallback(
     (hand: ControllerHand, state: HandleState<unknown>, target: THREE.Object3D) => {
       defaultApply(state, target);
-      // DesktopControlScene currently uses raw OpenVR tracking coordinates (identity origin).
-      const pose = controllerTrackingPose(target);
+      const pose = controllerTrackingPose(target, controlsRoot.current?.matrixWorld);
       void connection.current?.writer.set(hand, pose).catch((error) => {
         console.warn("[controller-gizmos] pose update", error);
         setError(String(error));
@@ -58,8 +89,18 @@ export function ControllerPoseGizmos({ socket }: { socket: string }) {
     [],
   );
   if (error || !snapshot) return null;
+  // The gizmos overlap the synthetic controllers and would intercept their own XR rays.
   return (
-    <group name="controller-pose-controls" userData={{ desktopControl: true }}>
+    <group
+      ref={controlsRoot}
+      name="controller-pose-controls"
+      matrix={new THREE.Matrix4().fromArray(playspaceFrame.rawToPetplay)}
+      matrixAutoUpdate={false}
+      userData={{ desktopControl: true }}
+      {...({
+        pointerEventsType: { allow: ["screen-mouse", "screen-touch", "screen-pen", "mouse"] },
+      } as Record<string, unknown>)}
+    >
       {snapshot.hands.map((hand) => {
         const q = hand.pose.qRotation;
         return (

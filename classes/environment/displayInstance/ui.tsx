@@ -1,4 +1,7 @@
-import type { PointerEvent as PenPointerEvent, WheelEvent as PenWheelEvent } from "@pmndrs/pointer-events";
+import type {
+  PointerEvent as PenPointerEvent,
+  WheelEvent as PenWheelEvent,
+} from "@pmndrs/pointer-events";
 import React, { forwardRef, useCallback, useEffect, useMemo, useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
@@ -27,6 +30,8 @@ declare module "@react-three/fiber/webgpu" {
 }
 
 const STABLE_CLICK_HOLD_MS = 180;
+
+const DISPLAY_GRAB_EDGE_HEIGHT = 0.025;
 
 /**
  * Backplate logo: fraction of the display height the square logo occupies.
@@ -58,7 +63,11 @@ export type DisplayInstanceFrameProps = {
    * in the scene themselves (the scene stream's `videoSurface`, `classes/sceneStoreWriter.ts`).
    * The OpenVR overlay path does not use it.
    */
-  videoFeed?: { feed: string; crop: { x: number; y: number; width: number; height: number }; opacity: number } | null;
+  videoFeed?: {
+    feed: string;
+    crop: { x: number; y: number; width: number; height: number };
+    opacity: number;
+  } | null;
   /** Optional display-space mouse sink; receives normalized 0..1 coordinates on the screen plane. */
   onMouse?: DisplayMouseSink;
   mouseButtonForPointer?: (event: PenPointerEvent) => DisplayMouseButton | undefined;
@@ -83,10 +92,13 @@ function pointerButton(button: number | undefined): DisplayMouseButton {
 }
 
 function isDesktopDisplayGrab(e: PenPointerEvent): boolean {
-  return isDesktopMousePointerType(e.pointerType) && e.nativeEvent.altKey && e.nativeEvent.button === 0;
+  return isDesktopMousePointerType(e.pointerType) && e.nativeEvent.altKey &&
+    e.nativeEvent.button === 0;
 }
 
-function displayCoordsFromPointerEvent(e: Pick<PenPointerEvent, "uv">): { x: number; y: number } | null {
+function displayCoordsFromPointerEvent(
+  e: Pick<PenPointerEvent, "uv">,
+): { x: number; y: number } | null {
   const uv = e.uv;
   if (uv == null) return null;
   return {
@@ -141,10 +153,22 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       [width, height, curvature],
     );
     useEffect(() => () => surfaceGeometry.dispose(), [surfaceGeometry]);
+    const grabEdgeGeometry = useMemo(
+      () => createDisplaySurfaceGeometry(width, DISPLAY_GRAB_EDGE_HEIGHT, curvature),
+      [width, curvature],
+    );
+    useEffect(() => () => grabEdgeGeometry.dispose(), [grabEdgeGeometry]);
     const videoSurface = useMemo(
       () => videoFeed ? { ...videoFeed, geometry: surfaceGeometry } : null,
-      [videoFeed?.feed, videoFeed?.crop.x, videoFeed?.crop.y, videoFeed?.crop.width, videoFeed?.crop.height,
-        videoFeed?.opacity, surfaceGeometry],
+      [
+        videoFeed?.feed,
+        videoFeed?.crop.x,
+        videoFeed?.crop.y,
+        videoFeed?.crop.width,
+        videoFeed?.crop.height,
+        videoFeed?.opacity,
+        surfaceGeometry,
+      ],
     );
     const pendingClickRef = useRef<PendingDisplayClick | null>(null);
     const desktopMoves = useRef(new WeakSet<object>());
@@ -311,9 +335,23 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         onSpatialHoverChange={onSpatialHoverChange}
         grabFilter={(event) =>
           isDesktopMousePointerType(event.pointerType)
-            ? isDesktopDisplayGrab(event)
+            ? isDesktopDisplayGrab(event) ||
+              (event.button === 0 && event.object.userData.displayGrabEdge === true)
             : event.pointerType !== "ray" && event.pointerType !== "poker"}
       >
+        {(rayHitSurface || shellRayPickable) && [-1, 1].map((side) => (
+          <mesh
+            key={side}
+            position={[0, side * (height + DISPLAY_GRAB_EDGE_HEIGHT) / 2, 0]}
+            userData={{ displayGrabEdge: true }}
+            {...({
+              pointerEventsType: { allow: ["grab", "screen-mouse", "mouse"] },
+            } as Record<string, unknown>)}
+          >
+            <primitive object={grabEdgeGeometry} attach="geometry" />
+            <meshBasicMaterial color={lineColor} toneMapped={false} side={THREE.DoubleSide} />
+          </mesh>
+        ))}
         {videoSurface ? <group userData={{ videoSurface }} /> : null}
         {rayHitSurface
           ? (

@@ -252,7 +252,9 @@ export function WristMenuPanel(
   const savedOffset = useSetting("wristMenuOffset");
   const offsetHand = hostHandedness ?? "right";
   // Where the menu sits on the wrist; a desktop HUD isn't on one and stays square to the view.
-  const offset = savedOffset == null || !attached ? null : wristOffsetForHand(savedOffset, offsetHand);
+  const offset = savedOffset == null || !attached
+    ? null
+    : wristOffsetForHand(savedOffset, offsetHand);
   const offsetRef = useRef<THREE.Group>(null);
   const dragging = useRef(false);
   /** A resize was saved to `wristMenuScale`; the grab's own scale resets when that arrives. */
@@ -272,6 +274,22 @@ export function WristMenuPanel(
         triggerResize: {},
         apply: (state: HandleState<unknown>, target: import("three").Object3D) => {
           if (state.first) dragging.current = false;
+          const { position, quaternion, scale } = state.current;
+          // A degenerate grab must leave the last valid transform on the live wrist mount.
+          if (
+            ![
+              position.x,
+              position.y,
+              position.z,
+              quaternion.x,
+              quaternion.y,
+              quaternion.z,
+              quaternion.w,
+              scale.x,
+              scale.y,
+              scale.z,
+            ].every(Number.isFinite)
+          ) return;
           const resized = Math.abs(target.scale.x - 1) > 1e-4;
           if (!dragging.current && !resized) {
             const moved = state.initial.position.distanceTo(state.current.position);
@@ -281,12 +299,12 @@ export function WristMenuPanel(
           }
           defaultApply(state, target);
           if (!state.last) return;
-          let position = target.position;
+          let offsetPosition = target.position;
           if (resized) {
             const current = getSetting("wristMenuScale");
             const next = Math.min(2, Math.max(0.5, current * target.scale.x));
             // The offset sits inside the scaled mount: keep the panel where it is in the world.
-            position = target.position.clone().multiplyScalar(current / next);
+            offsetPosition = target.position.clone().multiplyScalar(current / next);
             if (next !== current) {
               resizeSaved.current = true;
               setSetting("wristMenuScale", next);
@@ -297,7 +315,7 @@ export function WristMenuPanel(
           setSetting(
             "wristMenuOffset",
             wristOffsetForHand({
-              position: position.toArray() as [number, number, number],
+              position: offsetPosition.toArray() as [number, number, number],
               rotation: target.quaternion.toArray() as [number, number, number, number],
             }, offsetHand),
           );
@@ -417,6 +435,7 @@ export function WristMenuPanel(
               // The trigger ray presses the menu's controls; only squeeze grabs.
               e.pointerType !== "ray" &&
               e.pointerType !== "poker" &&
+              (!e.pointerType.startsWith("screen-") || e.button === 0) &&
               !isPointerEventFromHostHand(e, hostHandedness, attached)}
           >
             <WristMenuUi
