@@ -19,3 +19,6 @@ _scratch/
 # Built locally by deno task overlay:presenter:build
 /resources/libpetplay_overlay_presenter.so
 /resources/libpetplay_pathfinder_text.so
+
+# Household secret for rdp agents (markdown/rdp/peers.md)
+/.secret
