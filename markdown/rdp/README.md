@@ -211,6 +211,19 @@ the topic server.
    `IrohWebWorker` under `--stageforge-networking`. Until 2b provides an iroh carrier, networked
    PetPlay publishes records with no routes, so other hubs see them but cannot reach it.
 2b. Iroh in the browser: a wasm wrapper crate on the same iroh version as the Deno side.
+   **Done 2026-11-20.** Native: `petplay-media link` (`submodules/petplay_mediatransport/src/link.rs`),
+   one iroh endpoint per hub, ALPN `petplay/link/1`, driven over stdio by
+   `classes/irohLinkCarrier.ts`; registered under `--stageforge-networking`. It publishes
+   `{id, relay}`, no IP addresses. Browser: `link-web/` (wasm-bindgen, iroh =1.4.1, relay-only,
+   dial-only) with `classes/irohWebLinkCarrier.ts`. A hub that hears a join it cannot dial
+   re-announces its members once, so a dial-only page also finds members that joined first.
+   Tests (`classes/irohLinkCarrier.test.ts`, `tests/iroh-link/`): native↔native over loopback
+   iroh; two hubs meet through a topic, link over iroh and upgrade to a WebSocket; the wasm
+   module (run in Deno) reaches a native hub through a local `iroh-relay --dev`, including the
+   re-announce path. Also checked once against n0's public relays: wasm→native connect in
+   0.8 s (3.3 s for the native endpoint to come online). With the dev relay the first connect
+   takes ~10 s, because QUIC address discovery is off there. The live release
+   `petplay-media` predates `link`; rebuild with `--features iroh` before using networking.
 3. `desktopSource` and `desktopInput` split out of `displayOverlayHost`; the overlay host consumes them.
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.

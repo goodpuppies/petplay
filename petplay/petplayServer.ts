@@ -239,9 +239,12 @@ export async function startPetplayServer(
 
   PostalService.performanceLoggingActive = false;
   if (stageforgeNetworkingEnabled) {
-    // Topic records reach other hubs, but a hub is only reachable through a registered
-    // publishable link carrier (iroh, markdown/rdp/README.md phase 2b); none exists yet.
+    // Other hubs reach this one through iroh: `petplay-media link` (built with
+    // --features iroh) publishes its endpoint id and relay in topic records. See
+    // markdown/rdp/README.md.
     console.log(`Stageforge networking enabled (${STAGEFORGE_SIGNALING_URL})`);
+    const { irohLinkCarrier } = await import("../classes/irohLinkCarrier.ts");
+    postalservice.registerLinkCarrier(irohLinkCarrier());
     postalservice.initSignalingClient(STAGEFORGE_SIGNALING_URL);
   } else {
     console.log(
