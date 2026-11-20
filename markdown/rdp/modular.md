@@ -93,10 +93,10 @@ class per job, and a class per platform where platforms differ (as `desktopInput
 Each step leaves the VR desktop working. displayOverlayHost runs in the live session, so changes
 there are tested in a novr server first (`petplay-test-server-isolation`) and land in one step.
 
-1. **Input through desktopInput.** (In progress, 2026-11-20: the actor and its platform classes
+1. **Input through desktopInput.** (Done 2026-11-20: the actor and its platform classes
    in `rdp/classes/input/`, the scene's sink in `classes/environment/desktopInputSink.ts`; main
-   spawns it. The scene keeps the old path as a fallback until the server restarts, then the
-   capture helper gets `--no-input` and the fallback goes.)
+   spawns it. The capture helper runs with `--no-input`; the overlay host only takes cursor
+   positions.)
    - Widen `InputEvent` to what the scene sends: key taps, modifier latches as scan keys, wheel
      in the scene's units.
    - Give desktopInput platform backends: the Linux helper plus the X11 discrete wheel (moved

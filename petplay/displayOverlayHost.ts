@@ -305,12 +305,11 @@ new PostMan(
         visible: state.visible,
       };
     },
+    /** `C,x,y`: where to composite the cursor. Input itself goes through desktopInput. */
     INPUTCONTROL: (payload: string) => {
-      if (payload.startsWith("C,")) {
+      if (typeof payload === "string" && payload.startsWith("C,")) {
         updateCursorFromPointerControl(payload);
-        return;
       }
-      void state.screenCapturer?.sendControl(payload);
     },
     __RESTORE__: (
       payload: {
@@ -633,6 +632,8 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
     },
     executablePath: getScreenStreamerPath(),
     captureTokenPath: join(portalStateDir, "screencast-restore-token"),
+    // desktopInput injects; the capture helper only captures.
+    input: false,
     // Opt in by pointing this at a media worker that is already listening, the same
     // way the remote scene controls are enabled. Capture and the local overlay behave
     // identically without it; see markdown/remote-desktop-stream.md.

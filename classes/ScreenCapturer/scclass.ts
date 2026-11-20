@@ -34,6 +34,11 @@ export interface ScreenCapturerOptions {
    * not a replacement. See `submodules/petplay_mediatransport/docs/protocol.md`.
    */
   mediaSocketPath?: string;
+  /**
+   * Linux: whether the helper also creates the uinput devices and injects what `sendControl`
+   * writes. Default true; PetPlay passes false, since `desktopInput` injects.
+   */
+  input?: boolean;
   /** Whether to log debug information. Defaults to false. */
   debug?: boolean;
   /** Callback for frame statistics (FPS, latency). Called every 30 frames if provided. */
@@ -116,6 +121,7 @@ export class ScreenCapturer {
       onExit: options.onExit ?? (() => {}),
       // Empty means no media worker, so the helper is started without the option.
       mediaSocketPath: options.mediaSocketPath ?? "",
+      input: options.input ?? true,
     };
   }
 
@@ -235,6 +241,7 @@ export class ScreenCapturer {
         ...(this.options.mediaSocketPath
           ? [`--media-socket=${this.options.mediaSocketPath}`]
           : []),
+        ...(Deno.build.os === "linux" && this.options.input === false ? ["--no-input"] : []),
       ],
       // The helper reads Enter to stop. Keep stdin open for its lifetime rather
       // than giving it Deno.Command's closed default, which makes it exit at

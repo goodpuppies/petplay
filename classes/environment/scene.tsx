@@ -20,17 +20,11 @@ import {
   DEFAULT_DISPLAY_HEIGHT,
   DISPLAY_PANEL_WIDTH,
 } from "./displayMetrics.ts";
-import {
-  createSmoothedDisplayMouseSink,
-  windowsSystemDisplayMouseSink,
-} from "./displayInstance/mouse.ts";
-import type { DisplayMouseLogicEvent, DisplayMouseSink } from "./displayInstance/mouse.ts";
-import { KeyboardPanel, windowsSystemKeyboardSink } from "./keyboard/keyboard.tsx";
-import { tryLinuxX11Scroll } from "./displayInstance/linuxX11Scroll.ts";
+import type { DisplayMouseSink } from "./displayInstance/mouse.ts";
+import { KeyboardPanel } from "./keyboard/keyboard.tsx";
 import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
 import { createDesktopInputSinks } from "./desktopInputSink.ts";
-import { createLinuxKeyboardSink } from "./keyboard/linuxSystemKeyboard.ts";
 import type { KeyboardSink } from "./keyboard/types.ts";
 import { KEYBOARD_LOCALES, useKeyboardLocale } from "./keyboard/keyboardLocale.ts";
 import { PostMan } from "../../submodules/stageforge/mod.ts";
@@ -170,35 +164,6 @@ type WebXRSceneProps = {
   desktopInputActor?: string | null;
   directOpenVrInputSource?: DirectOpenVrInputSource;
 };
-
-function postInputControl(actor: string, command: string): void {
-  try {
-    PostMan.PostMessage({ target: actor, type: "INPUTCONTROL", payload: command });
-  } catch {
-    // The display actor may be shutting down.
-  }
-}
-
-function createLinuxMouseSink(actor: string): DisplayMouseSink {
-  const rawSink: DisplayMouseSink = (event: DisplayMouseLogicEvent) => {
-    postInputControl(actor, `M,${event.x},${event.y}`);
-    if (event.kind === "button") {
-      postInputControl(actor, `B,${event.button},${event.pressed ? 1 : 0}`);
-    } else if (event.kind === "wheel") {
-      if (!tryLinuxX11Scroll(event.deltaY, event.x, event.y)) {
-        postInputControl(actor, `W,${event.deltaY}`);
-      }
-    }
-  };
-  const smoothedUinputSink = createSmoothedDisplayMouseSink(rawSink);
-  return (event) => {
-    // Keep the compositor cursor pixel-exact with the VR ray. KDE uinput still
-    // receives the smoothed path below; button events snap it to this same raw
-    // coordinate before the click transition.
-    postInputControl(actor, `C,${event.x},${event.y}`);
-    smoothedUinputSink(event);
-  };
-}
 
 /** VRC camera OSC debug markers; off unless `PETPLAY_VRC_CAMERA_DEBUG=1`. */
 const SHOW_VRC_CAMERA_DEBUG = Deno.env.get("PETPLAY_VRC_CAMERA_DEBUG") === "1";
@@ -2294,6 +2259,9 @@ function PassthroughSkybox() {
   );
 }
 
+const ignoreMouse: DisplayMouseSink = () => {};
+const ignoreKeys: KeyboardSink = () => {};
+
 export function WebXRScene(
   {
     XROrigin: _XROrigin,
@@ -2313,28 +2281,14 @@ export function WebXRScene(
         : null,
     [desktopInputActor, displayOverlayHostActor],
   );
-  // Without a desktopInput (a server started before it existed, hot-reloading this scene), the
-  // previous path: input through the overlay host's capture helper, or SendInput from here.
-  const rawDisplayMouseSink = React.useMemo(
-    () =>
-      desktopInputSinks?.mouse ??
-        (Deno.build.os === "linux" && displayOverlayHostActor
-          ? createLinuxMouseSink(displayOverlayHostActor)
-          : windowsSystemDisplayMouseSink),
-    [desktopInputSinks, displayOverlayHostActor],
-  );
-  const rawKeyboardSink = React.useMemo(
-    () =>
-      desktopInputSinks?.keyboard ??
-        (Deno.build.os === "linux" && displayOverlayHostActor
-          ? createLinuxKeyboardSink((command) => postInputControl(displayOverlayHostActor, command))
-          : windowsSystemKeyboardSink),
-    [desktopInputSinks, displayOverlayHostActor],
-  );
-
+  // Without a desktopInput (a --novr server, by default) nothing reaches the real desktop.
   const { onMouse: displayMouseSink, onKey: keyboardSink } = React.useMemo(
-    () => createDesktopInputRouting(rawDisplayMouseSink, rawKeyboardSink),
-    [rawDisplayMouseSink, rawKeyboardSink],
+    () =>
+      createDesktopInputRouting(
+        desktopInputSinks?.mouse ?? ignoreMouse,
+        desktopInputSinks?.keyboard ?? ignoreKeys,
+      ),
+    [desktopInputSinks],
   );
 
   React.useEffect(() => {
