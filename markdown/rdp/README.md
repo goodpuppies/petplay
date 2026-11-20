@@ -259,8 +259,10 @@ Tests: stageforge `test/topic.test.ts` (both join orders, bytes, the lost-joins 
 of the dial record and of re-announce fail them), PetPlay `tests/iroh-topics/` (native and wasm,
 the page dialed through its relay), `rdp/test/`.
 
-**Next:** a transport is just the kind's connection (WebSocket messages, WebTransport streams,
-MessagePort), with the stageforge message protocol as an option on top, not built in.
+**Transports as connections (done 2026-11-20).** `transport.connection` is the kind's own object
+(MessagePort, WebSocket, ...). Stageforge's framing is the optional `messages(transport)` layer.
+Kinds are modules registered per actor like worker wrappers: `messageport` by default,
+`websocket` opt-in, application kinds (PetPlay's WebTransport) alongside.
 
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.
