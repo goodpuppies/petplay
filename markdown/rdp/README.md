@@ -182,6 +182,13 @@ the topic server.
 1. Transport API in stageforge with `messageport` and `websocket` kinds, plus tests: negotiation
    over an existing route, single-use tokens, and moving an actor route onto a new transport
    without losing or reordering messages.
+   **1a done 2026-11-20** (`submodules/stageforge/src/lib/Transport.ts`, `transports/`,
+   `test/transport.test.ts`): `Transport.open` / `accept`, offer → answer → optional connect
+   messages, locality-based kind choice (thread↔thread picks `messageport`, thread↔process
+   falls back to `websocket`), single-use WebSocket tokens, close propagation with reasons,
+   channels closed on actor shutdown. A worker's transferred MessagePorts now survive the hub
+   relay (`shared.ts` keeps them in the message's `transfer` field). **1b remaining:** moving an
+   actor route onto a negotiated channel.
 2. Transport-neutral topic records; iroh as a registered kind; only node ids published.
 2b. Iroh in the browser: a wasm wrapper crate on the same iroh version as the Deno side.
 3. `desktopSource` and `desktopInput` split out of `displayOverlayHost`; the overlay host consumes them.
