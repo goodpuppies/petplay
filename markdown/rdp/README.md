@@ -148,11 +148,21 @@ endpoint with `wasm-bindgen` (connect, accept, bidirectional streams). Sources:
 [iroh wasm/browser docs](https://docs.iroh.computer/deployment/wasm-browser-support),
 [iroh 0.33 release notes](https://iroh.computer/blog/iroh-0-33-0-browsers-and-discovery-and-0-RTT-oh-my).
 
-Version skew to resolve first: `submodules/irohworker` uses `npm:@number0/iroh` 0.35 (NAPI
-bindings to native iroh, locked in `deno.lock`). Iroh has since reached 1.0, and
-`petplay_mediatransport` uses iroh in Rust through `moq-tokio`. The browser wrapper and the Deno
-side must speak the same iroh protocol version and agree on one ALPN for actor routes. One option
-is a single Rust crate built twice: as wasm for browsers and as a Deno FFI library for the server.
+**Our own crate, not iroh-ffi.** `submodules/irohworker` uses `npm:@number0/iroh` 0.35, the
+NAPI bindings, which are too limited (the reason `petplay_mediatransport` already uses iroh from
+Rust through `moq-tokio`). On 2026-11-20 the npm package was at 1.2.0 and the `iroh` crate at
+1.5.0, so the bindings also trail the crate, and they don't cover browsers at all. Decision: one
+PetPlay iroh crate that owns the endpoint, a versioned ALPN for actor routes, message framing and
+the transport-negotiation helpers, with two front ends:
+
+- **browser:** `wasm-bindgen` (relay-only, as above);
+- **native:** the same crate inside the existing `petplay-media` process, extended to accept actor
+  routes next to MoQ media on one endpoint. One node id per machine then covers both, multiplexed
+  by ALPN, and a native crash stays outside the PetPlay host process. Deno reaches it over a local
+  socket, as `remoteMediaOverlay` already does. In-process `Deno.dlopen` is the alternative if the
+  socket hop shows up in latency.
+
+Framing and batching happen in Rust, so JavaScript never handles individual packets.
 
 Relays: public n0 relays work for development. A self-hosted `iroh-relay` could later sit next to
 the topic server.
