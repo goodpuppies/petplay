@@ -50,14 +50,15 @@ The topic only gets two processes talking. Access is decided over iroh:
   What changes is the share code: it travels as a descriptor over the actor route, and the source
   admits only the node id that asked, which the README lists as missing ("restricting a source to
   specific viewer identities").
-- **Input:** a new stageforge kind, `route`. It carries the message layer as ordinary actor
-  messages over the route that already exists, iroh here, so it reaches wherever the actors
-  reach each other, NAT included. It is the fallback every actor has. `desktopInput` needs no
-  listener. Input is small enough that a dedicated connection gains nothing.
+- **Input:** no transport of its own. In one process the UI actor opens `rdp.input` over
+  `messageport`, as now. Across machines it sends `desktopInput` the `INPUT` messages it
+  already accepts, which travel over the iroh route like any actor message (NAT included). A
+  real iroh transport kind, its own stream on the connection for bulk data, may come later for
+  video or for replacing the main path. Input doesn't need it.
 
 ## Order
 
-1. `.secret`, the agent, the `route` kind, and node-bound proofs (replacing the plain secret in
+1. `.secret`, the agent, input over the actor route, and node-bound proofs (replacing the plain secret in
    the `rdp.ui` offer). Test as two local processes, then on cachyos.
 2. The rdp app lists several desktops: a picker in the toolbar.
 3. `desktopSource` offers an iroh feed. PetPlay shows a found desktop through
