@@ -3,7 +3,7 @@
  * constructs the PostalService (with this process's iroh node and the topic server) and spawns
  * `rdp`, which composes the rest. Prints the link to open in a browser.
  *
- *   deno run -A rdp/main.ts [--host=<tailnet address>] [--media-port=4460] [--site-port=N]
+ *   deno run -A --unstable-net rdp/main.ts [--host=<tailnet address>] [--media-port=4460] [--site-port=N]
  *     [--no-capture] [--no-input] [--no-site] [--topics=wss://…] [--relay=https://…]
  *
  * Needs `deno task rdp:build` (the page) and `petplay-media` built with `--features iroh`

@@ -2,8 +2,9 @@
  * rdp UI actor: renders the remote desktop app for a browser tab.
  *
  * It joins the session's topic, so the tab's client actor finds it, and accepts one `rdp.ui`
- * transport at a time (a WebSocket the tab connects to; the descriptor travels over the actor
- * route, never the topic). A tab must present the session secret in its offer
+ * transport at a time: WebTransport with a pinned self-signed certificate
+ * (`classes/selfSignedCert.ts`), so a page served over https anywhere can reach it, or a WebSocket.
+ * The descriptor travels over the actor route, never the topic. A tab must present the session secret in its offer
  * (`classes/session.ts`); any other transport is closed before anything is sent. The app runs in a headless browser tab sized to the real one
  * (`classes/browserTab.ts`); the tab's DOM events are dispatched into it, and its scene is sent
  * back as raythree store deltas, "latest since ack" (`classes/sceneFeed.ts`).
@@ -22,7 +23,9 @@ import {
   Transport,
   type TransportMessages,
   webSocketTransport,
+  webTransportTransport,
 } from "../submodules/stageforge/mod.ts";
+import { CERT_RENEW_MS, selfSignedCertificate } from "./classes/selfSignedCert.ts";
 import { type BrowserTab, createBrowserTab } from "./classes/browserTab.ts";
 import { SceneFeed } from "./classes/sceneFeed.ts";
 import {
@@ -43,6 +46,11 @@ export type UiStart = {
   secret: string;
   /** Where the tab's WebSocket reaches this actor (a tailnet address); default loopback. */
   websocket?: { hostname?: string; port?: number; publicUrl?: string };
+  /**
+   * Where the tab's WebTransport reaches this actor; default the websocket hostname. False: no
+   * WebTransport (it needs --unstable-net and openssl).
+   */
+  webtransport?: { hostname?: string; port?: number; publicHost?: string } | false;
   source?: ActorId;
   input?: ActorId;
 };
@@ -60,6 +68,9 @@ const state = actorState({
   bytesSent: 0,
   domEvents: 0,
   rejected: 0,
+  /** The transport kind of the connected tab. */
+  tabKind: null as string | null,
+  webtransport: false,
   feed: null as FeedInfo | null,
   inputConnected: false,
   lastError: null as string | null,
@@ -73,6 +84,7 @@ let feedSize: { width: number; height: number } | null = null;
 let input: TransportMessages | null = null;
 let lastCamera = "";
 let frameTimer: ReturnType<typeof setInterval> | null = null;
+let certTimer: ReturnType<typeof setTimeout> | null = null;
 let feedTimer: ReturnType<typeof setInterval> | null = null;
 
 const inputSink: DesktopInputSink = {
@@ -174,6 +186,7 @@ async function onTab(transport: Transport): Promise<void> {
   session = current;
   lastCamera = "";
   state.tabConnected = true;
+  state.tabKind = transport.kind;
   tab.onclose = () => {
     if (session !== current) return;
     session = null;
@@ -208,7 +221,33 @@ async function onTab(transport: Transport): Promise<void> {
   send({ media: { feeds: state.feed ? { [DESKTOP_FEED]: state.feed } : {} } });
 }
 
+/**
+ * Listen on WebTransport with a fresh certificate, and again with a new one before it expires.
+ * A renewal replaces the kind for new tabs; the old listener stays up for the tab it carries.
+ */
+async function listenWebTransport(options: Exclude<UiStart["webtransport"], false>): Promise<void> {
+  if (typeof (Deno as { QuicEndpoint?: unknown }).QuicEndpoint !== "function") {
+    state.lastError = "webtransport: needs --unstable-net; tabs use websocket";
+    return;
+  }
+  try {
+    registerTransportKind(webTransportTransport({
+      certificate: await selfSignedCertificate(),
+      hostname: options?.hostname ?? config?.websocket?.hostname ?? "127.0.0.1",
+      port: options?.port,
+      publicHost: options?.publicHost,
+      reach: "network",
+    }));
+    state.webtransport = true;
+  } catch (error) {
+    state.lastError = `webtransport: ${error}`;
+  }
+  certTimer = setTimeout(() => void listenWebTransport({ ...options, port: undefined }), CERT_RENEW_MS);
+}
+
 function stop(): void {
+  if (certTimer) clearTimeout(certTimer);
+  certTimer = null;
   if (frameTimer) clearInterval(frameTimer);
   if (feedTimer) clearInterval(feedTimer);
   frameTimer = feedTimer = null;
@@ -241,6 +280,7 @@ new PostMan(
         // browser is always "network" away.
         reach: "network",
       }));
+      if (payload.webtransport !== false) await listenWebTransport(payload.webtransport);
       Transport.accept(UI_PURPOSE, (transport) => onTab(transport));
       frameTimer = setInterval(frame, FRAME_MS);
       if (payload.source) {

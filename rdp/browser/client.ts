@@ -22,6 +22,7 @@ import {
   Transport,
   type TransportMessages,
   webSocketTransport,
+  webTransportTransport,
 } from "../../submodules/stageforge/mod.ts";
 import {
   decodeDelta,
@@ -131,7 +132,9 @@ async function connect(): Promise<void> {
       try {
         const transport = await Transport.open(ui, {
           purpose: UI_PURPOSE,
-          kinds: ["websocket"],
+          // WebTransport works from an https page anywhere; a WebSocket only from http or a
+          // page on the same host.
+          kinds: ["webtransport", "websocket"],
           params: { secret },
         });
         tab = messages(transport);
@@ -190,6 +193,7 @@ new PostMan(state, {
     };
     resize(initial);
     registerTransportKind(webSocketTransport());
+    registerTransportKind(webTransportTransport());
     PostMan.setTopic(await sessionTopic(secret));
     status("looking for the desktop…");
     void connect();

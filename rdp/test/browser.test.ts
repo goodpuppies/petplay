@@ -1,13 +1,13 @@
 /**
  * The whole path in a real browser (headless Chromium, its own window-less instance): the built
  * page (`deno task rdp:build`) finds the UI actor through a topic, over iroh through a local dev
- * relay, opens the rdp.ui WebSocket, draws the app, and a click and a key in the page reach
+ * relay, opens the rdp.ui WebTransport (pinned self-signed certificate), draws the app, and a click and a key in the page reach
  * desktopInput (on a stand-in helper; nothing reaches the real desktop). The video is a stand-in
  * feed nothing serves, so it shows as an empty surface.
  *
  * Needs: dist/rdp, PETPLAY_LINK_BINARY (petplay-media --features iroh), iroh-relay in
  * target/tools, and Playwright's Chromium (PETPLAY_CHROMIUM or ~/.cache/ms-playwright).
- * Leaves a screenshot of the page in $RDP_SCREENSHOT if set.
+ * Run with --unstable-net. Leaves a screenshot of the page in $RDP_SCREENSHOT if set.
  */
 import { assert, assertEquals } from "jsr:@std/assert";
 import { chromium } from "npm:playwright@1.55.0";
@@ -97,11 +97,15 @@ Deno.test({
 
       const ui = actors.ui;
       const health = await eventually(
-        () => call<{ tabConnected: boolean; deltasSent: number; viewport: unknown }>(ui, "__HEALTH__"),
+        () => call<{ tabConnected: boolean; tabKind: string; deltasSent: number; viewport: unknown }>(
+            ui,
+            "__HEALTH__",
+          ),
         (h) => h.tabConnected && h.deltasSent >= 2,
         `the tab connects and receives the app (page log: ${logs.slice(-5).join(" | ")})`,
       );
       assertEquals(health.viewport, { width: 800, height: 600, dpr: 1 });
+      assertEquals(health.tabKind, "webtransport");
       await eventually(
         () => page.locator("#status").textContent(),
         (text) => text === "",

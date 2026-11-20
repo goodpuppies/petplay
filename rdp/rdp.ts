@@ -62,7 +62,13 @@ new PostMan(state, {
       input = actors.input = resolveActorId(await PostMan.create("./desktopInput.ts", import.meta.url));
     }
     const ui = actors.ui = resolveActorId(await PostMan.create("./ui.tsx", import.meta.url));
-    await call(ui, "START", { secret, websocket: { hostname: host }, source, input });
+    await call(ui, "START", {
+      secret,
+      websocket: { hostname: host },
+      webtransport: { hostname: host },
+      source,
+      input,
+    });
 
     let base = "";
     if (payload.site !== false) {

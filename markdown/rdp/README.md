@@ -262,7 +262,14 @@ the page dialed through its relay), `rdp/test/`.
 **Transports as connections (done 2026-11-20).** `transport.connection` is the kind's own object
 (MessagePort, WebSocket, ...). Stageforge's framing is the optional `messages(transport)` layer.
 Kinds are modules registered per actor like worker wrappers: `messageport` by default,
-`websocket` opt-in, application kinds (PetPlay's WebTransport) alongside.
+`websocket` and `webtransport` opt-in, application kinds alongside.
+
+**WebTransport for the tab (done 2026-11-20).** Stageforge's `webtransport` kind: a Deno QUIC
+listener with a self-signed certificate whose hash the descriptor carries and the connecting side
+pins; the message layer runs over the session's first bidirectional stream. The UI actor listens
+on it and the tab prefers it, so the page can come from any https host
+(`connection.md`, "The page's origin"). Tests: stageforge `test/webTransport.test.ts`, and
+`rdp/test/browser.test.ts` now asserts the tab connected over it.
 
 **One tab, end to end (2026-11-20).** `deno task rdp:build` builds the page into `dist/rdp`;
 `deno task rdp [--host=<tailnet address>]` runs a standalone desktop process (`rdp/main.ts`: a
@@ -278,10 +285,11 @@ PostalService with the iroh carrier, spawning `rdp`) and prints the link.
   an OffscreenCanvas with the scene viewer's `SceneView` (now `web/scene-stream/sceneView.ts`,
   with `mediaFeeds.ts`).
 - Tests: `rdp/test/ui.test.ts` (a test actor as the tab; a wrong secret gets nothing) and
-  `rdp/test/browser.test.ts` (headless Chromium: topic → iroh via a dev relay → WebSocket → the
+  `rdp/test/browser.test.ts` (headless Chromium: topic → iroh via a dev relay → WebTransport → the
   app drawn → a click and a key reach desktopInput on a stand-in helper; 6 s).
 Not yet tried against real capture and input (both act on the live desktop), nor over the
-tailnet. Open: `wss` for an https page, and the empty feed drawing white in headless Chromium.
+tailnet. Open: hosting the page on an https site, and the empty feed drawing white in headless
+Chromium.
 
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.
