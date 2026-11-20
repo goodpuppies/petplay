@@ -1,4 +1,5 @@
-import { captureSessionEnvironment } from "./captureSessionEnvironment.ts";
+import { CaptureHelper } from "./captureHelper.ts";
+import { FrameReceiver } from "./frameReceiver.ts";
 //#region typings
 
 /**
@@ -68,48 +69,22 @@ export function clampCaptureFps(fps: number | undefined): number {
 }
 
 /**
- * ScreenCapturer provides a high-level interface for capturing screen content.
- * It manages the screen capture process and provides easy access to the latest frame.
+ * A capture helper and the frame receiver it streams to, as one object: the helper starts with
+ * the first frame request and the pair goes away together. `desktopSource` uses the two parts
+ * separately (`CaptureHelper`, `FrameReceiver`), since there the receiver lives with whoever
+ * shows frames.
  *
- * Example usage:
- * ```typescript
- * const capturer = new ScreenCapturer();
- *
- * // Get the latest frame
- * const frame = await capturer.getLatestFrame();
- * if (frame) {
- *   console.log(`Got frame: ${frame.width}x${frame.height}`);
- *   // Use frame.data (RGBA pixels)...
- * }
- *
- * // Clean up when done
- * await capturer.dispose();
- * ```
+ * A dropped frame socket stops the helper (this receiver takes one connection), so `onExit`, the
+ * owner's restart path, brings up a fresh pair.
  */
 export class ScreenCapturer {
-  private static readonly LISTENER_START_TIMEOUT_MS = 5_000;
-  //#region privates
-  private process: Deno.ChildProcess | null = null;
-  private controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
-  private worker: Worker | null = null;
-  private frameData: CapturedFrame | null = null;
-  private lastErrorLine: string | null = null;
-  private receivedFrame = false;
-  private disposed = false;
-  private frameCount = 0;
-  private totalReceiveTime = 0;
-  private isStarted = false;
   private options: Required<ScreenCapturerOptions>;
+  private receiver: FrameReceiver | null = null;
+  private helper: CaptureHelper | null = null;
   private startPromise: Promise<void> | null = null;
-  private processExit: Deno.CommandStatus | null = null;
+  private disposed = false;
   private stopping = false;
-  private statsStartedAt = performance.now();
-  private frameWaiters: Array<(frame: CapturedFrame | null) => void> = [];
-  //#endregion
-  /**
-   * Creates a new ScreenCapturer instance and automatically starts the capture process.
-   * @param options Configuration options for the capturer
-   */
+
   constructor(options: ScreenCapturerOptions = {}) {
     this.options = {
       port: options.port ?? 12345,
@@ -125,181 +100,51 @@ export class ScreenCapturer {
     };
   }
 
-  /**
-   * Internal method to log debug messages
-   */
   private log(...args: unknown[]) {
-    if (this.options.debug) {
-      console.log("[ScreenCapturer]", ...args);
-    }
+    if (this.options.debug) console.log("[ScreenCapturer]", ...args);
   }
 
-  /**
-   * Starts the screen capture process if not already started.
-   * This is called automatically when needed, but can be called manually to pre-initialize.
-   * @returns Promise that resolves when the capture process is ready
-   * @throws Error if the capture process fails to start
-   */
+  /** Starts the receiver, then the helper aimed at it. Called by the first frame request. */
   async start(): Promise<void> {
     // A frame poll after dispose() must not silently spawn a new helper (and a new portal dialog).
     if (this.disposed) throw new Error("ScreenCapturer was disposed");
-    if (this.isStarted) return;
-    if (this.startPromise) return this.startPromise;
-
-    this.startPromise = this.initializeCapture();
-    try {
-      await this.startPromise;
-      this.isStarted = true;
-    } finally {
-      this.startPromise = null;
-    }
+    if (this.helper) return;
+    this.startPromise ??= this.initializeCapture().finally(() => this.startPromise = null);
+    return await this.startPromise;
   }
 
-  /**
-   * Internal method to initialize the capture process and worker
-   */
   private async initializeCapture(): Promise<void> {
-    this.log("Starting frame receiver worker...");
-    this.worker = new Worker(new URL("./frame_receiver_worker.ts", import.meta.url).href, {
-      type: "module",
+    const receiver = await FrameReceiver.start({
+      port: this.options.port,
+      reaccept: false,
+      onDisconnect: () => this.handleDisconnect(),
+      onStats: this.options.onStats,
     });
-
-    // Wait for worker to be ready
-    try {
-      await Promise.race([
-        new Promise<void>((resolve, reject) => {
-          if (!this.worker) return reject(new Error("Worker not initialized"));
-
-          this.worker.onerror = (event) => {
-            event.preventDefault();
-            reject(new Error(`Capture receiver worker failed to load: ${event.message}`));
-          };
-          this.worker.onmessageerror = () => {
-            reject(new Error("Capture receiver worker could not deserialize a message"));
-          };
-
-          this.worker.onmessage = (e: MessageEvent) => {
-            const { type, data, width, height, receiveTime, error } = e.data;
-            if (type === "listening") {
-              this.log("TCP server started on worker");
-              resolve();
-            } else if (type === "connected") {
-              this.log("Client connected to worker");
-            } else if (type === "disconnected") {
-              this.handleDisconnect();
-            } else if (type === "frame") {
-              this.frameData = { data, width, height, receiveTime };
-              this.receivedFrame = true;
-              const waiters = this.frameWaiters.splice(0);
-              for (const finish of waiters) finish(this.frameData);
-              this.frameCount++;
-              this.totalReceiveTime += receiveTime;
-
-              if (this.frameCount % 30 === 0) {
-                const avgLatency = this.totalReceiveTime / this.frameCount;
-                const now = performance.now();
-                const fps = (this.frameCount * 1000) / Math.max(1, now - this.statsStartedAt);
-                this.options.onStats({ fps, avgLatency });
-                this.totalReceiveTime = 0;
-                this.frameCount = 0;
-                this.statsStartedAt = now;
-              }
-            } else if (type === "error") {
-              this.log("Worker error:", error);
-              reject(new Error(error));
-            }
-          };
-
-          // Tell worker to start TCP server
-          this.worker.postMessage({ type: "connect", port: this.options.port });
-        }),
-        new Promise<never>((_, reject) => {
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `Capture receiver did not start listening within ${ScreenCapturer.LISTENER_START_TIMEOUT_MS}ms`,
-                ),
-              ),
-            ScreenCapturer.LISTENER_START_TIMEOUT_MS,
-          );
-        }),
-      ]);
-    } catch (error) {
-      this.worker?.terminate();
-      this.worker = null;
-      throw error;
+    if (this.disposed) {
+      receiver.dispose();
+      throw new Error("ScreenCapturer was disposed");
     }
-
-    // Start the Rust process after worker is ready
-    const command = new Deno.Command(this.options.executablePath, {
-      env: captureSessionEnvironment(),
-      args: [
-        `--fps=${this.options.fps}`,
-        `--port=${this.options.port}`,
-        `--capture-token-path=${this.options.captureTokenPath}`,
-        ...(this.options.mediaSocketPath
-          ? [`--media-socket=${this.options.mediaSocketPath}`]
-          : []),
-        ...(Deno.build.os === "linux" && this.options.input === false ? ["--no-input"] : []),
-      ],
-      // The helper reads Enter to stop. Keep stdin open for its lifetime rather
-      // than giving it Deno.Command's closed default, which makes it exit at
-      // once as if the user had pressed Enter.
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "piped",
+    this.receiver = receiver;
+    const helper = new CaptureHelper({
+      executablePath: this.options.executablePath,
+      fps: this.options.fps,
+      tokenPath: this.options.captureTokenPath,
+      framePort: receiver.port,
+      mediaSocket: this.options.mediaSocketPath || null,
+      input: this.options.input,
+      log: (line) => this.log("Process:", line),
     });
-
-    this.process = command.spawn();
-    this.controlWriter = this.process.stdin.getWriter();
-    this.processExit = null;
-    const process = this.process;
-    void process.status.then((status) => {
-      if (this.process !== process) return;
-      this.processExit = status;
-      if (!this.stopping) {
-        this.options.onExit(status);
-      }
+    this.helper = helper;
+    void helper.exited.then((status) => {
+      if (this.helper === helper && !this.stopping) this.options.onExit(status);
     });
-
-    // Handle process output
-    this.process.stderr.pipeTo(
-      new WritableStream({
-        write: (chunk) => {
-          const text = new TextDecoder().decode(chunk);
-          const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-          if (lines.length > 0) this.lastErrorLine = lines[lines.length - 1];
-          this.log("Process stderr:", text);
-        },
-      }),
-    );
-
-    this.process.stdout.pipeTo(
-      new WritableStream({
-        write: (chunk) => {
-          const text = new TextDecoder().decode(chunk);
-          this.log("Process stdout:", text);
-        },
-      }),
-    );
   }
 
-  /**
-   * The frame socket dropped. The worker's listener only ever accepts one connection, so a helper
-   * that is still alive can never deliver another frame: stop it, and let `onExit` (the owner's
-   * restart path) bring up a fresh helper and receiver.
-   */
+  /** The receiver takes one connection: a live helper behind a dropped socket is useless. */
   private handleDisconnect(): void {
     if (this.stopping) return;
     this.log("Frame socket disconnected; stopping the helper so it is restarted");
-    if (this.process != null && this.processExit === null) {
-      try {
-        this.process.kill();
-      } catch {
-        // Already exiting; its status callback reports the exit.
-      }
-    }
+    void this.helper?.stop();
   }
 
   /** Capture rate the helper process was launched with. */
@@ -308,24 +153,12 @@ export class ScreenCapturer {
   }
 
   async sendControl(command: string): Promise<void> {
-    if (!this.controlWriter) return;
-    try {
-      await this.controlWriter.write(new TextEncoder().encode(`${command}\n`));
-    } catch (error) {
-      this.log("Control write failed:", error);
-    }
+    await this.helper?.sendControl(command);
   }
 
-  /**
-   * Gets the latest captured frame. Automatically starts the capture process if needed.
-   * @returns Promise that resolves to the latest frame, or null if no frame is available
-   * @throws Error if the capture process fails to start
-   */
   async getLatestFrame(): Promise<CapturedFrame | null> {
-    if (!this.isStarted) {
-      await this.start();
-    }
-    return this.frameData;
+    await this.start();
+    return this.receiver?.latestFrame() ?? null;
   }
 
   /** Wait for a frame object newer than `previous`, avoiding duplicate timer polling. */
@@ -333,93 +166,45 @@ export class ScreenCapturer {
     previous: CapturedFrame | null,
     timeoutMs = 1_000,
   ): Promise<CapturedFrame | null> {
-    if (!this.isStarted) await this.start();
-    if (this.frameData && this.frameData !== previous) return this.frameData;
-
-    return await new Promise((resolve) => {
-      let settled = false;
-      const finish = (frame: CapturedFrame | null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        const index = this.frameWaiters.indexOf(finish);
-        if (index >= 0) this.frameWaiters.splice(index, 1);
-        resolve(frame);
-      };
-      const timer = setTimeout(() => finish(null), timeoutMs);
-      this.frameWaiters.push(finish);
-    });
+    await this.start();
+    return await (this.receiver?.nextFrame(previous, timeoutMs) ?? null);
   }
 
   /** True once the helper has delivered a frame; a portal refusal exits before that. */
   hasReceivedFrame(): boolean {
-    return this.receivedFrame;
+    return this.receiver?.hasReceivedFrame() ?? false;
   }
 
   /** The helper's last stderr line, e.g. the portal's reason for ending the request. */
   getLastError(): string | null {
-    return this.lastErrorLine;
+    return this.helper?.lastError ?? null;
   }
 
   getStatus() {
+    const frame = this.receiver?.latestFrame() ?? null;
     return {
-      started: this.isStarted,
+      started: this.helper != null,
       starting: this.startPromise !== null,
-      workerActive: this.worker !== null,
-      processId: this.process?.pid ?? null,
-      processRunning: this.process !== null && this.processExit === null,
-      processExitCode: this.processExit?.code ?? null,
-      processSuccess: this.processExit?.success ?? null,
-      latestFrameWidth: this.frameData?.width ?? null,
-      latestFrameHeight: this.frameData?.height ?? null,
+      workerActive: this.receiver !== null,
+      processId: this.helper?.pid ?? null,
+      processRunning: this.helper?.running ?? false,
+      latestFrameWidth: frame?.width ?? null,
+      latestFrameHeight: frame?.height ?? null,
     };
   }
 
-  /**
-   * Stops the capture process and cleans up resources.
-   * The instance cannot be reused after calling this method.
-   */
+  /** Stops the helper and the receiver. The instance cannot be reused. */
   async dispose() {
     this.disposed = true;
     this.stopping = true;
-    this.isStarted = false;
-
-    if (this.worker) {
-      this.worker.postMessage({ type: "stop" });
-      this.worker.terminate();
-      this.worker = null;
+    await this.startPromise?.catch(() => {});
+    this.receiver?.dispose();
+    this.receiver = null;
+    const helper = this.helper;
+    this.helper = null;
+    if (helper) {
+      const status = await helper.stop();
+      this.log("Process exited with status:", status.code);
     }
-
-    if (this.process) {
-      try {
-        // Deno throws when kill() races the process status callback. A helper
-        // that has already exited only needs to have its status collected.
-        if (this.processExit === null) {
-          this.process.kill();
-        }
-        const status = await this.process.status;
-        this.log("Process exited with status:", status.code);
-      } catch (err) {
-        // The process can terminate between the status check and kill().
-        // Awaiting status confirms that this is normal teardown.
-        try {
-          const status = await this.process.status;
-          this.log("Process exited with status:", status.code);
-        } catch {
-          this.log("Error killing process:", err);
-        }
-      }
-      this.process = null;
-    }
-    try {
-      await this.controlWriter?.close();
-    } catch {
-      // Process teardown can close stdin first.
-    }
-    this.controlWriter = null;
-
-    this.frameData = null;
-    const waiters = this.frameWaiters.splice(0);
-    for (const finish of waiters) finish(null);
   }
 }

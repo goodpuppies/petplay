@@ -16,6 +16,7 @@ if (report) {
 }
 const port = Number(Deno.args.find((arg) => arg.startsWith("--port="))?.slice(7));
 const conn = await Deno.connect({ hostname: "127.0.0.1", port });
+console.log("🎥 Started capture. Press Enter to stop...");
 const pixels = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]);
 const header = new DataView(new ArrayBuffer(20));
 header.setUint32(0, 2, true); // width

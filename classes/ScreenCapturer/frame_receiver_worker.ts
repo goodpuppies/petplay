@@ -120,24 +120,37 @@ async function startReceiving() {
   }
 }
 
+async function acceptConnections(reaccept: boolean): Promise<void> {
+  do {
+    const current = listener;
+    if (!current) return;
+    try {
+      conn = await current.accept();
+    } catch {
+      return; // stopped
+    }
+    isConnected = true;
+    worker.postMessage({ type: "connected" });
+    await startReceiving();
+    try {
+      conn?.close();
+    } catch {
+      // Already closed.
+    }
+    conn = null;
+  } while (reaccept && listener);
+}
+
 worker.onmessage = async (e: MessageEvent) => {
   const { type, port } = e.data;
 
   if (type === "connect") {
     try {
-      // Create TCP server
-      listener = Deno.listen({
-        hostname: "127.0.0.1",
-        port,
-      });
-      worker.postMessage({ type: "listening", port });
-
-      // Wait for client connection
-      //console.log("Waiting for client connection...");
-      conn = await listener.accept();
-      isConnected = true;
-      worker.postMessage({ type: "connected" });
-      startReceiving();
+      // Port 0: any free port, reported back. With `reaccept`, a helper that goes away can be
+      // replaced by another connecting to the same port; otherwise one connection only.
+      listener = Deno.listen({ hostname: "127.0.0.1", port });
+      worker.postMessage({ type: "listening", port: (listener.addr as Deno.NetAddr).port });
+      void acceptConnections(e.data.reaccept === true);
     } catch (err) {
       worker.postMessage({ type: "error", error: (err as Error).message });
     }

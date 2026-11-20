@@ -5,15 +5,12 @@ import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { Buffer } from "node:buffer";
-import { join } from "@std/path";
-import { configDir, tempDir } from "../classes/appPaths.ts";
 import { wait } from "../classes/utils.ts";
-import { nativeBuildTarget, screenStreamerRelativePath } from "../classes/nativeBuildTarget.ts";
+import { FrameReceiver } from "../classes/ScreenCapturer/frameReceiver.ts";
 import {
   type CapturedFrame,
   clampCaptureFps,
   DEFAULT_CAPTURE_FPS,
-  type ScreenCapturer,
 } from "../classes/ScreenCapturer/scclass.ts";
 import type { OpenGLManager } from "../classes/openglManager.ts";
 import { getOverlayTransformAbsolute, setOverlayTransform } from "../classes/openvrTransform.ts";
@@ -36,7 +33,10 @@ const state = actorState({
   isStarting: false,
   lastStartError: null as string | null,
   glManager: null as OpenGLManager | null,
-  screenCapturer: null as ScreenCapturer | null,
+  /** Where the capture helper streams frames; `desktopSource` runs the helper. */
+  frameReceiver: null as FrameReceiver | null,
+  /** This machine's capture actor (`rdp/desktopSource.ts`), set by `SETDESKTOPSOURCE`. */
+  desktopSource: null as string | null,
   textureStructPtr: null as Deno.PointerValue<OpenVR.Texture> | null,
   textureReady: false,
   lastWidthMeters: -1,
@@ -62,23 +62,10 @@ const state = actorState({
   mediaSocketPath: (Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOCKET") || null) as string | null,
 });
 
-let warmCapturePromise: Promise<ScreenCapturer> | null = null;
-
-/**
- * Capture restarts back off so a helper that dies at once (portal denied, port taken) does not
- * spin. A helper that ran for `CAPTURE_STABLE_MS` resets the delay.
- */
-const CAPTURE_RESTART_MIN_MS = 1_000;
-const CAPTURE_RESTART_MAX_MS = 30_000;
-const CAPTURE_STABLE_MS = 60_000;
-let captureRestartDelayMs = CAPTURE_RESTART_MIN_MS;
-let captureStartedAt = 0;
-let captureRestartTimer: ReturnType<typeof setTimeout> | null = null;
+let frameReceiverPromise: Promise<FrameReceiver> | null = null;
 
 /** Actor that shows our status to the user (the webxr actor's toasts), set by SUBSCRIBESTATUS. */
 let statusListener: string | null = null;
-/** A restart is in flight, so the next successful capture start is a recovery worth announcing. */
-let captureRecovering = false;
 
 function postStatusToast(toast: { title: string; content?: string; tone?: string }): void {
   if (statusListener == null) return;
@@ -89,28 +76,22 @@ function postStatusToast(toast: { title: string; content?: string; tone?: string
   }
 }
 
-function scheduleCaptureRestart(reason: string): void {
-  if (state.shuttingDown || captureRestartTimer != null) return;
-  if (!captureRecovering) {
+/** desktopSource's capture events, as the toasts the overlay host used to raise itself. */
+function relayCaptureStatus(status: { event?: string; message?: string }): void {
+  if (status?.event === "lost") {
     postStatusToast({ title: "Desktop capture lost", content: "Reconnecting…", tone: "warning" });
-  }
-  captureRecovering = true;
-  if (performance.now() - captureStartedAt > CAPTURE_STABLE_MS) {
-    captureRestartDelayMs = CAPTURE_RESTART_MIN_MS;
-  }
-  const delay = captureRestartDelayMs;
-  captureRestartDelayMs = Math.min(CAPTURE_RESTART_MAX_MS, captureRestartDelayMs * 2);
-  LogChannel.error("actor", `[displayOverlayHost] ${reason}; restarting capture in ${delay}ms`);
-  captureRestartTimer = setTimeout(() => {
-    captureRestartTimer = null;
-    if (state.shuttingDown) return;
-    ensureWarmScreenCapturer().catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      state.lastStartError = message;
-      scheduleCaptureRestart(`capture restart failed: ${message}`);
+  } else if (status?.event === "recovered") {
+    postStatusToast({ title: "Desktop capture reconnected" });
+  } else if (status?.event === "unavailable") {
+    postStatusToast({
+      title: "Desktop capture unavailable",
+      content: status.message ??
+        "The screen-sharing request did not complete. Open the desktop to retry.",
+      tone: "warning",
     });
-  }, delay);
+  }
 }
+
 const openVrRuntime = new OpenVrRuntime("Display overlay host OpenVR");
 
 const START_DESKTOP_MAX_ATTEMPTS = 4;
@@ -280,19 +261,13 @@ new PostMan(
     __INIT__: (_payload: void) => {
       PostMan.setTopic("muffin");
       initializeDisplayOverlayOpenVr();
-      void ensureWarmScreenCapturer().catch((error) => {
-        LogChannel.error(
-          "actor",
-          `[displayOverlayHost] startup screen capture failed: ${
-            error instanceof Error ? error.message : error
-          }`,
-        );
-      });
+      // Listening early, so capture can start the moment desktopSource is known.
+      void ensureFrameReceiver().catch((error) =>
+        LogChannel.error("actor", `[displayOverlayHost] frame receiver failed: ${error}`)
+      );
     },
     __SHUTDOWN__: async (_payload: unknown) => {
       state.shuttingDown = true;
-      if (captureRestartTimer != null) clearTimeout(captureRestartTimer);
-      captureRestartTimer = null;
       await stopDisplayOverlayHost();
       releaseDisplayOverlayOpenVr();
     },
@@ -353,17 +328,39 @@ new PostMan(
     /** `{ path }`: also publish captured frames to this media worker socket; `null` stops. */
     SETDESKTOPMEDIASOCKET: (payload: { path: string | null }) => {
       const path = typeof payload?.path === "string" && payload.path ? payload.path : null;
-      void applyMediaSocket(path).catch((error) =>
-        LogChannel.error("actor", `[displayOverlayHost] media socket change failed: ${error}`)
-      );
+      state.mediaSocketPath = path;
+      if (state.desktopSource) {
+        PostMan.PostMessage({
+          target: state.desktopSource,
+          type: "SETMEDIASOCKET",
+          payload: { path },
+        });
+      }
       return getDisplayOverlayHostStatus();
     },
+    /** The capture actor; capture starts here once it is known. */
+    SETDESKTOPSOURCE: (actor: string) => {
+      state.desktopSource = typeof actor === "string" && actor ? actor : null;
+      if (!state.desktopSource) return getDisplayOverlayHostStatus();
+      PostMan.PostMessage({ target: state.desktopSource, type: "SUBSCRIBESTATUS", payload: state.id });
+      if (state.mediaSocketPath) {
+        PostMan.PostMessage({
+          target: state.desktopSource,
+          type: "SETMEDIASOCKET",
+          payload: { path: state.mediaSocketPath },
+        });
+      }
+      void registerFrameSink();
+      return getDisplayOverlayHostStatus();
+    },
+    CAPTURESTATUS: (status: { event?: string; message?: string }) => relayCaptureStatus(status),
     CONFIGUREDESKTOP: (payload: StartDesktopPayload) => {
       state.lastStartConfig = payload;
       // The capturer is warmed at actor startup, before this config arrives, so
       // the helper is running at the default rate. Without this the configured
       // fps only moved the present-side gate and could never exceed it.
-      void applyCaptureFps(clampCaptureFps(payload.captureFps));
+      state.captureFps = clampCaptureFps(payload.captureFps);
+      void registerFrameSink();
       return getDisplayOverlayHostStatus();
     },
     WRIST_MENU_ACTION: (
@@ -552,77 +549,28 @@ function getDisplayOverlayHostStatus() {
       name: entry.name ?? null,
     })),
     glReady: state.glManager != null,
-    screenCaptureActive: state.screenCapturer != null,
+    screenCaptureActive: state.frameReceiver?.connected ?? false,
+    desktopSource: state.desktopSource,
     captureFps: state.captureFps,
     captureFramesPresented: state.captureFramesPresented,
     visible: state.visible,
-    screenCapture: state.screenCapturer?.getStatus() ?? null,
+    screenCapture: state.frameReceiver
+      ? {
+        port: state.frameReceiver.port,
+        connected: state.frameReceiver.connected,
+        receivedFrame: state.frameReceiver.hasReceivedFrame(),
+      }
+      : null,
     hasTextureStruct: state.textureStructPtr != null,
     textureReady: state.textureReady,
     lastStartError: state.lastStartError,
   };
 }
 
-const SCREEN_STREAMER_PROCESS_NAME = Deno.build.os === "windows"
-  ? "petplay-screen-streamer.exe"
-  : "petplay-screen-streamer";
-let screenStreamerPath: string | null = null;
-
-function getScreenStreamerPath(): string {
-  if (screenStreamerPath) return screenStreamerPath;
-  const override = Deno.env.get("PETPLAY_SCREEN_STREAMER");
-  if (override) {
-    screenStreamerPath = override;
-    return override;
-  }
-  const url = new URL(`../${screenStreamerRelativePath(nativeBuildTarget())}`, import.meta.url);
-  let bytes: Uint8Array;
-  try {
-    bytes = Deno.readFileSync(url);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-    throw new Error(
-      "screen-streamer is missing. Run deno task build:native, or set PETPLAY_SCREEN_STREAMER.",
-    );
-  }
-  const runtimeDir = tempDir();
-  Deno.mkdirSync(runtimeDir, { recursive: true });
-  screenStreamerPath = join(runtimeDir, SCREEN_STREAMER_PROCESS_NAME);
-  Deno.writeFileSync(screenStreamerPath, bytes);
-  if (Deno.build.os !== "windows") Deno.chmodSync(screenStreamerPath, 0o755);
-  return screenStreamerPath;
-}
-
-/**
- * A forced app exit can orphan the Rust capture helper on Windows. Use a stable
- * executable name so the next display start can reliably remove only PetPlay's
- * stale helper before opening its replacement.
- */
-async function stopStaleScreenStreamer(): Promise<void> {
-  if (Deno.build.os !== "windows") return;
-  try {
-    await new Deno.Command("taskkill", {
-      args: ["/F", "/IM", SCREEN_STREAMER_PROCESS_NAME],
-      stdout: "null",
-      stderr: "null",
-    }).output();
-  } catch (error) {
-    LogChannel.log(
-      "actor",
-      `[displayOverlayHost] stale capture cleanup skipped: ${
-        error instanceof Error ? error.message : error
-      }`,
-    );
-  }
-}
-
-async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
-  const { ScreenCapturer } = await import("../classes/ScreenCapturer/scclass.ts");
+function ensureFrameReceiver(): Promise<FrameReceiver> {
+  if (state.frameReceiver) return Promise.resolve(state.frameReceiver);
   const logStats = getWebxrFrameLogsEnabled();
-  const portalStateDir = configDir();
-  const capturer = new ScreenCapturer({
-    debug: Deno.build.os !== "windows",
-    fps,
+  frameReceiverPromise ??= FrameReceiver.start({
     onStats: ({ fps, avgLatency }) => {
       if (!logStats) return;
       LogChannel.log(
@@ -630,104 +578,29 @@ async function initScreenCapturer(fps: number): Promise<ScreenCapturer> {
         `Display overlay — ${fps.toFixed(1)} fps, ${avgLatency.toFixed(1)} ms`,
       );
     },
-    executablePath: getScreenStreamerPath(),
-    captureTokenPath: join(portalStateDir, "screencast-restore-token"),
-    // desktopInput injects; the capture helper only captures.
-    input: false,
-    // Opt in by pointing this at a media worker that is already listening, the same
-    // way the remote scene controls are enabled. Capture and the local overlay behave
-    // identically without it; see markdown/remote-desktop-stream.md.
-    mediaSocketPath: state.mediaSocketPath ?? undefined,
-    onExit: (status) => {
-      state.screenCapturer = null;
-      warmCapturePromise = null;
-      if (state.shuttingDown) return;
-      const reason = capturer.getLastError();
-      const message = `screen-streamer exited (code=${status.code}, success=${status.success})` +
-        (reason ? `: ${reason}` : "");
-      state.lastStartError = message;
-      if (!capturer.hasReceivedFrame()) {
-        // It never captured: the portal refused, was cancelled or found no source. Restarting
-        // would open a new picker dialog every few seconds (and KDE ends a pending one when the
-        // next request arrives), so wait for the user to open the desktop again instead.
-        LogChannel.error("actor", `[displayOverlayHost] ${message}; not restarting capture`);
-        postStatusToast({
-          title: "Desktop capture unavailable",
-          content: reason ??
-            "The screen-sharing request did not complete. Open the desktop to retry.",
-          tone: "warning",
-        });
-        void capturer.dispose();
-        return;
-      }
-      void capturer.dispose().finally(() => scheduleCaptureRestart(message));
-    },
-  });
-  await capturer.start();
-  return capturer;
+  }).then((receiver) => {
+    state.frameReceiver = receiver;
+    return receiver;
+  }).finally(() => frameReceiverPromise = null);
+  return frameReceiverPromise;
 }
 
 /**
- * Re-launch the capture helper when the requested rate changes. `--fps` is a
- * process argument, so an already-running helper cannot be re-rated in place.
+ * Ask desktopSource to stream to our receiver at our rate. Also how a refused capture is retried:
+ * opening the desktop registers again.
  */
-async function applyCaptureFps(fps: number): Promise<void> {
-  if (state.captureFps === fps && state.screenCapturer?.getFps() === fps) return;
-  state.captureFps = fps;
-  const capturer = state.screenCapturer;
-  if (capturer == null || capturer.getFps() === fps) return;
-  await restartCapture(`at ${fps} fps (was ${capturer.getFps()})`);
-}
-
-/**
- * Publish capture to a media worker's frame socket as well (null stops). The socket is a
- * process argument of the capture helper, so a running helper is re-launched.
- */
-async function applyMediaSocket(path: string | null): Promise<void> {
-  if (state.mediaSocketPath === path) return;
-  state.mediaSocketPath = path;
-  if (state.screenCapturer == null) return;
-  await restartCapture(path ? `publishing to ${path}` : "without media publishing");
-}
-
-async function restartCapture(reason: string): Promise<void> {
-  const capturer = state.screenCapturer;
-  if (capturer == null) return;
-  LogChannel.log("actor", `[displayOverlayHost] restarting screen capture ${reason}`);
-  state.screenCapturer = null;
-  warmCapturePromise = null;
+async function registerFrameSink(): Promise<void> {
+  if (!state.desktopSource || state.shuttingDown) return;
+  const receiver = await ensureFrameReceiver();
   try {
-    await capturer.dispose();
+    await PostMan.PostMessage({
+      target: state.desktopSource,
+      type: "ADDFRAMESINK",
+      payload: { port: receiver.port, fps: state.captureFps },
+    }, true);
   } catch (error) {
-    LogChannel.error(
-      "actor",
-      `[displayOverlayHost] capture restart dispose failed: ${
-        error instanceof Error ? error.message : error
-      }`,
-    );
-  }
-  await ensureWarmScreenCapturer();
-}
-
-async function ensureWarmScreenCapturer(): Promise<ScreenCapturer> {
-  if (state.screenCapturer) return state.screenCapturer;
-  if (warmCapturePromise) return await warmCapturePromise;
-  warmCapturePromise = (async () => {
-    await stopStaleScreenStreamer();
-    const capturer = await initScreenCapturer(state.captureFps);
-    state.screenCapturer = capturer;
-    captureStartedAt = performance.now();
-    if (captureRecovering) {
-      captureRecovering = false;
-      postStatusToast({ title: "Desktop capture reconnected" });
-    }
-    LogChannel.log("actor", "[displayOverlayHost] screen capture warmed at actor startup");
-    return capturer;
-  })();
-  try {
-    return await warmCapturePromise;
-  } finally {
-    warmCapturePromise = null;
+    state.lastStartError = `capture: ${error instanceof Error ? error.message : error}`;
+    LogChannel.error("actor", `[displayOverlayHost] ADDFRAMESINK failed: ${state.lastStartError}`);
   }
 }
 
@@ -1034,10 +907,19 @@ async function stopDisplayOverlayHost(): Promise<void> {
   clearDeferredStartRetry();
   state.lastStartConfig = null;
   await stopDesktopOverlay();
-  if (state.screenCapturer) {
-    await state.screenCapturer.dispose();
-    state.screenCapturer = null;
+  const receiver = state.frameReceiver;
+  state.frameReceiver = null;
+  if (receiver && state.desktopSource) {
+    await Promise.race([
+      PostMan.PostMessage({
+        target: state.desktopSource,
+        type: "REMOVEFRAMESINK",
+        payload: { port: receiver.port },
+      }, true).catch(() => {}),
+      wait(2_000),
+    ]);
   }
+  receiver?.dispose();
 }
 
 async function startDesktopWithRetry(config: StartDesktopPayload): Promise<void> {
@@ -1124,23 +1006,20 @@ async function deskCapLoop(
   overlay: OpenVR.IVROverlay,
   textureStructPtr: Deno.PointerValue<OpenVR.Texture>,
 ) {
-  if (!state.screenCapturer) return;
   const maxFrames = state.captureFrames;
   const continuous = maxFrames === 0;
   let frameCount = 0;
   let lastFrame: CapturedFrame | null = null;
   let nextPresentAt = 0;
   while (state.isRunning && (continuous || frameCount < maxFrames)) {
-    // Follow the current helper: a lost stream is replaced by scheduleCaptureRestart, and a
-    // helper that never captured is not replaced until the user opens the desktop again.
-    const capturer = state.screenCapturer;
-    if (!capturer) {
+    // The receiver outlives helpers: desktopSource restarts a lost capture, and one that never
+    // captured waits until the user opens the desktop again (registerFrameSink).
+    const receiver = state.frameReceiver;
+    if (!receiver) {
       await wait(250);
       continue;
     }
-    const frame: CapturedFrame | null = await capturer.getNextFrame(lastFrame, 1_000).catch(() =>
-      null
-    );
+    const frame: CapturedFrame | null = await receiver.nextFrame(lastFrame, 1_000);
     if (!frame) {
       continue;
     }
@@ -1281,7 +1160,7 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
   for (const sync of pendingVirtualDisplays.values()) syncVirtualDisplay(sync);
 
   if (config.runScreenCapture) {
-    await ensureWarmScreenCapturer();
+    await registerFrameSink();
     void deskCapLoop(overlay, textureStructPtr).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       LogChannel.error("actor", `[displayOverlayHost] screen capture loop failed: ${message}`);
@@ -1305,8 +1184,6 @@ async function startDesktopOpenVrOverlay(config: StartDesktopPayload) {
 
 globalThis.addEventListener("unload", async () => {
   state.isRunning = false;
-  if (state.screenCapturer) {
-    await state.screenCapturer.dispose();
-    state.screenCapturer = null;
-  }
+  state.frameReceiver?.dispose();
+  state.frameReceiver = null;
 });

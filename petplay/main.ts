@@ -284,6 +284,8 @@ type SupervisedSceneActors = {
   agentRepl: ActorId;
   /** This machine's desktop input injector (`rdp/desktopInput.ts`); needs no OpenVR. */
   desktopInput: ActorId;
+  /** This machine's desktop capture (`rdp/desktopSource.ts`); the overlay host's frames. */
+  desktopSource: ActorId;
   desktopControlEnabled: boolean;
 };
 
@@ -350,6 +352,7 @@ const clientActors = {
   agentRepl: null as ActorId | null,
   cameraOrigin: null as ActorId | null,
   desktopInput: null as ActorId | null,
+  desktopSource: null as ActorId | null,
   /** Started on demand by `STARTDESKTOPCONTROL` — the interactive desktop view actor. */
   desktopControl: null as ActorId | null,
   /** Started on demand by `STARTDESKTOPVIEW` — the decoupled IR-consumer view actor. */
@@ -369,6 +372,7 @@ function clientActorRegistry() {
     ...(clientActors.agentRepl ? { agentRepl: clientActors.agentRepl } : {}),
     ...(clientActors.cameraOrigin ? { cameraOrigin: clientActors.cameraOrigin } : {}),
     ...(clientActors.desktopInput ? { desktopInput: clientActors.desktopInput } : {}),
+    ...(clientActors.desktopSource ? { desktopSource: clientActors.desktopSource } : {}),
     ...(clientActors.desktopControl ? { desktopControl: clientActors.desktopControl } : {}),
     ...(clientActors.desktopView ? { desktopView: clientActors.desktopView } : {}),
     ...(clientActors.vrcCameraView ? { vrcCameraView: clientActors.vrcCameraView } : {}),
@@ -486,6 +490,7 @@ function registerSceneActors(actors: SupervisedSceneActors): void {
   clientActors.agentRepl = actors.agentRepl;
   clientActors.cameraOrigin = actors.cameraOrigin;
   clientActors.desktopInput = actors.desktopInput;
+  clientActors.desktopSource = actors.desktopSource;
   registerClientActors();
 }
 
@@ -905,6 +910,7 @@ async function createSupervisedScene() {
   const webxr = await PostMan.create("./webxr.ts", import.meta.url);
   const agentRepl = await PostMan.create("./agentRepl.ts", import.meta.url);
   const desktopInput = await PostMan.create("../rdp/desktopInput.ts", import.meta.url);
+  const desktopSource = await PostMan.create("../rdp/desktopSource.ts", import.meta.url);
   const desktopControlEnabled = getDesktopControlEnabled();
   const actors: SupervisedSceneActors = {
     ivr: resolveActorId(ivr),
@@ -913,6 +919,7 @@ async function createSupervisedScene() {
     webxr: resolveActorId(webxr),
     agentRepl: resolveActorId(agentRepl),
     desktopInput: resolveActorId(desktopInput),
+    desktopSource: resolveActorId(desktopSource),
     desktopControlEnabled,
   };
   console.log("[petplay boot] control-plane actors created");
@@ -999,6 +1006,11 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
       target: displayOverlayHost,
       type: "CONFIGUREDESKTOP",
       payload: desktopOverlayConfig(),
+    });
+    PostMan.PostMessage({
+      target: displayOverlayHost,
+      type: "SETDESKTOPSOURCE",
+      payload: actors.desktopSource,
     });
     if (Deno.args.includes("--dev-start-desktop-overlay")) {
       PostMan.PostMessage({
