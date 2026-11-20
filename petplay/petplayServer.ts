@@ -239,12 +239,12 @@ export async function startPetplayServer(
 
   PostalService.performanceLoggingActive = false;
   if (stageforgeNetworkingEnabled) {
-    // Other hubs reach this one through iroh: `petplay-media link` (built with
-    // --features iroh) publishes its endpoint id and relay in topic records. See
-    // markdown/rdp/README.md.
+    // Actors in other processes reach the ones here through iroh: `petplay-media link`
+    // (built with --features iroh) publishes this process's endpoint id and relay in topic
+    // records. See markdown/rdp/README.md.
     console.log(`Stageforge networking enabled (${STAGEFORGE_SIGNALING_URL})`);
-    const { irohLinkCarrier } = await import("../classes/irohLinkCarrier.ts");
-    postalservice.registerLinkCarrier(irohLinkCarrier());
+    const { irohCarrier } = await import("../classes/irohCarrier.ts");
+    postalservice.registerRemoteCarrier(irohCarrier());
     postalservice.initSignalingClient(STAGEFORGE_SIGNALING_URL);
   } else {
     console.log(

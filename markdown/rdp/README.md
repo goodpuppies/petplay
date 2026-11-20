@@ -91,13 +91,12 @@ Transport.accept("rdp.input", (channel, from) => { channel.onmessage = ... });
 - **Negotiation needs an existing connection.** `Transport.open` runs over an actor route that
   already exists (a local Worker, an IPC child, or a remote proxy from a topic). It never
   discovers peers itself; that is what topics are for.
-- **Routes move by moving hub-to-hub links.** Remote routes belong to a `PostalService`, not
-  to an actor, so the thing that switches carriers is a link between two hubs (see phase 1b).
-- **The actor route can be replaced by a negotiated transport.** Stageforge's existing
-  `registerProxyTransport` / `connectProxy` turns a channel into a message route for a remote
-  actor. Once a WebSocket is up, the route moves onto it and the iroh connection can be closed (or
-  kept as a fallback). Messages in flight during the switch must not be lost or reordered: the
-  old route is drained before it is closed.
+- **PostalService stays a background manager.** It creates workers and routes messages; it has
+  no identity of its own across processes and negotiates nothing. Remote actors are proxy routes
+  over one connection per remote process (see revision below).
+- **Later: replacing the main path.** In a browser, iroh always goes through a relay. Moving an
+  actor route from iroh onto a negotiated WebSocket (without losing or reordering messages) is
+  planned, not built.
 - **Descriptors carry secrets, so they only travel over the encrypted route.** A WebSocket
   descriptor is `{url, token}`. The token is single-use and binds the new socket to the peer that
   negotiated it, so the WebSocket inherits the iroh connection's peer identity instead of trusting
@@ -241,5 +240,27 @@ the topic server.
      `petplay-media capture-tcp`) to sit behind the same messages.
    **3b remaining:** coordinate mapping when the capture is one monitor of several, and moving
    `displayOverlayHost` onto these actors.
+**Revision 2026-11-20 (afternoon): hub links removed.** Phases 1b and 2 put networking into the
+hub (hub ids, links, carrier upgrades, `TOPICINTRO`, hub-level negotiation). That moved too much
+onto the main thread, which should only do what has to happen there. Now:
+- `Link.ts` is gone; `Remote.ts` has `RemoteConnection`: one connection per remote process,
+  carrying ordinary actor messages. Remote actors are proxy routes on it; a message from an
+  unknown actor teaches the reply route; a message for a non-local actor is dropped.
+- Topics as originally intended: a record is `{type, topic, actorId, routes}`, `routes` holding
+  the process's one carrier endpoint (`postal.registerRemoteCarrier`, iroh in PetPlay). A process
+  that hears a join dials it and sends its own members' records along (`TOPICRECORD`), since the
+  topic server keeps nothing; a 15 s re-announce covers the race where neither side heard.
+- The browser is reachable: `link-web` accepts through its relay, so a page publishes
+  `{id, relay}` like any process (`classes/irohWebCarrier.ts`; native is `classes/irohCarrier.ts`).
+- `Channel` is now `Transport`: `Transport.open(peer, {purpose})` returns one. Only actors
+  negotiate; the hub does not.
+- Link codec: `Uint8Array` and `ArrayBuffer` survive JSON carriers (base64).
+Tests: stageforge `test/topic.test.ts` (both join orders, bytes, the lost-joins race; mutations
+of the dial record and of re-announce fail them), PetPlay `tests/iroh-topics/` (native and wasm,
+the page dialed through its relay), `rdp/test/`.
+
+**Next:** a transport is just the kind's connection (WebSocket messages, WebTransport streams,
+MessagePort), with the stageforge message protocol as an option on top, not built in.
+
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.

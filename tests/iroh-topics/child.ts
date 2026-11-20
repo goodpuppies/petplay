@@ -1,9 +1,9 @@
-/** A hub that joins topic "t" with one actor, reachable over a local iroh link carrier. */
+/** A process with one actor that joins topic "t", reachable over a local iroh carrier. */
 import { PostalService } from "../../submodules/stageforge/mod.ts";
-import { irohLinkCarrier } from "../../classes/irohLinkCarrier.ts";
+import { irohCarrier } from "../../classes/irohCarrier.ts";
 
 const postal = new PostalService();
-postal.registerLinkCarrier(irohLinkCarrier({ local: true }));
+postal.registerRemoteCarrier(irohCarrier({ local: true }));
 postal.initSignalingClient(Deno.args[0]);
 const actor = await postal.add(
   "../../submodules/stageforge/test/actors/topicPeer.ts",

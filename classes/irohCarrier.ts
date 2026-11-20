@@ -1,16 +1,17 @@
 /**
- * Iroh as a stageforge link carrier: how hubs first reach each other from a topic record.
+ * Iroh as this process's stageforge remote carrier: how actors in other processes reach the
+ * actors here once a topic record names them (`PostalService.registerRemoteCarrier`).
  *
- * One `petplay-media link` child per hub owns the iroh endpoint (see
+ * One `petplay-media link` child per process owns the iroh node (see
  * submodules/petplay_mediatransport/src/link.rs); this module drives it over stdio and turns
  * each iroh connection into a `Carrier`. The published endpoint is `{id, relay}`: it identifies
- * and authenticates this hub and reveals no IP address. Better transports are negotiated over
- * the link afterwards (`link.upgrade`).
+ * and authenticates this process and reveals no IP address. Actors negotiate better transports
+ * between themselves afterwards (`Transport.open`).
  *
  * `local: true` binds loopback with no relay, for tests on one machine; its endpoint carries
  * loopback addresses instead of a relay.
  */
-import type { Carrier, LinkCarrierKind } from "../submodules/stageforge/mod.ts";
+import type { Carrier, RemoteCarrierKind } from "../submodules/stageforge/mod.ts";
 import {
   decodeWebSocketWorkerMessage,
   encodeWebSocketWorkerMessage,
@@ -19,7 +20,7 @@ import { fromFileUrl } from "@std/path";
 
 export type IrohEndpoint = { id: string; relay?: string | null; addrs?: string[] };
 
-export type IrohLinkCarrierOptions = {
+export type IrohCarrierOptions = {
   /** `petplay-media` built with `--features iroh`. Default: PETPLAY_LINK_BINARY, else the release build. */
   binary?: string;
   local?: boolean;
@@ -172,7 +173,7 @@ class LinkDaemon {
         const carrier = new IrohCarrier(this, event.conn, event.peer);
         this.#carriers.set(event.conn, carrier);
         if (this.#accept) this.#accept(carrier);
-        else carrier.close("not accepting links");
+        else carrier.close("not accepting connections");
         return;
       }
       case "data":
@@ -196,10 +197,10 @@ export function defaultLinkBinary(): string {
     );
 }
 
-/** The iroh link carrier, plus `stop()` to end its child process. */
-export function irohLinkCarrier(
-  options: IrohLinkCarrierOptions = {},
-): LinkCarrierKind & { stop(): Promise<void>; endpoint(): Promise<IrohEndpoint> } {
+/** The iroh remote carrier, plus `stop()` to end its child process. */
+export function irohCarrier(
+  options: IrohCarrierOptions = {},
+): RemoteCarrierKind & { stop(): Promise<void>; endpoint(): Promise<IrohEndpoint> } {
   let daemon: LinkDaemon | null = null;
   const start = () =>
     daemon ??= new LinkDaemon(
@@ -209,7 +210,7 @@ export function irohLinkCarrier(
     );
   return {
     kind: "iroh",
-    // An endpoint id plus relay URL identifies the hub and reveals no IP address. A local
+    // An endpoint id plus relay URL identifies the process and reveals no IP address. A local
     // endpoint carries loopback addresses, which mean nothing off this machine.
     publishable: true,
     async listen(accept) {

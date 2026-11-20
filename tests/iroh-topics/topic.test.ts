@@ -1,12 +1,12 @@
 /**
- * Phase 2b end to end: two hubs in two processes meet through a topic relay, link over iroh
- * (loopback, no relay server), message each other's actors, then move the link to a negotiated
- * WebSocket. Needs `petplay-media` with `--features iroh` (PETPLAY_LINK_BINARY).
+ * Topic members in two processes find each other through a topic relay and message each other
+ * over iroh (loopback, no relay server). Needs `petplay-media` with `--features iroh`
+ * (PETPLAY_LINK_BINARY).
  */
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "jsr:@std/assert";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
-import { irohLinkCarrier } from "../../classes/irohLinkCarrier.ts";
+import { irohCarrier } from "../../classes/irohCarrier.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -22,7 +22,7 @@ async function eventually<T>(read: () => Promise<T>, ok: (v: T) => boolean, what
 }
 
 Deno.test({
-  name: "hubs meet through a topic, link over iroh, and upgrade the link to a websocket",
+  name: "topic members in two processes reach each other over iroh",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -37,9 +37,9 @@ Deno.test({
       return response;
     });
     const relayUrl = `ws://127.0.0.1:${relay.addr.port}/`;
-    const iroh = irohLinkCarrier({ local: true });
+    const iroh = irohCarrier({ local: true });
     const postal = new PostalService();
-    postal.registerLinkCarrier(iroh);
+    postal.registerRemoteCarrier(iroh);
     postal.initSignalingClient(relayUrl);
     const local = await postal.add(
       "../../submodules/stageforge/test/actors/topicPeer.ts",
@@ -59,19 +59,15 @@ Deno.test({
         (c) => c.length === 1,
         "local actor learns the remote member",
       );
-      const [link] = postal.links();
-      assert(link, "a link exists");
+      assertEquals(postal.remoteConnections().length, 1, "one connection to the other process");
       assertEquals(await call(local, "ASK", remote), remote, "remote answers over iroh");
       await eventually(
-        () => call<ActorId[]>(remote, "CONTACTS"),
+        () => call<ActorId[]>(local, "TELL", { target: remote, type: "CONTACTS", payload: null }),
         (c) => c.includes(local),
         "remote member learns the local one",
       );
-      await link.upgrade({ kinds: ["websocket"] });
-      assertEquals(link.epoch, 1);
-      assertEquals(await call(local, "ASK", remote), remote, "remote answers after the upgrade");
     } finally {
-      for (const link of postal.links()) link.close("test done");
+      postal.closeRemote("test done");
       child.kill();
       await child.status;
       await iroh.stop();

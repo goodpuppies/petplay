@@ -1,9 +1,9 @@
-/** A "server" hub: native iroh link through the relay in args[1], topic relay in args[0]. */
+/** A "server" process: native iroh through the relay in args[1], topic relay in args[0]. */
 import { PostalService } from "../../submodules/stageforge/mod.ts";
-import { irohLinkCarrier } from "../../classes/irohLinkCarrier.ts";
+import { irohCarrier } from "../../classes/irohCarrier.ts";
 
 const postal = new PostalService();
-postal.registerLinkCarrier(irohLinkCarrier({ relay: Deno.args[1] }));
+postal.registerRemoteCarrier(irohCarrier({ relay: Deno.args[1] }));
 postal.initSignalingClient(Deno.args[0]);
 const actor = await postal.add(
   "../../submodules/stageforge/test/actors/topicPeer.ts",

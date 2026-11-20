@@ -1,17 +1,17 @@
 /**
- * The browser side of iroh links (submodules/petplay_mediatransport/link-web): a dial-only
- * stageforge link carrier. iroh in a browser is relay-only, so a page reaches a hub through the
- * hub's relay, and the hubs then negotiate a direct transport over the link (`link.upgrade`).
+ * The browser side of the iroh remote carrier (submodules/petplay_mediatransport/link-web).
+ * iroh in a browser is relay-only: the page dials other processes through their relay and is
+ * reached through its own, so it publishes `{id, relay}` in topic records like any process.
  *
  * Takes the wasm-bindgen module (`pkg-web` in a page, `pkg-deno` in tests) so this file has no
  * build step of its own.
  */
-import type { Carrier, LinkCarrierKind } from "../submodules/stageforge/mod.ts";
+import type { Carrier, RemoteCarrierKind } from "../submodules/stageforge/mod.ts";
 import {
   decodeWebSocketWorkerMessage,
   encodeWebSocketWorkerMessage,
 } from "../submodules/stageforge/src/lib/webSocketWorkerCodec.ts";
-import type { IrohEndpoint } from "./irohLinkCarrier.ts";
+import type { IrohEndpoint } from "./irohCarrier.ts";
 
 type LinkConnection = {
   send(text: string): Promise<void>;
@@ -20,7 +20,10 @@ type LinkConnection = {
 };
 type LinkEndpoint = {
   id(): string;
+  relay(): string | undefined;
   connect(id: string, relay: string): Promise<LinkConnection>;
+  /** The next incoming connection; undefined once the endpoint is closed. */
+  accept(): Promise<LinkConnection | undefined>;
   close(): Promise<void>;
 };
 export type IrohWebModule = {
@@ -85,26 +88,42 @@ class WebCarrier implements Carrier {
   }
 }
 
-/** Dial-only iroh carrier for a page. `relay` replaces n0's public relays. */
-export function irohWebLinkCarrier(
+/** The iroh carrier for a page. `relay` replaces n0's public relays. */
+export function irohWebCarrier(
   module: IrohWebModule,
   options: { relay?: string } = {},
-): LinkCarrierKind & { stop(): Promise<void> } {
+): RemoteCarrierKind & { stop(): Promise<void> } {
   let endpoint: Promise<LinkEndpoint> | null = null;
+  let accepting = false;
   const bound = () => endpoint ??= module.LinkEndpoint.bind(options.relay ?? null);
   return {
     kind: "iroh",
-    // A browser cannot accept connections, so it has nothing to publish.
-    publishable: false,
-    listen: () => Promise.reject(new Error("a browser cannot accept iroh links")),
+    publishable: true,
+    async listen(accept) {
+      const running = await bound();
+      const relay = running.relay();
+      if (!relay) throw new Error("the page's iroh endpoint has no relay");
+      if (!accepting) {
+        accepting = true;
+        void (async () => {
+          for (;;) {
+            const connection = await running.accept().catch(() => undefined);
+            if (!connection) return;
+            accept(new WebCarrier(connection));
+          }
+        })();
+      }
+      return { id: running.id(), relay };
+    },
     async connect(target) {
       const { id, relay } = target as IrohEndpoint;
-      if (!relay) throw new Error("a browser reaches a hub only through its relay");
+      if (!relay) throw new Error("a page reaches other processes only through their relay");
       return new WebCarrier(await (await bound()).connect(id, relay));
     },
     async stop() {
       const running = endpoint;
       endpoint = null;
+      accepting = false;
       await (await running)?.close();
     },
   };

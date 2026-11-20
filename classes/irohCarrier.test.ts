@@ -4,19 +4,19 @@
  */
 import { assert, assertEquals } from "jsr:@std/assert";
 import type { Carrier } from "../submodules/stageforge/mod.ts";
-import { irohLinkCarrier } from "./irohLinkCarrier.ts";
+import { irohCarrier } from "./irohCarrier.ts";
 
 function nextMessage(carrier: Carrier): Promise<unknown> {
   return new Promise((resolve) => carrier.onmessage = resolve);
 }
 
 Deno.test({
-  name: "two iroh link endpoints carry frames both ways and report a close",
+  name: "two iroh endpoints carry frames both ways and report a close",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
-    const a = irohLinkCarrier({ local: true });
-    const b = irohLinkCarrier({ local: true });
+    const a = irohCarrier({ local: true });
+    const b = irohCarrier({ local: true });
     try {
       let accepted!: (carrier: Carrier) => void;
       const incoming = new Promise<Carrier>((resolve) => accepted = resolve);

@@ -4,7 +4,7 @@
  * (petplay-media; PETPLAY_MEDIA_BINARY) on a loopback port.
  */
 import { assert, assertEquals } from "jsr:@std/assert";
-import { PostalService, Transport } from "../../submodules/stageforge/mod.ts";
+import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,7 +31,7 @@ const lines = async (path: string) =>
   (await Deno.readTextFile(path).catch(() => "")).split("\n").filter(Boolean);
 
 Deno.test({
-  name: "desktopInput validates, injects, and releases what is held when a channel closes",
+  name: "desktopInput validates, injects, and releases what is held when a transport closes",
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {
@@ -40,22 +40,21 @@ Deno.test({
     PostalService.actors.clear();
     const postal = new PostalService();
     const input = await postal.add("../desktopInput.ts", import.meta.url);
-    const call = <T>(type: string, payload: unknown = null) =>
-      postal.PostMessage({ target: input, type, payload }, true) as Promise<T>;
+    const client = await postal.add("./inputClient.ts", import.meta.url);
+    const call = <T>(type: string, payload: unknown = null, target = input) =>
+      postal.PostMessage({ target, type, payload }, true) as Promise<T>;
     try {
       assertEquals(await call("INPUT", { t: "pointer", x: 0.25, y: 2 }), true);
       assertEquals(await call("INPUT", { t: "key", scan: "1e; rm", down: true }), false);
       assertEquals(await call("INPUT", { t: "button", button: "back", down: true }), false);
-      const channel = await Transport.open(input, {
-        purpose: "rdp.input",
-        endpoint: postal.transportEndpoint(),
-      });
-      assertEquals(channel.info.kind, "messageport");
-      channel.send({ t: "button", button: "left", down: true });
-      channel.send({ t: "key", scan: "1E", down: true });
-      channel.send({ t: "wheel", delta: -2 });
+      assertEquals(await call("OPEN", input, client), "messageport");
+      await call("SEND", [
+        { t: "button", button: "left", down: true },
+        { t: "key", scan: "1E", down: true },
+        { t: "wheel", delta: -2 },
+      ], client);
       await eventually(async () => (await lines(`${dir}/stdin`)).length >= 4, "events written");
-      channel.close("client gone");
+      await call("CLOSE", "client gone", client);
       await eventually(async () => (await lines(`${dir}/stdin`)).length >= 6, "releases written");
       assertEquals(await lines(`${dir}/stdin`), [
         "M,0.25,1",
@@ -72,6 +71,7 @@ Deno.test({
     } finally {
       await postal.PostMessage({ target: input, type: "SHUTDOWN", payload: null }, true);
       PostalService.actors.get(input)?.worker.terminate();
+      PostalService.actors.get(client)?.worker.terminate();
       PostalService.actors.clear();
       Deno.env.delete("PETPLAY_SCREEN_STREAMER");
       await Deno.remove(dir, { recursive: true });

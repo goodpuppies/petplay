@@ -3,11 +3,11 @@
  *
  * Runs `screen-streamer --input-only` (uinput on Linux) and feeds it the helper's stdin verbs,
  * so injection needs no capture session and no OpenVR. Callers send typed messages, or open a
- * negotiated channel (purpose `rdp.input`) for high-rate pointer motion that skips the hub.
+ * negotiated transport (purpose `rdp.input`) for high-rate pointer motion that skips the hub.
  *
  * Coordinates are normalized 0..1 over the whole workspace (the helper's absolute pointer
  * device), which is what a client gets from a pointer position over a full-desktop capture.
- * Pressed buttons and keys are tracked and released on `RELEASEALL`, when a channel closes and on
+ * Pressed buttons and keys are tracked and released on `RELEASEALL`, when a transport closes and on
  * shutdown, so a dropped client cannot leave a key held.
  *
  * Linux only for now; Windows injection exists in the scene (`SendInput` sinks) and would move
@@ -129,11 +129,11 @@ new PostMan(
   state,
   {
     __INIT__: () => {
-      Transport.accept("rdp.input", (channel) => {
-        channel.onmessage = (event) => {
+      Transport.accept("rdp.input", (transport) => {
+        transport.onmessage = (event) => {
           inject(event as InputEvent);
         };
-        channel.onclose = () => releaseAll();
+        transport.onclose = () => releaseAll();
       });
     },
     __HEALTH__: () => ({ ...state, heldButtons: [...heldButtons], heldKeys: [...heldKeys] }),
