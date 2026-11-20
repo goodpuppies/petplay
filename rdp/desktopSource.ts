@@ -17,6 +17,8 @@
  * consumer change (opening the desktop again) retries. Subscribers (`SUBSCRIBESTATUS`) get
  * `CAPTURESTATUS {event: "lost" | "recovered" | "unavailable", message?}`.
  *
+ * `LAYOUT` returns the monitors as crops of the capture (`workspaceDisplays.ts`).
+ *
  * The encoder is Linux only (the media socket); frame sinks work wherever the helper does.
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
@@ -29,6 +31,10 @@ import {
   stopStaleScreenStreamer,
 } from "../classes/ScreenCapturer/screenStreamerPath.ts";
 import { configDir } from "../classes/appPaths.ts";
+import {
+  loadWorkspaceOutputs,
+  type WorkspaceOutput,
+} from "../classes/environment/workspaceDisplays.ts";
 
 export type SourceRequest = {
   /** Where receivers reach the encoder: 127.0.0.1, or this machine's tailnet address. */
@@ -274,6 +280,8 @@ new PostMan(
       return state.feed!;
     },
     FEED: (): FeedInfo | null => state.feed,
+    /** The monitors, as crops of the capture: KDE, Windows, or GNOME (hardcoded for now). */
+    LAYOUT: (): Promise<WorkspaceOutput[]> => loadWorkspaceOutputs(),
     /** Stop the encoder feed; frame sinks keep capturing. */
     STOP: async () => {
       await stopFeed();

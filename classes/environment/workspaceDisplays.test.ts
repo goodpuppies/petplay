@@ -80,3 +80,13 @@ Deno.test("disabled outputs do not occupy workspace extent", () => {
   });
   assertEquals(outputs[0]?.crop, { x: 0, y: 0, width: 1, height: 1 });
 });
+
+Deno.test("GNOME sessions are recognized from XDG_CURRENT_DESKTOP", async () => {
+  const { isGnomeSession } = await import("./workspaceDisplays.ts");
+  for (const desktop of ["GNOME", "ubuntu:GNOME", "gnome"]) {
+    if (!isGnomeSession(desktop)) throw new Error(`${desktop} should be GNOME`);
+  }
+  for (const desktop of ["KDE", "", "GNOME-Flashback-ish"]) {
+    if (isGnomeSession(desktop)) throw new Error(`${desktop} should not be GNOME`);
+  }
+});

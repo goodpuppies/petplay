@@ -110,7 +110,8 @@ there are tested in a novr server first (`petplay-test-server-isolation`) and la
 2. **One capture.** (Capture done 2026-11-20: `desktopSource` runs the only helper
    (`CaptureHelper`) for a frame sink, its own encoder or the scene stream's; the overlay host
    keeps a `FrameReceiver` and relays capture status as toasts; `ScreenCapturer` is now the two
-   classes composed. Monitor layout has not moved yet.)
+   classes composed. `LAYOUT` answers with the monitors; GNOME is hardcoded to cachyos's single
+   1366x768 panel until Mutter's `DisplayConfig` is parsed. The VR scene still reads its own.)
    - desktopSource owns the machine's only helper and portal token. It delivers frames to the
      overlay host's existing TCP receiver (a frame-sink port it is given) and to the encoder when
      anyone wants a feed.

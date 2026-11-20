@@ -178,9 +178,30 @@ function loadWindowsWorkspaceOutputs(): WorkspaceOutput[] {
   }
 }
 
+/**
+ * GNOME, hardcoded for now: cachyos's one built-in panel (eDP-1, 1366x768 at scale 1, from
+ * Mutter's `DisplayConfig.GetCurrentState`) is the whole capture. Several monitors on GNOME need
+ * that D-Bus call parsed instead.
+ */
+export const GNOME_OUTPUTS: WorkspaceOutput[] = [{
+  id: "eDP-1",
+  name: "Built-in display",
+  priority: 0,
+  logicalX: 0,
+  logicalY: 0,
+  logicalWidth: 1366,
+  logicalHeight: 768,
+  crop: { x: 0, y: 0, width: 1, height: 1 },
+}];
+
+export function isGnomeSession(desktop = Deno.env.get("XDG_CURRENT_DESKTOP") ?? ""): boolean {
+  return desktop.split(":").some((part) => part.toUpperCase() === "GNOME");
+}
+
 export async function loadWorkspaceOutputs(): Promise<WorkspaceOutput[]> {
   if (Deno.build.os === "windows") return loadWindowsWorkspaceOutputs();
   if (Deno.build.os !== "linux") return [];
+  if (isGnomeSession()) return GNOME_OUTPUTS;
   try {
     const result = await new Deno.Command("kscreen-doctor", {
       args: ["-j"],
