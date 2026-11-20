@@ -91,6 +91,8 @@ Transport.accept("rdp.input", (channel, from) => { channel.onmessage = ... });
 - **Negotiation needs an existing connection.** `Transport.open` runs over an actor route that
   already exists (a local Worker, an IPC child, or a remote proxy from a topic). It never
   discovers peers itself; that is what topics are for.
+- **Routes move by moving hub-to-hub links.** Remote routes belong to a `PostalService`, not
+  to an actor, so the thing that switches carriers is a link between two hubs (see phase 1b).
 - **The actor route can be replaced by a negotiated transport.** Stageforge's existing
   `registerProxyTransport` / `connectProxy` turns a channel into a message route for a remote
   actor. Once a WebSocket is up, the route moves onto it and the iroh connection can be closed (or
@@ -187,8 +189,16 @@ the topic server.
    messages, locality-based kind choice (thread↔thread picks `messageport`, thread↔process
    falls back to `websocket`), single-use WebSocket tokens, close propagation with reasons,
    channels closed on actor shutdown. A worker's transferred MessagePorts now survive the hub
-   relay (`shared.ts` keeps them in the message's `transfer` field). **1b remaining:** moving an
-   actor route onto a negotiated channel.
+   relay (`shared.ts` keeps them in the message's `transfer` field).
+   **1b done 2026-11-20** (`submodules/stageforge/src/lib/Link.ts`, `test/link*.test.ts`): routes
+   live in hubs, so a route moves by moving a **hub-to-hub link**. `postal.link(carrier)` links
+   two PostalServices (each now has an id, `postal@…`); `link.attach(actor)` routes a remote
+   actor; `link.upgrade()` negotiates a new carrier with the transport API run as the hub and
+   switches with per-side `switch` markers, holding new-carrier frames until the old carrier is
+   left. Tested across processes under load with a slowed bootstrap carrier (in order, nothing
+   lost, frames really held) and with in-memory carriers for the orderings timing can't force;
+   20/20 repeated runs after fixing a race where the leader's marker beat the follower's
+   adoption. Not yet: reconnecting a link whose only carrier dropped.
 2. Transport-neutral topic records; iroh as a registered kind; only node ids published.
 2b. Iroh in the browser: a wasm wrapper crate on the same iroh version as the Deno side.
 3. `desktopSource` and `desktopInput` split out of `displayOverlayHost`; the overlay host consumes them.
