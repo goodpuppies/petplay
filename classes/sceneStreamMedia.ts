@@ -75,21 +75,23 @@ export class DesktopMediaFeed {
       log.push(line);
       if (log.length > 200) log.shift();
     };
-    void drainLines(child.stderr, keep);
+    const drained = [drainLines(child.stderr, keep)];
     try {
       const fingerprint = await new Promise<string>((resolve, reject) => {
         let fingerprint: string | null = null;
         const timer = setTimeout(() => reject(Error(`petplay-media not ready: ${log.at(-1) ?? "no output"}`)), READY_TIMEOUT_MS);
-        void drainLines(child.stdout, (line) => {
+        drained.push(drainLines(child.stdout, (line) => {
           keep(line);
           fingerprint ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
           if (line.startsWith("MEDIA_READY") && fingerprint) {
             clearTimeout(timer);
             resolve(fingerprint);
           }
-        });
-        child.status.then((status) => {
+        }));
+        child.status.then(async (status) => {
           clearTimeout(timer);
+          // The reason is its last words; read them before reporting.
+          await Promise.race([Promise.allSettled(drained), new Promise((r) => setTimeout(r, 1000))]);
           reject(Error(`petplay-media exited (${status.code}): ${log.at(-1) ?? ""}`));
         });
       });

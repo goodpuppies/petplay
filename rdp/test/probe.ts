@@ -4,9 +4,9 @@ import { actorState, PostMan } from "../../submodules/stageforge/mod.ts";
 const state = actorState({ name: "probe" });
 
 new PostMan(state, {
-  CALL: async (payload: { target: string; type: string; payload?: unknown }) => {
+  CALL: async ({ target, type, payload = null }: { target: string; type: string; payload?: unknown }) => {
     try {
-      return { ok: true, value: await PostMan.PostMessage(payload, true) };
+      return { ok: true, value: await PostMan.PostMessage({ target, type, payload }, true) };
     } catch (error) {
       return { ok: false, error: String(error) };
     }
