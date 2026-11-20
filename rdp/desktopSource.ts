@@ -21,7 +21,7 @@
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
-import { screenStreamerPath } from "./helperPaths.ts";
+import { screenStreamerPath } from "./classes/helperPaths.ts";
 
 export type SourceRequest = {
   /** Where receivers reach the encoder: 127.0.0.1, or this machine's tailnet address. */

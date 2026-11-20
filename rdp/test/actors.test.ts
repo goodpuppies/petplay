@@ -4,8 +4,8 @@
  * (petplay-media; PETPLAY_MEDIA_BINARY) on a loopback port.
  */
 import { assert, assertEquals } from "jsr:@std/assert";
-import { PostalService, Transport } from "../submodules/stageforge/mod.ts";
-import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
+import { PostalService, Transport } from "../../submodules/stageforge/mod.ts";
+import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,7 +39,7 @@ Deno.test({
     Deno.env.set("PETPLAY_SCREEN_STREAMER", await standIn(dir));
     PostalService.actors.clear();
     const postal = new PostalService();
-    const input = await postal.add("./desktopInput.ts", import.meta.url);
+    const input = await postal.add("../desktopInput.ts", import.meta.url);
     const call = <T>(type: string, payload: unknown = null) =>
       postal.PostMessage({ target: input, type, payload }, true) as Promise<T>;
     try {
@@ -89,7 +89,7 @@ Deno.test({
     Deno.env.set("PETPLAY_SCREEN_STREAMER", await standIn(dir));
     PostalService.actors.clear();
     const postal = new PostalService();
-    const source: ActorId = await postal.add("./desktopSource.ts", import.meta.url);
+    const source: ActorId = await postal.add("../desktopSource.ts", import.meta.url);
     const call = <T>(type: string, payload: unknown = null) =>
       postal.PostMessage({ target: source, type, payload }, true) as Promise<T>;
     const port = 46000 + Math.floor(Math.random() * 1000) * 2;

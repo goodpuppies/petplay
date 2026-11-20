@@ -14,7 +14,7 @@
  * behind this same API.
  */
 import { actorState, PostMan, Transport } from "../submodules/stageforge/mod.ts";
-import { screenStreamerPath } from "./helperPaths.ts";
+import { screenStreamerPath } from "./classes/helperPaths.ts";
 
 export type InputEvent =
   | { t: "pointer"; x: number; y: number }
