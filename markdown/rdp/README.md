@@ -225,5 +225,21 @@ the topic server.
    takes ~10 s, because QUIC address discovery is off there. The live release
    `petplay-media` predates `link`; rebuild with `--features iroh` before using networking.
 3. `desktopSource` and `desktopInput` split out of `displayOverlayHost`; the overlay host consumes them.
+   **3a done 2026-11-20, additively** (`displayOverlayHost` untouched while it runs live VR):
+   - `rdp/desktopInput.ts` runs `screen-streamer --input-only` (new flag: uinput from stdin, no
+     capture, no portal). `INPUT`/`INPUTS` messages or a negotiated `rdp.input` channel carry
+     `{t: pointer|button|wheel|key}`; pointer coordinates are normalized over the workspace.
+     Malformed events are counted and dropped; held buttons and keys are released on
+     `RELEASEALL`, when a channel closes and on shutdown.
+   - `rdp/desktopSource.ts` runs the encoder (`DesktopMediaFeed`, `petplay-media --persist`) and
+     `screen-streamer --no-frame-socket --no-input --media-socket=…` with its own portal restore
+     token. `START {host, port}` / `FEED` return `{host, port, fingerprint}` for a WebTransport
+     receiver; both processes restart with backoff until `STOP`.
+   - Tested with stand-in helpers (nothing injected, no portal) and the real encoder
+     (`rdp/rdp.test.ts`). Not yet run against a real capture or real uinput events: both would
+     act on the live desktop. Linux only; Windows has the pieces (`SendInput` sinks,
+     `petplay-media capture-tcp`) to sit behind the same messages.
+   **3b remaining:** coordinate mapping when the capture is one monitor of several, and moving
+   `displayOverlayHost` onto these actors.
 4. `gateway` actor absorbing `sceneStreamServer` and `desktopRemoteServer`; the browser page as a peer.
 5. `rdp` + `rdpApp`: browser-only remote desktop over the tailnet, then the same app in VR.
