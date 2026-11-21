@@ -11,7 +11,6 @@ import {
   type PlaytestContext,
   type PlaytestStep,
   WRIST_MAIN,
-  WRIST_SETTINGS,
 } from "../../utils/playtest.ts";
 import {
   aim,
@@ -29,6 +28,34 @@ import {
 import { onKeyboardEvent } from "../../classes/environment/keyboard/keyEvents.ts";
 import type { KeyboardLogicEvent } from "../../classes/environment/keyboard/types.ts";
 import { getSetting } from "../../classes/settings.ts";
+import { setSettingsWindowOpen } from "../../classes/environment/settingsWindowStore.ts";
+
+function settingsWindow(ctx: PlaytestContext): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null;
+  ctx.scene().traverse((object) => {
+    if (!found && object.userData?.settingsWindowOverlay) found = object;
+  });
+  return found;
+}
+
+/** A setting row's ON or OFF pill: the one level with the row's title. */
+function settingPill(
+  ctx: PlaytestContext,
+  title: string,
+  label: "ON" | "OFF",
+): THREE.Object3D | null {
+  const root = settingsWindow(ctx);
+  const heading = root && ctx.textObject(root, title);
+  if (!root || !heading) return null;
+  const y = heading.getWorldPosition(new THREE.Vector3()).y;
+  let best: THREE.Object3D | null = null, bestDistance = Infinity;
+  root.traverse((object) => {
+    if (object.userData?.raythreeUiText?.text !== label) return;
+    const distance = Math.abs(object.getWorldPosition(new THREE.Vector3()).y - y);
+    if (distance < bestDistance) [best, bestDistance] = [object, distance];
+  });
+  return best;
+}
 
 export const steps: PlaytestStep[] = [
   showWindows,
@@ -111,21 +138,34 @@ export const steps: PlaytestStep[] = [
     },
   },
   {
+    // The wrist's Settings tile opens the floating Settings window (General tab first).
     name: "change-setting",
     run: async (ctx) => {
       const before = getSetting("grabboxOutline");
       await ctx.t.faceWristMenu();
       await ctx.t.clickWristMenu(WRIST_MAIN.settings);
-      await ctx.t.clickWristMenu(WRIST_SETTINGS.grabboxOutline);
-      const changed = await ctx.waitFor(
-        () => getSetting("grabboxOutline") !== before,
-        "the Settings page toggles the grab-box outline",
-      );
-      if (changed) {
-        await ctx.t.clickWristMenu(WRIST_SETTINGS.grabboxOutline);
-        await ctx.waitFor(() => getSetting("grabboxOutline") === before, "and toggles it back");
+      try {
+        const opened = await ctx.waitFor(
+          () => settingsWindow(ctx) != null,
+          "the wrist's Settings opens the Settings window",
+        );
+        if (!opened) return;
+        const flip = async (to: boolean, message: string) => {
+          let pill: THREE.Object3D | null = null;
+          const found = await ctx.waitFor(
+            () => (pill = settingPill(ctx, "Grab-Box Outlines", to ? "ON" : "OFF")) != null,
+            "the Settings window has a Grab-Box Outlines toggle",
+          );
+          if (!found) return false;
+          await ctx.clickObject(pill!, settingsWindow(ctx)!);
+          return ctx.waitFor(() => getSetting("grabboxOutline") === to, message);
+        };
+        if (await flip(!before, "the Settings window toggles the grab-box outline")) {
+          await flip(before, "and toggles it back");
+        }
+      } finally {
+        setSettingsWindowOpen(false);
       }
-      await ctx.t.clickWristMenu(WRIST_SETTINGS.back);
     },
   },
 ];
