@@ -72,6 +72,7 @@ type Desktop = {
 
 const FRAME_MS = 16;
 const FEED_POLL_MS = 2000;
+const START_RETRY_MS = 10_000;
 
 const state = actorState({
   name: UI_ACTOR_NAME,
@@ -212,13 +213,19 @@ async function discover(): Promise<void> {
     });
   }
   if (config?.household) {
-    for (const contact of state.addressBook) {
-      const id = String(contact) as ActorId;
-      if (!id.startsWith("desktopSource@") || desktops.has(id)) continue;
+    const known = new Set([...state.addressBook].map(String));
+    // A machine whose agent left (or restarted, under a new actor id) drops off the list.
+    for (const [id, desktop] of desktops) if (!desktop.local && !known.has(id)) forget(id);
+    for (const id of known) {
+      if (!id.startsWith("desktopSource@") || desktops.has(id as ActorId)) continue;
       try {
-        const described = await request<{ machine: string; input: ActorId | null }>(id, "DESCRIBE");
-        desktops.set(id, {
-          source: id,
+        const described = await request<{ machine: string; input: ActorId | null }>(id as ActorId, "DESCRIBE");
+        // The same machine under a new id is its agent restarted; its old entry is gone.
+        for (const [old, desktop] of desktops) {
+          if (!desktop.local && desktop.machine === described.machine) forget(old);
+        }
+        desktops.set(id as ActorId, {
+          source: id as ActorId,
           input: described.input,
           machine: described.machine,
           local: false,
@@ -226,12 +233,27 @@ async function discover(): Promise<void> {
           startRequested: false,
         });
       } catch (error) {
-        state.lastError = `DESCRIBE ${id}: ${error}`;
+        report(`DESCRIBE ${id}: ${error}`);
       }
     }
   }
   if (!selected && desktops.size) await select([...desktops.keys()][0]);
   summarize();
+}
+
+function forget(id: ActorId): void {
+  desktops.delete(id);
+  if (selected !== id) return;
+  releaseInput("desktop left");
+  selected = null;
+  sendMedia();
+}
+
+/** Errors go to the health report and this process's log; the page shows no errors yet. */
+function report(error: string): void {
+  if (state.lastError === error) return;
+  state.lastError = error;
+  console.error(`[rdp] ${error}`);
 }
 
 /** Keep the selected desktop's feed current, starting its encoder when it is not running. */
@@ -244,10 +266,16 @@ async function pollFeed(): Promise<void> {
     feed = await request<FeedInfo | null>(desktop.source, "FEED");
     if (!feed && !desktop.startRequested) {
       desktop.startRequested = true;
-      feed = await request<FeedInfo>(desktop.source, "START");
+      try {
+        feed = await request<FeedInfo>(desktop.source, "START");
+      } catch (error) {
+        // Ask again later; a capture the user refused is not retried by the source anyway.
+        setTimeout(() => desktop.startRequested = false, START_RETRY_MS);
+        throw error;
+      }
     }
   } catch (error) {
-    state.lastError = `FEED ${desktop.machine}: ${error}`;
+    report(`FEED ${desktop.machine}: ${error}`);
   }
   if (JSON.stringify(feed) === JSON.stringify(desktop.feed)) return;
   desktop.feed = feed;

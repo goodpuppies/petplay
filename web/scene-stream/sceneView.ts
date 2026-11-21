@@ -323,6 +323,20 @@ export class SceneView {
     return previous;
   }
 
+  /** Back to black (the feed now comes from elsewhere); returns the picture it replaced. */
+  clearFeed(feed: string): VideoFrame | null {
+    const texture = this.feeds.get(feed);
+    if (!texture) return null;
+    const previous = typeof VideoFrame !== "undefined" && texture.image instanceof VideoFrame ? texture.image : null;
+    const black = new OffscreenCanvas(2, 2);
+    black.getContext("2d")!.fillRect(0, 0, 2, 2);
+    texture.image = black;
+    texture.userData.size = "2x2";
+    texture.dispose();
+    texture.needsUpdate = true;
+    return previous;
+  }
+
   private syncItem(row: TouchedRow): void {
     const old = this.items.get(row.id);
     if (row.removed) {

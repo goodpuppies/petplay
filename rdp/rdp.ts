@@ -33,7 +33,7 @@ export type RdpStart = {
   actors?: { source?: ActorId; input?: ActorId };
   /** A fixed session secret instead of a random one (tests). */
   secret?: string;
-  /** False: no household even if this machine has `.secret`. */
+  /** False: no household even if this machine has `.secret`. Also off when `actors` is given. */
   household?: false;
 };
 
@@ -65,7 +65,9 @@ new PostMan(state, {
       input = actors.input = resolveActorId(await PostMan.create("./desktopInput.ts", import.meta.url));
     }
     // With a household, this desktop is offered to its other machines, and theirs show here.
-    const homeSecret = payload.household === false ? null : householdSecret();
+    // Actors the caller brought are its own to configure; they cannot take guarded requests.
+    const ownActors = !payload.actors?.source && !payload.actors?.input;
+    const homeSecret = payload.household === false || !ownActors ? null : householdSecret();
     const household = homeSecret
       ? { secret: homeSecret, topic: await householdTopic(homeSecret) }
       : undefined;
