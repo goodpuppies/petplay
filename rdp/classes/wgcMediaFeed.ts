@@ -6,6 +6,9 @@
  * The feed is served twice: as a pinned WebTransport listener on `host:port` (LAN or tailnet, if
  * the firewall lets it in) and as an iroh share code, which starts with an outgoing connection
  * and so passes Windows' firewall.
+ *
+ * `WgcMediaFeed.audio` is the machine's sound the same way: `petplay-media capture-audio`, every
+ * app's audio but VRChat's and PetPlay's, Opus over its own broadcast.
  */
 import { fromFileUrl } from "@std/path";
 
@@ -93,18 +96,31 @@ export class WgcMediaFeed {
     this.exited = child.status;
   }
 
-  static async start(options: WgcFeedOptions): Promise<WgcMediaFeed> {
+  static start(options: WgcFeedOptions): Promise<WgcMediaFeed> {
+    return WgcMediaFeed.spawn([
+      "capture-wgc",
+      String(options.monitor),
+      `${options.host}:${options.port}`,
+      "--iroh-share",
+      "--fps",
+      String(options.fps ?? 30),
+      "--bitrate",
+      String(options.bitrate ?? 8_000_000),
+    ], "MEDIA_SOURCE", options.port);
+  }
+
+  /** This machine's audio, but VRChat's and PetPlay's. */
+  static audio(options: { host: string; port: number }): Promise<WgcMediaFeed> {
+    return WgcMediaFeed.spawn(
+      ["capture-audio", `${options.host}:${options.port}`, "--iroh-share"],
+      "AUDIO_SOURCE",
+      options.port,
+    );
+  }
+
+  private static async spawn(args: string[], ready: string, port: number): Promise<WgcMediaFeed> {
     const child = new Deno.Command(mediaBinary(), {
-      args: [
-        "capture-wgc",
-        String(options.monitor),
-        `${options.host}:${options.port}`,
-        "--iroh-share",
-        "--fps",
-        String(options.fps ?? 30),
-        "--bitrate",
-        String(options.bitrate ?? 8_000_000),
-      ],
+      args,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
@@ -120,22 +136,22 @@ export class WgcMediaFeed {
         (resolve, reject) => {
           let fingerprint: string | null = null, code: string | null = null;
           const timer = setTimeout(
-            () => reject(new Error(`capture-wgc not ready: ${log.at(-1) ?? "no output"}`)),
+            () => reject(new Error(`${args[0]} not ready: ${log.at(-1) ?? "no output"}`)),
             READY_TIMEOUT_MS,
           );
           drained.push(drain(child.stdout, (line) => {
             keep(line);
             code ??= line.match(/^IROH_SHARE code=(\S+)/)?.[1] ?? null;
             fingerprint ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
-            if (line.startsWith("MEDIA_SOURCE") && code && fingerprint) {
+            if (line.startsWith(ready) && code && fingerprint) {
               clearTimeout(timer);
-              resolve({ port: options.port, fingerprint, code });
+              resolve({ port, fingerprint, code });
             }
           }));
           child.status.then(async (status) => {
             clearTimeout(timer);
             await Promise.race([Promise.allSettled(drained), new Promise((r) => setTimeout(r, 1000))]);
-            reject(new Error(`capture-wgc exited (${status.code}): ${log.at(-1) ?? ""}`));
+            reject(new Error(`${args[0]} exited (${status.code}): ${log.at(-1) ?? ""}`));
           });
         },
       );

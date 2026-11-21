@@ -15,9 +15,14 @@
  * sends display input to directly. When the last display
  * lets go (`RELEASE`), the overlay stops after a grace period.
  *
+ * A machine that offers its sound (`DesktopDescription.audio`) plays it here while any of its
+ * desktops is shown: a `petplay-media receive-audio` on the default output, stopped a few
+ * seconds after the last display lets go.
+ *
  * Needs stageforge networking (`--stageforge-networking`); without it the list stays empty.
  */
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
+import { fromFileUrl } from "@std/path";
 import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { householdProof, householdSecret, householdTopic } from "../rdp/classes/household.ts";
 import type { DesktopDescription, FeedInfo, ScreenInfo } from "../rdp/desktopSource.ts";
@@ -55,6 +60,21 @@ type Desktop = {
   error: string | null;
 };
 
+/** A machine's sound, played while any of its desktops is shown. */
+type Sound = {
+  machine: string;
+  source: ActorId;
+  player: Deno.ChildProcess | null;
+  starting: boolean;
+  retryAt: number;
+  /** When the last display let go. */
+  quietSince: number | null;
+  error: string | null;
+  log: string[];
+};
+/** Switching between a machine's monitors must not cut its sound. */
+const AUDIO_GRACE_MS = 3000;
+
 const state = actorState({
   name: "householdDesktops",
   enabled: false,
@@ -67,11 +87,13 @@ const state = actorState({
     frames: number;
     error: string | null;
   }>,
+  sounds: [] as Array<{ machine: string; playing: boolean; error: string | null; last: string | null }>,
   lastError: null as string | null,
 });
 
 let secret: string | null = null;
 const desktops = new Map<string, Desktop>();
+const sounds = new Map<string, Sound>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let polling = false;
 /** desktopSources that did not answer DESCRIBE (an agent since restarted), until when. */
@@ -119,6 +141,95 @@ function summarize(): void {
     frames: d.frames,
     error: d.error,
   }));
+  state.sounds = [...sounds.values()].map((s) => ({
+    machine: s.machine,
+    playing: s.player !== null,
+    error: s.error,
+    last: s.log.at(-1) ?? null,
+  }));
+}
+
+function mediaBinary(): string {
+  return Deno.env.get("PETPLAY_MEDIA_BINARY") ??
+    fromFileUrl(
+      new URL(
+        `../submodules/petplay_mediatransport/target/release/petplay-media${
+          Deno.build.os === "windows" ? ".exe" : ""
+        }`,
+        import.meta.url,
+      ),
+    );
+}
+
+function stopSound(sound: Sound): void {
+  const player = sound.player;
+  sound.player = null;
+  try {
+    player?.kill();
+  } catch { /* already gone */ }
+}
+
+async function keepSound(sound: Sound): Promise<void> {
+  const shown = [...desktops.values()].some((d) =>
+    d.machine === sound.machine && d.holders.size > 0
+  );
+  if (!shown) {
+    sound.quietSince ??= Date.now();
+    if (sound.player && Date.now() - sound.quietSince >= AUDIO_GRACE_MS) stopSound(sound);
+    return;
+  }
+  sound.quietSince = null;
+  if (sound.player || sound.starting || Date.now() < sound.retryAt) return;
+  sound.starting = true;
+  try {
+    const feed = await request<FeedInfo | null>(sound.source, "AUDIO");
+    if (!feed) return;
+    const args = feed.code
+      ? ["receive-audio", feed.code]
+      : ["receive-audio", `https://${feed.host}:${feed.port}/`, feed.fingerprint];
+    const player = new Deno.Command(mediaBinary(), {
+      args,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    sound.player = player;
+    sound.error = null;
+    const keepLine = (line: string) => {
+      sound.log.push(line);
+      if (sound.log.length > 50) sound.log.shift();
+    };
+    void lines(player.stdout, keepLine);
+    void lines(player.stderr, keepLine);
+    void player.status.then((status) => {
+      if (sound.player !== player) return;
+      sound.player = null;
+      sound.error = `receive-audio exited (${status.code}): ${sound.log.at(-1) ?? ""}`;
+      sound.retryAt = Date.now() + RETRY_MS;
+      report(`${sound.machine} audio: ${sound.error}`);
+    });
+  } catch (error) {
+    sound.error = String(error instanceof Error ? error.message : error);
+    sound.retryAt = Date.now() + RETRY_MS;
+    report(`${sound.machine} audio: ${sound.error}`);
+  } finally {
+    sound.starting = false;
+  }
+}
+
+async function lines(stream: ReadableStream<Uint8Array>, onLine: (line: string) => void) {
+  let buffered = "";
+  try {
+    const text = stream.pipeThrough(
+      new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>,
+    );
+    for await (const chunk of text) {
+      buffered += chunk;
+      const parts = buffered.split(/\r?\n/);
+      buffered = parts.pop() ?? "";
+      for (const line of parts) if (line) onLine(line);
+    }
+  } catch { /* the process ended */ }
 }
 
 async function stopOverlay(desktop: Desktop): Promise<void> {
@@ -142,6 +253,11 @@ function forget(key: string): void {
 async function discover(): Promise<void> {
   const known = new Set([...state.addressBook].map(String));
   for (const [key, desktop] of desktops) if (!known.has(desktop.source)) forget(key);
+  for (const [machine, sound] of sounds) {
+    if (known.has(sound.source)) continue;
+    stopSound(sound);
+    sounds.delete(machine);
+  }
   const now = Date.now();
   const fresh = [...known].filter((id) =>
     id.startsWith("desktopSource@") && (quiet.get(id) ?? 0) <= now &&
@@ -162,6 +278,21 @@ async function discover(): Promise<void> {
         if (d.machine !== described.machine) continue;
         holders.set(key, d.holders);
         forget(key);
+      }
+      const previousSound = sounds.get(described.machine);
+      if (previousSound) stopSound(previousSound);
+      sounds.delete(described.machine);
+      if (described.audio) {
+        sounds.set(described.machine, {
+          machine: described.machine,
+          source: id as ActorId,
+          player: null,
+          starting: false,
+          retryAt: 0,
+          quietSince: null,
+          error: null,
+          log: [],
+        });
       }
       const screens: Array<ScreenInfo | null> = described.screens?.length ? described.screens : [null];
       for (const screen of screens) {
@@ -262,7 +393,10 @@ async function poll(): Promise<void> {
   polling = true;
   try {
     await discover();
-    await Promise.all([...desktops.values()].map((desktop) => keep(desktop)));
+    await Promise.all([
+      ...[...desktops.values()].map((desktop) => keep(desktop)),
+      ...[...sounds.values()].map((sound) => keepSound(sound)),
+    ]);
     summarize();
   } finally {
     polling = false;
@@ -340,6 +474,8 @@ new PostMan(
     __SHUTDOWN__: async () => {
       if (timer) clearInterval(timer);
       timer = null;
+      for (const sound of sounds.values()) stopSound(sound);
+      sounds.clear();
       await Promise.all([...desktops.values()].map((desktop) => stopOverlay(desktop)));
       desktops.clear();
     },

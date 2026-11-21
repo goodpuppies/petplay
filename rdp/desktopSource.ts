@@ -30,6 +30,10 @@
  * also carries an iroh share `code`. `DESCRIBE` lists them as `screens`, with the rectangle each
  * covers on the virtual desktop (input `region`s); `START`, `FEED` and `STOP` take `{monitor}`,
  * without it the configured one. Frame sinks work wherever the helper does.
+ *
+ * Audio, Windows for now: `AUDIO` starts the machine's sound (every app but VRChat and PetPlay,
+ * `WgcMediaFeed.audio`) on `port + 100` if it is not running and returns its feed; `STOPAUDIO`
+ * ends it. `DESCRIBE` says `audio: true` where it can.
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { join } from "@std/path";
@@ -79,6 +83,8 @@ export type DesktopDescription = {
   feed: FeedInfo | null;
   /** Windows: every monitor, each its own feed. Absent: one feed of the whole workspace. */
   screens?: ScreenInfo[];
+  /** The machine's sound can be had (`AUDIO`). */
+  audio?: boolean;
 };
 export type CaptureStatus = { event: "lost" | "recovered" | "unavailable"; message?: string };
 
@@ -113,6 +119,42 @@ const guard = new HouseholdGuard();
 type Running = { encoder: DesktopMediaFeed | WgcMediaFeed; request: SourceRequest; info: FeedInfo };
 const running = new Map<number, Running>();
 let screens: ScreenInfo[] | null = null;
+/** The machine's sound: its feed, or the start in progress. */
+let audio: { encoder: WgcMediaFeed; info: FeedInfo } | null = null;
+let audioStarting: Promise<FeedInfo> | null = null;
+/** Ports above the monitors' feeds. */
+const AUDIO_PORT_OFFSET = 100;
+
+function startAudio(): Promise<FeedInfo | null> {
+  if (Deno.build.os !== "windows") return Promise.resolve(null);
+  if (audio) return Promise.resolve(audio.info);
+  if (audioStarting) return audioStarting;
+  const defaults = feedDefaults;
+  if (!defaults || typeof defaults.host !== "string" || !Number.isInteger(defaults.port)) {
+    return Promise.reject(new Error("AUDIO needs CONFIGURE first"));
+  }
+  const port = defaults.port + AUDIO_PORT_OFFSET;
+  audioStarting = (async () => {
+    const encoder = await WgcMediaFeed.audio({ host: defaults.host, port });
+    const started = {
+      encoder,
+      info: { host: defaults.host, port, fingerprint: encoder.info.fingerprint, code: encoder.info.code },
+    };
+    audio = started;
+    // An exit leaves no feed; the next AUDIO starts another.
+    void encoder.exited.then(() => {
+      if (audio === started) audio = null;
+    });
+    return started.info;
+  })().finally(() => audioStarting = null);
+  return audioStarting;
+}
+
+async function stopAudio(): Promise<void> {
+  const running = audio;
+  audio = null;
+  await running?.encoder.stop();
+}
 const subscribers = new Set<string>();
 
 let helper: CaptureHelper | null = null;
@@ -351,6 +393,7 @@ async function describe(): Promise<DesktopDescription> {
     input: pairedInput,
     feed: state.feed,
     ...(screens ? { screens } : {}),
+    ...(Deno.build.os === "windows" ? { audio: true } : {}),
   };
 }
 
@@ -418,6 +461,11 @@ new PostMan(
         return true;
       },
       LAYOUT: () => loadWorkspaceOutputs(),
+      AUDIO: () => startAudio(),
+      STOPAUDIO: async () => {
+        await stopAudio();
+        return true;
+      },
     }),
     /** Start the encoder feed; returns where receivers reach it. */
     START: refuseWhenGuarded(guard, (payload?: Partial<SourceRequest>) => startFeed(payload)),
@@ -432,6 +480,7 @@ new PostMan(
     __SHUTDOWN__: async () => {
       shuttingDown = true;
       frameSink = null;
+      await stopAudio();
       await stopFeed();
       await applying;
     },
