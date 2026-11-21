@@ -31,9 +31,10 @@ import { Text } from "./text.tsx";
 import { measureMsdfText } from "../../../submodules/threewebxrwebgpudeno/msdf-text.tsx";
 import { Icon, type IconName } from "./icons.tsx";
 import { UiImage } from "./image.tsx";
+import { type BatteryDeviceItem, BatteryWidget } from "./batteryWidget.tsx";
 import { Footer, Pill, Shell, Slot, SlotRow, Tile, TileRow } from "./primitives.tsx";
-import { COLOR, GAP, LAST_ROW_HEIGHT, RADIUS, unitSpan } from "./tokens.ts";
-import type { BatteryReading, BatteryReadings } from "../batteryStore.ts";
+import { COLOR, GAP, GRID_WIDTH, INNER_GAP, RADIUS, unitSpan } from "./tokens.ts";
+import type { BatteryReadings } from "../batteryStore.ts";
 import { type MediaCommand, type NowPlaying, nowPlayingLabel } from "../mediaStore.ts";
 import { truncateText } from "./wrapText.ts";
 
@@ -60,6 +61,8 @@ export type WristOverlayProps = {
   /** Displays currently in the spatial graph, for the readout. */
   displayCount?: number;
   batteries?: BatteryReadings;
+  /** Optional arbitrary list of battery devices (overrides `batteries` when provided). */
+  batteryItems?: readonly BatteryDeviceItem[];
   /** The active media player, if any: swaps the displays readout for transport controls. */
   nowPlaying?: NowPlaying | null;
   onMedia?: (command: MediaCommand) => void;
@@ -72,9 +75,7 @@ export type WristOverlayProps = {
  * one readout you glance at rather than read, and the accent pairing is the
  * system's strongest contrast.
  */
-function ClockTile(
-  { clock, dateLabel }: { clock: string; dateLabel: string },
-) {
+function ClockTile({ clock }: { clock: string }) {
   const size = unitSpan(2);
   return (
     <Tile units={2} rows={2}>
@@ -92,15 +93,7 @@ function ClockTile(
         radius={RADIUS.tile}
         focus={[1, 0.5]}
       />
-      <Pill slots={4} units={2} tone="accent" fontSize={44}>{clock}</Pill>
-      {
-        /*
-        Time and date only. There was a third pill here showing a session
-        counter that read "496509:25:18" — the value was wrong and, working or
-        not, an uptime figure is not something you glance at a wrist for.
-      */
-      }
-      <Pill slots={4} units={2} fontSize={14}>{dateLabel}</Pill>
+      <Pill slots={4} units={2} tone="accent" fontSize={52} height={72}>{clock}</Pill>
     </Tile>
   );
 }
@@ -160,28 +153,18 @@ function SlotTile(
   );
 }
 
-function batteryReadout(
-  prefix: string,
-  reading: BatteryReading | undefined,
-  icon: IconName,
-) {
-  if (reading == null) return null;
-  const percent = `${Math.round(reading.percent)}%`;
-  return { icon, active: reading.charging, value: prefix ? `${prefix} ${percent}` : percent };
-}
+const FOOTER_FONT_SIZE = 36;
 
-const NOW_PLAYING_FONT_SIZE = 16;
-
-/** The squeezed last row: what's playing, cut to one line. */
-function NowPlayingRow({ label }: { label: string }) {
+/** Truncates a string to fit inside the footer's single-line pill. */
+function useFooterLabel(label: string): string {
   const [fitted, setFitted] = useState(label);
   useEffect(() => {
     let cancelled = false;
-    const maxWidth = unitSpan(4) - 2 * GAP;
+    const maxWidth = GRID_WIDTH - 2 * (GAP + INNER_GAP);
     truncateText(
       label,
       maxWidth,
-      async (line) => (await measureMsdfText(line, NOW_PLAYING_FONT_SIZE)).width,
+      async (line) => (await measureMsdfText(line, FOOTER_FONT_SIZE)).width,
     ).then((next) => {
       if (!cancelled) setFitted(next);
     });
@@ -189,11 +172,7 @@ function NowPlayingRow({ label }: { label: string }) {
       cancelled = true;
     };
   }, [label]);
-  return (
-    <Tile units={4} height={LAST_ROW_HEIGHT}>
-      <Text color={COLOR.ink} fontSize={NOW_PLAYING_FONT_SIZE}>{fitted}</Text>
-    </Tile>
-  );
+  return fitted;
 }
 
 /** A 1x1 tile is a rounded square, not a circle — rule 3 is about nesting depth. */
@@ -234,6 +213,7 @@ export function WristOverlay(
     status = "Native module active",
     displayCount = 0,
     batteries = {},
+    batteryItems,
     nowPlaying = null,
     onMedia,
     opacity,
@@ -241,16 +221,17 @@ export function WristOverlay(
   }: WristOverlayProps,
 ) {
   const on = (id: WristOverlayToggleId) => active[id] ?? false;
+  const infoText = useFooterLabel(nowPlaying != null ? nowPlayingLabel(nowPlaying) : status);
 
   return (
     <Shell
       pointerEventsType={pointerEventsType}
       opacity={opacity}
-      footer={<Footer>{status}</Footer>}
+      footer={<Footer>{infoText}</Footer>}
     >
       {/* Rows 1-2: the 2x2 clock beside a stack of two 2x1 tiles. */}
       <Container flexDirection="row" gap={GAP} alignItems="flex-start">
-        <ClockTile clock={clock} dateLabel={dateLabel} />
+        <ClockTile clock={clock} />
         <Container flexDirection="column" gap={GAP}>
           {
             /*
@@ -309,19 +290,9 @@ export function WristOverlay(
             label over empty circles.
           */
           }
-          {batteries.left || batteries.right || batteries.hmd
-            ? (
-              <SlotTile
-                label="BATTERY"
-                labelSlots={3}
-                slots={[
-                  batteryReadout("L", batteries.left, "videogame_asset"),
-                  batteryReadout("R", batteries.right, "videogame_asset"),
-                  batteryReadout("", batteries.hmd, "headset"),
-                  null,
-                ]}
-              />
-            )
+          {(batteryItems && batteryItems.length > 0) || batteries.left || batteries.right ||
+              batteries.hmd
+            ? <BatteryWidget batteries={batteries} items={batteryItems} />
             : <Tile units={2} />}
         </Container>
       </Container>
@@ -359,21 +330,6 @@ export function WristOverlay(
           disabled={!on("layout")}
           onClick={onRecenter}
         />
-      </TileRow>
-
-      {
-        /*
-        Row 4 is squeezed to one sub-unit so the panel comes out square. It
-        shows what's playing, and is empty otherwise. It held SETTINGS (now a
-        tile above) and EXIT, which was removed: the only shutdown path in the
-        tree is a `Deno.exit(1)` in the desktop child's error handler, so the
-        button did nothing.
-      */
-      }
-      <TileRow>
-        {nowPlaying != null
-          ? <NowPlayingRow label={nowPlayingLabel(nowPlaying)} />
-          : <Tile units={4} height={LAST_ROW_HEIGHT} />}
       </TileRow>
     </Shell>
   );

@@ -59,6 +59,8 @@
     "check": "deno run -A utils/type-check.ts",
     "check:all": "deno check --allow-import",
     "ui": "deno run -A petplay/uiViewer.tsx ",
+    "ui:build": "deno run -A ui/build.ts",
+    "ui:web": "deno run -A --no-check ui/main.ts",
     "server": "deno run -A --unstable-webgpu --env-file --no-check petplay/petplay.ts dev --agent-repl --openvr-reattach",
     "status": "deno run -A petplay/client.ts status",
     "reboot": "deno run -A petplay/client.ts reboot",

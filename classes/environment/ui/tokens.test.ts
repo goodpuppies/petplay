@@ -31,8 +31,8 @@ function assertEquals(actual: unknown, expected: unknown): void {
  */
 
 Deno.test("panel is square", () => {
-  const gridHeight = UNIT * 3 + GAP * 3 + LAST_ROW_HEIGHT;
-  const contentHeight = gridHeight + GAP + FOOTER_HEIGHT;
+  // 3 tile rows + 1 full-unit context/footer row = 4x4 recursive grid.
+  const contentHeight = UNIT * 3 + GAP * 3 + FOOTER_HEIGHT;
   assertEquals(contentHeight, GRID_WIDTH);
   assertEquals(SHELL_SIZE, contentHeight + GAP * 2);
 });
@@ -59,20 +59,17 @@ Deno.test("radius is concentric: each level is its parent minus that level's ins
   assertEquals(RADIUS.slot, RADIUS.tile - INNER_GAP);
 });
 
-Deno.test("the footer can carry the shell's bottom radius", () => {
-  // A child at a container's corner needs height >= 2 * (parentRadius - inset).
-  const required = 2 * (RADIUS.shellBottom - GAP);
+Deno.test("the footer carries the shell's concentric tile radius symmetrically", () => {
+  // A full-unit footer (4x1) is tall enough for `RADIUS.shell - GAP`, so the shell
+  // stays symmetric on all four corners and the footer matches the tile radius.
+  const required = 2 * (RADIUS.shell - GAP);
   assertEquals(FOOTER_HEIGHT >= required, true);
-  // ...and the shell's top radius is exactly what the footer could *not* carry,
-  // which is why the shell is asymmetric rather than the footer being grown.
-  assertEquals(2 * (RADIUS.shell - GAP) > FOOTER_HEIGHT, true);
+  assertEquals(RADIUS.footer, RADIUS.tile);
+  assertEquals(RADIUS.shellBottom, RADIUS.shell);
 });
 
-Deno.test("a square grid cannot host a footer without squeezing a row", () => {
-  // (cols - rows) * (UNIT + GAP) === GAP + FOOTER_HEIGHT has no solution with
-  // cols === rows and a positive footer, so the last row absorbs the difference.
-  assertEquals(LAST_ROW_HEIGHT, UNIT - GAP - FOOTER_HEIGHT);
-  assertEquals(LAST_ROW_HEIGHT, SUB_UNIT);
+Deno.test("four rows of whole units fill the square grid", () => {
+  assertEquals(FOOTER_HEIGHT, UNIT);
   assertEquals(COLUMNS, 4);
 });
 

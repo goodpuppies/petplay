@@ -47,6 +47,7 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
   onSpatialFocus?: () => void;
   onSpatialHoverChange?: (hovered: boolean) => void;
+  onDismiss?: () => void;
 };
 
 export {
@@ -118,6 +119,7 @@ export function DisplayInstance(
     manipulationStoreRef,
     onSpatialFocus,
     onSpatialHoverChange,
+    onDismiss,
     ...frameProps
   }: DisplayInstanceProps,
 ) {
@@ -341,6 +343,7 @@ export function DisplayInstance(
         manipulationStoreRef={manipulationStoreRef}
         onSpatialFocus={onSpatialFocus}
         onSpatialHoverChange={onSpatialHoverChange}
+        onDismiss={onDismiss}
       />
     </group>
   );

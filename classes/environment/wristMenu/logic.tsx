@@ -21,6 +21,7 @@ import {
   saveLayoutSlot,
   useWorkspaceLayoutSnapshot,
 } from "../workspaceLayoutStore.ts";
+import { toggleSettingsWindow } from "../settingsWindowStore.ts";
 import { GrabBox, type GrabBoxManipulationOptions } from "../grabbox.tsx";
 import { isPointerBlockedByHost } from "./pointerFilter.ts";
 import { getSetting, setSetting, useSetting } from "../../settings.ts";
@@ -451,6 +452,7 @@ export function WristMenuPanel(
               onAddOutput={addWorkspaceLayoutOutput}
               onSaveLayout={saveLayoutSlot}
               onLoadLayout={loadLayoutSlot}
+              onOpenSettingsWindow={toggleSettingsWindow}
               pointerEventsType={menuPointerType}
             />
           </GrabBox>

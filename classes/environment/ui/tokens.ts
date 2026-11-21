@@ -43,8 +43,8 @@ export const SUB_UNIT = (UNIT - GAP) / 2;
 /** The panel is this many units wide, and square overall. */
 export const COLUMNS = 4;
 
-/** Footer height. One sub-unit, which also makes the squeezed last row one sub-unit. */
-export const FOOTER_HEIGHT = SUB_UNIT;
+/** Footer height: one full grid row (4x1), so the 4x4 panel stays square with no squeezed row. */
+export const FOOTER_HEIGHT = UNIT;
 
 /**
  * Radius is **extrinsic**: each level is its parent's minus the inset at that
@@ -67,16 +67,10 @@ export const RADIUS = {
   shell: 44,
   tile: 44 - GAP,
   slot: 44 - GAP - INNER_GAP,
-  /** Half the footer's height, so the footer is a true pill. */
-  footer: FOOTER_HEIGHT / 2,
-  /**
-   * The shell's *bottom* radius is derived back from the footer rather than
-   * shared with the top. A child sitting at a container's corner must be at
-   * least `2 * (parentRadius - inset)` tall or its corner cannot nest; the
-   * footer is too short for a 44 radius, so the shell yields instead. Hence the
-   * asymmetric shell.
-   */
-  shellBottom: FOOTER_HEIGHT / 2 + GAP,
+  /** Same concentric tile radius as any other 1-unit-tall row (`shell - GAP`). */
+  footer: 44 - GAP,
+  /** Symmetric with the top: a full-unit footer easily carries `RADIUS.tile`. */
+  shellBottom: 44,
 } as const;
 
 /**

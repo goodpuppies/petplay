@@ -53,6 +53,7 @@ import { setGrabboxOutlineVisible, useGrabboxOutlineVisible } from "./grabboxOut
 import { useHingedOneHandScaleMaxGrabOffset } from "./spatialManipulationMode.ts";
 import { GrabBox, type GrabBoxManipulationOptions } from "./grabbox.tsx";
 import { SnapSlotMarkers } from "./snapSlotMarkers.tsx";
+import { setJoystickYReader } from "./oneHandScale.ts";
 import { pushPullGrab } from "./pushPull.ts";
 import { consumeOneHandScaleEnd } from "./oneHandScale.ts";
 import {
@@ -112,6 +113,7 @@ import { controllerHandOfPointerState } from "./mainController.ts";
 import type { DirectOpenVrInputSource } from "../directOpenVrInputSource.ts";
 import { penHandler } from "./penEvents.ts";
 import { ToastOverlay } from "./toastOverlay.tsx";
+import { SettingsWindowOverlay } from "./settingsWindowOverlay.tsx";
 import { pushToast } from "./toastStore.ts";
 import { startXsoNotificationReceiver } from "./xsoNotificationReceiver.ts";
 import { startDesktopNotificationFollow } from "./desktopNotifications.ts";
@@ -125,6 +127,7 @@ import {
   type SpatialOriginId,
   type TrackedOriginId,
 } from "./trackedOrigins.ts";
+import { DisplaySettingsPanel } from "./ui/displaySettingsPanel.tsx";
 import {
   contextToolbarFootprint,
   type SpatialContextAction,
@@ -132,6 +135,8 @@ import {
   SpatialHierarchyIndicator,
   SpatialSettingsButton,
   SpatialSettingsSection,
+  SpatialSettingsSlider,
+  SpatialSettingsToggle,
 } from "./spatialContextToolbar.tsx";
 
 // deno-lint-ignore no-explicit-any
@@ -577,10 +582,7 @@ function CommonOverlayChords({
           }
           return;
         }
-        if (axis !== 0) {
-          const step = axis * JOYSTICK_PUSH_PULL_METERS_PER_SECOND * delta;
-          pushPullGrab(closestStore, closestPointerId, step);
-        }
+        // Free-grab joystick push/pull is handled inherently by `GrabBox` itself.
         return;
       }
     }
@@ -1121,8 +1123,6 @@ function AnchorSettingsSection(
   );
 }
 
-const OPACITY_STEPS = [1, 0.75, 0.5, 0.25] as const;
-
 function OpacitySettingsSection(
   { node, setGraph }: {
     node: SpatialNode;
@@ -1131,16 +1131,15 @@ function OpacitySettingsSection(
 ) {
   const current = node.opacity ?? 1;
   return (
-    <SpatialSettingsSection label="Opacity">
-      {OPACITY_STEPS.map((step) => (
-        <SpatialSettingsButton
-          key={step}
-          label={`${Math.round(step * 100)}%`}
-          selected={Math.abs(current - step) < 0.001}
-          onClick={() => setGraph((latest) => setSpatialNodeOpacity(latest, node.id, step))}
-        />
-      ))}
-    </SpatialSettingsSection>
+    <SpatialSettingsSlider
+      label="Opacity"
+      value={current}
+      min={0.2}
+      max={1}
+      step={0.05}
+      formatValue={(v) => `${Math.round(v * 100)}%`}
+      onChange={(next) => setGraph((latest) => setSpatialNodeOpacity(latest, node.id, next))}
+    />
   );
 }
 
@@ -1151,13 +1150,12 @@ function MouseSettingsSection(
   },
 ) {
   const blocked = node.mouseBlocked ?? false;
-  const set = (next: boolean) =>
-    setGraph((latest) => setSpatialNodeMouseBlocked(latest, node.id, next));
   return (
-    <SpatialSettingsSection label="Laser drives mouse">
-      <SpatialSettingsButton label="On" selected={!blocked} onClick={() => set(false)} />
-      <SpatialSettingsButton label="Off" selected={blocked} onClick={() => set(true)} />
-    </SpatialSettingsSection>
+    <SpatialSettingsToggle
+      label="Laser drives mouse"
+      value={!blocked}
+      onChange={(next) => setGraph((latest) => setSpatialNodeMouseBlocked(latest, node.id, !next))}
+    />
   );
 }
 
@@ -1168,31 +1166,23 @@ function AutoHideSettingsSection(
   },
 ) {
   const on = node.autoHide ?? false;
-  const set = (next: boolean) =>
-    setGraph((latest) => setSpatialNodeAutoHide(latest, node.id, next));
   return (
-    <SpatialSettingsSection label="Hide when looking away">
-      <SpatialSettingsButton label="On" selected={on} onClick={() => set(true)} />
-      <SpatialSettingsButton label="Off" selected={!on} onClick={() => set(false)} />
-    </SpatialSettingsSection>
+    <SpatialSettingsToggle
+      label="Hide when looking away"
+      value={on}
+      onChange={(next) => setGraph((latest) => setSpatialNodeAutoHide(latest, node.id, next))}
+    />
   );
 }
 
 function TypingSoundSettingsSection() {
   const on = useSetting("typingSounds");
   return (
-    <SpatialSettingsSection label="Typing sounds">
-      <SpatialSettingsButton
-        label="On"
-        selected={on}
-        onClick={() => setSetting("typingSounds", true)}
-      />
-      <SpatialSettingsButton
-        label="Off"
-        selected={!on}
-        onClick={() => setSetting("typingSounds", false)}
-      />
-    </SpatialSettingsSection>
+    <SpatialSettingsToggle
+      label="Typing sounds"
+      value={on}
+      onChange={(next) => setSetting("typingSounds", next)}
+    />
   );
 }
 
@@ -1219,9 +1209,6 @@ function KeyboardLocaleSettingsSection() {
   );
 }
 
-/** Curvature as OpenVR's fraction of a full cylinder; 0.2 on a default display is a ~1.4 m radius. */
-const CURVATURE_STEPS = [0, 0.1, 0.2, 0.3] as const;
-
 function CurvatureSettingsSection(
   { node, setGraph }: {
     node: SpatialNode;
@@ -1230,16 +1217,15 @@ function CurvatureSettingsSection(
 ) {
   const current = node.curvature ?? 0;
   return (
-    <SpatialSettingsSection label="Curve">
-      {CURVATURE_STEPS.map((step) => (
-        <SpatialSettingsButton
-          key={step}
-          label={step === 0 ? "Flat" : `${Math.round(step * 100)}%`}
-          selected={Math.abs(current - step) < 0.001}
-          onClick={() => setGraph((latest) => setSpatialNodeCurvature(latest, node.id, step))}
-        />
-      ))}
-    </SpatialSettingsSection>
+    <SpatialSettingsSlider
+      label="Curve"
+      value={current}
+      min={0}
+      max={0.35}
+      step={0.05}
+      formatValue={(v) => v <= 0.001 ? "Flat" : `${Math.round(v * 100)}%`}
+      onChange={(next) => setGraph((latest) => setSpatialNodeCurvature(latest, node.id, next))}
+    />
   );
 }
 
@@ -1298,89 +1284,6 @@ function useLockedGrabOptions(
         ? { ...options, translate: false, rotate: false, scale: false, triggerResize: undefined }
         : options,
     [locked, options],
-  );
-}
-
-function useScaleToDelete(
-  nodeId: string,
-  grabSize: [number, number, number],
-  baseOptions: GrabBoxManipulationOptions,
-  setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>,
-) {
-  const [armed, setArmed] = React.useState(false);
-  const armedRef = React.useRef(false);
-  const sawTwoPointerScaleRef = React.useRef(false);
-  const worldScale = React.useMemo(() => new THREE.Vector3(), []);
-  const setDeleteArmed = React.useCallback((next: boolean) => {
-    if (armedRef.current === next) return;
-    armedRef.current = next;
-    setArmed(next);
-  }, []);
-  const apply = React.useCallback(
-    (state: HandleState<unknown>, target: import("three").Object3D) => {
-      if (state.first) {
-        sawTwoPointerScaleRef.current = false;
-        setDeleteArmed(false);
-      }
-      if (state.last && armedRef.current && state.event != null) {
-        setDeleteArmed(false);
-        sawTwoPointerScaleRef.current = false;
-        setGraph((current) => deleteSpatialNode(current, nodeId));
-        return;
-      }
-
-      (baseOptions.apply ?? defaultApply)(state, target);
-      // Two-pointer scale only: a single squeeze-grab never arms delete, and
-      // the armed flag (a React state → full subtree re-render + uikit text
-      // rebuild) only flips on the arm/disarm edges, not during the grab.
-      if (!state.last && state.current.pointerAmount >= 2) {
-        sawTwoPointerScaleRef.current = true;
-      }
-      if (!state.last && sawTwoPointerScaleRef.current) {
-        const targetObject = target as unknown as THREE.Object3D;
-        targetObject.updateWorldMatrix(true, false);
-        targetObject.getWorldScale(worldScale);
-        const worldSize = Math.max(
-          Math.abs(worldScale.x) * grabSize[0],
-          Math.abs(worldScale.y) * grabSize[1],
-          Math.abs(worldScale.z) * grabSize[2],
-        );
-        setDeleteArmed(
-          armedRef.current
-            ? worldSize < DELETE_DISARM_SIZE_METERS
-            : worldSize < DELETE_ARM_SIZE_METERS,
-        );
-      }
-      if (state.last) {
-        setDeleteArmed(false);
-        sawTwoPointerScaleRef.current = false;
-      }
-    },
-    [baseOptions, grabSize, nodeId, setDeleteArmed, setGraph, worldScale],
-  );
-  const options = React.useMemo(
-    () => ({ ...baseOptions, apply }),
-    [apply, baseOptions],
-  );
-  return { armed, options };
-}
-
-function ScaleDeleteIndicator({ grabSize }: { grabSize: [number, number, number] }) {
-  const radius = 0.6 * Math.hypot(...grabSize);
-  return (
-    <mesh
-      scale={[radius, radius, radius]}
-      renderOrder={1000}
-      {...({ pointerEvents: "none" } as Record<string, unknown>)}
-    >
-      <sphereGeometry args={[1, 24, 16]} />
-      <meshBasicNodeMaterial
-        colorNode={TSL.color(0xff1838)}
-        transparent
-        opacity={0.28}
-        depthWrite={false}
-      />
-    </mesh>
   );
 }
 
@@ -1443,8 +1346,11 @@ function DisplaySpatialNodeView({
     () => withTriggerResize(manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform })),
     [commitFreeTransform, manipulationOptions],
   );
-  const deletion = useScaleToDelete(node.id, DISPLAY_GRAB_SIZE, baseOptions, setGraph);
-  const grabOptions = useLockedGrabOptions(deletion.options, node.locked ?? false);
+  const grabOptions = useLockedGrabOptions(baseOptions, node.locked ?? false);
+  const dismissDisplay = React.useCallback(
+    () => setGraph((current) => deleteSpatialNode(current, node.id)),
+    [node.id, setGraph],
+  );
   const children = getSpatialChildren(graph, node.id);
   const attachmentRole = getDisplayAttachmentRole(graph, node.id);
   const outputConnected = node.workspaceOutputId != null && node.workspaceOutputConnected !== false;
@@ -1582,6 +1488,9 @@ function DisplaySpatialNodeView({
     [contextActions.length, toolbarScale],
   );
   const toolbarSide = displayToolbarSide(graph, node.id, toolbarFootprint);
+  const scene = useThree((r3fState) => r3fState.scene);
+  const camera = useThree((r3fState) => r3fState.camera);
+  const renderer = useThree((r3fState) => r3fState.gl);
   const assignedSide = node.constraint?.kind === "hinge"
     ? node.constraint.attachmentSlotId.match(/-(left|right|top|bottom)-slot$/)?.[1]
     : undefined;
@@ -1605,7 +1514,6 @@ function DisplaySpatialNodeView({
         workspaceOutputConnected: node.workspaceOutputConnected ?? null,
       }}
     >
-      {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
       <SnapSlotMarkers graph={graph} ownerId={node.id} setGraph={setGraph} />
       <DisplayInstance
         position={[0, panel.centerY, 0]}
@@ -1637,6 +1545,7 @@ function DisplaySpatialNodeView({
         manipulationStoreRef={setManipulationStore}
         onSpatialFocus={selectNode}
         onSpatialHoverChange={setHovered}
+        onDismiss={node.locked ? undefined : dismissDisplay}
       >
         <SpatialHierarchyIndicator
           role={attachmentRole ?? "solo"}
@@ -1666,40 +1575,58 @@ function DisplaySpatialNodeView({
           ]}
           role={attachmentRole ?? undefined}
           actions={contextActions}
-          settings={
-            <>
-              <SpatialSettingsSection label="Feed">
-                {workspaceOutputs.map((output) => (
-                  <SpatialSettingsButton
-                    key={output.id}
-                    label={output.name}
-                    selected={node.workspaceOutputId === output.id}
-                    onClick={() =>
-                      setGraph((current) =>
-                        assignWorkspaceOutput(current, node.id, output.id, workspaceOutputs)
-                      )}
-                  />
-                ))}
-              </SpatialSettingsSection>
-              <AnchorSettingsSection graph={graph} node={node} setGraph={setGraph} />
-              <OpacitySettingsSection node={node} setGraph={setGraph} />
-              {feedAcceptsMouse ? <MouseSettingsSection node={node} setGraph={setGraph} /> : null}
-              <AutoHideSettingsSection node={node} setGraph={setGraph} />
-              <CurvatureSettingsSection node={node} setGraph={setGraph} />
-              <SpatialSettingsSection
-                label={assignedSide == null ? "Free spatial element" : `Attached: ${assignedSide}`}
-              >
-                <SpatialSettingsButton
-                  label="Grab outline"
-                  selected={grabOutlineVisible}
-                  onClick={() => setGrabboxOutlineVisible(!grabOutlineVisible)}
-                />
-                <SpatialSettingsButton
-                  label="Reset pose"
-                  onClick={() => setGraph((current) => resetSpatialNodeTransform(current, node.id))}
-                />
-              </SpatialSettingsSection>
-            </>
+          settingsPanel={
+            <DisplaySettingsPanel
+              feeds={workspaceOutputs.map((o) => ({ id: o.id, name: o.name }))}
+              selectedFeedId={node.workspaceOutputId ?? null}
+              onSelectFeed={(id) =>
+                setGraph((current) =>
+                  assignWorkspaceOutput(current, node.id, id, workspaceOutputs)
+                )}
+              anchorLabel={getSpatialRootId(graph, node.id) === node.id
+                ? "Anchored to"
+                : "Group anchored to"}
+              anchorOptions={SPATIAL_ORIGIN_IDS.map((id) => ({
+                id,
+                label: SPATIAL_ORIGIN_LABEL[id],
+              }))}
+              selectedAnchorId={graph.nodes[getSpatialRootId(graph, node.id)]?.originId ??
+                SCENE_ORIGIN_ID}
+              onSelectAnchor={(id) => {
+                const originId = id as SpatialOriginId;
+                const rootId = getSpatialRootId(graph, node.id);
+                const currentOrigin = graph.nodes[rootId]?.originId ?? SCENE_ORIGIN_ID;
+                if (originId === currentOrigin) return;
+                const head = getHeadObject(renderer, camera as unknown as THREE.Camera);
+                const local = anchoredRootTransform(scene, head, rootId, originId);
+                if (local === "untracked") {
+                  pushToast({
+                    title: `${SPATIAL_ORIGIN_LABEL[originId]} isn't tracked`,
+                    tone: "warning",
+                  });
+                  return;
+                }
+                if (local == null) return;
+                setGraph((latest) => setSpatialRootOrigin(latest, rootId, originId, local));
+              }}
+              opacity={node.opacity ?? 1}
+              onChangeOpacity={(next) =>
+                setGraph((latest) => setSpatialNodeOpacity(latest, node.id, next))}
+              curvature={node.curvature ?? 0}
+              onChangeCurvature={(next) =>
+                setGraph((latest) => setSpatialNodeCurvature(latest, node.id, next))}
+              showLaserMouse={feedAcceptsMouse}
+              laserMouse={!(node.mouseBlocked ?? false)}
+              onChangeLaserMouse={(next) =>
+                setGraph((latest) => setSpatialNodeMouseBlocked(latest, node.id, !next))}
+              autoHide={node.autoHide ?? false}
+              onChangeAutoHide={(next) =>
+                setGraph((latest) => setSpatialNodeAutoHide(latest, node.id, next))}
+              grabOutline={grabOutlineVisible}
+              onChangeGrabOutline={(next) => setGrabboxOutlineVisible(next)}
+              onResetPose={() =>
+                setGraph((current) => resetSpatialNodeTransform(current, node.id))}
+            />
           }
         />
       </DisplayInstance>
@@ -1771,8 +1698,11 @@ function KeyboardSpatialNodeView({
     () => withTriggerResize(manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform })),
     [commitFreeTransform, manipulationOptions],
   );
-  const deletion = useScaleToDelete(node.id, node.snapSource.size, baseOptions, setGraph);
-  const grabOptions = useLockedGrabOptions(deletion.options, node.locked ?? false);
+  const grabOptions = useLockedGrabOptions(baseOptions, node.locked ?? false);
+  const dismissKeyboard = React.useCallback(
+    () => setGraph((current) => deleteSpatialNode(current, node.id)),
+    [node.id, setGraph],
+  );
   const children = getSpatialChildren(graph, node.id);
   const selectNode = React.useCallback(() => onSelectNode(node.id), [node.id, onSelectNode]);
   const contextActions = React.useMemo<SpatialContextAction[]>(() => {
@@ -1820,7 +1750,6 @@ function KeyboardSpatialNodeView({
         originId: node.originId,
       }}
     >
-      {deletion.armed ? <ScaleDeleteIndicator grabSize={node.snapSource.size} /> : null}
       <KeyboardPanel
         position={[0, 0, 0]}
         rotation={[0, 0, 0]}
@@ -1831,6 +1760,7 @@ function KeyboardSpatialNodeView({
         manipulationStoreRef={setManipulationStore}
         onGrabBoxSize={updateBounds}
         onSpatialFocus={selectNode}
+        onDismiss={node.locked ? undefined : dismissKeyboard}
         opacity={node.opacity}
       >
         <SpatialContextToolbar
@@ -2351,12 +2281,21 @@ export function WebXRScene(
       ),
     [desktopInputSinks],
   );
+  // The keyboard types into the desktop of the display clicked last (`keyboardFocus.ts`).
+  const routedKeyboardSink = React.useMemo(() => focusedKeyboard(keyboardSink), [keyboardSink]);
+
+  React.useEffect(() => {
+    if (!directOpenVrInputSource) {
+      setJoystickYReader(null);
+      return;
+    }
+    setJoystickYReader((hand) => directOpenVrInputSource.getSnapshot().controllers[hand]?.joystick[1] ?? 0);
+    return () => setJoystickYReader(null);
+  }, [directOpenVrInputSource]);
 
   React.useEffect(() => {
     const receiver = startXsoNotificationReceiver();
     return receiver.close;
-  // The keyboard types into the desktop of the display clicked last (`keyboardFocus.ts`).
-  const routedKeyboardSink = React.useMemo(() => focusedKeyboard(keyboardSink), [keyboardSink]);
   }, []);
 
   React.useEffect(() => {
@@ -2388,6 +2327,7 @@ export function WebXRScene(
         onKey={routedKeyboardSink}
         directOpenVrInputSource={directOpenVrInputSource}
       />
+      <SettingsWindowOverlay />
       <ToastOverlay />
     </>
   );

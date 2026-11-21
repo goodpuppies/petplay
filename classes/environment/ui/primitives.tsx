@@ -368,7 +368,7 @@ export function Footer({ children }: { children?: React.ReactNode }) {
       backgroundColor={COLOR.ink}
       backgroundOpacity={1}
     >
-      <Text color={COLOR.ground} fontSize={14}>{tooltip ?? children}</Text>
+      <Text color={COLOR.ground} fontSize={36}>{tooltip ?? children}</Text>
     </Container>
   );
 }

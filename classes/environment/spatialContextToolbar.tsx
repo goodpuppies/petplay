@@ -75,7 +75,10 @@ export type SpatialContextAction = {
 export type SpatialContextToolbarProps = {
   title: string;
   actions: SpatialContextAction[];
+  /** Legacy inline settings children (wrapped in the toolbar's default settings shell). */
   settings?: React.ReactNode;
+  /** Self-contained recursive-grid settings panel (e.g. `DisplaySettingsPanel`), rendered directly. */
+  settingsPanel?: React.ReactNode;
   /**
    * Where the card attaches, in the node's space: the middle of the bottom edge, which the card
    * hangs below; with `side: "above"` the middle of the top edge, which it stands on; with
@@ -108,6 +111,10 @@ export type SpatialContextToolbarProps = {
    * uikit builds the icons a couple of frames after mount, so a fresh card popped in half-drawn.
    */
   open?: boolean;
+  /** Initial state of the settings sub-panel (default false; useful in UI previews). */
+  defaultSettingsOpen?: boolean;
+  /** When true, displays a wifi/signal icon next to the display name. */
+  sharing?: boolean;
   pointerEventsType?: AllowedPointerEventsType;
 };
 
@@ -219,6 +226,7 @@ export function SpatialContextToolbar({
   title,
   actions,
   settings,
+  settingsPanel,
   position,
   side = "below",
   settingsPosition,
@@ -226,8 +234,11 @@ export function SpatialContextToolbar({
   scale = DEFAULT_TOOLBAR_SCALE,
   pointerEventsType = "all",
   open = true,
+  defaultSettingsOpen = false,
+  sharing = false,
 }: SpatialContextToolbarProps) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(defaultSettingsOpen);
+  const hasSettings = settingsPanel != null || settings != null;
   // By id, so the tooltip follows a label that changes on click (Lock -> "Locked — unlock") and
   // goes away with a tile that a click removed, which never gets its pointer-out.
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -241,7 +252,7 @@ export function SpatialContextToolbar({
   // Rule 4: the card is sized in whole element units to what it holds — a
   // 3-button menu is a 3-wide card holding 3 buttons. Two is the floor, or the
   // title pill has no room to say anything useful.
-  const tileCount = actions.length + (settings != null ? 1 : 0);
+  const tileCount = actions.length + (hasSettings ? 1 : 0);
   const units = Math.max(2, tileCount);
   // Beside the node the card is a column two tiles wide, the narrowest the title pill reads at;
   // the tiles wrap into rows of two.
@@ -255,7 +266,7 @@ export function SpatialContextToolbar({
   };
   const hoverLabel = hoveredId == null
     ? null
-    : [...actions, ...(settings != null ? [settingsAction] : [])]
+    : [...actions, ...(hasSettings ? [settingsAction] : [])]
       .find((action) => action.id === hoveredId)?.label ?? null;
 
   // The card is a control, not part of the window: it stays the same size and the same distance
@@ -332,7 +343,9 @@ export function SpatialContextToolbar({
     backgroundOpacity: 1,
     pointerEventsType,
   } as const);
-  const shell = shellFor(units);
+  // The settings panel is a fixed 4-unit card (528px, same width as the wrist shell) so sliders,
+  // toggles, and 20px labels fill the card edge-to-edge cleanly.
+  const settingsShell = shellFor(4);
   const toolbarShell = shellFor(cardUnits);
   // uikit pixels are 0.001 group units (`pixelSize`).
   const besideCard = (toolbarShell.width + GAP) * 0.001;
@@ -408,34 +421,61 @@ export function SpatialContextToolbar({
           is lit at all — which is the point.
         */
           }
-          <Container flexDirection="row" gap={INNER_GAP}>
+          <Container flexDirection="row" alignItems="center" gap={INNER_GAP}>
             {role != null && <HierarchyBadge role={role} size={slotSize(cardUnits)} />}
-            <Pill slots={cardUnits * 2 - (role != null ? 1 : 0)} units={cardUnits} fontSize={14}>
-              {hoverLabel ?? title}
-            </Pill>
+            <Container
+              flexGrow={1}
+              height={slotSize(cardUnits)}
+              flexDirection="row"
+              alignItems="center"
+              justifyContent="flex-start"
+              gap={INNER_GAP}
+              paddingX={INNER_GAP}
+              backgroundOpacity={0}
+            >
+              <Text color={COLOR.ink} fontSize={32}>
+                {hoverLabel ?? title}
+              </Text>
+              {sharing && hoverLabel == null && (
+                <Icon name="wifi" size={26} color={COLOR.accent} />
+              )}
+            </Container>
           </Container>
 
           <Container flexDirection="row" flexWrap="wrap" gap={GAP}>
             {actions.map((action) => (
               <ActionTile key={action.id} action={action} onHover={setHoveredId} />
             ))}
-            {settings != null && <ActionTile action={settingsAction} onHover={setHoveredId} />}
+            {hasSettings && <ActionTile action={settingsAction} onHover={setHoveredId} />}
           </Container>
-          {settingsOpen && !detachedSettings && settings}
+          {settingsOpen && !detachedSettings && (settingsPanel ?? settings)}
         </Container>
         {settingsOpen && detachedSettings && (
           <group
             ref={vertical ? undefined : settingsGroup}
             position={vertical ? [side === "right" ? besideCard : -besideCard, 0, 0] : undefined}
           >
-            <Container
-              {...shell}
-              anchorX={side === "left" ? "right" : "left"}
-              anchorY="top"
-              flexDirection="column"
-            >
-              {settings}
-            </Container>
+            {settingsPanel != null
+              ? (
+                <Container
+                  pixelSize={0.001}
+                  anchorX={side === "left" ? "right" : "left"}
+                  anchorY="top"
+                  backgroundOpacity={0}
+                >
+                  {settingsPanel}
+                </Container>
+              )
+              : (
+                <Container
+                  {...settingsShell}
+                  anchorX={side === "left" ? "right" : "left"}
+                  anchorY="top"
+                  flexDirection="column"
+                >
+                  {settings}
+                </Container>
+              )}
           </group>
         )}
       </group>
@@ -452,7 +492,7 @@ export function SpatialSettingsSection({
 }) {
   return (
     <Container flexDirection="column" gap={INNER_GAP} paddingTop={INNER_GAP}>
-      <Pill slots={4} units={2} fontSize={12}>{label}</Pill>
+      <Text color={COLOR.inkDim} fontSize={20}>{label}</Text>
       <Container flexDirection="row" flexWrap="wrap" gap={INNER_GAP}>
         {children}
       </Container>
@@ -463,22 +503,195 @@ export function SpatialSettingsSection({
 export function SpatialSettingsButton({
   label,
   selected = false,
+  tone,
   onClick,
 }: {
   label: string;
   selected?: boolean;
+  tone?: "normal" | "danger";
   onClick: () => void;
 }) {
+  const [hovered, setHovered] = useState(false);
+  const isDanger = tone === "danger";
+  const bg = isDanger
+    ? (hovered ? COLOR.dangerBright : COLOR.danger)
+    : selected
+    ? (hovered ? COLOR.accentBright : COLOR.accent)
+    : (hovered ? COLOR.tileHi : COLOR.tile);
+  const ink = isDanger
+    ? COLOR.onDanger
+    : selected
+    ? COLOR.onAccent
+    : COLOR.ink;
   return (
-    <Pill
-      slots={4}
-      units={2}
-      fontSize={12}
-      tone={selected ? "accent" : "outline"}
-      onClick={onClick}
+    <Container
+      paddingX={20}
+      height={58}
+      borderRadius={RADIUS.slot}
+      alignItems="center"
+      justifyContent="center"
+      backgroundColor={bg}
+      backgroundOpacity={1}
+      onPointerOver={(event: unknown) => {
+        setHovered(true);
+        pulseForPointerEvent(event, "hover");
+      }}
+      onPointerOut={() => setHovered(false)}
+      onClick={(event: unknown) => {
+        pulseForPointerEvent(event, "click");
+        onClick();
+      }}
     >
-      {label}
-    </Pill>
+      <Text color={ink} fontSize={20}>{label}</Text>
+    </Container>
+  );
+}
+
+/** Full-width interactive toggle row for boolean display settings. */
+export function SpatialSettingsToggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Container
+      width={unitSpan(4)}
+      height={62}
+      paddingX={GAP}
+      borderRadius={RADIUS.slot}
+      backgroundColor={hovered ? COLOR.tileHi : COLOR.tile}
+      backgroundOpacity={1}
+      flexDirection="row"
+      alignItems="center"
+      justifyContent="space-between"
+      onPointerOver={(event: unknown) => {
+        setHovered(true);
+        pulseForPointerEvent(event, "hover");
+      }}
+      onPointerOut={() => setHovered(false)}
+      onClick={(event: unknown) => {
+        pulseForPointerEvent(event, "click");
+        onChange(!value);
+      }}
+    >
+      <Text color={COLOR.ink} fontSize={20}>{label}</Text>
+      <Container
+        width={80}
+        height={40}
+        borderRadius={20}
+        alignItems="center"
+        justifyContent="center"
+        backgroundColor={value ? COLOR.accent : COLOR.ground}
+        backgroundOpacity={1}
+      >
+        <Text color={value ? COLOR.onAccent : COLOR.inkDim} fontSize={18}>
+          {value ? "ON" : "OFF"}
+        </Text>
+      </Container>
+    </Container>
+  );
+}
+
+/**
+ * Full-width interactive slider bar (click or drag anywhere along the track).
+ * Uses the same horizontal progress-fill visual language as the battery bars.
+ */
+export function SpatialSettingsSlider({
+  label,
+  value,
+  min,
+  max,
+  step = 0.05,
+  formatValue,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  formatValue: (value: number) => string;
+  onChange: (next: number) => void;
+}) {
+  const dragging = useRef(false);
+  const trackWidth = unitSpan(4);
+  const trackHeight = 66;
+  const r = RADIUS.slot;
+
+  const fraction = max > min ? Math.max(0, Math.min(1, (value - min) / (max - min))) : 0;
+  const fillW = Math.round(trackWidth * fraction);
+  const leftR = Math.min(r, trackHeight / 2, fillW / 2);
+  const rightRem = trackWidth - fillW;
+  const rightR = rightRem < r ? Math.min(r - rightRem, trackHeight / 2, fillW / 2) : 0;
+
+  const updateFromEvent = (event: unknown) => {
+    const uvX = (event as { uv?: { x?: number } } | null)?.uv?.x;
+    if (typeof uvX !== "number" || !Number.isFinite(uvX)) return;
+    const t = Math.max(0, Math.min(1, uvX));
+    const raw = min + t * (max - min);
+    const snapped = Math.round(raw / step) * step;
+    const clamped = Math.max(min, Math.min(max, Math.round(snapped * 1000) / 1000));
+    if (Math.abs(clamped - value) > 1e-4) onChange(clamped);
+  };
+
+  return (
+    <Container
+      width={trackWidth}
+      height={trackHeight}
+      borderRadius={r}
+      backgroundColor="#141418"
+      backgroundOpacity={1}
+      positionType="relative"
+      flexDirection="row"
+      alignItems="center"
+      justifyContent="space-between"
+      paddingX={GAP}
+      onPointerDown={(event: unknown) => {
+        dragging.current = true;
+        const e = event as {
+          pointerId?: number;
+          target?: { setPointerCapture?: (id: number) => void };
+        };
+        if (typeof e.pointerId === "number") e.target?.setPointerCapture?.(e.pointerId);
+        pulseForPointerEvent(event, "click");
+        updateFromEvent(event);
+      }}
+      onPointerMove={(event: unknown) => {
+        if (!dragging.current) return;
+        updateFromEvent(event);
+      }}
+      onPointerUp={(event: unknown) => {
+        dragging.current = false;
+        const e = event as {
+          pointerId?: number;
+          target?: { releasePointerCapture?: (id: number) => void };
+        };
+        if (typeof e.pointerId === "number") e.target?.releasePointerCapture?.(e.pointerId);
+      }}
+    >
+      {fillW > 0 && (
+        <Container
+          positionType="absolute"
+          positionLeft={0}
+          positionTop={0}
+          width={fillW}
+          height={trackHeight}
+          borderTopLeftRadius={leftR}
+          borderBottomLeftRadius={leftR}
+          borderTopRightRadius={rightR}
+          borderBottomRightRadius={rightR}
+          backgroundColor="#4a4d5c"
+          backgroundOpacity={1}
+        />
+      )}
+      <Text color={COLOR.ink} fontSize={20}>{label}</Text>
+      <Text color={COLOR.accent} fontSize={22}>{formatValue(value)}</Text>
+    </Container>
   );
 }
 

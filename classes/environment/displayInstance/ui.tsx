@@ -78,6 +78,7 @@ export type DisplayInstanceFrameProps = {
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
   onSpatialFocus?: () => void;
   onSpatialHoverChange?: (hovered: boolean) => void;
+  onDismiss?: () => void;
   /** Controls and other spatial content structurally owned by this display. */
   children?: React.ReactNode;
 };
@@ -143,6 +144,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       manipulationStoreRef,
       onSpatialFocus,
       onSpatialHoverChange,
+      onDismiss,
       children,
     },
     ref,
@@ -336,6 +338,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
         manipulationStoreRef={manipulationStoreRef}
         onSpatialFocus={onSpatialFocus}
         onSpatialHoverChange={onSpatialHoverChange}
+        onDismiss={onDismiss}
         grabFilter={(event) =>
           isDesktopMousePointerType(event.pointerType)
             ? isDesktopDisplayGrab(event) ||
@@ -346,13 +349,13 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
           <mesh
             key={side}
             position={[0, side * (height + DISPLAY_GRAB_EDGE_HEIGHT) / 2, 0]}
-            userData={{ displayGrabEdge: true }}
+            userData={{ displayGrabEdge: true, bridge: { kind: "skip" } }}
             {...({
               pointerEventsType: { allow: ["grab", "screen-mouse", "mouse"] },
             } as Record<string, unknown>)}
           >
             <primitive object={grabEdgeGeometry} attach="geometry" />
-            <meshBasicMaterial color={lineColor} toneMapped={false} side={THREE.DoubleSide} />
+            <meshBasicMaterial visible={false} side={THREE.DoubleSide} />
           </mesh>
         ))}
         {videoSurface ? <group userData={{ videoSurface }} /> : null}

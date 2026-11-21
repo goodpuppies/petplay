@@ -47,6 +47,7 @@ export type KeyboardPanelProps = WorldKeyboardPanelProps & {
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
   onGrabBoxSize?: (size: [number, number, number]) => void;
   onSpatialFocus?: () => void;
+  onDismiss?: () => void;
   /** 0..1 (default opaque). */
   opacity?: number;
   children?: React.ReactNode;
@@ -72,6 +73,7 @@ export function KeyboardPanel(
     manipulationStoreRef,
     onGrabBoxSize,
     onSpatialFocus,
+    onDismiss,
     opacity = 1,
     children,
   }: KeyboardPanelProps = {},
@@ -155,6 +157,7 @@ export function KeyboardPanel(
             manipulationOptions={manipulationOptions}
             manipulationStoreRef={manipulationStoreRef}
             onSpatialFocus={onSpatialFocus}
+            onDismiss={onDismiss}
             grabFilter={(event) => event.pointerType !== "ray" && event.pointerType !== "poker"}
           >
             <group

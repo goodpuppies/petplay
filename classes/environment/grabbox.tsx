@@ -5,13 +5,17 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
-import { extend, type ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
+import { extend, type ThreeToJSXElements, useFrame, useThree } from "@react-three/fiber/webgpu";
 import { Handle } from "@react-three/handle";
-import { defaultApply, type HandleOptions, type HandleStore } from "@pmndrs/handle";
-import { withOneHandScale } from "./oneHandScale.ts";
+import { defaultApply, type HandleOptions, type HandleState, type HandleStore } from "@pmndrs/handle";
+import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
+import { Icon } from "./ui/icons.tsx";
+import { COLOR } from "./ui/tokens.ts";
+import { readGrabPointerStickY, withOneHandScale } from "./oneHandScale.ts";
 import { pushPullGrab } from "./pushPull.ts";
 import type {
   PointerEvent as PenPointerEvent,
@@ -30,6 +34,18 @@ declare module "@react-three/fiber/webgpu" {
 
 /** Default frame tint (shared with the display wireframe in prior code paths). */
 export const DEFAULT_GRABBOX_LINE_COLOR = 0x7ec8e3;
+/** Default thumbstick push/pull speed along the grabbing ray (metres per second). */
+export const JOYSTICK_PUSH_PULL_METERS_PER_SECOND = 2;
+/** World max-extent below which shrinking a GrabBox arms dismiss (delete/close on release). */
+export const DISMISS_ARM_SIZE_METERS = 0.1;
+/** Hysteresis threshold above which an armed GrabBox disarms again. */
+export const DISMISS_DISARM_SIZE_METERS = 0.13;
+
+export function nextDismissArmed(currentlyArmed: boolean, worldSizeMeters: number): boolean {
+  return currentlyArmed
+    ? worldSizeMeters < DISMISS_DISARM_SIZE_METERS
+    : worldSizeMeters < DISMISS_ARM_SIZE_METERS;
+}
 
 /**
  * The one-hand trigger resize ({@link withOneHandScale}): while one hand grabs the box, pulling
@@ -72,6 +88,8 @@ export type GrabBoxProps = {
    * Defaults to true; decorative/action-only boxes must explicitly opt out.
    */
   grabbable?: boolean;
+  /** Whether thumbstick up/down pushes/pulls this box along the grabbing ray. Defaults to true. */
+  joystickPushPull?: boolean;
   manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
   manipulationOptions?: GrabBoxManipulationOptions;
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
@@ -80,6 +98,12 @@ export type GrabBoxProps = {
   onSpatialFocus?: () => void;
   /** Report hover at the spatial-object boundary without coupling chrome to its contents. */
   onSpatialHoverChange?: (hovered: boolean) => void;
+  /**
+   * Universal close / trash / delete callback for this spatial element. When provided, shrinking
+   * the box below `DISMISS_ARM_SIZE_METERS` (via two-hand pinch OR one-hand trigger resize) arms
+   * the red dismiss indicator and invokes `onDismiss` on release.
+   */
+  onDismiss?: () => void;
   userData?: Record<string, unknown>;
   /** Uikit + this box both use a centered origin; children only need a `contentOffset` nudge, not a pivot correction. */
   children?: React.ReactNode;
@@ -171,6 +195,76 @@ function GrabBoxFrame(
   );
 }
 
+const NO_POINTER_EVENTS = () => false;
+const _dismissHeadPos = new THREE.Vector3();
+const _dismissSelfPos = new THREE.Vector3();
+const _dismissParentScale = new THREE.Vector3();
+const _dismissParentQuat = new THREE.Quaternion();
+const _dismissWorldQuat = new THREE.Quaternion();
+const _dismissLookMat = new THREE.Matrix4();
+const _dismissUp = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Translucent red trash icon projected on the shrunken element, always billboarding toward the
+ * user's head and counter-scaling the parent so it stays a crisp constant world size (~12 cm).
+ */
+function DismissIndicator() {
+  const groupRef = useRef<THREE.Group>(null);
+  const camera = useThree((state) => state.camera);
+  const renderer = useThree((state) => state.gl);
+
+  useFrame(() => {
+    const node = groupRef.current;
+    const parent = node?.parent;
+    if (!node || !parent) return;
+
+    const xr = (renderer as unknown as {
+      xr?: { getCamera?: (cam: THREE.Camera) => THREE.Camera };
+    }).xr;
+    const head = Deno.args.includes("--desktop")
+      ? camera
+      : xr?.getCamera?.(camera as unknown as THREE.Camera) ?? camera;
+    head.updateWorldMatrix(true, false);
+    head.getWorldPosition(_dismissHeadPos);
+
+    parent.updateWorldMatrix(true, false);
+    parent.getWorldScale(_dismissParentScale);
+    parent.getWorldQuaternion(_dismissParentQuat);
+    node.getWorldPosition(_dismissSelfPos);
+
+    // Counter-scale so the 120px (0.12 m) badge stays readable even when the box is tiny.
+    node.scale.set(
+      1 / Math.max(1e-4, Math.abs(_dismissParentScale.x)),
+      1 / Math.max(1e-4, Math.abs(_dismissParentScale.y)),
+      1 / Math.max(1e-4, Math.abs(_dismissParentScale.z)),
+    );
+
+    // Point local +Z toward the user's head in parent-local space.
+    _dismissLookMat.lookAt(_dismissHeadPos, _dismissSelfPos, _dismissUp);
+    _dismissWorldQuat.setFromRotationMatrix(_dismissLookMat);
+    node.quaternion.copy(_dismissParentQuat).invert().multiply(_dismissWorldQuat);
+  });
+
+  return (
+    <group ref={groupRef} userData={{ bridge: { kind: "skip" }, dismissIndicator: true }}>
+      <Container
+        pixelSize={0.001}
+        width={120}
+        height={120}
+        borderRadius={60}
+        backgroundColor={COLOR.danger}
+        backgroundOpacity={0.32}
+        opacity={0.82}
+        alignItems="center"
+        justifyContent="center"
+        pointerEventsType={NO_POINTER_EVENTS}
+      >
+        <Icon name="delete" size={76} color={COLOR.dangerBright} />
+      </Container>
+    </group>
+  );
+}
+
 /**
  * Canonical spatial-object boundary for an arbitrary subtree (from one widget to a complete OS UI).
  * It owns manipulation, push/pull, interaction hull, chrome, and spatial metadata in one place.
@@ -190,12 +284,14 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     interactionHullFilter,
     visibleChrome = true,
     grabbable = true,
+    joystickPushPull = true,
     manipulationTargetRef,
     manipulationOptions,
     manipulationStoreRef,
     grabFilter,
     onSpatialFocus,
     onSpatialHoverChange,
+    onDismiss,
     userData,
     children,
   },
@@ -205,6 +301,20 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
   const globalOutlineVisible = useGrabboxOutlineVisible();
   const chromeVisible = visibleChrome && globalOutlineVisible;
   const handleStoreRef = useRef<HandleStore<unknown> | null>(null);
+  const [dismissArmed, setDismissArmed] = useState(false);
+  const dismissArmedRef = useRef(false);
+  const sawScaleRef = useRef(false);
+  const startScaleRef = useRef(1);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  const setArmed = useCallback((next: boolean) => {
+    if (dismissArmedRef.current === next) return;
+    dismissArmedRef.current = next;
+    setDismissArmed(next);
+  }, []);
+  useEffect(() => {
+    if (onDismiss == null) setArmed(false);
+  }, [onDismiss, setArmed]);
   useImperativeHandle(ref, () => boxRef.current!, []);
   // `withOneHandScale` finds the grabbing pointer through the store its state belongs to.
   const resizeStores = useMemo(() => new Map<string, HandleStore<unknown>>(), []);
@@ -219,31 +329,81 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
   }, [manipulationStoreRef, resizeStores]);
   const worldScale = useMemo(() => new THREE.Vector3(), []);
   const handleOptions = useMemo((): Omit<HandleOptions<unknown>, "filter"> | undefined => {
-    if (manipulationOptions == null) return undefined;
-    const { triggerResize, ...options } = manipulationOptions;
-    if (triggerResize == null) return options;
-    const measure = {
-      width: () => {
-        const box = boxRef.current;
-        if (box == null) return width;
-        box.updateWorldMatrix(true, false);
-        return width * Math.abs(box.getWorldScale(worldScale).x);
-      },
-      // The box geometry is centred on its group.
-      center: (out: THREE.Vector3) => boxRef.current?.getWorldPosition(out) ?? out.set(0, 0, 0),
-    };
-    return {
-      ...options,
-      apply: withOneHandScale(
-        options.apply ?? defaultApply,
+    const { triggerResize, ...options } = manipulationOptions ?? {};
+    let innerApply = options.apply ?? defaultApply;
+    let alwaysUpdate = options.alwaysUpdate;
+
+    if (triggerResize != null) {
+      const measure = {
+        width: () => {
+          const box = boxRef.current;
+          if (box == null) return width;
+          box.updateWorldMatrix(true, false);
+          return width * Math.abs(box.getWorldScale(worldScale).x);
+        },
+        // The box geometry is centred on its group.
+        center: (out: THREE.Vector3) => boxRef.current?.getWorldPosition(out) ?? out.set(0, 0, 0),
+      };
+      innerApply = withOneHandScale(
+        innerApply,
         resizeStores,
         measure,
         triggerResize.carryWithController ?? false,
-      ),
+      );
       // The trigger resizes while the hand holds still, so apply runs every frame.
-      alwaysUpdate: true,
+      alwaysUpdate = true;
+    }
+
+    if (onDismiss == null && manipulationOptions == null) return undefined;
+    if (onDismiss == null) {
+      return { ...options, apply: innerApply, alwaysUpdate };
+    }
+
+    const applyWithDismiss = (state: HandleState<unknown>, target: import("three").Object3D) => {
+      const targetObj = target as unknown as THREE.Object3D;
+      if (state.first) {
+        sawScaleRef.current = false;
+        startScaleRef.current = Math.abs(targetObj.scale.x);
+        setArmed(false);
+      }
+      if (state.last && dismissArmedRef.current && state.event != null) {
+        setArmed(false);
+        sawScaleRef.current = false;
+        onDismissRef.current?.();
+        return;
+      }
+
+      innerApply(state, target);
+
+      if (!state.last) {
+        if (
+          state.current.pointerAmount >= 2 ||
+          Math.abs(Math.abs(targetObj.scale.x) - startScaleRef.current) > 1e-3
+        ) {
+          sawScaleRef.current = true;
+        }
+        if (sawScaleRef.current) {
+          targetObj.updateWorldMatrix(true, false);
+          targetObj.getWorldScale(worldScale);
+          const worldSize = Math.max(
+            Math.abs(worldScale.x) * width,
+            Math.abs(worldScale.y) * height,
+            Math.abs(worldScale.z) * depth,
+          );
+          setArmed(nextDismissArmed(dismissArmedRef.current, worldSize));
+        }
+      } else {
+        setArmed(false);
+        sawScaleRef.current = false;
+      }
     };
-  }, [manipulationOptions, resizeStores, width, worldScale]);
+
+    return {
+      ...options,
+      apply: applyWithDismiss,
+      alwaysUpdate,
+    };
+  }, [manipulationOptions, onDismiss, resizeStores, setArmed, width, height, depth, worldScale]);
   const handleWheel = useCallback((event: PenWheelEvent) => {
     const store = handleStoreRef.current;
     const notches = -event.deltaY / 100;
@@ -252,9 +412,18 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     }
   }, []);
   const color = useMemo(() => new THREE.Color(lineColor), [lineColor]);
-  useFrame(() => {
+  useFrame((_state, delta) => {
     const store = handleStoreRef.current;
-    if (store != null && store.capturedObjects.size > 0) cancelStaleHandleGrab(store);
+    if (store == null) return;
+    if (store.capturedObjects.size > 0 && cancelStaleHandleGrab(store)) return;
+    if (!joystickPushPull || store.inputState.size === 0) return;
+    const dt = Math.min(delta, 0.1);
+    for (const pointerId of store.inputState.keys()) {
+      const axis = readGrabPointerStickY(pointerId);
+      if (axis !== 0) {
+        pushPullGrab(store, pointerId, axis * JOYSTICK_PUSH_PULL_METERS_PER_SECOND * dt);
+      }
+    }
   });
 
   const shellPointerMods = !shellRayPickable
@@ -332,6 +501,7 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
             />
           </mesh>
         )}
+      {dismissArmed ? <DismissIndicator /> : null}
       {children}
     </group>
   );

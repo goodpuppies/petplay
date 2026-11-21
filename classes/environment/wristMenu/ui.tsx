@@ -9,6 +9,7 @@ import { Text } from "../ui/text.tsx";
 import { Pill, Shell } from "../ui/primitives.tsx";
 import { COLOR, INNER_GAP, OUTLINE_WIDTH, RADIUS } from "../ui/tokens.ts";
 import { WristOverlay } from "../ui/wristOverlay.tsx";
+import type { BatteryDeviceItem } from "../ui/batteryWidget.tsx";
 import { useBatteryReadings } from "../batteryStore.ts";
 import { sendMediaCommand, useNowPlaying } from "../mediaStore.ts";
 import type { WristMenuButtonId } from "./types.ts";
@@ -39,6 +40,10 @@ export type WristMenuUiProps = {
   onAddOutput?: (outputId: string) => void;
   onSaveLayout?: (slot: number) => void;
   onLoadLayout?: (slot: number) => void;
+  /** Optional override list of battery devices (e.g. for previewing 6–9 devices). */
+  batteryItems?: readonly BatteryDeviceItem[];
+  /** When provided, pressing the Settings tile opens an external window instead of the inline wrist page. */
+  onOpenSettingsWindow?: () => void;
   /** Only the opposite controller’s pointer should hit the menu (set from `WristMenuPanel` in XR). */
   pointerEventsType?: AllowedPointerEventsType;
 };
@@ -547,6 +552,8 @@ export function WristMenuUi(
     onAddOutput,
     onSaveLayout,
     onLoadLayout,
+    batteryItems,
+    onOpenSettingsWindow,
     pointerEventsType,
   }: WristMenuUiProps,
 ) {
@@ -673,12 +680,13 @@ export function WristMenuUi(
         : statusLabel}
       displayCount={workspaceLayout.displays.length}
       batteries={batteries}
+      batteryItems={batteryItems}
       nowPlaying={nowPlaying}
       onMedia={sendMediaCommand}
       opacity={mainStyle.opacity}
       active={{ layout: layoutActive, edit: editActive }}
       onToggle={onToggle}
-      onOpenSettings={() => setView("settings")}
+      onOpenSettings={onOpenSettingsWindow ?? (() => setView("settings"))}
       onRecenter={onRecenter}
       pointerEventsType={mainStyle.pe}
     />

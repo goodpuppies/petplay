@@ -44,6 +44,25 @@ type GrabPointer = {
 
 const grabPointers = new Map<number, GrabPointer>();
 
+const JOYSTICK_DEADZONE = 0.2;
+let joystickYReader: ((hand: GrabHand) => number) | null = null;
+
+/** Registers a live controller thumbstick Y reader (positive = push away, negative = pull closer). */
+export function setJoystickYReader(reader: ((hand: GrabHand) => number) | null): void {
+  joystickYReader = reader;
+}
+
+/** Reads the thumbstick Y axis for a grabbing pointer, with deadzone applied (0 when idle). */
+export function readGrabPointerStickY(pointerId: number): number {
+  const entry = grabPointers.get(pointerId);
+  if (!entry) return 0;
+  const raw = joystickYReader
+    ? joystickYReader(entry.hand)
+    : -(entry.inputSource.gamepad?.axes?.[3] ?? 0);
+  if (!Number.isFinite(raw) || Math.abs(raw) <= JOYSTICK_DEADZONE) return 0;
+  return raw;
+}
+
 /** Returns the unregister function; a stale unregister leaves a newer registration alone. */
 export function registerGrabPointerHand(
   pointer: Pointer,
