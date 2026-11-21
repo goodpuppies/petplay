@@ -18,7 +18,9 @@ import { DisplayInstance } from "./displayInstance/logic.tsx";
 import {
   DEFAULT_DISPLAY_DEPTH,
   DEFAULT_DISPLAY_HEIGHT,
+  DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
   DISPLAY_PANEL_WIDTH,
+  displayPanelSize,
 } from "./displayMetrics.ts";
 import type { DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel } from "./keyboard/keyboard.tsx";
@@ -1453,6 +1455,12 @@ function DisplaySpatialNodeView({
       displayOverlayHostActor,
     );
   const workspaceCrop = node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 };
+  // The panel takes the picture's shape, so the laser lands where the overlay draws.
+  const panel = displayPanelSize(
+    outputConnected && selectedFeed && selectedFeed.logicalWidth > 0 && selectedFeed.logicalHeight > 0
+      ? selectedFeed.logicalWidth / selectedFeed.logicalHeight
+      : DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+  );
   const mouseButtonForPointer = React.useCallback((event: PenPointerEvent) => {
     const hand = controllerHandOfPointerState(event.pointerState);
     return hand == null ? undefined : directOpenVrInputSource?.getDesktopMouseButton(hand);
@@ -1467,7 +1475,7 @@ function DisplaySpatialNodeView({
   const household = outputConnected ? selectedFeed?.household : undefined;
   React.useEffect(() => {
     if (!household) return;
-    const payload = { machine: household.machine, display: node.id };
+    const payload = { desktop: household.desktop, display: node.id };
     const post = (type: string) => {
       try {
         PostMan.PostMessage({ target: household.provider, type, payload });
@@ -1475,7 +1483,7 @@ function DisplaySpatialNodeView({
     };
     post("SHOW");
     return () => post("RELEASE");
-  }, [household?.provider, household?.machine, node.id]);
+  }, [household?.provider, household?.desktop, node.id]);
   // Its mouse and keyboard go to that machine's desktopInput, with the household proof.
   const remoteInputActor = household ? selectedFeed?.inputActor : undefined;
   const [remoteInput, setRemoteInput] = React.useState<
@@ -1488,17 +1496,19 @@ function DisplaySpatialNodeView({
     (PostMan.PostMessage({
       target: household.provider,
       type: "INPUTTARGET",
-      payload: { machine: household.machine },
-    }, true) as Promise<{ actor: string; proof: string } | null>).then((target) => {
+      payload: { desktop: household.desktop },
+    }, true) as Promise<
+      { actor: string; proof: string; region?: { x: number; y: number; width: number; height: number } } | null
+    >).then((target) => {
       if (cancelled || !target || target.actor !== remoteInputActor) return;
-      const sinks = createDesktopInputSinks(target.actor, null, target.proof);
+      const sinks = createDesktopInputSinks(target.actor, null, target.proof, target.region);
       setRemoteInput(createDesktopInputRouting(sinks.mouse, sinks.keyboard));
     }).catch(() => {});
     return () => {
       cancelled = true;
       releaseKeyboard(node.id);
     };
-  }, [remoteInputActor, household?.provider, household?.machine, node.id]);
+  }, [remoteInputActor, household?.provider, household?.desktop, node.id]);
       x: workspaceCrop.x + event.x * workspaceCrop.width,
       y: workspaceCrop.y + event.y * workspaceCrop.height,
     });
@@ -1598,6 +1608,9 @@ function DisplaySpatialNodeView({
       {deletion.armed ? <ScaleDeleteIndicator grabSize={DISPLAY_GRAB_SIZE} /> : null}
       <SnapSlotMarkers graph={graph} ownerId={node.id} setGraph={setGraph} />
       <DisplayInstance
+        position={[0, panel.centerY, 0]}
+        height={panel.height}
+        aspect={panel.width / panel.height}
         displayOverlayHostActor={activeDisplayOverlayHostActor}
         virtualDisplayId={node.id}
         virtualDisplayName={node.workspaceOutputName ?? `PetPlay ${node.id}`}
@@ -1627,7 +1640,7 @@ function DisplaySpatialNodeView({
       >
         <SpatialHierarchyIndicator
           role={attachmentRole ?? "solo"}
-          position={[0, DEFAULT_DISPLAY_HEIGHT * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
+          position={[0, panel.height * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
           // The open toolbar carries the badge instead.
           visible={hovered && attachmentRole != null && selectedNodeId !== node.id}
         />
@@ -1637,18 +1650,18 @@ function DisplaySpatialNodeView({
           side={toolbarSide}
           position={toolbarSide === "left" || toolbarSide === "right"
             ? [
-              (toolbarSide === "right" ? 0.5 : -0.5) * DISPLAY_PANEL_WIDTH,
-              DEFAULT_DISPLAY_HEIGHT * 0.5,
+              (toolbarSide === "right" ? 0.5 : -0.5) * panel.width,
+              panel.height * 0.5,
               DEFAULT_DISPLAY_DEPTH,
             ]
             : [
               0,
-              (toolbarSide === "above" ? 0.5 : -0.5) * DEFAULT_DISPLAY_HEIGHT,
+              (toolbarSide === "above" ? 0.5 : -0.5) * panel.height,
               DEFAULT_DISPLAY_DEPTH,
             ]}
           settingsPosition={[
-            DISPLAY_PANEL_WIDTH * 0.5,
-            DEFAULT_DISPLAY_HEIGHT * 0.5,
+            panel.width * 0.5,
+            panel.height * 0.5,
             DEFAULT_DISPLAY_DEPTH,
           ]}
           role={attachmentRole ?? undefined}

@@ -8,8 +8,9 @@
  *   deno run -A rdp/agent.ts [--host=<tailnet address>] [--media-port=4460]
  *     [--secret-file=PATH] [--topics=wss://…] [--relay=https://…] [--monitor=N]
  *
- * Windows shares one monitor (`--monitor`, a `capture-wgc --list` index; default the primary),
- * captured and encoded on the GPU; input positions map onto that monitor.
+ * Windows offers every monitor, each its own feed captured and encoded on the GPU (on
+ * `--media-port` + its index); `--monitor` (a `capture-wgc --list` index; default the primary) is
+ * the one a request without a monitor gets.
  *
  * `--host` is where other machines' browsers reach the encoder; default this machine's tailnet
  * IPv4 (`tailscale ip -4`). Compiled for machines without a checkout by `rdp/buildAgent.ts`,
@@ -20,7 +21,7 @@ import { parseArgs } from "jsr:@std/cli/parse-args";
 import { PostalService, resolveActorId } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";
 import { householdSecret, householdTopic } from "./classes/household.ts";
-import { regionOf, wgcMonitors } from "./classes/wgcMediaFeed.ts";
+import { wgcMonitors } from "./classes/wgcMediaFeed.ts";
 
 const args = parseArgs(Deno.args, {
   string: ["host", "media-port", "secret-file", "topics", "relay", "monitor"],
@@ -55,8 +56,8 @@ const call = (target: string, type: string, payload: unknown = null) =>
 
 const input = resolveActorId(await postal.add("./desktopInput.ts", import.meta.url));
 const source = resolveActorId(await postal.add("./desktopSource.ts", import.meta.url));
-// Windows captures one monitor; input positions are fractions of it, mapped onto the virtual
-// desktop. Linux captures the whole workspace.
+// Windows offers each monitor as its own feed (`START {monitor}`); one without a monitor gets
+// the primary, or `--monitor`. Input positions arrive already placed on the virtual desktop.
 let monitor: number | undefined;
 if (Deno.build.os === "windows") {
   const monitors = await wgcMonitors();
@@ -68,8 +69,9 @@ if (Deno.build.os === "windows") {
     Deno.exit(1);
   }
   monitor = chosen.index;
-  await call(input, "REGION", regionOf(chosen, monitors));
-  console.log(`agent: sharing monitor ${chosen.index} (${chosen.name}, ${chosen.width}x${chosen.height})`);
+  for (const m of monitors) {
+    console.log(`agent: monitor ${m.index} ${m.name} ${m.width}x${m.height}${m.primary ? " (primary)" : ""}`);
+  }
 }
 await call(source, "CONFIGURE", { host, port, ...(monitor !== undefined ? { monitor } : {}) });
 await call(source, "SETINPUT", input);

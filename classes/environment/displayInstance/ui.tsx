@@ -39,8 +39,10 @@ const DISPLAY_GRAB_EDGE_HEIGHT = 0.025;
  */
 const BACKPLATE_LOGO_SIZE = 0.45;
 export type DisplayInstanceFrameProps = {
-  /** Full height of the 16:9 frame. Width = height × `DISPLAY_ASPECT_WIDTH_OVER_HEIGHT`. */
+  /** Full height of the frame. Width = height × `aspect`. */
   height?: number;
+  /** The picture's width / height (default 16:9); see `displayPanelSize`. */
+  aspect?: number;
   /** Override bound game controls while an XR pointer interacts with this display. */
   blockGameInput?: boolean;
   depth?: number;
@@ -119,13 +121,14 @@ type PendingDisplayClick = {
 };
 
 /**
- * Visual-only 16:9 thin box — a [GrabBox](grabbox.tsx) with fixed aspect. Wireframe and raylib
+ * Visual-only thin box at the picture's aspect — a [GrabBox](grabbox.tsx). Wireframe and raylib
  * mirroring are documented on `GrabBox`.
  */
 export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrameProps>(
   function DisplayInstanceFrame(
     {
       height = DEFAULT_DISPLAY_HEIGHT,
+      aspect = DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
       blockGameInput = true,
       depth = DEFAULT_DISPLAY_DEPTH,
       lineColor = DEFAULT_GRABBOX_LINE_COLOR,
@@ -145,8 +148,8 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
     ref,
   ) {
     const width = useMemo(
-      () => height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
-      [height],
+      () => height * aspect,
+      [height, aspect],
     );
     const surfaceGeometry = useMemo(
       () => createDisplaySurfaceGeometry(width, height, curvature),

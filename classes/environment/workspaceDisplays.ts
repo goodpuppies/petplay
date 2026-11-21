@@ -20,7 +20,7 @@ export type WorkspaceOutput = {
    * display shows it (`SHOW`/`RELEASE`) and gives its input target (`INPUTTARGET`). Until it
    * runs there is no `overlayHostActor`, and it shows nothing rather than the local desktop.
    */
-  household?: { machine: string; provider: string };
+  household?: { desktop: string; provider: string };
   id: string;
   name: string;
   priority: number;

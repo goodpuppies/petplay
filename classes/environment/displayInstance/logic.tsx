@@ -98,7 +98,7 @@ function carryOnController(obj: THREE.Object3D, world: THREE.Matrix4): number | 
 }
 
 /**
- * 16:9 wireframe display frame with XR handle: move/rotate and uniform scale (aspect preserved).
+ * Wireframe display frame at the picture's aspect, with XR handle: move/rotate and uniform scale (aspect preserved).
  * When `displayOverlayHostActor` is set, the OpenVR desktop overlay actor is kept aligned with
  * this transform and world width (meters) each frame.
  */
@@ -145,7 +145,8 @@ export function DisplayInstance(
   const [raysOff, setRaysOff] = useState(false);
 
   const height = frameProps.height ?? DEFAULT_DISPLAY_HEIGHT;
-  const localHalfW = 0.5 * height * DISPLAY_ASPECT_WIDTH_OVER_HEIGHT;
+  const aspect = frameProps.aspect ?? DISPLAY_ASPECT_WIDTH_OVER_HEIGHT;
+  const localHalfW = 0.5 * height * aspect;
 
   const displaySyncFrameOpts = React.useMemo<UseFrameNextOptions>(
     () => ({
@@ -323,7 +324,7 @@ export function DisplayInstance(
       rotation={rotation}
       userData={{
         displayInstance: true,
-        aspect: "16:9",
+        aspect,
         displayOverlayHostActor: displayOverlayHostActor ?? null,
       }}
     >

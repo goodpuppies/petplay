@@ -47,7 +47,7 @@ Deno.test("a household desktop shows nothing until it runs, then takes input on 
     logicalWidth: 1920,
     logicalHeight: 1080,
     crop: { x: 0, y: 0, width: 1, height: 1 },
-    household: { machine: "cachyos", provider: "householdDesktops@a" },
+    household: { desktop: "cachyos", provider: "householdDesktops@a" },
   };
   const waiting = resolveDisplayFeedProvider({ ...base, input: "none" }, "local-host");
   if (waiting.actor !== null || waiting.acceptsMouse) {

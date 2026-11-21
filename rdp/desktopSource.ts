@@ -19,20 +19,22 @@
  *
  * For other machines: `CONFIGURE {host, port}` sets where the encoder serves, so `START` needs no
  * payload; `SETINPUT` pairs the desktopInput that drives this desktop; `DESCRIBE` returns
- * `{machine, input, feed}`. In a household (`SETHOUSEHOLD`, `classes/household.ts`) requests
+ * `{machine, input, feed, screens}`. In a household (`SETHOUSEHOLD`, `classes/household.ts`) requests
  * come only as `GUARDED` with a proof, and the local-only messages are refused.
  *
  * `LAYOUT` returns the monitors as crops of the capture (`workspaceDisplays.ts`).
  *
- * The encoder: on Linux the helper publishes into `petplay-media`'s media socket; on Windows
- * `petplay-media capture-wgc` captures one monitor itself (`classes/wgcMediaFeed.ts`, `{monitor}`
- * in the request), all on the GPU, and its feed also carries an iroh share `code`. Frame sinks
- * work wherever the helper does.
+ * The encoder: on Linux the helper publishes into `petplay-media`'s media socket, one feed of the
+ * whole workspace. On Windows each monitor is its own feed: `petplay-media capture-wgc` captures
+ * one monitor itself (`classes/wgcMediaFeed.ts`), all on the GPU, on `port + index`, and its feed
+ * also carries an iroh share `code`. `DESCRIBE` lists them as `screens`, with the rectangle each
+ * covers on the virtual desktop (input `region`s); `START`, `FEED` and `STOP` take `{monitor}`,
+ * without it the configured one. Frame sinks work wherever the helper does.
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { join } from "@std/path";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
-import { WgcMediaFeed } from "./classes/wgcMediaFeed.ts";
+import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
 import { CaptureHelper } from "../classes/ScreenCapturer/captureHelper.ts";
 import { clampCaptureFps, DEFAULT_CAPTURE_FPS } from "../classes/ScreenCapturer/scclass.ts";
 import {
@@ -61,7 +63,23 @@ export type SourceRequest = {
  * iroh share `code`, which native receivers prefer (it passes firewalls).
  */
 export type FeedInfo = { host: string; port: number; fingerprint: string; code?: string };
-export type DesktopDescription = { machine: string; input: string | null; feed: FeedInfo | null };
+/** One monitor a Windows machine offers as its own feed. */
+export type ScreenInfo = {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  primary: boolean;
+  /** Its rectangle on the virtual desktop, as fractions: where its input positions go. */
+  region: { x: number; y: number; width: number; height: number };
+};
+export type DesktopDescription = {
+  machine: string;
+  input: string | null;
+  feed: FeedInfo | null;
+  /** Windows: every monitor, each its own feed. Absent: one feed of the whole workspace. */
+  screens?: ScreenInfo[];
+};
 export type CaptureStatus = { event: "lost" | "recovered" | "unavailable"; message?: string };
 
 const RESTART_MIN_MS = 1_000;
@@ -79,17 +97,22 @@ const state = actorState({
   captureRestarts: 0,
   encoderRestarts: 0,
   lastError: null as string | null,
+  /** The configured monitor's feed (the only one on Linux). */
   feed: null as FeedInfo | null,
+  /** Every running feed, by monitor. */
+  feeds: {} as Record<string, FeedInfo>,
 });
 
 /** Consumers. */
 let frameSink: { port: number; fps: number } | null = null;
 let externalMediaSocket: string | null = Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOCKET") || null;
-let feedRequest: SourceRequest | null = null;
 let feedDefaults: SourceRequest | null = null;
 let pairedInput: string | null = null;
 const guard = new HouseholdGuard();
-let encoder: DesktopMediaFeed | WgcMediaFeed | null = null;
+/** Running feeds by monitor; Linux has one, monitor 0, the whole workspace. */
+type Running = { encoder: DesktopMediaFeed | WgcMediaFeed; request: SourceRequest; info: FeedInfo };
+const running = new Map<number, Running>();
+let screens: ScreenInfo[] | null = null;
 const subscribers = new Set<string>();
 
 let helper: CaptureHelper | null = null;
@@ -113,9 +136,10 @@ function notify(status: CaptureStatus): void {
 }
 
 function wanted(): { framePort: number | null; mediaSocket: string | null; fps: number } | null {
-  const mediaSocket = encoder?.socketPath ?? externalMediaSocket;
+  const linux = running.get(0);
+  const mediaSocket = linux?.encoder.socketPath ?? externalMediaSocket;
   if (!frameSink && !mediaSocket) return null;
-  const fps = Math.max(frameSink?.fps ?? 0, feedRequest?.fps ?? 0) || DEFAULT_CAPTURE_FPS;
+  const fps = Math.max(frameSink?.fps ?? 0, linux?.request.fps ?? 0) || DEFAULT_CAPTURE_FPS;
   return { framePort: frameSink?.port ?? null, mediaSocket, fps: clampCaptureFps(fps) };
 }
 
@@ -204,13 +228,29 @@ function onExit(exited: CaptureHelper, status: Deno.CommandStatus): void {
   }, delay);
 }
 
-async function startEncoder(directory?: string): Promise<DesktopMediaFeed | WgcMediaFeed> {
-  const request = feedRequest!;
-  const feed = Deno.build.os === "windows"
+function monitorOf(payload?: { monitor?: unknown } | null): number {
+  if (Deno.build.os !== "windows") return 0;
+  const monitor = payload?.monitor ?? feedDefaults?.monitor ?? 0;
+  if (!Number.isInteger(monitor) || (monitor as number) < 0) throw new Error("monitor is an index");
+  return monitor as number;
+}
+
+function publishFeeds(): void {
+  state.feeds = Object.fromEntries([...running].map(([monitor, r]) => [monitor, r.info]));
+  state.feed = running.get(monitorOf(null))?.info ?? null;
+}
+
+async function startEncoder(
+  monitor: number,
+  request: SourceRequest,
+  directory?: string,
+): Promise<Running> {
+  const encoder = Deno.build.os === "windows"
     ? await WgcMediaFeed.start({
       host: request.host,
-      port: request.port,
-      monitor: request.monitor ?? 0,
+      // One listener per monitor.
+      port: request.port + monitor,
+      monitor,
       fps: request.fps,
       bitrate: request.bitrate,
     })
@@ -221,27 +261,32 @@ async function startEncoder(directory?: string): Promise<DesktopMediaFeed | WgcM
       bitrate: request.bitrate,
       directory,
     });
-  encoder = feed;
-  state.feed = {
-    host: request.host,
-    port: feed.info.port,
-    fingerprint: feed.info.fingerprint,
-    ...("code" in feed.info ? { code: feed.info.code } : {}),
+  const started: Running = {
+    encoder,
+    request,
+    info: {
+      host: request.host,
+      port: encoder.info.port,
+      fingerprint: encoder.info.fingerprint,
+      ...("code" in encoder.info ? { code: encoder.info.code } : {}),
+    },
   };
-  void superviseEncoder(feed);
-  return feed;
+  running.set(monitor, started);
+  publishFeeds();
+  void superviseEncoder(monitor, started);
+  return started;
 }
 
-async function superviseEncoder(feed: DesktopMediaFeed | WgcMediaFeed): Promise<void> {
-  await feed.exited;
+async function superviseEncoder(monitor: number, feed: Running): Promise<void> {
+  await feed.encoder.exited;
   let delay = 1000;
-  while (!shuttingDown && encoder === feed) {
-    state.lastError = `encoder exited: ${feed.log.at(-1) ?? ""}`;
+  while (!shuttingDown && running.get(monitor) === feed) {
+    state.lastError = `encoder ${monitor} exited: ${feed.encoder.log.at(-1) ?? ""}`;
     await sleep(delay);
-    if (shuttingDown || encoder !== feed) return;
+    if (shuttingDown || running.get(monitor) !== feed) return;
     try {
       // Same directory, so the capture helper finds the replacement on the same socket.
-      await startEncoder(feed.directoryPath);
+      await startEncoder(monitor, feed.request, feed.encoder.directoryPath);
       state.encoderRestarts++;
       return;
     } catch (error) {
@@ -251,33 +296,62 @@ async function superviseEncoder(feed: DesktopMediaFeed | WgcMediaFeed): Promise<
   }
 }
 
-async function stopFeed(): Promise<void> {
-  const feed = encoder;
-  encoder = null;
-  feedRequest = null;
-  state.feed = null;
+/** Stop one monitor's feed, or every feed. */
+async function stopFeed(monitor?: number): Promise<void> {
+  const stopping = [...running].filter(([m]) => monitor === undefined || m === monitor);
+  for (const [m] of stopping) running.delete(m);
+  publishFeeds();
   await consumersChanged();
-  await feed?.stop();
+  await Promise.all(stopping.map(([, r]) => r.encoder.stop()));
 }
 
-async function startFeed(payload?: Partial<SourceRequest>): Promise<FeedInfo> {
+const startingFeeds = new Map<number, Promise<FeedInfo>>();
+
+function startFeed(payload?: Partial<SourceRequest>): Promise<FeedInfo> {
   if (Deno.build.os !== "linux" && Deno.build.os !== "windows") {
-    throw new Error(`desktopSource has no encoder on ${Deno.build.os}`);
+    return Promise.reject(new Error(`desktopSource has no encoder on ${Deno.build.os}`));
   }
-  if (encoder && state.feed) return state.feed;
-  const request = { ...feedDefaults, ...payload } as SourceRequest;
+  const monitor = monitorOf(payload);
+  const current = running.get(monitor);
+  if (current) return Promise.resolve(current.info);
+  const pending = startingFeeds.get(monitor);
+  if (pending) return pending;
+  const request = { ...feedDefaults, ...payload, monitor } as SourceRequest;
   if (typeof request.host !== "string" || !Number.isInteger(request.port)) {
-    throw new Error("START needs {host, port}, or CONFIGURE first");
+    return Promise.reject(new Error("START needs {host, port}, or CONFIGURE first"));
   }
   shuttingDown = false;
-  feedRequest = request;
-  await startEncoder();
-  await consumersChanged();
-  return state.feed!;
+  const starting = (async () => {
+    const started = await startEncoder(monitor, request);
+    await consumersChanged();
+    return started.info;
+  })().finally(() => startingFeeds.delete(monitor));
+  startingFeeds.set(monitor, starting);
+  return starting;
 }
 
-function describe(): DesktopDescription {
-  return { machine: Deno.hostname(), input: pairedInput, feed: state.feed };
+async function describe(): Promise<DesktopDescription> {
+  if (Deno.build.os === "windows" && !screens) {
+    try {
+      const monitors = await wgcMonitors();
+      screens = monitors.map((m) => ({
+        index: m.index,
+        name: m.name.replace(/^\\\\\.\\/, ""),
+        width: m.width,
+        height: m.height,
+        primary: m.primary,
+        region: regionOf(m, monitors),
+      }));
+    } catch (error) {
+      state.lastError = String(error);
+    }
+  }
+  return {
+    machine: Deno.hostname(),
+    input: pairedInput,
+    feed: state.feed,
+    ...(screens ? { screens } : {}),
+  };
 }
 
 new PostMan(
@@ -337,9 +411,10 @@ new PostMan(
     GUARDED: guardedDispatch(guard, {
       DESCRIBE: describe,
       START: (payload) => startFeed(payload as Partial<SourceRequest> | undefined),
-      FEED: () => state.feed,
-      STOP: async () => {
-        await stopFeed();
+      FEED: (payload) => running.get(monitorOf(payload as { monitor?: number }))?.info ?? null,
+      STOP: async (payload) => {
+        const monitor = (payload as { monitor?: number } | null)?.monitor;
+        await stopFeed(Number.isInteger(monitor) ? monitor : undefined);
         return true;
       },
       LAYOUT: () => loadWorkspaceOutputs(),
