@@ -16,7 +16,7 @@ import {
   decodeWebSocketWorkerMessage,
   encodeWebSocketWorkerMessage,
 } from "../submodules/stageforge/src/lib/webSocketWorkerCodec.ts";
-import { fromFileUrl } from "@std/path";
+import { petplayMediaPath } from "./petplayMediaPath.ts";
 
 export type IrohEndpoint = { id: string; relay?: string | null; addrs?: string[] };
 
@@ -188,13 +188,7 @@ class LinkDaemon {
 }
 
 export function defaultLinkBinary(): string {
-  return Deno.env.get("PETPLAY_LINK_BINARY") ??
-    fromFileUrl(
-      new URL(
-        "../submodules/petplay_mediatransport/target/release/petplay-media",
-        import.meta.url,
-      ),
-    );
+  return petplayMediaPath({ forLink: true });
 }
 
 /** The iroh remote carrier, plus `stop()` to end its child process. */

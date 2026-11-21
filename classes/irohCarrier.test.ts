@@ -5,6 +5,7 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import type { Carrier } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "./irohCarrier.ts";
+import { hasPetplayMediaBinary } from "./petplayMediaPath.ts";
 
 function nextMessage(carrier: Carrier): Promise<unknown> {
   return new Promise((resolve) => carrier.onmessage = resolve);
@@ -12,6 +13,7 @@ function nextMessage(carrier: Carrier): Promise<unknown> {
 
 Deno.test({
   name: "two iroh endpoints carry frames both ways and report a close",
+  ignore: !hasPetplayMediaBinary({ forLink: true }),
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {

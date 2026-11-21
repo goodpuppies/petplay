@@ -10,7 +10,7 @@
  * `WgcMediaFeed.audio` is the machine's sound the same way: `petplay-media capture-audio`, every
  * app's audio but VRChat's and PetPlay's, Opus over its own broadcast.
  */
-import { fromFileUrl } from "@std/path";
+import { petplayMediaPath } from "../../classes/petplayMediaPath.ts";
 
 export type WgcMonitor = {
   index: number;
@@ -25,15 +25,7 @@ export type WgcMonitor = {
 const READY_TIMEOUT_MS = 20_000;
 
 export function mediaBinary(): string {
-  return Deno.env.get("PETPLAY_MEDIA_BINARY") ??
-    fromFileUrl(
-      new URL(
-        `../../submodules/petplay_mediatransport/target/release/petplay-media${
-          Deno.build.os === "windows" ? ".exe" : ""
-        }`,
-        import.meta.url,
-      ),
-    );
+  return petplayMediaPath();
 }
 
 /** The monitors, physical pixels on the virtual desktop. */

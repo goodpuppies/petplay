@@ -79,6 +79,9 @@ jobs:
       - id: capture-helper-commit
         shell: bash
         run: echo "sha=$(git rev-parse HEAD:submodules/screen-streamer)" >> "$GITHUB_OUTPUT"
+      - id: media-helper-commit
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:submodules/petplay_mediatransport)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         id: capture-helper
         with:
@@ -86,20 +89,29 @@ jobs:
             dist/cargo/*/release/screen-streamer
             dist/cargo/*/release/screen-streamer.exe
           key: capture-helper-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ steps.capture-helper-commit.outputs.sha }}
+      - uses: actions/cache@v4
+        id: media-helper
+        with:
+          path: |
+            dist/cargo-media/*/release/petplay-media
+            dist/cargo-media/*/release/petplay-media.exe
+          key: media-helper-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ steps.media-helper-commit.outputs.sha }}-${{ steps.capture-helper-commit.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.capture-helper.outputs.cache-hit != 'true'
+        if: steps.capture-helper.outputs.cache-hit != 'true' || steps.media-helper.outputs.cache-hit != 'true'
         with:
           toolchain: 1.99.0
       - uses: Swatinem/rust-cache@v2
-        if: steps.capture-helper.outputs.cache-hit != 'true'
+        if: steps.capture-helper.outputs.cache-hit != 'true' || steps.media-helper.outputs.cache-hit != 'true'
         with:
-          workspaces: submodules/screen-streamer -> ../../dist/cargo
+          workspaces: |
+            submodules/screen-streamer -> ../../dist/cargo
+            submodules/petplay_mediatransport -> ../../dist/cargo-media
       # A cached helper still needs PipeWire at runtime for build-native's startup probe.
-      - name: Install Linux capture dependencies
+      - name: Install Linux capture and media dependencies
         if: runner.os == 'Linux'
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          ${{ steps.capture-helper.outputs.cache-hit == 'true' && 'libpipewire-0.3-0t64' || 'pkg-config clang libpipewire-0.3-dev libdbus-1-dev' }}
+          ${{ (steps.capture-helper.outputs.cache-hit == 'true' && steps.media-helper.outputs.cache-hit == 'true') && 'libpipewire-0.3-0t64' || 'pkg-config clang libpipewire-0.3-dev libdbus-1-dev libva-dev libgbm-dev libasound2-dev libopus-dev' }}
       - name: Test Linux capture buffer handling
         if: runner.os == 'Linux' && steps.capture-helper.outputs.cache-hit != 'true'
         run: >-
@@ -126,6 +138,7 @@ jobs:
       - run: deno task build ${{ matrix.args }}
         env:
           PETPLAY_PREBUILT_CAPTURE_HELPER: ${{ steps.capture-helper.outputs.cache-hit == 'true' && '1' || '' }}
+          PETPLAY_PREBUILT_MEDIA_HELPER: ${{ steps.media-helper.outputs.cache-hit == 'true' && '1' || '' }}
           PETPLAY_RAYLIB_SYSROOT: ${{ runner.arch == 'ARM64' && format('{0}/dist/glfw-fixture', github.workspace) || '' }}
       - name: Smoke test compiled ARM64 executable with bundled raylib
         if: runner.arch == 'ARM64'

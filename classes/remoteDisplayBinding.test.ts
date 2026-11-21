@@ -49,11 +49,18 @@ Deno.test("old display cleanup cannot hide a reassigned feed", async () => {
   binding.sync(sync("old"));
   binding.remove("old");
   binding.sync(sync("new"));
+  const afterReassign = calls.length;
   await new Promise((r) => setTimeout(r, 270));
-  assert(!calls.some((c) => c[0] === "HideOverlay"), "old cleanup hid new assignment");
+  assert(
+    !calls.slice(afterReassign).some((c) => c[0] === "HideOverlay"),
+    "old cleanup hid new assignment",
+  );
   binding.remove("new");
   await new Promise((r) => setTimeout(r, 270));
-  assert(calls.some((c) => c[0] === "HideOverlay"), "unassigned managed feed stayed visible");
+  assert(
+    calls.slice(afterReassign).some((c) => c[0] === "HideOverlay"),
+    "unassigned managed feed stayed visible",
+  );
   const shown = calls.filter((c) => c[0] === "ShowOverlay").length;
   binding.presented();
   assert(

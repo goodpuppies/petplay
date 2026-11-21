@@ -22,7 +22,7 @@
  * Needs stageforge networking (`--stageforge-networking`); without it the list stays empty.
  */
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
-import { fromFileUrl } from "@std/path";
+import { petplayMediaPath } from "../classes/petplayMediaPath.ts";
 import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { householdProof, householdSecret, householdTopic } from "../rdp/classes/household.ts";
 import type { DesktopDescription, FeedInfo, ScreenInfo } from "../rdp/desktopSource.ts";
@@ -170,15 +170,7 @@ function summarize(): void {
 }
 
 function mediaBinary(): string {
-  return Deno.env.get("PETPLAY_MEDIA_BINARY") ??
-    fromFileUrl(
-      new URL(
-        `../submodules/petplay_mediatransport/target/release/petplay-media${
-          Deno.build.os === "windows" ? ".exe" : ""
-        }`,
-        import.meta.url,
-      ),
-    );
+  return petplayMediaPath();
 }
 
 function stopSound(sound: Sound): void {

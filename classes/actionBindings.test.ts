@@ -90,17 +90,22 @@ Deno.test("runtime staging repairs missing bindings beside an existing binding",
   const directory = await Deno.makeTempDir({ prefix: "petplay-bindings-" });
   try {
     const code = `
-      import { createTemp } from ${JSON.stringify(new URL("classes/utils.ts", root).href)};
-      const directory = "tmp/run-" + Deno.pid;
-      Deno.mkdirSync(directory, { recursive: true });
-      Deno.copyFileSync(${
+      import { createTemp, destroyTemp } from ${JSON.stringify(new URL("classes/utils.ts", root).href)};
+      import { tempDir } from ${JSON.stringify(new URL("classes/appPaths.ts", root).href)};
+      const directory = tempDir() + "/run-" + Deno.pid;
+      try {
+        Deno.mkdirSync(directory, { recursive: true });
+        Deno.copyFileSync(${
       JSON.stringify(fromFileUrl(new URL("resources/bindings_oculus_touch.json", root)))
     }, directory + "/bindings_oculus_touch.json");
-      createTemp();
-      const manifest = ${JSON.stringify(manifest)};
-      for (const binding of manifest.default_bindings) {
-        const file = JSON.parse(Deno.readTextFileSync(directory + "/" + binding.binding_url));
-        if (file.controller_type !== binding.controller_type) throw new Error(binding.binding_url);
+        createTemp();
+        const manifest = ${JSON.stringify(manifest)};
+        for (const binding of manifest.default_bindings) {
+          const file = JSON.parse(Deno.readTextFileSync(directory + "/" + binding.binding_url));
+          if (file.controller_type !== binding.controller_type) throw new Error(binding.binding_url);
+        }
+      } finally {
+        destroyTemp();
       }
     `;
     const result = await new Deno.Command(Deno.execPath(), {

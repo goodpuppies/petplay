@@ -2,6 +2,7 @@ import { fromFileUrl } from "@std/path";
 import {
   type NativeBuildTarget,
   nativeBuildTarget,
+  petplayMediaRelativePath,
   screenStreamerRelativePath,
 } from "../classes/nativeBuildTarget.ts";
 
@@ -46,9 +47,54 @@ export async function buildNative(target: NativeBuildTarget): Promise<string> {
   return output;
 }
 
+export async function buildMedia(target: NativeBuildTarget): Promise<string> {
+  const isWindows = target.includes("windows");
+  const filename = `petplay-media${isWindows ? ".exe" : ""}`;
+  const manifest = fromFileUrl(new URL("submodules/petplay_mediatransport/Cargo.toml", root));
+  const targetDirectory = fromFileUrl(new URL("dist/cargo-media/", root));
+  const output = fromFileUrl(new URL(petplayMediaRelativePath(target), root));
+  // Off Windows, a Windows helper is linked with mingw-w64: MSVC's linker only runs on Windows.
+  const cargoTarget = isWindows && Deno.build.os !== "windows"
+    ? "x86_64-pc-windows-gnu"
+    : target;
+  const built = `${targetDirectory}/${cargoTarget}/release/${filename}`;
+  const prebuilt = Deno.env.get("PETPLAY_PREBUILT_MEDIA_HELPER") === "1" &&
+    await Deno.stat(built).then(() => true, () => false);
+  if (prebuilt) console.log(`Reusing ${built}`);
+  const featureArgs = isWindows
+    ? ["--no-default-features", "--features", "decode-windows,capture-windows"]
+    : ["--features", "decode"];
+  const result = prebuilt ? { success: true, code: 0 } : await new Deno.Command("cargo", {
+    args: [
+      "build",
+      "--locked",
+      "--release",
+      "--manifest-path",
+      manifest,
+      "--target",
+      cargoTarget,
+      ...featureArgs,
+    ],
+    env: { CARGO_TARGET_DIR: targetDirectory },
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  if (!result.success) throw new Error(`petplay-media build failed (${result.code})`);
+  await Deno.mkdir(fromFileUrl(new URL(`dist/native/${target}/`, root)), { recursive: true });
+  const staged = `${output}.new`;
+  await Deno.copyFile(built, staged);
+  if (!isWindows) await Deno.chmod(staged, 0o755);
+  await Deno.rename(staged, output);
+  console.log(`Built ${output}`);
+  return output;
+}
+
 if (import.meta.main) {
   if (Deno.args.length > 1 || (Deno.args.length === 1 && !Deno.args[0]!.startsWith("--target="))) {
     throw new Error("usage: deno task build:native [--target=<Rust target>]");
   }
-  await buildNative(nativeBuildTarget(Deno.args[0]?.slice("--target=".length)));
+  const target = nativeBuildTarget(Deno.args[0]?.slice("--target=".length));
+  await buildNative(target);
+  await buildMedia(target);
 }

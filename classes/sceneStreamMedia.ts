@@ -10,7 +10,7 @@
  * helper restarting (fps change, portal hiccup) only reconnects; if the worker itself exits, the
  * stream starts another on the same socket path (`directory`), which the helper finds again.
  */
-import { fromFileUrl } from "@std/path";
+import { petplayMediaPath } from "./petplayMediaPath.ts";
 
 export type MediaFeedInfo = {
   port: number;
@@ -61,8 +61,7 @@ export class DesktopMediaFeed {
     const socketPath = `${directory}/frames.sock`;
     // A worker that died leaves its socket behind, and a new one refuses an existing path.
     await Deno.remove(socketPath).catch(() => {});
-    const binary = Deno.env.get("PETPLAY_MEDIA_BINARY") ??
-      fromFileUrl(new URL("../submodules/petplay_mediatransport/target/release/petplay-media", import.meta.url));
+    const binary = petplayMediaPath();
     const child = new Deno.Command(binary, {
       args: [
         socketPath,

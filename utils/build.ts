@@ -9,7 +9,7 @@
  */
 import { nativeBuildTarget } from "../classes/nativeBuildTarget.ts";
 import { buildRaylib } from "./build-raylib.ts";
-import { buildNative } from "./build-native.ts";
+import { buildMedia, buildNative } from "./build-native.ts";
 
 import { parseBuildConfiguration } from "../classes/buildConfiguration.ts";
 const configuration = parseBuildConfiguration(Deno.args);
@@ -53,6 +53,7 @@ const resolvedTarget = nativeBuildTarget(target);
 // Both variants ship the optimized capture helper: an unoptimized one manages about 4 fps, and
 // building it would overwrite the dist/native copy that source runs use.
 const captureHelper = await buildNative(resolvedTarget);
+const mediaHelper = await buildMedia(resolvedTarget);
 const raylib = resolvedTarget === "aarch64-unknown-linux-gnu"
   ? await buildRaylib(resolvedTarget, Deno.env.get("PETPLAY_RAYLIB_SYSROOT"))
   : null;
@@ -84,6 +85,8 @@ const args = [
   "./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/build/",
   "--include",
   captureHelper,
+  "--include",
+  mediaHelper,
   ...(raylib ? ["--include", raylib] : []),
   "--include",
   "./dist/build-info.json",

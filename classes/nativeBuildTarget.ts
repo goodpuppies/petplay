@@ -23,3 +23,7 @@ export function nativeBuildTarget(target?: string): NativeBuildTarget {
 export function screenStreamerRelativePath(target: NativeBuildTarget): string {
   return `dist/native/${target}/screen-streamer${target.includes("windows") ? ".exe" : ""}`;
 }
+
+export function petplayMediaRelativePath(target: NativeBuildTarget): string {
+  return `dist/native/${target}/petplay-media${target.includes("windows") ? ".exe" : ""}`;
+}

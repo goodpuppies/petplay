@@ -2,7 +2,7 @@
 import * as VR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
-import { fromFileUrl } from "@std/path";
+import { petplayMediaPath } from "../classes/petplayMediaPath.ts";
 import type { RemoteDisplayBinding } from "../classes/remoteDisplayBinding.ts";
 import type { RemoteMediaRequest } from "./remoteMediaOverlay.ts";
 type State = { running: boolean; starting: boolean; frames: number; width: number; height: number };
@@ -77,13 +77,7 @@ export async function runWindowsMedia(
     // Keep decode on the same adapter SteamVR uses, including hybrid-GPU laptops.
     const adapter = new Int32Array(1);
     system.GetDXGIOutputInfo(Deno.UnsafePointer.of(adapter));
-    const binary = Deno.env.get("PETPLAY_MEDIA_BINARY") ??
-      fromFileUrl(
-        new URL(
-          "../submodules/petplay_mediatransport/target/release/petplay-media.exe",
-          import.meta.url,
-        ),
-      );
+    const binary = petplayMediaPath();
     native = new Deno.Command(binary, {
       args: [
         "receive",
