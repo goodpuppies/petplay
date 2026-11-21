@@ -1,4 +1,4 @@
-import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { type ActorId, actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { type OpenVrPresence, OpenVrRuntime } from "../classes/openVrRuntime.ts";
 import { wait } from "../classes/utils.ts";
@@ -44,6 +44,8 @@ const runtime = new OpenVrRuntime("PetPlay OpenVR");
 const attachOnly = Deno.args.includes(OPENVR_ATTACH_ONLY_ARG);
 /** The runtime instance we attached to; its disappearance permits a later manual instance. */
 let attachedVrserverPids: number[] = [];
+/** `webxr` actor notified when HMD/display events require overlay or eye-geometry refresh. */
+let webxrActor: ActorId | null = null;
 
 /** SteamVR shutdown events are the only signal that arrives *before* calls start failing. */
 const RUNTIME_WATCH_INTERVAL_MS = 500;
@@ -76,6 +78,10 @@ export const api = {
   },
   __HEALTH__: (_payload: unknown) => {
     return getOpenVrStatus();
+  },
+  ASSIGNWEBXR: (actorId: ActorId | null) => {
+    webxrActor = actorId;
+    return { webxrActor };
   },
   /**
    * Idempotent init attempt for a supervisor: succeeds once SteamVR is running,
@@ -259,6 +265,24 @@ function startRuntimeWatch(): void {
               "actor",
               `OpenVR runtime is exiting (event ${events.exitEventType}, ${events.handled} event(s) drained)`,
             );
+          } else if (
+            webxrActor != null &&
+            (events.rebuildOverlayReason != null || events.refreshEyeGeometryReason != null)
+          ) {
+            const reason = events.rebuildOverlayReason ?? events.refreshEyeGeometryReason!;
+            LogChannel.log(
+              "actor",
+              `OpenVR display/headset event (${reason}); notifying webxr`,
+            );
+            PostMan.PostMessage({
+              target: webxrActor,
+              type: "OPENVRDISPLAYCHANGED",
+              payload: {
+                reason,
+                rebuildOverlay: events.rebuildOverlayReason != null,
+                refreshEyeGeometry: true,
+              },
+            });
           }
         }
         await wait(RUNTIME_WATCH_INTERVAL_MS);

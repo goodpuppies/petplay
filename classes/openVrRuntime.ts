@@ -64,6 +64,52 @@ const RUNTIME_EXIT_EVENTS = new Set<number>([
   OpenVR.EventType.VREvent_RestartRequested,
 ]);
 
+/** Events that indicate the HMD/display pipeline reconnected or changed tracking universe. */
+const OVERLAY_REBUILD_EVENTS = new Set<number>([
+  OpenVR.EventType.VREvent_Compositor_DisplayReconnected,
+  OpenVR.EventType.VREvent_LeaveStandbyMode,
+  OpenVR.EventType.VREvent_ChaperoneUniverseHasChanged,
+  OpenVR.EventType.VREvent_StandingZeroPoseReset,
+]);
+
+export type OpenVrEventAction =
+  | { kind: "exit"; eventType: number }
+  | { kind: "rebuild-overlay"; reason: string; eventType: number }
+  | { kind: "refresh-eye-geometry"; reason: string; eventType: number }
+  | null;
+
+/**
+ * Classifies one `VREvent_t` `(eventType, trackedDeviceIndex)` for runtime/presentation repair.
+ * SteamLink reconnects keep `vrserver` alive (no `VREvent_Quit`), so HMD reactivation, display
+ * reconnect, standby exit, universe change, and IPD updates are caught here instead.
+ */
+export function classifyOpenVrEvent(
+  eventType: number,
+  trackedDeviceIndex: number,
+): OpenVrEventAction {
+  if (RUNTIME_EXIT_EVENTS.has(eventType)) {
+    return { kind: "exit", eventType };
+  }
+  const name = OpenVR.EventType[eventType] ?? `event_${eventType}`;
+  if (OVERLAY_REBUILD_EVENTS.has(eventType)) {
+    return { kind: "rebuild-overlay", reason: name, eventType };
+  }
+  if (
+    eventType === OpenVR.EventType.VREvent_TrackedDeviceActivated &&
+    trackedDeviceIndex === OpenVR.k_unTrackedDeviceIndex_Hmd
+  ) {
+    return { kind: "rebuild-overlay", reason: `${name}(HMD)`, eventType };
+  }
+  if (
+    eventType === OpenVR.EventType.VREvent_IpdChanged ||
+    (eventType === OpenVR.EventType.VREvent_TrackedDeviceUpdated &&
+      trackedDeviceIndex === OpenVR.k_unTrackedDeviceIndex_Hmd)
+  ) {
+    return { kind: "refresh-eye-geometry", reason: name, eventType };
+  }
+  return null;
+}
+
 /** Owns one process-local OpenVR client runtime and its acquired interfaces. */
 export class OpenVrRuntime {
   private pointers = EMPTY_POINTERS();
@@ -110,14 +156,25 @@ export class OpenVrRuntime {
     handled: number;
     lastEventType: number | null;
     exitEventType: number | null;
+    rebuildOverlayReason: string | null;
+    refreshEyeGeometryReason: string | null;
   } {
     const system = this.system;
     if (system == null || !this.active) {
-      return { exiting: false, handled: 0, lastEventType: null, exitEventType: null };
+      return {
+        exiting: false,
+        handled: 0,
+        lastEventType: null,
+        exitEventType: null,
+        rebuildOverlayReason: null,
+        refreshEyeGeometryReason: null,
+      };
     }
     let handled = 0;
     let lastEventType: number | null = null;
     let exitEventType: number | null = null;
+    let rebuildOverlayReason: string | null = null;
+    let refreshEyeGeometryReason: string | null = null;
     for (let i = 0; i < MAX_EVENTS_PER_POLL; i++) {
       const eventPointer = Deno.UnsafePointer.of(this.eventBuffer) as
         | Deno.PointerValue<OpenVR.Event>
@@ -125,11 +182,22 @@ export class OpenVrRuntime {
       if (eventPointer == null) break;
       if (!system.PollNextEvent(eventPointer, EVENT_BUFFER_BYTES)) break;
       const eventType = this.eventTypeView.getUint32(0, true);
+      const trackedDeviceIndex = this.eventTypeView.getUint32(4, true);
       handled += 1;
       lastEventType = eventType;
-      if (RUNTIME_EXIT_EVENTS.has(eventType)) exitEventType = eventType;
+      const action = classifyOpenVrEvent(eventType, trackedDeviceIndex);
+      if (action?.kind === "exit") exitEventType = action.eventType;
+      else if (action?.kind === "rebuild-overlay") rebuildOverlayReason = action.reason;
+      else if (action?.kind === "refresh-eye-geometry") refreshEyeGeometryReason = action.reason;
     }
-    return { exiting: exitEventType != null, handled, lastEventType, exitEventType };
+    return {
+      exiting: exitEventType != null,
+      handled,
+      lastEventType,
+      exitEventType,
+      rebuildOverlayReason,
+      refreshEyeGeometryReason,
+    };
   }
 
   initialize(request: OpenVrRuntimeRequest): OpenVrRuntimePointers {

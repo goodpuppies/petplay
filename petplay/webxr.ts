@@ -1029,6 +1029,12 @@ new PostMan(
       scene.add(cube);
       return { enabled: true, position: cube.position.toArray(), size: 0.5 };
     },
+    OPENVRDISPLAYCHANGED: (
+      payload: { reason?: string; rebuildOverlay?: boolean; refreshEyeGeometry?: boolean } | null,
+    ) => {
+      const reason = payload?.reason?.trim() || "OpenVR display event";
+      return handleOpenVrDisplayChanged(reason, payload?.rebuildOverlay === true);
+    },
     VRCPEERSUPDATE: (payload: { peers?: VrcPeerUpdateEntry[] } | null) => {
       vrcTofuStore.setPeers(Array.isArray(payload?.peers) ? payload.peers : []);
       return { prompts: vrcTofuStore.prompts().length };
@@ -1352,6 +1358,36 @@ function dropRaylibOverlayForRecreate(reason: string): void {
   state.raylibOverlay = null;
 }
 
+let lastWatchedHmdConnected: boolean | null = null;
+
+function handleOpenVrDisplayChanged(reason: string, rebuildOverlay: boolean): {
+  reason: string;
+  eyeGeometryApplied: boolean;
+  rebuiltOverlay: boolean;
+} {
+  const eyeGeometryApplied = applyOpenVrEyeGeometry();
+  if (state.nativeRaylibVrSystem) {
+    applyHeadsetEyeSize(state.nativeRaylibVrSystem);
+  }
+  let rebuiltOverlay = false;
+  if (rebuildOverlay && state.overlayRunning) {
+    presentationWatch.repairs += 1;
+    presentationWatch.overlayRebuilds += 1;
+    presentationWatch.lastRepairReason = `display-changed: ${reason}`;
+    presentationWatch.lastRepairAt = Date.now();
+    // Reset cached controller indices so SteamLink reconnect re-binds the active hands.
+    state.nativeRaylibLeftControllerIndex = -1;
+    state.nativeRaylibRightControllerIndex = -1;
+    dropRaylibOverlayForRecreate(reason);
+    rebuiltOverlay = true;
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] auto-repaired overlay + eye geometry after ${reason}`,
+    );
+  }
+  return { reason, eyeGeometryApplied, rebuiltOverlay };
+}
+
 /**
  * Bounded, in-actor repair of the presentation path: re-show the overlay when the
  * compositor stopped drawing it, rebuild its handle when showing does not stick.
@@ -1401,6 +1437,7 @@ async function restartRenderingStack(reason: string): Promise<void> {
 
 function stopPresentationWatch(): void {
   presentationWatch.running = false;
+  lastWatchedHmdConnected = null;
 }
 
 /** True once an overlay is configured, i.e. once frames are expected to appear. */
@@ -1493,6 +1530,31 @@ function startPresentationWatch(): void {
             presentationWatch.lastRepairAt = now;
           }
           continue;
+        }
+        // Belt-and-suspenders reconnect check: even if an OpenVR event was missed, a
+        // `false -> true` transition on HMD connection or a changed eye-to-head IPD repairs
+        // the panorama overlay and eye geometry automatically.
+        const vrSys = state.nativeRaylibVrSystem;
+        if (vrSys != null) {
+          try {
+            const connected = vrSys.IsTrackedDeviceConnected(OpenVR.k_unTrackedDeviceIndex_Hmd);
+            if (lastWatchedHmdConnected === false && connected) {
+              handleOpenVrDisplayChanged("HMD connection restored", true);
+            }
+            lastWatchedHmdConnected = connected;
+            const leftEye = vrSys.GetEyeToHeadTransform(OpenVR.Eye.Eye_Left);
+            const rightEye = vrSys.GetEyeToHeadTransform(OpenVR.Eye.Eye_Right);
+            const liveIpd = Math.abs((rightEye?.m?.[0]?.[3] ?? 0) - (leftEye?.m?.[0]?.[3] ?? 0));
+            const hostIpd = state.host?.getEffectiveIpdMeters?.(0) ?? 0;
+            if (liveIpd > 0.03 && liveIpd < 0.12 && Math.abs(liveIpd - hostIpd) > 0.0002) {
+              handleOpenVrDisplayChanged(
+                `IPD changed (${(hostIpd * 1000).toFixed(1)}mm -> ${(liveIpd * 1000).toFixed(1)}mm)`,
+                false,
+              );
+            }
+          } catch {
+            // Transient OpenVR error during reconnect; next tick will retry.
+          }
         }
         const visible = state.raylibOverlay?.isVisible() ?? null;
         if (visible !== false) {

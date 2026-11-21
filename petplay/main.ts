@@ -934,6 +934,11 @@ async function createSupervisedScene() {
   console.log("[petplay boot] control-plane actors created");
 
   PostMan.PostMessage({
+    target: ivr,
+    type: "ASSIGNWEBXR",
+    payload: resolveActorId(webxr),
+  });
+  PostMan.PostMessage({
     target: cameraOrigin,
     type: "ASSIGNWEBXR",
     payload: webxr,
