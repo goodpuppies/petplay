@@ -12,13 +12,17 @@ export async function buildNative(target: NativeBuildTarget): Promise<string> {
   const manifest = fromFileUrl(new URL("submodules/screen-streamer/Cargo.toml", root));
   const targetDirectory = fromFileUrl(new URL("dist/cargo/", root));
   const output = fromFileUrl(new URL(screenStreamerRelativePath(target), root));
-  const built = `${targetDirectory}/${target}/release/${filename}`;
+  // Off Windows, a Windows helper is linked with mingw-w64: MSVC's linker only runs on Windows.
+  const cargoTarget = target.includes("windows") && Deno.build.os !== "windows"
+    ? "x86_64-pc-windows-gnu"
+    : target;
+  const built = `${targetDirectory}/${cargoTarget}/release/${filename}`;
   // CI restores `built` from a cache keyed on the screen-streamer commit and skips cargo.
   const prebuilt = Deno.env.get("PETPLAY_PREBUILT_CAPTURE_HELPER") === "1" &&
     await Deno.stat(built).then(() => true, () => false);
   if (prebuilt) console.log(`Reusing ${built}`);
   const result = prebuilt ? { success: true, code: 0 } : await new Deno.Command("cargo", {
-    args: ["build", "--locked", "--release", "--manifest-path", manifest, "--target", target],
+    args: ["build", "--locked", "--release", "--manifest-path", manifest, "--target", cargoTarget],
     env: { CARGO_TARGET_DIR: targetDirectory },
     stdin: "inherit",
     stdout: "inherit",

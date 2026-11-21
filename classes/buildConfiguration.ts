@@ -14,11 +14,15 @@ export function parseBuildConfiguration(args: string[]) {
     throw new Error(`Unsupported build mode: ${mode}`);
   }
   const target = options.get("target");
-  if (target && target !== "aarch64-unknown-linux-gnu") {
+  // Windows from Linux: a quicker test build than CI's. The capture helper is built with mingw
+  // (`utils/build-native.ts`), since MSVC does not link on Linux.
+  if (target && target !== "aarch64-unknown-linux-gnu" && target !== "x86_64-pc-windows-msvc") {
     throw new Error(`Unsupported cross-build target: ${target}`);
   }
   const output = options.get("output") ??
-    (target
+    (target === "x86_64-pc-windows-msvc"
+      ? "dist/petplay-windows/petplay"
+      : target
       ? "dist/petplay-aarch64"
       : mode === "development"
       ? "dist/petplay-debug"
