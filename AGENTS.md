@@ -16,8 +16,10 @@
   with `--watch-webxr` so every save hot-reloads the `webxr` actor. Keep it running: crashes
   happen during development, but avoid causing them. Apply each change in one step (all files of
   a cross-file edit in one write; importers first, removed exports last) so a reload never sees a
-  half-done edit. If it does go down, read `logs/petplay-<start time>.log` for why and restart it detached, the way SteamVR does:
-  `STEAMVR_APPKEY=petplay.overlay setsid -f ~/.local/share/petplay/steamvr/launch-petplay.sh`
+  half-done edit. If it does go down, read `logs/petplay-<start time>.log` for why and restart it
+  as a systemd user unit, outside the agent harness's process tree (stopping the harness kills
+  everything it started, `setsid` included):
+  `systemd-run --user --unit=petplay-steamvr --collect --setenv=STEAMVR_APPKEY=petplay.overlay ~/.local/share/petplay/steamvr/launch-petplay.sh`
   (its launch log is `~/.local/state/petplay/steamvr-launch.log`).
 - Type-check with `deno task check`: it filters out the vendor submodules' unrelated errors that
   raw `deno check` reports (`deno task check:all` for the unfiltered graph).
