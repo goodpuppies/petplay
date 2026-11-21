@@ -13,6 +13,7 @@ import { startWebXrAutoReload } from "../classes/webxrAutoReload.ts";
 import { requestProcessExit } from "../classes/processExitRequest.ts";
 import { getSetting, loadSettings } from "../classes/settings.ts";
 import { OPENVR_REATTACH_ARG } from "../classes/steamVrProcess.ts";
+import { householdSecret } from "../rdp/classes/household.ts";
 
 const state = actorState({
   name: "main",
@@ -957,6 +958,21 @@ async function createSupervisedScene() {
   if (desktopControlEnabled) {
     await startDesktopView();
   }
+  // Other household machines' desktops, as display outputs (needs `.secret` and networking).
+  await PostMan.create("./householdDesktops.ts", import.meta.url);
+  // This machine's displays for others on the share topic: the ones a display's Share action
+  // picks, or all with `--share-all-displays`. Needs a share key (`.secret`) and networking.
+  if (householdSecret()) {
+    const share = await PostMan.create("./displayShare.ts", import.meta.url);
+    await PostMan.PostMessage({
+      target: share,
+      type: "SETUP",
+      payload: { source: actors.desktopSource, input: actors.desktopInput },
+    }, true).catch((error) => console.error(`[displayShare] ${error}`));
+    if (isEnabledArg("--share-all-displays")) {
+      PostMan.PostMessage({ target: share, type: "SHAREALL", payload: null });
+    }
+  }
 
   supervisedActors = actors;
   supervisor.running = true;
@@ -971,17 +987,6 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
   LogChannel.log("actor", "[supervisor] SteamVR available; attaching OpenVR actors");
   const created: ActorId[] = [];
   try {
-  // Other household machines' desktops, as display outputs (needs `.secret` and networking).
-  await PostMan.create("./householdDesktops.ts", import.meta.url);
-  // `--share-all-displays`: offer this machine's displays to others on the share topic.
-  if (isEnabledArg("--share-all-displays")) {
-    const share = await PostMan.create("./displayShare.ts", import.meta.url);
-    await PostMan.PostMessage({
-      target: share,
-      type: "SHARE",
-      payload: { source: actors.desktopSource, input: actors.desktopInput },
-    }, true).catch((error) => console.error(`[displayShare] ${error}`));
-  }
     // The control-plane session is running without OpenVR; restart it with the
     // runtime so the overlay, pacer and IVRInput sampling come up.
     await callActor(actors.webxr, "STOPWEBXR", OPENVR_CALL_TIMEOUT_MS * 2).catch((error) => {

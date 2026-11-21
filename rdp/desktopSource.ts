@@ -31,14 +31,15 @@
  * covers on the virtual desktop (input `region`s); `START`, `FEED` and `STOP` take `{monitor}`,
  * without it the configured one. Frame sinks work wherever the helper does.
  *
- * Audio, Windows for now: `AUDIO` starts the machine's sound (every app but VRChat and PetPlay,
- * `WgcMediaFeed.audio`) on `port + 100` if it is not running and returns its feed; `STOPAUDIO`
- * ends it. `DESCRIBE` says `audio: true` where it can.
+ * Audio: `AUDIO` starts the machine's sound (every app but VRChat and PetPlay: Windows'
+ * `WgcMediaFeed.audio`, Linux's PipeWire `LinuxAudioShare`) on `port + 100` if it is not running
+ * and returns its feed; `STOPAUDIO` ends it. `DESCRIBE` says `audio: true` where it can.
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { join } from "@std/path";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
 import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
+import { linuxAudioAvailable, LinuxAudioShare } from "./classes/linuxAudioShare.ts";
 import { CaptureHelper } from "../classes/ScreenCapturer/captureHelper.ts";
 import { clampCaptureFps, DEFAULT_CAPTURE_FPS } from "../classes/ScreenCapturer/scclass.ts";
 import {
@@ -78,13 +79,20 @@ export type ScreenInfo = {
   primary: boolean;
   /** Its rectangle on the virtual desktop, as fractions: where its input positions go. */
   region: { x: number; y: number; width: number; height: number };
+  /** Offered by a sharer (`petplay/displayShare.ts`): whether viewers may drive it. */
+  input?: boolean;
 };
 export type DesktopDescription = {
   machine: string;
   input: string | null;
   feed: FeedInfo | null;
-  /** Windows: every monitor, each its own feed. Absent: one feed of the whole workspace. */
+  /**
+   * Windows: every monitor, each its own feed. Absent: one feed of the whole workspace. From a
+   * sharer, only the shared ones; empty: nothing is shared.
+   */
   screens?: ScreenInfo[];
+  /** A sharer's whole workspace (no `screens`): whether viewers may drive it. */
+  wholeInput?: boolean;
   /** The machine's sound can be had (`AUDIO`). */
   audio?: boolean;
 };
@@ -122,13 +130,19 @@ type Running = { encoder: DesktopMediaFeed | WgcMediaFeed; request: SourceReques
 const running = new Map<number, Running>();
 let screens: ScreenInfo[] | null = null;
 /** The machine's sound: its feed, or the start in progress. */
-let audio: { encoder: WgcMediaFeed; info: FeedInfo } | null = null;
+let audio: { encoder: WgcMediaFeed | LinuxAudioShare; info: FeedInfo } | null = null;
+/** Linux: whether PipeWire's tools are here (checked once). */
+let canShareAudio: Promise<boolean> | null = null;
+function audioAvailable(): Promise<boolean> {
+  if (Deno.build.os === "windows") return Promise.resolve(true);
+  return canShareAudio ??= linuxAudioAvailable();
+}
 let audioStarting: Promise<FeedInfo> | null = null;
 /** Ports above the monitors' feeds. */
 const AUDIO_PORT_OFFSET = 100;
 
 function startAudio(where?: { host?: string; port?: number } | null): Promise<FeedInfo | null> {
-  if (Deno.build.os !== "windows") return Promise.resolve(null);
+  if (Deno.build.os !== "windows" && Deno.build.os !== "linux") return Promise.resolve(null);
   if (audio) return Promise.resolve(audio.info);
   if (audioStarting) return audioStarting;
   const defaults = where?.host && Number.isInteger(where.port) ? where : feedDefaults;
@@ -138,7 +152,9 @@ function startAudio(where?: { host?: string; port?: number } | null): Promise<Fe
   const host = defaults.host as string;
   const port = (defaults.port as number) + AUDIO_PORT_OFFSET;
   audioStarting = (async () => {
-    const encoder = await WgcMediaFeed.audio({ host, port });
+    const encoder = Deno.build.os === "windows"
+      ? await WgcMediaFeed.audio({ host, port })
+      : await LinuxAudioShare.start({ host, port });
     const started = {
       encoder,
       info: { host, port, fingerprint: encoder.info.fingerprint, code: encoder.info.code },
@@ -399,7 +415,7 @@ async function describe(): Promise<DesktopDescription> {
     input: pairedInput,
     feed: state.feed,
     ...(screens ? { screens } : {}),
-    ...(Deno.build.os === "windows" ? { audio: true } : {}),
+    ...(await audioAvailable() ? { audio: true } : {}),
   };
 }
 

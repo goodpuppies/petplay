@@ -28,7 +28,9 @@ export function mediaBinary(): string {
   return Deno.env.get("PETPLAY_MEDIA_BINARY") ??
     fromFileUrl(
       new URL(
-        "../../submodules/petplay_mediatransport/target/release/petplay-media.exe",
+        `../../submodules/petplay_mediatransport/target/release/petplay-media${
+          Deno.build.os === "windows" ? ".exe" : ""
+        }`,
         import.meta.url,
       ),
     );

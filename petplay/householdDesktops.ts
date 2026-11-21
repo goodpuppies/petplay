@@ -54,6 +54,8 @@ type Desktop = {
   monitor?: number;
   region: ScreenInfo["region"] | null;
   input: ActorId | null;
+  /** The sharer lets viewers drive it. */
+  inputAllowed: boolean;
   /** Displays (spatial node ids) showing it. */
   holders: Set<string>;
   overlay: ActorId | null;
@@ -258,7 +260,12 @@ function forget(key: string): void {
   void stopOverlay(desktop);
 }
 
-/** Other machines' desktopSources on the household topic. */
+/** When each source was last described; a sharer is asked again every `RESCAN_MS`. */
+const described = new Map<string, number>();
+/** A sharer's shared screens change as its displays are toggled. */
+const RESCAN_MS = 5000;
+
+/** Other machines' desktops on the topic: sharers (displayShare) and desktopSources. */
 async function discover(): Promise<void> {
   const known = new Set([...state.addressBook].map(String));
   for (const [key, desktop] of desktops) if (!known.has(desktop.source)) forget(key);
@@ -267,75 +274,108 @@ async function discover(): Promise<void> {
     stopSound(sound);
     sounds.delete(machine);
   }
+  for (const id of described.keys()) if (!known.has(id)) described.delete(id);
   const now = Date.now();
-  const fresh = [...known].filter((id) =>
-    (id.startsWith("desktopSource@") || id.startsWith("displayShare@")) &&
-    (quiet.get(id)?.until ?? 0) <= now &&
-    ![...desktops.values()].some((d) => d.source === id)
-  );
+  const due = [...known].filter((id) => {
+    if (!id.startsWith("desktopSource@") && !id.startsWith("displayShare@")) return false;
+    if ((quiet.get(id)?.until ?? 0) > now) return false;
+    const at = described.get(id);
+    return at === undefined || (id.startsWith("displayShare@") && now - at >= RESCAN_MS);
+  });
   // At once: a source gone without leaving the address book must not hold up the others.
-  await Promise.all(fresh.map(async (id) => {
+  await Promise.all(due.map(async (id) => {
     try {
-      const described = await request<DesktopDescription>(id as ActorId, "DESCRIBE", null, DESCRIBE_MS);
-      // This machine's own desktop (an rdp app here) is the local one, not a remote output.
-      if (described.machine === Deno.hostname()) {
-        quiet.set(id, { until: Infinity, wait: Infinity });
-        return;
-      }
-      // The same machine under a new id is its agent restarted: its displays keep showing it.
-      const holders = new Map<string, Set<string>>();
-      for (const [key, d] of desktops) {
-        if (d.machine !== described.machine) continue;
-        holders.set(key, d.holders);
-        forget(key);
-      }
-      const previousSound = sounds.get(described.machine);
-      if (previousSound) stopSound(previousSound);
-      sounds.delete(described.machine);
-      if (described.audio) {
-        sounds.set(described.machine, {
-          machine: described.machine,
-          source: id as ActorId,
-          player: null,
-          starting: false,
-          retryAt: 0,
-          quietSince: null,
-          error: null,
-          log: [],
-        });
-      }
-      const screens: Array<ScreenInfo | null> = described.screens?.length ? described.screens : [null];
-      for (const screen of screens) {
-        const key = screen ? `${described.machine}:${screen.index}` : described.machine;
-        desktops.set(key, {
-          key,
-          // `DISPLAY2` is Windows' own number for the monitor, as its settings show it.
-          name: screen
-            ? `${described.machine}${screen.name.match(/(\d+)$/)?.[1] ?? screen.index + 1}`
-            : described.machine,
-          source: id as ActorId,
-          machine: described.machine,
-          ...(screen ? { monitor: screen.index } : {}),
-          region: screen?.region ?? null,
-          input: described.input as ActorId | null,
-          holders: holders.get(key) ?? new Set<string>(),
-          overlay: null,
-          feed: null,
-          width: screen?.width ?? 0,
-          height: screen?.height ?? 0,
-          frames: 0,
-          starting: false,
-          retryAt: 0,
-          releaseAt: null,
-          error: null,
-        });
-      }
+      const description = await request<DesktopDescription>(
+        id as ActorId,
+        "DESCRIBE",
+        null,
+        DESCRIBE_MS,
+      );
+      described.set(id, Date.now());
+      apply(id as ActorId, description);
     } catch (error) {
       const wait = quiet.get(id)?.wait ?? QUIET_MS;
       quiet.set(id, { until: Date.now() + wait, wait: Math.min(QUIET_MAX_MS, wait * 2) });
       report(`DESCRIBE ${id}: ${error}`);
     }
   }));
+}
+
+/** Bring the desktops (and sound) offered by `id` in line with its description. */
+function apply(id: ActorId, description: DesktopDescription): void {
+  const machine = description.machine;
+  // This machine's own desktop (an rdp app here) is the local one, not a remote output.
+  if (machine === Deno.hostname()) {
+    quiet.set(id, { until: Infinity, wait: Infinity });
+    return;
+  }
+  // The same machine under a new id (restarted, or the agent replaced by PetPlay): its displays
+  // keep showing it.
+  const holders = new Map<string, Set<string>>();
+  for (const [key, d] of desktops) {
+    if (d.machine !== machine || d.source === id) continue;
+    holders.set(key, d.holders);
+    forget(key);
+  }
+  const previousSound = sounds.get(machine);
+  if (previousSound && previousSound.source !== id) {
+    stopSound(previousSound);
+    sounds.delete(machine);
+  }
+  // No `screens`: one desktop, the whole workspace. Empty: nothing shared.
+  const screens: Array<ScreenInfo | null> = description.screens ?? [null];
+  const keys = new Set(
+    screens.map((screen) => screen ? `${machine}:${screen.index}` : machine),
+  );
+  for (const [key, d] of desktops) if (d.source === id && !keys.has(key)) forget(key);
+  for (const screen of screens) {
+    const key = screen ? `${machine}:${screen.index}` : machine;
+    const inputAllowed = screen ? screen.input !== false : description.wholeInput !== false;
+    const existing = desktops.get(key);
+    if (existing) {
+      existing.inputAllowed = inputAllowed;
+      continue;
+    }
+    desktops.set(key, {
+      key,
+      // `DISPLAY2` is Windows' own number for the monitor, as its settings show it.
+      name: screen ? `${machine}${screen.name.match(/(\d+)$/)?.[1] ?? screen.index + 1}` : machine,
+      source: id,
+      machine,
+      ...(screen ? { monitor: screen.index } : {}),
+      region: screen?.region ?? null,
+      input: description.input as ActorId | null,
+      inputAllowed,
+      holders: holders.get(key) ?? new Set<string>(),
+      overlay: null,
+      feed: null,
+      width: screen?.width ?? 0,
+      height: screen?.height ?? 0,
+      frames: 0,
+      starting: false,
+      retryAt: 0,
+      releaseAt: null,
+      error: null,
+    });
+  }
+  const sound = sounds.get(machine);
+  if (description.audio && screens.length > 0) {
+    if (!sound) {
+      sounds.set(machine, {
+        machine,
+        source: id,
+        player: null,
+        starting: false,
+        retryAt: 0,
+        quietSince: null,
+        error: null,
+        log: [],
+      });
+    }
+  } else if (sound) {
+    stopSound(sound);
+    sounds.delete(machine);
+  }
 }
 
 /** Bring a shown desktop's feed and overlay up, and keep them current. */
@@ -468,7 +508,7 @@ function outputs(): WorkspaceOutput[] {
       crop: { x: 0, y: 0, width: 1, height: 1 },
       household: { desktop: d.key, provider: state.id },
       ...(running ? { overlayHostActor: d.overlay! } : {}),
-      ...(running && d.input
+      ...(running && d.input && d.inputAllowed
         ? { inputActor: d.input }
         : { input: "none" as const }),
     };
@@ -515,7 +555,7 @@ new PostMan(
      */
     INPUTTARGET: async (payload: { desktop: string }) => {
       const desktop = desktops.get(payload?.desktop);
-      if (!desktop?.input || !secret) return null;
+      if (!desktop?.input || !desktop.inputAllowed || !secret) return null;
       return {
         actor: desktop.input,
         proof: await householdProof(secret, desktop.input),

@@ -29,8 +29,8 @@ import { KeyboardPanel } from "./keyboard/keyboard.tsx";
 import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
 import { createDesktopInputSinks } from "./desktopInputSink.ts";
-import type { KeyboardSink } from "./keyboard/types.ts";
 import { focusedKeyboard, focusKeyboard, releaseKeyboard } from "./keyboard/keyboardFocus.ts";
+import type { KeyboardSink } from "./keyboard/types.ts";
 import { KEYBOARD_LOCALES, useKeyboardLocale } from "./keyboard/keyboardLocale.ts";
 import { PostMan } from "../../submodules/stageforge/mod.ts";
 import { SpatialAudioProvider } from "./spatialAudio.tsx";
@@ -89,6 +89,7 @@ import {
   setSpatialNodeCurvature,
   setSpatialNodeLocked,
   setSpatialNodeMouseBlocked,
+  setSpatialNodeShared,
   setSpatialNodeOpacity,
   setSpatialRootOrigin,
   type SpatialGraph,
@@ -100,7 +101,11 @@ import {
   swapDisplayToolbarSide,
   updateSnapSourceSize,
 } from "./spatialGraph.ts";
-import { discoverRemoteDisplayFeeds, resolveDisplayFeedProvider } from "./remoteDisplayFeeds.ts";
+import {
+  discoverRemoteDisplayFeeds,
+  resolveDisplayFeedProvider,
+  setSharedScreens,
+} from "./remoteDisplayFeeds.ts";
 import { loadWorkspaceOutputs, type WorkspaceOutput } from "./workspaceDisplays.ts";
 import { publishWorkspaceLayout, registerWorkspaceLayoutActions } from "./workspaceLayoutStore.ts";
 import {
@@ -748,6 +753,30 @@ function WindowLayer({
     Awaited<ReturnType<typeof loadWorkspaceOutputs>>
   >([]);
   const [remoteOutputs, setRemoteOutputs] = React.useState<WorkspaceOutput[]>([]);
+  // The screens shared with others (a display's Share action), for displayShare.
+  const sharedScreens = React.useMemo(() => {
+    const byName = new Map<string, boolean>();
+    for (const node of Object.values(graph.nodes)) {
+      if (node.kind !== "display" || !node.shared) continue;
+      const output = localWorkspaceOutputs.find((o) => o.id === node.workspaceOutputId);
+      if (output) byName.set(output.name, (byName.get(output.name) ?? false) || !!node.remoteInput);
+    }
+    return JSON.stringify([...byName].sort().map(([name, input]) => ({ name, input })));
+  }, [graph, localWorkspaceOutputs]);
+  React.useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // displayShare may not be up yet at launch: try until it takes the list.
+    const send = async () => {
+      const taken = await setSharedScreens(JSON.parse(sharedScreens)).catch(() => false);
+      if (!taken && !cancelled) timer = setTimeout(() => void send(), 5000);
+    };
+    void send();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [sharedScreens]);
   const workspaceOutputs = React.useMemo(() => [...localWorkspaceOutputs, ...remoteOutputs], [
     localWorkspaceOutputs,
     remoteOutputs,
@@ -1375,14 +1404,12 @@ function DisplaySpatialNodeView({
     const hand = controllerHandOfPointerState(event.pointerState);
     return hand == null ? undefined : directOpenVrInputSource?.getDesktopMouseButton(hand);
   }, [directOpenVrInputSource]);
-  const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
-    // Clicking a display gives the keyboard to the desktop it shows.
-    if (event.kind === "button" && event.pressed) focusKeyboard(node.id, remoteInput?.onKey ?? null);
-    (remoteInput?.onMouse ?? onMouse)({
-      ...event,
   // Another household machine's desktop starts when a display shows it and stops after the
   // last one lets go (`petplay/householdDesktops.ts`).
   const household = outputConnected ? selectedFeed?.household : undefined;
+  // This machine's own screen (not a remote feed): it can be shared with others.
+  const localOutput = outputConnected && selectedFeed != null && !selectedFeed.household &&
+    !selectedFeed.overlayHostActor;
   React.useEffect(() => {
     if (!household) return;
     const payload = { desktop: household.desktop, display: node.id };
@@ -1419,6 +1446,11 @@ function DisplaySpatialNodeView({
       releaseKeyboard(node.id);
     };
   }, [remoteInputActor, household?.provider, household?.desktop, node.id]);
+  const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
+    // Clicking a display gives the keyboard to the desktop it shows.
+    if (event.kind === "button" && event.pressed) focusKeyboard(node.id, remoteInput?.onKey ?? null);
+    (remoteInput?.onMouse ?? onMouse)({
+      ...event,
       x: workspaceCrop.x + event.x * workspaceCrop.width,
       y: workspaceCrop.y + event.y * workspaceCrop.height,
     });
@@ -1470,6 +1502,28 @@ function DisplaySpatialNodeView({
         run: () => setGraph((current) => swapDisplayToolbarSide(current, node.id, swapFootprint)),
       });
     }
+    if (localOutput) {
+      // Accent reports the state, as with Lock.
+      actions.push({
+        id: "share",
+        label: node.shared ? "Shared — stop" : "Share",
+        icon: "wifi",
+        tone: node.shared ? "accent" : "normal",
+        run: () =>
+          setGraph((current) =>
+            setSpatialNodeShared(current, node.id, !node.shared, node.remoteInput ?? false)
+          ),
+      });
+      if (node.shared) {
+        actions.push({
+          id: "remote-input",
+          label: node.remoteInput ? "Remote input — off" : "Allow remote input",
+          tone: node.remoteInput ? "accent" : "normal",
+          run: () =>
+            setGraph((current) => setSpatialNodeShared(current, node.id, true, !node.remoteInput)),
+        });
+      }
+    }
     actions.push({
       id: "lock",
       label: node.locked ? "Locked — unlock" : "Lock",
@@ -1484,7 +1538,18 @@ function DisplaySpatialNodeView({
       run: () => setGraph((current) => deleteSpatialNode(current, node.id)),
     });
     return actions;
-  }, [attachmentRole, graph, node.id, node.parentId, setGraph, workspaceOutputs, toolbarScale]);
+  }, [
+    attachmentRole,
+    graph,
+    node.id,
+    node.parentId,
+    setGraph,
+    workspaceOutputs,
+    toolbarScale,
+    localOutput,
+    node.shared,
+    node.remoteInput,
+  ]);
   // A keyboard hinged under the window would sit in front of a toolbar hanging below it, and so
   // would anything floating in the space the menu needs (its actions plus the settings button).
   const toolbarFootprint = React.useMemo(
@@ -1557,6 +1622,15 @@ function DisplaySpatialNodeView({
           // The open toolbar carries the badge instead.
           visible={hovered && attachmentRole != null && selectedNodeId !== node.id}
         />
+        {(localOutput && node.shared) || household
+          ? (
+            <SharedIndicator
+              position={[-panel.width * 0.5 + 0.04, panel.height * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
+              // Accented: whoever sees it may also drive it.
+              remoteInput={household ? selectedFeed?.inputActor != null : node.remoteInput ?? false}
+            />
+          )
+          : null}
         <SpatialContextToolbar
           open={selectedNodeId === node.id}
           title={node.workspaceOutputName ?? `Display ${node.ordinal}`}

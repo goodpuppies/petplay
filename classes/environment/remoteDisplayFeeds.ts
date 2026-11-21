@@ -79,3 +79,17 @@ export function resolveDisplayFeedProvider(
     acceptsMouse: output.input !== "none",
   };
 }
+
+/**
+ * Tell this machine's displayShare (`petplay/displayShare.ts`) which screens the displays share.
+ * False when there is none (no share key on this machine).
+ */
+export async function setSharedScreens(
+  screens: Array<{ name: string; input: boolean }>,
+): Promise<boolean> {
+  const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
+  const share = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith("displayShare@"));
+  if (!share) return false;
+  await request(share.actorId, "SETSHARED", { screens });
+  return true;
+}

@@ -49,6 +49,12 @@ type SpatialNodeBase = {
   mouseBlocked?: boolean;
   /** Displays: fade out while the head is turned away from it (XSO's auto-hide). */
   autoHide?: boolean;
+  /**
+   * Displays showing this machine's own screen: offered to others on the share topic
+   * (`petplay/displayShare.ts`). `remoteInput`: they may also drive it with mouse and keys.
+   */
+  shared?: boolean;
+  remoteInput?: boolean;
   /** 0..1, unset means opaque. Only the node itself: children keep their own. */
   opacity?: number;
   /** Displays: OpenVR overlay curvature, 0 < c <= `MAX_DISPLAY_CURVATURE`; unset means flat. */
@@ -785,6 +791,23 @@ export function setSpatialNodeLocked(
   if (!node || (node.locked ?? false) === locked) return current;
   const graph = cloneGraph(current);
   graph.nodes[nodeId] = { ...node, locked };
+  return graph;
+}
+
+/** Share a display's screen with others, and whether they may drive it. */
+export function setSpatialNodeShared(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+  shared: boolean,
+  remoteInput: boolean,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  if (!node || ((node.shared ?? false) === shared && (node.remoteInput ?? false) === remoteInput)) {
+    return current;
+  }
+  const graph = cloneGraph(current);
+  const { shared: _shared, remoteInput: _input, ...rest } = node;
+  graph.nodes[nodeId] = (shared ? { ...rest, shared, remoteInput } : rest) as SpatialNode;
   return graph;
 }
 
