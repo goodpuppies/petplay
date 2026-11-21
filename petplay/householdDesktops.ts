@@ -33,9 +33,16 @@ const POLL_MS = 2000;
 const RELEASE_GRACE_MS = 30_000;
 const RETRY_MS = 10_000;
 const REQUEST_MS = 60_000;
-/** A desktopSource that does not describe itself this fast is skipped for `QUIET_MS`. */
+/**
+ * A desktopSource that does not describe itself this fast is skipped for a while: a minute,
+ * doubling to half an hour. A restarted agent leaves its old ids in the address book for good.
+ */
 const DESCRIBE_MS = 10_000;
 const QUIET_MS = 60_000;
+const QUIET_MAX_MS = 30 * 60_000;
+/** After starting an overlay, how often to look for its first frame, and for how long. */
+const FIRST_FRAME_POLL_MS = 250;
+const FIRST_FRAME_WAIT_MS = 20_000;
 
 type Desktop = {
   /** `machine`, or `machine:index` for one of a Windows machine's monitors. */
@@ -96,8 +103,10 @@ const desktops = new Map<string, Desktop>();
 const sounds = new Map<string, Sound>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let polling = false;
-/** desktopSources that did not answer DESCRIBE (an agent since restarted), until when. */
-const quiet = new Map<string, number>();
+let discovering = false;
+/** desktopSources that did not answer DESCRIBE (an agent since restarted): until when, and the
+ * next wait. */
+const quiet = new Map<string, { until: number; wait: number }>();
 
 function report(error: string): void {
   if (state.lastError === error) return;
@@ -260,7 +269,7 @@ async function discover(): Promise<void> {
   }
   const now = Date.now();
   const fresh = [...known].filter((id) =>
-    id.startsWith("desktopSource@") && (quiet.get(id) ?? 0) <= now &&
+    id.startsWith("desktopSource@") && (quiet.get(id)?.until ?? 0) <= now &&
     ![...desktops.values()].some((d) => d.source === id)
   );
   // At once: a source gone without leaving the address book must not hold up the others.
@@ -269,7 +278,7 @@ async function discover(): Promise<void> {
       const described = await request<DesktopDescription>(id as ActorId, "DESCRIBE", null, DESCRIBE_MS);
       // This machine's own desktop (an rdp app here) is the local one, not a remote output.
       if (described.machine === Deno.hostname()) {
-        quiet.set(id, Infinity);
+        quiet.set(id, { until: Infinity, wait: Infinity });
         return;
       }
       // The same machine under a new id is its agent restarted: its displays keep showing it.
@@ -321,7 +330,8 @@ async function discover(): Promise<void> {
         });
       }
     } catch (error) {
-      quiet.set(id, Date.now() + QUIET_MS);
+      const wait = quiet.get(id)?.wait ?? QUIET_MS;
+      quiet.set(id, { until: Date.now() + wait, wait: Math.min(QUIET_MAX_MS, wait * 2) });
       report(`DESCRIBE ${id}: ${error}`);
     }
   }));
@@ -379,6 +389,7 @@ async function keep(desktop: Desktop): Promise<void> {
         forDisplay: true,
       },
     }, true);
+    void watchFirstFrame(desktop, desktop.overlay);
   } catch (error) {
     desktop.error = String(error instanceof Error ? error.message : error);
     desktop.retryAt = Date.now() + RETRY_MS;
@@ -388,11 +399,47 @@ async function keep(desktop: Desktop): Promise<void> {
   }
 }
 
+/** Discovery on its own: a source that does not answer must not hold up the shown desktops. */
+async function rediscover(): Promise<void> {
+  if (discovering) return;
+  discovering = true;
+  try {
+    await discover();
+  } finally {
+    discovering = false;
+  }
+  summarize();
+}
+
+/** List a new overlay as soon as it has a picture, rather than at the next poll. */
+async function watchFirstFrame(desktop: Desktop, overlay: ActorId): Promise<void> {
+  const deadline = Date.now() + FIRST_FRAME_WAIT_MS;
+  while (desktop.overlay === overlay && Date.now() < deadline) {
+    const health = await withTimeout(
+      PostMan.PostMessage({ target: overlay, type: "__HEALTH__", payload: null }, true) as Promise<
+        { frames: number; width: number; height: number }
+      >,
+      2000,
+      "overlay health",
+    ).catch(() => null);
+    if (desktop.overlay !== overlay) return;
+    if (health && health.frames > 0) {
+      desktop.frames = health.frames;
+      desktop.width = health.width;
+      desktop.height = health.height;
+      desktop.error = null;
+      summarize();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, FIRST_FRAME_POLL_MS));
+  }
+}
+
 async function poll(): Promise<void> {
+  void rediscover();
   if (polling) return;
   polling = true;
   try {
-    await discover();
     await Promise.all([
       ...[...desktops.values()].map((desktop) => keep(desktop)),
       ...[...sounds.values()].map((sound) => keepSound(sound)),
@@ -447,7 +494,10 @@ new PostMan(
       if (!desktop) return false;
       desktop.holders.add(String(payload.display));
       desktop.releaseAt = null;
-      void poll();
+      // Now, not at the next poll.
+      void keep(desktop).then(summarize);
+      const sound = sounds.get(desktop.machine);
+      if (sound) void keepSound(sound).then(summarize);
       return true;
     },
     /** A display stopped showing it. */
