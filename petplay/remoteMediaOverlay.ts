@@ -9,6 +9,13 @@ import { RemoteDisplayBinding, type RemoteDisplaySync } from "../classes/remoteD
 import { runWindowsMedia } from "./remoteMediaWindows.ts";
 import { fromFileUrl } from "@std/path";
 export type RemoteMediaRequest = {
+  /** A desktopSource's feed (`FEED`): its WebTransport listener, pinned to the certificate. */
+  feed?: { host: string; port: number; fingerprint: string };
+  /**
+   * Where this display's input goes: a desktopInput on the feed's machine, and the household
+   * proof it takes in `GUARDED`. Reported in `__HEALTH__` for the scene's display outputs.
+   */
+  input?: { actor: string; proof?: string };
   code?: string;
   url?: string;
   address?: string;
@@ -27,6 +34,7 @@ const state = actorState({
   feedName: "Remote desktop",
   width: 0,
   height: 0,
+  input: null as { actor: string; proof?: string } | null,
 });
 const displayBinding = new RemoteDisplayBinding();
 let stopRequested = false;
@@ -50,11 +58,21 @@ new PostMan(
         !Number.isFinite(width) || width <= 0 || width > 10 || !Number.isFinite(distance) ||
         distance < .1 || distance > 20
       ) throw Error("Invalid overlay placement");
-      if (!request.code && (!request.url || !request.address)) {
+      if (!request.feed && !request.code && (!request.url || !request.address)) {
         throw Error(
-          "A share code or iroh URL plus address is required",
+          "A feed, a share code, or an iroh URL plus address is required",
         );
       }
+      if (request.feed) {
+        const { host, port, fingerprint } = request.feed;
+        if (
+          typeof host !== "string" || !host || /[\s/\[\]]/.test(host) ||
+          !Number.isInteger(port) || port <= 0 || port > 65535 ||
+          !/^[0-9a-f]{64}$/i.test(fingerprint)
+        ) throw Error("Invalid feed");
+        if (Deno.build.os === "windows") throw Error("The Windows receiver takes share codes only");
+      }
+      state.input = request.input?.actor ? { actor: request.input.actor, proof: request.input.proof } : null;
       state.feedId = request.feedId?.trim().slice(0, 128) || "desktop";
       state.feedName = request.name?.trim().slice(0, 128) || "Remote desktop";
       stopRequested = false;
@@ -113,7 +131,11 @@ async function run(request: RemoteMediaRequest, width: number, distance: number)
     native = new Deno.Command(binary, {
       args: [
         "receive",
-        ...(request.code ? [request.code] : [request.url!, request.address!]),
+        ...(request.feed
+          ? [`https://${request.feed.host}:${request.feed.port}/`, request.feed.fingerprint]
+          : request.code
+          ? [request.code]
+          : [request.url!, request.address!]),
         socket,
       ],
       stdin: "null",
