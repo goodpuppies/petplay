@@ -174,6 +174,11 @@ export const SETTINGS_SCHEMA = {
     label: "Keyboard legend locale; null follows --keyboard-locale / the host layout",
     valid: isLocaleOrNull,
   } satisfies SettingSpec<string | null>,
+  stageforgeNetworking: {
+    default: false as boolean,
+    label: "Enable peer-to-peer networking (iroh + topic server) for VRChat/household sharing (restart to apply)",
+    valid: isBoolean,
+  } satisfies SettingSpec<boolean>,
 };
 
 export type Settings = {

@@ -3,6 +3,7 @@ import { childProcessArgs } from "../classes/childModule.ts";
 import { asyncPrompt, createTemp, destroyTemp, ensuredenodir, wait } from "../classes/utils.ts";
 import { listenForProcessExitRequests } from "../classes/processExitRequest.ts";
 import { watchLogParent } from "../classes/runLog.ts";
+import { loadSettings } from "../classes/settings.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
 import { householdSecret } from "../rdp/classes/household.ts";
@@ -32,14 +33,15 @@ export async function startPetplayServer(
   console.log("Press Ctrl-C to close");
 
   /**
-   * On with the flag or PETPLAY_STAGEFORGE_NETWORKING=1, and by default on a machine with a
-   * household secret (`.secret`): the household's other desktops are found through it
-   * (`petplay/householdDesktops.ts`). PETPLAY_STAGEFORGE_NETWORKING=0 keeps it off.
+   * On with `--stageforge-networking`, `PETPLAY_STAGEFORGE_NETWORKING=1`, the
+   * `stageforgeNetworking` setting in `settings.json`, or by default on a machine with a
+   * household secret (`.secret`). `PETPLAY_STAGEFORGE_NETWORKING=0` forces it off.
    */
   function isStageforgeNetworkingEnabled(): boolean {
     const env = Deno.env.get("PETPLAY_STAGEFORGE_NETWORKING");
     if (Deno.args.includes("--stageforge-networking") || env === "1") return true;
     if (env === "0") return false;
+    if (loadSettings().stageforgeNetworking) return true;
     try {
       return householdSecret() !== null;
     } catch {

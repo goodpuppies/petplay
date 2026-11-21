@@ -350,7 +350,7 @@ function BooleanSettingRow({
 
 function GeneralPage({ showGuides }: { showGuides: boolean }) {
   return (
-    <Grid cols={1} rows={4} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
       <BooleanSettingRow
         row={0}
         title="Controller Lasers"
@@ -374,6 +374,12 @@ function GeneralPage({ showGuides }: { showGuides: boolean }) {
         title="Grab-Box Outlines"
         description="Show wireframe frames around spatial windows"
         setting="grabboxOutline"
+      />
+      <BooleanSettingRow
+        row={4}
+        title="Peer Networking"
+        description="Connect via iroh + topic server for VRChat sharing (restart)"
+        setting="stageforgeNetworking"
       />
     </Grid>
   );
