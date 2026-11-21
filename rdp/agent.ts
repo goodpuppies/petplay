@@ -60,6 +60,15 @@ const source = resolveActorId(await postal.add("./desktopSource.ts", import.meta
 // the primary, or `--monitor`. Input positions arrive already placed on the virtual desktop.
 let monitor: number | undefined;
 if (Deno.build.os === "windows") {
+  // Feeds and input regions are physical pixels. Unaware of DPI, this process would place
+  // input on a scaled virtual desktop, drifting off any monitor not at 100%.
+  const user32 = Deno.dlopen("user32.dll", {
+    SetProcessDpiAwarenessContext: { parameters: ["isize"], result: "i32" },
+  });
+  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+  if (!user32.symbols.SetProcessDpiAwarenessContext(-4n)) {
+    console.error("agent: could not become DPI aware; input may drift on scaled monitors");
+  }
   const monitors = await wgcMonitors();
   const chosen = args.monitor !== undefined
     ? monitors.find((m) => m.index === Number(args.monitor))

@@ -5,7 +5,8 @@
  * joins the household topic and finds the other machines' desktopSources there (the agent,
  * `rdp/agent.ts`, or another machine's rdp app). Each becomes a display output named after its
  * machine; a Windows machine offers each monitor as its own (`DesktopDescription.screens`), keyed
- * `machine:index` and named `machine · DISPLAY2`. Nothing is started until a display shows one: a feed start can ask that machine's
+ * `machine:index` and named after the machine and Windows' monitor number (`DISPLAY2`:
+ * `machine2`). Nothing is started until a display shows one: a feed start can ask that machine's
  * user to share the screen, so it waits for `SHOW`.
  *
  * Shown, a desktop gets a process-isolated `remoteMediaOverlay` on its feed (the pinned
@@ -167,7 +168,10 @@ async function discover(): Promise<void> {
         const key = screen ? `${described.machine}:${screen.index}` : described.machine;
         desktops.set(key, {
           key,
-          name: screen ? `${described.machine} · ${screen.name}` : described.machine,
+          // `DISPLAY2` is Windows' own number for the monitor, as its settings show it.
+          name: screen
+            ? `${described.machine}${screen.name.match(/(\d+)$/)?.[1] ?? screen.index + 1}`
+            : described.machine,
           source: id as ActorId,
           machine: described.machine,
           ...(screen ? { monitor: screen.index } : {}),
@@ -241,6 +245,7 @@ async function keep(desktop: Desktop): Promise<void> {
         ...(feed.code ? { code: feed.code } : { feed }),
         feedId: `household:${desktop.key}`,
         name: desktop.name,
+        forDisplay: true,
       },
     }, true);
   } catch (error) {

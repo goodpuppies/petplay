@@ -16,6 +16,8 @@ export class RemoteDisplayBinding {
   private handle = 0n;
   private syncValue: RemoteDisplaySync | null = null;
   private managed = false;
+  /** A display let go: hidden at once, so it never overlaps the feed that display switched to. */
+  private released = false;
   private ready = false;
   private visible = false;
   private removal: ReturnType<typeof setTimeout> | undefined;
@@ -25,6 +27,11 @@ export class RemoteDisplayBinding {
     this.ready = false;
     this.visible = false;
     this.apply();
+  }
+  /** Show only where a display puts it: no default placement in front of the headset. */
+  awaitDisplay() {
+    this.managed = true;
+    this.updateVisibility();
   }
   detach() {
     if (this.removal) clearTimeout(this.removal);
@@ -48,12 +55,15 @@ export class RemoteDisplayBinding {
     if (this.removal) clearTimeout(this.removal);
     this.removal = undefined;
     this.managed = true;
+    this.released = false;
     this.syncValue = value;
     this.apply();
   }
   remove(id: string) {
     if (this.syncValue?.id !== id) return;
     if (this.removal) clearTimeout(this.removal);
+    this.released = true;
+    this.updateVisibility();
     // Match display host's StrictMode/unmount grace; a replacement sync cancels removal.
     this.removal = setTimeout(() => {
       this.removal = undefined;
@@ -72,7 +82,7 @@ export class RemoteDisplayBinding {
   }
   private updateVisibility() {
     if (!this.overlay || !this.handle) return;
-    const show = this.ready && (!this.managed || this.syncValue !== null);
+    const show = this.ready && !this.released && (!this.managed || this.syncValue !== null);
     if (show === this.visible) return;
     this.ok(
       show ? this.overlay.ShowOverlay(this.handle) : this.overlay.HideOverlay(this.handle),

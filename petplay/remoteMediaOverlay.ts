@@ -18,6 +18,8 @@ export type RemoteMediaRequest = {
   distance?: number;
   feedId?: string;
   name?: string;
+  /** A display shows it: hidden until that display places it (`SYNCVIRTUALDISPLAY`). */
+  forDisplay?: boolean;
 };
 const state = actorState({
   name: "remoteMedia",
@@ -69,6 +71,7 @@ new PostMan(
 
       state.feedId = request.feedId?.trim().slice(0, 128) || "desktop";
       state.feedName = request.name?.trim().slice(0, 128) || "Remote desktop";
+      if (request.forDisplay) displayBinding.awaitDisplay();
       stopRequested = false;
       state.starting = true;
       state.lastError = null;
