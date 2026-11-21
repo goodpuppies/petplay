@@ -12,7 +12,15 @@
  */
 import { fromFileUrl } from "@std/path";
 
-export type MediaFeedInfo = { port: number; fingerprint: string; width?: number; height?: number };
+export type MediaFeedInfo = {
+  port: number;
+  fingerprint: string;
+  width?: number;
+  height?: number;
+  /** With `share`: the iroh share code, reachable across the internet (and the Windows receiver's
+   * only way in). */
+  code?: string;
+};
 
 export type DesktopMediaOptions = {
   /** Where browsers reach the worker: loopback, or this machine's tailnet address. */
@@ -22,9 +30,13 @@ export type DesktopMediaOptions = {
   bitrate?: number;
   /** Reuse this private directory (and so the socket path) from a previous worker. */
   directory?: string;
+  /** Also announce an iroh share code (`--iroh-share`), for receivers off the LAN or tailnet. */
+  share?: boolean;
 };
 
 const READY_TIMEOUT_MS = 10_000;
+/** A share code waits for a relay connection and a direct address, up to 15 s by itself. */
+const SHARE_READY_TIMEOUT_MS = 25_000;
 
 export class DesktopMediaFeed {
   private constructor(
@@ -66,6 +78,7 @@ export class DesktopMediaFeed {
         // Whatever the producer sends, the GPU encodes at most the feed's rate.
         "--max-fps",
         String(options.fps ?? 30),
+        ...(options.share ? ["--iroh-share"] : []),
       ],
       stdout: "piped",
       stderr: "piped",
@@ -77,13 +90,18 @@ export class DesktopMediaFeed {
     };
     const drained = [drainLines(child.stderr, keep)];
     try {
+      let code: string | null = null;
       const fingerprint = await new Promise<string>((resolve, reject) => {
         let fingerprint: string | null = null;
-        const timer = setTimeout(() => reject(Error(`petplay-media not ready: ${log.at(-1) ?? "no output"}`)), READY_TIMEOUT_MS);
+        const timer = setTimeout(
+          () => reject(Error(`petplay-media not ready: ${log.at(-1) ?? "no output"}`)),
+          options.share ? SHARE_READY_TIMEOUT_MS : READY_TIMEOUT_MS,
+        );
         drained.push(drainLines(child.stdout, (line) => {
           keep(line);
+          code ??= line.match(/^IROH_SHARE code=(\S+)/)?.[1] ?? null;
           fingerprint ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
-          if (line.startsWith("MEDIA_READY") && fingerprint) {
+          if (line.startsWith("MEDIA_READY") && fingerprint && (code || !options.share)) {
             clearTimeout(timer);
             resolve(fingerprint);
           }
@@ -95,7 +113,13 @@ export class DesktopMediaFeed {
           reject(Error(`petplay-media exited (${status.code}): ${log.at(-1) ?? ""}`));
         });
       });
-      return new DesktopMediaFeed(socketPath, { port: options.port, fingerprint }, child, directory, log);
+      return new DesktopMediaFeed(
+        socketPath,
+        { port: options.port, fingerprint, ...(code ? { code } : {}) },
+        child,
+        directory,
+        log,
+      );
     } catch (error) {
       try {
         child.kill("SIGTERM");

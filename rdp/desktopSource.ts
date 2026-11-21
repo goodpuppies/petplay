@@ -302,6 +302,9 @@ async function startEncoder(
       fps: request.fps,
       bitrate: request.bitrate,
       directory,
+      // A household feed also gets a share code: the Windows receiver takes nothing else, and
+      // it reaches past NATs and firewalls.
+      share: guard.active,
     });
   const started: Running = {
     encoder,
@@ -310,7 +313,7 @@ async function startEncoder(
       host: request.host,
       port: encoder.info.port,
       fingerprint: encoder.info.fingerprint,
-      ...("code" in encoder.info ? { code: encoder.info.code } : {}),
+      ...(encoder.info.code ? { code: encoder.info.code } : {}),
     },
   };
   running.set(monitor, started);
