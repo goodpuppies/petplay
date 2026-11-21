@@ -31,6 +31,15 @@ export function resetPlayspace(): boolean {
   return true;
 }
 
+/**
+ * Re-anchor {@link playspaceFrame} to SteamVR's current standing zero pose after a tracking
+ * universe change (e.g. SteamLink reconnect). Ignored during or right after a SpaceDrag commit.
+ */
+export function reanchorPlayspaceFrame(): boolean {
+  if (!activeMover) return false;
+  return activeMover.reanchor();
+}
+
 type Drag = {
   /** Live standing zero pose at the click (column-major). */
   start: Float32Array;
@@ -52,6 +61,7 @@ export class PlayspaceMover {
   private readonly boundsXform = new Float32Array(16);
   private readonly inverse = new Float32Array(16);
   private drag: Drag | null = null;
+  private lastCommittedAt = 0;
 
   /** `null` when the runtime has no chaperone interface or no standing zero pose. */
   static tryCreate(pointer: number | bigint | null | undefined): PlayspaceMover | null {
@@ -127,6 +137,23 @@ export class PlayspaceMover {
     LogChannel.log("webxrv2", "[space move] reset");
   }
 
+  /** Re-anchor to the live standing zero pose unless this mover is actively dragging. */
+  reanchor(): boolean {
+    if (this.drag != null || Date.now() - this.lastCommittedAt < 1500) {
+      return false;
+    }
+    const anchor = this.readZeroPose();
+    if (!anchor) return false;
+    playspaceFrame.setAnchor(anchor);
+    LogChannel.log(
+      "webxrv2",
+      `[space move] re-anchored at standing zero (${anchor[12].toFixed(3)}, ${
+        anchor[13].toFixed(3)
+      }, ${anchor[14].toFixed(3)})`,
+    );
+    return true;
+  }
+
   /** Stop using the chaperone; PetPlay falls back to Standing. */
   dispose(): void {
     this.drag = null;
@@ -151,6 +178,7 @@ export class PlayspaceMover {
       );
     }
     this.setup.CommitWorkingCopy(OpenVR.ChaperoneConfigFile.EChaperoneConfigFile_Live);
+    this.lastCommittedAt = Date.now();
     playspaceFrame.setStandingZeroPose(zero);
   }
 

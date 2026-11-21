@@ -41,6 +41,7 @@ import { getDisplayMouseDiagnostics } from "../classes/environment/displayInstan
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { OpenVrProjectionOverlays } from "../classes/openVrProjectionOverlays.ts";
 import { playspaceFrame } from "../classes/playspaceFrame.ts";
+import { reanchorPlayspaceFrame } from "../classes/playspaceMover.ts";
 import { setLaserControllerModel } from "../classes/environment/laserOffset.ts";
 import { closeRaylibAudio } from "../classes/environment/raylibAudioContext.ts";
 import type { CompositorFrameTiming } from "../classes/openVrOverlayFramePacing.ts";
@@ -1359,33 +1360,40 @@ function dropRaylibOverlayForRecreate(reason: string): void {
 }
 
 let lastWatchedHmdConnected: boolean | null = null;
+let lastDisplayRebuildAt = 0;
+const DISPLAY_REBUILD_COOLDOWN_MS = 1000;
 
 function handleOpenVrDisplayChanged(reason: string, rebuildOverlay: boolean): {
   reason: string;
   eyeGeometryApplied: boolean;
+  reanchoredPlayspace: boolean;
   rebuiltOverlay: boolean;
 } {
   const eyeGeometryApplied = applyOpenVrEyeGeometry();
   if (state.nativeRaylibVrSystem) {
     applyHeadsetEyeSize(state.nativeRaylibVrSystem);
   }
+  const reanchoredPlayspace = rebuildOverlay ? reanchorPlayspaceFrame() : false;
   let rebuiltOverlay = false;
-  if (rebuildOverlay && state.overlayRunning) {
+  const now = Date.now();
+  if (rebuildOverlay && state.overlayRunning && now - lastDisplayRebuildAt >= DISPLAY_REBUILD_COOLDOWN_MS) {
+    lastDisplayRebuildAt = now;
     presentationWatch.repairs += 1;
     presentationWatch.overlayRebuilds += 1;
     presentationWatch.lastRepairReason = `display-changed: ${reason}`;
-    presentationWatch.lastRepairAt = Date.now();
+    presentationWatch.lastRepairAt = now;
     // Reset cached controller indices so SteamLink reconnect re-binds the active hands.
     state.nativeRaylibLeftControllerIndex = -1;
     state.nativeRaylibRightControllerIndex = -1;
     dropRaylibOverlayForRecreate(reason);
+    state.raylibOverlayRaylib?.invalidateRenderTargets();
     rebuiltOverlay = true;
     LogChannel.log(
       "webxrv2",
-      `[webxr] auto-repaired overlay + eye geometry after ${reason}`,
+      `[webxr] auto-repaired overlay + eye geometry + playspace (reanchored=${reanchoredPlayspace}) after ${reason}`,
     );
   }
-  return { reason, eyeGeometryApplied, rebuiltOverlay };
+  return { reason, eyeGeometryApplied, reanchoredPlayspace, rebuiltOverlay };
 }
 
 /**
