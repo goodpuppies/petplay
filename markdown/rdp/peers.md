@@ -70,8 +70,13 @@ The topic only gets two processes talking. Access is decided over iroh:
 ## Order
 
 1. `.secret`, the agent, input over the actor route, and node-bound proofs (replacing the plain secret in
-   the `rdp.ui` offer). Test as two local processes, then on cachyos.
-2. The rdp app lists several desktops: a picker in the toolbar.
+   the `rdp.ui` offer). Test as two local processes, then on cachyos. (Done 2026-11-20 except
+   the node binding: proofs name the recipient actor, not its iroh node. The agent runs on
+   cachyos from `deno task rdp:agent:build`; video and input work from the rdp page. Firefox
+   on Linux still freezes at times on GNOME's damage-only stream:
+   `markdown/issues/remote-desktop-stream-freezes-in-firefox-linux/`.)
+2. The rdp app lists several desktops: a picker in the toolbar. (Done 2026-11-20. Machines
+   that leave drop off; a restarted agent replaces its old entry.)
 3. `desktopSource` offers an iroh feed. PetPlay shows a found desktop through
    `remoteMediaOverlay`, with input through the same `desktopInput`.
 4. Two users: a password, the grant prompts in VR, and an active-share indicator.
