@@ -2,8 +2,8 @@
  * The household's other desktops, as VR display outputs.
  *
  * With a household secret on this machine (`.secret`, `rdp/classes/household.ts`), this actor
- * joins the household topic and finds the other machines' desktopSources there (the agent,
- * `rdp/agent.ts`, or another machine's rdp app). Each becomes a display output named after its
+ * joins the household topic and finds the other machines' desktops there: a PetPlay sharing its
+ * displays (`displayShare.ts`), the agent (`rdp/agent.ts`), or another machine's rdp app. Each becomes a display output named after its
  * machine; a Windows machine offers each monitor as its own (`DesktopDescription.screens`), keyed
  * `machine:index` and named after the machine and Windows' monitor number (`DISPLAY2`:
  * `machine2`). Nothing is started until a display shows one: a feed start can ask that machine's
@@ -269,7 +269,8 @@ async function discover(): Promise<void> {
   }
   const now = Date.now();
   const fresh = [...known].filter((id) =>
-    id.startsWith("desktopSource@") && (quiet.get(id)?.until ?? 0) <= now &&
+    (id.startsWith("desktopSource@") || id.startsWith("displayShare@")) &&
+    (quiet.get(id)?.until ?? 0) <= now &&
     ![...desktops.values()].some((d) => d.source === id)
   );
   // At once: a source gone without leaving the address book must not hold up the others.

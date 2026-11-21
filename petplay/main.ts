@@ -959,6 +959,15 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
   try {
   // Other household machines' desktops, as display outputs (needs `.secret` and networking).
   await PostMan.create("./householdDesktops.ts", import.meta.url);
+  // `--share-all-displays`: offer this machine's displays to others on the share topic.
+  if (isEnabledArg("--share-all-displays")) {
+    const share = await PostMan.create("./displayShare.ts", import.meta.url);
+    await PostMan.PostMessage({
+      target: share,
+      type: "SHARE",
+      payload: { source: actors.desktopSource, input: actors.desktopInput },
+    }, true).catch((error) => console.error(`[displayShare] ${error}`));
+  }
     // The control-plane session is running without OpenVR; restart it with the
     // runtime so the overlay, pacer and IVRInput sampling come up.
     await callActor(actors.webxr, "STOPWEBXR", OPENVR_CALL_TIMEOUT_MS * 2).catch((error) => {

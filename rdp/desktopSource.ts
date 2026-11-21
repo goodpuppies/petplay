@@ -60,6 +60,8 @@ export type SourceRequest = {
   bitrate?: number;
   /** Windows: the monitor to capture (`capture-wgc --list` index). */
   monitor?: number;
+  /** Also announce an iroh share code (Linux; Windows feeds always do). */
+  share?: boolean;
 };
 
 /**
@@ -125,20 +127,21 @@ let audioStarting: Promise<FeedInfo> | null = null;
 /** Ports above the monitors' feeds. */
 const AUDIO_PORT_OFFSET = 100;
 
-function startAudio(): Promise<FeedInfo | null> {
+function startAudio(where?: { host?: string; port?: number } | null): Promise<FeedInfo | null> {
   if (Deno.build.os !== "windows") return Promise.resolve(null);
   if (audio) return Promise.resolve(audio.info);
   if (audioStarting) return audioStarting;
-  const defaults = feedDefaults;
+  const defaults = where?.host && Number.isInteger(where.port) ? where : feedDefaults;
   if (!defaults || typeof defaults.host !== "string" || !Number.isInteger(defaults.port)) {
     return Promise.reject(new Error("AUDIO needs CONFIGURE first"));
   }
-  const port = defaults.port + AUDIO_PORT_OFFSET;
+  const host = defaults.host as string;
+  const port = (defaults.port as number) + AUDIO_PORT_OFFSET;
   audioStarting = (async () => {
-    const encoder = await WgcMediaFeed.audio({ host: defaults.host, port });
+    const encoder = await WgcMediaFeed.audio({ host, port });
     const started = {
       encoder,
-      info: { host: defaults.host, port, fingerprint: encoder.info.fingerprint, code: encoder.info.code },
+      info: { host, port, fingerprint: encoder.info.fingerprint, code: encoder.info.code },
     };
     audio = started;
     // An exit leaves no feed; the next AUDIO starts another.
@@ -304,7 +307,7 @@ async function startEncoder(
       directory,
       // A household feed also gets a share code: the Windows receiver takes nothing else, and
       // it reaches past NATs and firewalls.
-      share: guard.active,
+      share: request.share || guard.active,
     });
   const started: Running = {
     encoder,
@@ -472,12 +475,23 @@ new PostMan(
     }),
     /** Start the encoder feed; returns where receivers reach it. */
     START: refuseWhenGuarded(guard, (payload?: Partial<SourceRequest>) => startFeed(payload)),
-    FEED: refuseWhenGuarded(guard, (): FeedInfo | null => state.feed),
+    FEED: refuseWhenGuarded(
+      guard,
+      (payload?: { monitor?: number } | null): FeedInfo | null =>
+        running.get(monitorOf(payload))?.info ?? null,
+    ),
+    /** The machine's sound (Windows): start it if needed, at `{host, port}` + 100 or CONFIGURE's. */
+    AUDIO: refuseWhenGuarded(guard, (payload?: { host?: string; port?: number } | null) =>
+      startAudio(payload)),
+    STOPAUDIO: refuseWhenGuarded(guard, async () => {
+      await stopAudio();
+      return true;
+    }),
     /** The monitors, as crops of the capture: KDE, Windows, or GNOME (hardcoded for now). */
     LAYOUT: refuseWhenGuarded(guard, (): Promise<WorkspaceOutput[]> => loadWorkspaceOutputs()),
-    /** Stop the encoder feed; frame sinks keep capturing. */
-    STOP: refuseWhenGuarded(guard, async () => {
-      await stopFeed();
+    /** Stop a monitor's feed (`{monitor}`), or every feed; frame sinks keep capturing. */
+    STOP: refuseWhenGuarded(guard, async (payload?: { monitor?: number } | null) => {
+      await stopFeed(Number.isInteger(payload?.monitor) ? payload!.monitor : undefined);
       return true;
     }),
     __SHUTDOWN__: async () => {
