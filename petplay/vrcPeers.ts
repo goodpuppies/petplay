@@ -85,11 +85,27 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let currentTopic: string | null = null;
 let topicGeneration = 0;
 let webxrActor: ActorId | null = null;
+let displayShareActor: ActorId | null = null;
+let householdDesktopsActor: ActorId | null = null;
+
+type ShareOffer = {
+  from: ActorId;
+  vrcUserId: string;
+  displayName: string;
+  shareActor: ActorId;
+  token: string;
+};
 
 /** Verified peers discovered on the current instance topic, keyed by their remote actor id. */
 const peers = new Map<ActorId, VrcPeerInfo>();
 /** Contacts currently being handshaken, to avoid duplicate parallel challenges. */
 const handshaking = new Set<ActorId>();
+/** Remote `vrcPeers` actor ids we have already sent our `SHAREOFFER` to in this instance. */
+const grantedTo = new Set<ActorId>();
+/** `SHAREOFFER`s received from remote peers, keyed by their `vrcPeers` actor id. */
+const receivedOffers = new Map<ActorId, ShareOffer>();
+/** Remote `displayShare` actors currently registered with our local `householdDesktops`. */
+const activeSources = new Map<ActorId, ActorId>();
 
 function pushPeersToWebXr(): void {
   if (!webxrActor) return;
@@ -98,6 +114,104 @@ function pushPeersToWebXr(): void {
     type: "VRCPEERSUPDATE",
     payload: { peers: [...peers.values()] },
   });
+}
+
+async function grantPeerSharing(peer: VrcPeerInfo): Promise<void> {
+  if (!displayShareActor || !state.self || grantedTo.has(peer.actorId)) return;
+  if (peer.actorId.startsWith("vrcPeers@sim-")) return;
+  grantedTo.add(peer.actorId);
+  try {
+    const grant = await PostMan.PostMessage({
+      target: displayShareActor,
+      type: "GRANTPEER",
+      payload: { peerKey: peer.vrcUserId },
+    }, true) as { shareActor: ActorId; token: string };
+    // Re-check trust after async hop.
+    const current = peers.get(peer.actorId);
+    if (!current || current.trust !== "trusted") {
+      grantedTo.delete(peer.actorId);
+      PostMan.PostMessage({
+        target: displayShareActor,
+        type: "REVOKEPEER",
+        payload: { peerKey: peer.vrcUserId },
+      });
+      return;
+    }
+    PostMan.PostMessage({
+      target: peer.actorId,
+      type: "SHAREOFFER",
+      payload: {
+        from: state.id,
+        vrcUserId: state.self.userId,
+        displayName: state.self.displayName,
+        shareActor: grant.shareActor,
+        token: grant.token,
+      } satisfies ShareOffer,
+    });
+  } catch (error) {
+    grantedTo.delete(peer.actorId);
+    console.warn(`[vrcPeers] GRANTPEER failed for ${peer.vrcUserId}:`, error);
+  }
+}
+
+function revokePeerSharing(peerActorId: ActorId, vrcUserId?: string): void {
+  if (grantedTo.delete(peerActorId) && displayShareActor && vrcUserId) {
+    PostMan.PostMessage({
+      target: displayShareActor,
+      type: "REVOKEPEER",
+      payload: { peerKey: vrcUserId },
+    });
+  }
+  const sourceActor = activeSources.get(peerActorId);
+  if (sourceActor) {
+    activeSources.delete(peerActorId);
+    if (householdDesktopsActor) {
+      PostMan.PostMessage({
+        target: householdDesktopsActor,
+        type: "REMOVEPEERSOURCE",
+        payload: { source: sourceActor },
+      });
+    }
+  }
+}
+
+function syncSharingForPeer(peer: VrcPeerInfo): void {
+  if (peer.trust === "trusted" && peer.inInstance) {
+    void grantPeerSharing(peer);
+    const offer = receivedOffers.get(peer.actorId);
+    if (offer && householdDesktopsActor && activeSources.get(peer.actorId) !== offer.shareActor) {
+      activeSources.set(peer.actorId, offer.shareActor);
+      PostMan.PostMessage({
+        target: householdDesktopsActor,
+        type: "ADDPEERSOURCE",
+        payload: {
+          source: offer.shareActor,
+          proof: offer.token,
+          label: peer.displayName,
+        },
+      });
+    }
+  } else {
+    revokePeerSharing(peer.actorId, peer.vrcUserId);
+  }
+}
+
+function clearAllPeerSharing(): void {
+  for (const [peerActorId, peer] of peers.entries()) {
+    revokePeerSharing(peerActorId, peer.vrcUserId);
+  }
+  for (const sourceActor of activeSources.values()) {
+    if (householdDesktopsActor) {
+      PostMan.PostMessage({
+        target: householdDesktopsActor,
+        type: "REMOVEPEERSOURCE",
+        payload: { source: sourceActor },
+      });
+    }
+  }
+  grantedTo.clear();
+  receivedOffers.clear();
+  activeSources.clear();
 }
 
 async function ensureInitialized(): Promise<{ identity: LocalIdentity; trustStore: VrcTrustStore }> {
@@ -139,6 +253,7 @@ function reevaluatePeers(): void {
     if (peer.trust === "trusted") {
       trustStore.touch(peer.vrcUserId, peer.displayName);
     }
+    syncSharingForPeer(peer);
   }
   syncCounts();
 }
@@ -149,6 +264,7 @@ async function switchInstanceTopic(instanceId: string | null): Promise<void> {
   if (gen !== topicGeneration) return;
   if (nextTopic === currentTopic) return;
 
+  clearAllPeerSharing();
   if (currentTopic) {
     PostMan.delTopic(currentTopic);
   }
@@ -158,6 +274,13 @@ async function switchInstanceTopic(instanceId: string | null): Promise<void> {
   state.instanceTopic = nextTopic;
   syncCounts();
 
+  if (displayShareActor) {
+    PostMan.PostMessage({
+      target: displayShareActor,
+      type: "SETINSTANCETOPIC",
+      payload: { topic: nextTopic },
+    });
+  }
   if (nextTopic) {
     PostMan.setTopic(nextTopic);
   }
@@ -241,7 +364,7 @@ async function handshakePeer(remoteActorId: ActorId): Promise<void> {
       store.touch(reply.vrcUserId, reply.displayName);
     }
 
-    peers.set(remoteActorId, {
+    const peerInfo: VrcPeerInfo = {
       actorId: remoteActorId,
       vrcUserId: reply.vrcUserId,
       displayName: reply.displayName || reply.vrcUserId,
@@ -251,7 +374,9 @@ async function handshakePeer(remoteActorId: ActorId): Promise<void> {
       trust,
       pinnedFingerprint,
       verifiedAt: new Date().toISOString(),
-    });
+    };
+    peers.set(remoteActorId, peerInfo);
+    syncSharingForPeer(peerInfo);
     syncCounts();
   } catch (error) {
     console.warn(`[vrcPeers] handshake with ${remoteActorId} failed:`, error);
@@ -285,6 +410,14 @@ export const api = {
       clearInterval(pollTimer);
       pollTimer = null;
     }
+    clearAllPeerSharing();
+    if (displayShareActor) {
+      PostMan.PostMessage({
+        target: displayShareActor,
+        type: "SETINSTANCETOPIC",
+        payload: { topic: null },
+      });
+    }
     if (currentTopic) {
       PostMan.delTopic(currentTopic);
       currentTopic = null;
@@ -300,6 +433,38 @@ export const api = {
     webxrActor = actorId;
     pushPeersToWebXr();
     return { webxrActor };
+  },
+  ASSIGNSHARING: (payload: {
+    displayShare?: ActorId | null;
+    householdDesktops?: ActorId | null;
+  } | null) => {
+    if (payload && "displayShare" in payload) {
+      displayShareActor = payload.displayShare ?? null;
+      if (displayShareActor && currentTopic) {
+        PostMan.PostMessage({
+          target: displayShareActor,
+          type: "SETINSTANCETOPIC",
+          payload: { topic: currentTopic },
+        });
+      }
+    }
+    if (payload && "householdDesktops" in payload) {
+      householdDesktopsActor = payload.householdDesktops ?? null;
+    }
+    for (const peer of peers.values()) syncSharingForPeer(peer);
+    return { displayShareActor, householdDesktopsActor };
+  },
+  SHAREOFFER: (offer: ShareOffer | null) => {
+    if (
+      !offer || typeof offer.from !== "string" || typeof offer.shareActor !== "string" ||
+      typeof offer.token !== "string" || !offer.token
+    ) {
+      return false;
+    }
+    receivedOffers.set(offer.from, offer);
+    const peer = peers.get(offer.from);
+    if (peer) syncSharingForPeer(peer);
+    return true;
   },
   SIMULATEPEER: async (
     payload: { displayName?: string; userId?: string; mismatch?: boolean } | null,
@@ -440,7 +605,11 @@ export const api = {
   },
   REMOVECONTACT: (contactId: ActorId) => {
     state.addressBook.delete(contactId);
-    if (peers.delete(contactId)) {
+    const departed = peers.get(contactId);
+    receivedOffers.delete(contactId);
+    if (departed) {
+      revokePeerSharing(contactId, departed.vrcUserId);
+      peers.delete(contactId);
       syncCounts();
     }
   },

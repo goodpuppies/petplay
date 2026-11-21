@@ -103,6 +103,8 @@ const state = actorState({
 let secret: string | null = null;
 const desktops = new Map<string, Desktop>();
 const sounds = new Map<string, Sound>();
+/** Trusted peer displayShare sources added by `vrcPeers` (`sourceActorId -> {proof, label}`). */
+const peerSources = new Map<string, { proof: string; label?: string }>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let polling = false;
 let discovering = false;
@@ -126,6 +128,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
   ]).finally(() => clearTimeout(handle));
 }
 
+async function proofFor(target: ActorId): Promise<string> {
+  const peer = peerSources.get(String(target));
+  if (peer) return peer.proof;
+  if (!secret) throw new Error(`no proof for ${target}`);
+  return await householdProof(secret, target);
+}
+
 async function request<T>(
   target: ActorId,
   type: string,
@@ -136,7 +145,7 @@ async function request<T>(
     PostMan.PostMessage({
       target,
       type: "GUARDED",
-      payload: { proof: await householdProof(secret!, target), type, payload },
+      payload: { proof: await proofFor(target), type, payload },
     }, true) as Promise<T>,
     ms,
     `${type} on ${target}`,
@@ -265,9 +274,10 @@ const described = new Map<string, number>();
 /** A sharer's shared screens change as its displays are toggled. */
 const RESCAN_MS = 5000;
 
-/** Other machines' desktops on the topic: sharers (displayShare) and desktopSources. */
+/** Other machines' desktops on the topic (and trusted VRChat peer sources). */
 async function discover(): Promise<void> {
   const known = new Set([...state.addressBook].map(String));
+  for (const id of peerSources.keys()) known.add(id);
   for (const [key, desktop] of desktops) if (!known.has(desktop.source)) forget(key);
   for (const [machine, sound] of sounds) {
     if (known.has(sound.source)) continue;
@@ -277,10 +287,14 @@ async function discover(): Promise<void> {
   for (const id of described.keys()) if (!known.has(id)) described.delete(id);
   const now = Date.now();
   const due = [...known].filter((id) => {
-    if (!id.startsWith("desktopSource@") && !id.startsWith("displayShare@")) return false;
+    const isPeer = peerSources.has(id);
+    if (!isPeer && !id.startsWith("desktopSource@") && !id.startsWith("displayShare@")) {
+      return false;
+    }
     if ((quiet.get(id)?.until ?? 0) > now) return false;
     const at = described.get(id);
-    return at === undefined || (id.startsWith("displayShare@") && now - at >= RESCAN_MS);
+    return at === undefined ||
+      ((isPeer || id.startsWith("displayShare@")) && now - at >= RESCAN_MS);
   });
   // At once: a source gone without leaving the address book must not hold up the others.
   await Promise.all(due.map(async (id) => {
@@ -303,9 +317,10 @@ async function discover(): Promise<void> {
 
 /** Bring the desktops (and sound) offered by `id` in line with its description. */
 function apply(id: ActorId, description: DesktopDescription): void {
-  const machine = description.machine;
+  const peer = peerSources.get(String(id));
+  const machine = peer?.label ?? description.machine;
   // This machine's own desktop (an rdp app here) is the local one, not a remote output.
-  if (machine === Deno.hostname()) {
+  if (!peer && machine === Deno.hostname()) {
     quiet.set(id, { until: Infinity, wait: Infinity });
     return;
   }
@@ -515,19 +530,54 @@ function outputs(): WorkspaceOutput[] {
   });
 }
 
+function ensurePolling(): void {
+  if (timer) return;
+  state.enabled = true;
+  timer = setInterval(() => void poll(), POLL_MS);
+}
+
 new PostMan(
   state,
   {
     __INIT__: async () => {
       secret = householdSecret();
       if (!secret) return;
-      state.enabled = true;
       state.topic = await householdTopic(secret);
       PostMan.setTopic(state.topic);
-      timer = setInterval(() => void poll(), POLL_MS);
+      ensurePolling();
       void poll();
     },
-    __HEALTH__: () => ({ ...state }),
+    __HEALTH__: () => ({ ...state, peerSources: peerSources.size }),
+    /** Register a trusted VRChat peer's displayShare actor + capability token. */
+    ADDPEERSOURCE: (payload: { source: ActorId; proof: string; label?: string }) => {
+      if (!payload?.source || !payload?.proof) return false;
+      const key = String(payload.source);
+      peerSources.set(key, { proof: payload.proof, label: payload.label });
+      quiet.delete(key);
+      described.delete(key);
+      ensurePolling();
+      void rediscover();
+      return true;
+    },
+    /** Remove a VRChat peer's displayShare actor (peer left or was untrusted). */
+    REMOVEPEERSOURCE: (payload: { source: ActorId }) => {
+      if (!payload?.source) return false;
+      const key = String(payload.source);
+      const existed = peerSources.delete(key);
+      described.delete(key);
+      quiet.delete(key);
+      for (const [dKey, desktop] of desktops) {
+        if (desktop.source === payload.source) forget(dKey);
+      }
+      for (const [machine, sound] of sounds) {
+        if (sound.source === payload.source) {
+          stopSound(sound);
+          sounds.delete(machine);
+        }
+      }
+      summarize();
+      return existed;
+    },
     LIST: () => outputs(),
     /** A display (spatial node id) shows this desktop. */
     SHOW: (payload: { desktop: string; display: string }) => {
@@ -555,10 +605,12 @@ new PostMan(
      */
     INPUTTARGET: async (payload: { desktop: string }) => {
       const desktop = desktops.get(payload?.desktop);
-      if (!desktop?.input || !desktop.inputAllowed || !secret) return null;
+      if (!desktop?.input || !desktop.inputAllowed) return null;
+      const peer = peerSources.get(String(desktop.source));
+      if (!peer && !secret) return null;
       return {
         actor: desktop.input,
-        proof: await householdProof(secret, desktop.input),
+        proof: peer ? peer.proof : await householdProof(secret!, desktop.input),
         ...(desktop.region ? { region: desktop.region } : {}),
       };
     },

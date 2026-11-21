@@ -13,7 +13,6 @@ import { startWebXrAutoReload } from "../classes/webxrAutoReload.ts";
 import { requestProcessExit } from "../classes/processExitRequest.ts";
 import { getSetting, loadSettings } from "../classes/settings.ts";
 import { OPENVR_REATTACH_ARG } from "../classes/steamVrProcess.ts";
-import { householdSecret } from "../rdp/classes/household.ts";
 
 const state = actorState({
   name: "main",
@@ -958,21 +957,27 @@ async function createSupervisedScene() {
   if (desktopControlEnabled) {
     await startDesktopView();
   }
-  // Other household machines' desktops, as display outputs (needs `.secret` and networking).
-  await PostMan.create("./householdDesktops.ts", import.meta.url);
-  // This machine's displays for others on the share topic: the ones a display's Share action
-  // picks, or all with `--share-all-displays`. Needs a share key (`.secret`) and networking.
-  if (householdSecret()) {
-    const share = await PostMan.create("./displayShare.ts", import.meta.url);
-    await PostMan.PostMessage({
-      target: share,
-      type: "SETUP",
-      payload: { source: actors.desktopSource, input: actors.desktopInput },
-    }, true).catch((error) => console.error(`[displayShare] ${error}`));
-    if (isEnabledArg("--share-all-displays")) {
-      PostMan.PostMessage({ target: share, type: "SHAREALL", payload: null });
-    }
+  // Other household machines' and trusted VRChat peers' desktops, as display outputs.
+  const householdDesktops = await PostMan.create("./householdDesktops.ts", import.meta.url);
+  // This machine's displays for others (household `.secret` if present, and trusted VRChat peers):
+  // the ones a display's Share action picks, or all with `--share-all-displays`.
+  const share = await PostMan.create("./displayShare.ts", import.meta.url);
+  await PostMan.PostMessage({
+    target: share,
+    type: "SETUP",
+    payload: { source: actors.desktopSource, input: actors.desktopInput },
+  }, true).catch((error) => console.error(`[displayShare] ${error}`));
+  if (isEnabledArg("--share-all-displays")) {
+    PostMan.PostMessage({ target: share, type: "SHAREALL", payload: null });
   }
+  PostMan.PostMessage({
+    target: vrcPeers,
+    type: "ASSIGNSHARING",
+    payload: {
+      displayShare: resolveActorId(share),
+      householdDesktops: resolveActorId(householdDesktops),
+    },
+  });
 
   supervisedActors = actors;
   supervisor.running = true;

@@ -41,6 +41,7 @@ const state = actorState({
   name: "displayShare",
   sharing: false,
   topic: null as string | null,
+  instanceTopic: null as string | null,
   source: null as string | null,
   input: null as string | null,
   /** Everything, with input (`--share-all-displays`); otherwise `shared`. */
@@ -53,6 +54,32 @@ const state = actorState({
 });
 
 const guard = new HouseholdGuard();
+/** Per-peer capability tokens granted to trusted VRChat peers (`vrcUserId -> token`). */
+const peerTokens = new Map<string, string>();
+let peerRejected = 0;
+
+function sameToken(a: unknown, b: string): boolean {
+  if (typeof a !== "string" || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < b.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function hasValidPeerToken(proof: unknown): boolean {
+  if (typeof proof !== "string" || proof.length === 0) return false;
+  for (const token of peerTokens.values()) {
+    if (sameToken(proof, token)) return true;
+  }
+  return false;
+}
+
+function randomToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
 
 function call<T>(target: string, type: string, payload: unknown = null): Promise<T> {
   let handle: ReturnType<typeof setTimeout> | undefined;
@@ -137,23 +164,101 @@ function source(): string {
   return state.source;
 }
 
+const guardedHandlers: Record<string, (payload: unknown) => unknown> = {
+  DESCRIBE: () => describe(),
+  START: (payload) => {
+    const monitor = (payload as { monitor?: number } | null)?.monitor;
+    if (!allowedMonitor(monitor ?? screens?.find((s) => s.primary)?.index ?? 0)) {
+      throw new Error("that display is not shared");
+    }
+    return call(source(), "START", {
+      ...(payload as Partial<SourceRequest> | null),
+      host: "127.0.0.1",
+      port: MEDIA_PORT,
+      share: true,
+    });
+  },
+  FEED: (payload) =>
+    allowedMonitor((payload as { monitor?: number } | null)?.monitor ?? 0)
+      ? call(source(), "FEED", payload)
+      : null,
+  STOP: (payload) => call(source(), "STOP", payload),
+  AUDIO: () =>
+    state.all || state.shared.length > 0
+      ? call(source(), "AUDIO", { host: "127.0.0.1", port: MEDIA_PORT })
+      : null,
+  STOPAUDIO: () => call(source(), "STOPAUDIO"),
+  INPUT: (event) => {
+    if (!state.input) return false;
+    if (!inputAllowed(event as InputEvent)) {
+      state.refusedInputs++;
+      return false;
+    }
+    state.inputs++;
+    PostMan.PostMessage({ target: state.input as ActorId, type: "INPUT", payload: event });
+    return true;
+  },
+};
+
+const householdGuarded = guardedDispatch(guard, guardedHandlers);
+
 new PostMan(
   state,
   {
     __INIT__: () => {},
-    __HEALTH__: () => ({ ...state, rejected: guard.rejected }),
-    /** Join the share topic, offering this machine's desktopSource and desktopInput. */
+    __HEALTH__: () => ({
+      ...state,
+      rejected: guard.rejected + peerRejected,
+      peerGrants: peerTokens.size,
+    }),
+    /**
+     * Configure this machine's desktopSource and desktopInput. If a household `.secret` exists,
+     * also joins the household topic; otherwise serves only per-peer grants from `vrcPeers`.
+     */
     SETUP: async (payload: { source: string; input: string }) => {
       if (state.sharing) return true;
-      const secret = householdSecret();
-      if (!secret) throw new Error("no share key: put one (16+ characters) in .secret");
       state.source = payload.source;
       state.input = payload.input;
-      await guard.enable(secret, state.id);
-      state.topic = await householdTopic(secret);
-      PostMan.setTopic(state.topic);
+      const secret = householdSecret();
+      if (secret) {
+        await guard.enable(secret, state.id);
+        state.topic = await householdTopic(secret);
+        PostMan.setTopic(state.topic);
+        console.log(`[displayShare] on the household share topic`);
+      } else {
+        console.log(`[displayShare] ready for peer grants (no household .secret)`);
+      }
       state.sharing = true;
-      console.log(`[displayShare] on the share topic`);
+      return true;
+    },
+    /** Grant a trusted peer (e.g. VRChat `usr_...`) a revocable capability token. */
+    GRANTPEER: (payload: { peerKey: string }) => {
+      const peerKey = payload?.peerKey;
+      if (typeof peerKey !== "string" || !peerKey) {
+        throw new Error("GRANTPEER requires peerKey");
+      }
+      let token = peerTokens.get(peerKey);
+      if (!token) {
+        token = randomToken();
+        peerTokens.set(peerKey, token);
+      }
+      return { shareActor: state.id, token };
+    },
+    /** Revoke a previously granted peer capability token. */
+    REVOKEPEER: (payload: { peerKey: string }) => {
+      const removed = typeof payload?.peerKey === "string" && peerTokens.delete(payload.peerKey);
+      return { removed };
+    },
+    /**
+     * Join/leave the current VRChat instance topic so trusted peers' hubs have an iroh route to
+     * this actor. Requests still require a valid per-peer token (or household proof).
+     */
+    SETINSTANCETOPIC: (payload: { topic: string | null }) => {
+      const next = typeof payload?.topic === "string" && payload.topic ? payload.topic : null;
+      if (next === state.instanceTopic) return true;
+      if (state.instanceTopic) PostMan.delTopic(state.instanceTopic);
+      state.instanceTopic = next;
+      if (next) PostMan.setTopic(next);
       return true;
     },
     /** Share these screens (the scene's shared displays). */
@@ -172,40 +277,17 @@ new PostMan(
       console.log(`[displayShare] sharing every display`);
       return true;
     },
-    GUARDED: guardedDispatch(guard, {
-      DESCRIBE: () => describe(),
-      START: (payload) => {
-        const monitor = (payload as { monitor?: number } | null)?.monitor;
-        if (!allowedMonitor(monitor ?? screens?.find((s) => s.primary)?.index ?? 0)) {
-          throw new Error("that display is not shared");
-        }
-        return call(source(), "START", {
-          ...(payload as Partial<SourceRequest> | null),
-          host: "127.0.0.1",
-          port: MEDIA_PORT,
-          share: true,
-        });
-      },
-      FEED: (payload) =>
-        allowedMonitor((payload as { monitor?: number } | null)?.monitor ?? 0)
-          ? call(source(), "FEED", payload)
-          : null,
-      STOP: (payload) => call(source(), "STOP", payload),
-      AUDIO: () =>
-        state.all || state.shared.length > 0
-          ? call(source(), "AUDIO", { host: "127.0.0.1", port: MEDIA_PORT })
-          : null,
-      STOPAUDIO: () => call(source(), "STOPAUDIO"),
-      INPUT: (event) => {
-        if (!state.input) return false;
-        if (!inputAllowed(event as InputEvent)) {
-          state.refusedInputs++;
-          return false;
-        }
-        state.inputs++;
-        PostMan.PostMessage({ target: state.input as ActorId, type: "INPUT", payload: event });
-        return true;
-      },
-    }),
+    GUARDED: (request: { proof: string; type: string; payload?: unknown }) => {
+      if (hasValidPeerToken(request?.proof)) {
+        const handler = guardedHandlers[request.type];
+        if (!handler) throw new Error(`no share request ${request.type}`);
+        return handler(request.payload);
+      }
+      if (guard.active) {
+        return householdGuarded(request);
+      }
+      peerRejected++;
+      throw new Error("not authorized for this displayShare");
+    },
   } as const,
 );
