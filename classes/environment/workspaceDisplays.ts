@@ -10,6 +10,17 @@ export type WorkspaceOutput = {
   /** Runtime provider override; omitted for the local workspace host. Never saved in the graph. */
   overlayHostActor?: string;
   input?: "none";
+  /**
+   * Another machine's desktopInput that this output's mouse and keyboard go to (a household
+   * desktop, `petplay/householdDesktops.ts`); without it, input goes to this machine's.
+   */
+  inputActor?: string;
+  /**
+   * A household machine's desktop (`petplay/householdDesktops.ts`): `provider` starts it when a
+   * display shows it (`SHOW`/`RELEASE`) and gives its input target (`INPUTTARGET`). Until it
+   * runs there is no `overlayHostActor`, and it shows nothing rather than the local desktop.
+   */
+  household?: { machine: string; provider: string };
   id: string;
   name: string;
   priority: number;

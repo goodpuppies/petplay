@@ -28,11 +28,11 @@ export function remoteDisplayOutput(
     input: "none",
   };
 }
-async function request<T>(target: ActorId, type: string): Promise<T> {
+async function request<T>(target: ActorId, type: string, payload: unknown = null): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      PostMan.PostMessage({ target, type, payload: null }, true) as Promise<T>,
+      PostMan.PostMessage({ target, type, payload }, true) as Promise<T>,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(Error("Feed provider did not reply")), 1500);
       }),
@@ -43,21 +43,27 @@ async function request<T>(target: ActorId, type: string): Promise<T> {
 }
 export async function discoverRemoteDisplayFeeds(): Promise<WorkspaceOutput[]> {
   const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
+  const local = actors.filter((a) => a.ownership !== "external");
   const feeds = await Promise.all(
-    actors.filter((a) => a.ownership !== "external" && a.actorId.startsWith("remoteMedia@")).map(
+    local.filter((a) => a.actorId.startsWith("remoteMedia@")).map(
       async (actor) => {
         try {
-          return remoteDisplayOutput(
-            actor.actorId,
-            await request<RemoteFeedHealth>(actor.actorId, "__HEALTH__"),
-          );
+          const health = await request<RemoteFeedHealth>(actor.actorId, "__HEALTH__");
+          // Household desktops' overlays are listed by their provider, below.
+          if (health.feedId?.startsWith("household:")) return null;
+          return remoteDisplayOutput(actor.actorId, health);
         } catch {
           return null;
         }
       },
     ),
   );
-  return feeds.filter((feed): feed is WorkspaceOutput => feed !== null);
+  const household = await Promise.all(
+    local.filter((a) => a.actorId.startsWith("householdDesktops@")).map((actor) =>
+      request<WorkspaceOutput[]>(actor.actorId, "LIST").catch(() => [])
+    ),
+  );
+  return [...feeds.filter((feed): feed is WorkspaceOutput => feed !== null), ...household.flat()];
 }
 
 /** Missing/disconnected feeds must never fall through to the local desktop provider. */
@@ -66,6 +72,8 @@ export function resolveDisplayFeedProvider(
   localActor: string | null | undefined,
 ) {
   if (!output) return { actor: null, acceptsMouse: false };
+  // A household desktop that is not running yet shows nothing.
+  if (output.household && !output.overlayHostActor) return { actor: null, acceptsMouse: false };
   return {
     actor: output.overlayHostActor ?? localActor ?? null,
     acceptsMouse: output.input !== "none",

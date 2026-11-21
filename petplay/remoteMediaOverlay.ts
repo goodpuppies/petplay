@@ -11,11 +11,6 @@ import { fromFileUrl } from "@std/path";
 export type RemoteMediaRequest = {
   /** A desktopSource's feed (`FEED`): its WebTransport listener, pinned to the certificate. */
   feed?: { host: string; port: number; fingerprint: string };
-  /**
-   * Where this display's input goes: a desktopInput on the feed's machine, and the household
-   * proof it takes in `GUARDED`. Reported in `__HEALTH__` for the scene's display outputs.
-   */
-  input?: { actor: string; proof?: string };
   code?: string;
   url?: string;
   address?: string;
@@ -34,7 +29,6 @@ const state = actorState({
   feedName: "Remote desktop",
   width: 0,
   height: 0,
-  input: null as { actor: string; proof?: string } | null,
 });
 const displayBinding = new RemoteDisplayBinding();
 let stopRequested = false;
@@ -72,7 +66,7 @@ new PostMan(
         ) throw Error("Invalid feed");
         if (Deno.build.os === "windows") throw Error("The Windows receiver takes share codes only");
       }
-      state.input = request.input?.actor ? { actor: request.input.actor, proof: request.input.proof } : null;
+
       state.feedId = request.feedId?.trim().slice(0, 128) || "desktop";
       state.feedName = request.name?.trim().slice(0, 128) || "Remote desktop";
       stopRequested = false;

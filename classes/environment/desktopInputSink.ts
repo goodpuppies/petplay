@@ -20,8 +20,12 @@ export function createDesktopInputSinks(
   inputActor: string,
   /** The overlay host compositing the cursor (Linux), if any. */
   cursorActor: string | null,
+  /** A household machine's desktopInput takes input only with its proof, in `GUARDED`. */
+  proof?: string,
 ): { mouse: DisplayMouseSink; keyboard: KeyboardSink } {
-  const send = (event: InputEvent) => post(inputActor, "INPUT", event);
+  const send = proof
+    ? (event: InputEvent) => post(inputActor, "GUARDED", { proof, type: "INPUT", payload: event })
+    : (event: InputEvent) => post(inputActor, "INPUT", event);
   const inject: DisplayMouseSink = (event) => {
     if (event.kind === "move") send({ t: "pointer", x: event.x, y: event.y });
     else if (event.kind === "button") {

@@ -26,6 +26,7 @@ import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
 import { createDesktopInputSinks } from "./desktopInputSink.ts";
 import type { KeyboardSink } from "./keyboard/types.ts";
+import { focusedKeyboard, focusKeyboard, releaseKeyboard } from "./keyboard/keyboardFocus.ts";
 import { KEYBOARD_LOCALES, useKeyboardLocale } from "./keyboard/keyboardLocale.ts";
 import { PostMan } from "../../submodules/stageforge/mod.ts";
 import { SpatialAudioProvider } from "./spatialAudio.tsx";
@@ -1457,12 +1458,59 @@ function DisplaySpatialNodeView({
     return hand == null ? undefined : directOpenVrInputSource?.getDesktopMouseButton(hand);
   }, [directOpenVrInputSource]);
   const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
-    onMouse({
+    // Clicking a display gives the keyboard to the desktop it shows.
+    if (event.kind === "button" && event.pressed) focusKeyboard(node.id, remoteInput?.onKey ?? null);
+    (remoteInput?.onMouse ?? onMouse)({
       ...event,
+  // Another household machine's desktop starts when a display shows it and stops after the
+  // last one lets go (`petplay/householdDesktops.ts`).
+  const household = outputConnected ? selectedFeed?.household : undefined;
+  React.useEffect(() => {
+    if (!household) return;
+    const payload = { machine: household.machine, display: node.id };
+    const post = (type: string) => {
+      try {
+        PostMan.PostMessage({ target: household.provider, type, payload });
+      } catch { /* the provider is shutting down */ }
+    };
+    post("SHOW");
+    return () => post("RELEASE");
+  }, [household?.provider, household?.machine, node.id]);
+  // Its mouse and keyboard go to that machine's desktopInput, with the household proof.
+  const remoteInputActor = household ? selectedFeed?.inputActor : undefined;
+  const [remoteInput, setRemoteInput] = React.useState<
+    ReturnType<typeof createDesktopInputRouting> | null
+  >(null);
+  React.useEffect(() => {
+    setRemoteInput(null);
+    if (!remoteInputActor || !household) return;
+    let cancelled = false;
+    (PostMan.PostMessage({
+      target: household.provider,
+      type: "INPUTTARGET",
+      payload: { machine: household.machine },
+    }, true) as Promise<{ actor: string; proof: string } | null>).then((target) => {
+      if (cancelled || !target || target.actor !== remoteInputActor) return;
+      const sinks = createDesktopInputSinks(target.actor, null, target.proof);
+      setRemoteInput(createDesktopInputRouting(sinks.mouse, sinks.keyboard));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      releaseKeyboard(node.id);
+    };
+  }, [remoteInputActor, household?.provider, household?.machine, node.id]);
       x: workspaceCrop.x + event.x * workspaceCrop.width,
       y: workspaceCrop.y + event.y * workspaceCrop.height,
     });
-  }, [onMouse, workspaceCrop.x, workspaceCrop.y, workspaceCrop.width, workspaceCrop.height]);
+  }, [
+    node.id,
+    onMouse,
+    remoteInput,
+    workspaceCrop.x,
+    workspaceCrop.y,
+    workspaceCrop.width,
+    workspaceCrop.height,
+  ]);
   const selectNode = React.useCallback(() => onSelectNode(node.id), [node.id, onSelectNode]);
   // The menu's size is part of where it fits.
   const toolbarScale = useSetting("contextToolbarScale");
@@ -2294,6 +2342,8 @@ export function WebXRScene(
   React.useEffect(() => {
     const receiver = startXsoNotificationReceiver();
     return receiver.close;
+  // The keyboard types into the desktop of the display clicked last (`keyboardFocus.ts`).
+  const routedKeyboardSink = React.useMemo(() => focusedKeyboard(keyboardSink), [keyboardSink]);
   }, []);
 
   React.useEffect(() => {
@@ -2322,7 +2372,7 @@ export function WebXRScene(
       <WindowLayer
         displayOverlayHostActor={displayOverlayHostActor}
         onMouse={displayMouseSink}
-        onKey={keyboardSink}
+        onKey={routedKeyboardSink}
         directOpenVrInputSource={directOpenVrInputSource}
       />
       <ToastOverlay />

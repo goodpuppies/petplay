@@ -957,6 +957,8 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
   LogChannel.log("actor", "[supervisor] SteamVR available; attaching OpenVR actors");
   const created: ActorId[] = [];
   try {
+  // Other household machines' desktops, as display outputs (needs `.secret` and networking).
+  await PostMan.create("./householdDesktops.ts", import.meta.url);
     // The control-plane session is running without OpenVR; restart it with the
     // runtime so the overlay, pacer and IVRInput sampling come up.
     await callActor(actors.webxr, "STOPWEBXR", OPENVR_CALL_TIMEOUT_MS * 2).catch((error) => {

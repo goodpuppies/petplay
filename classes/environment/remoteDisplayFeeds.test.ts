@@ -36,3 +36,28 @@ Deno.test("an unavailable feed cannot briefly route to local desktop before grap
     throw Error("Remote feed routed locally");
   }
 });
+
+Deno.test("a household desktop shows nothing until it runs, then takes input on its machine", () => {
+  const base = {
+    id: "household:cachyos",
+    name: "cachyos",
+    priority: -1,
+    logicalX: 0,
+    logicalY: 0,
+    logicalWidth: 1920,
+    logicalHeight: 1080,
+    crop: { x: 0, y: 0, width: 1, height: 1 },
+    household: { machine: "cachyos", provider: "householdDesktops@a" },
+  };
+  const waiting = resolveDisplayFeedProvider({ ...base, input: "none" }, "local-host");
+  if (waiting.actor !== null || waiting.acceptsMouse) {
+    throw Error("A household desktop that is not running fell through to the local desktop");
+  }
+  const running = resolveDisplayFeedProvider(
+    { ...base, overlayHostActor: "remoteMedia@b", inputActor: "desktopInput@c" },
+    "local-host",
+  );
+  if (running.actor !== "remoteMedia@b" || !running.acceptsMouse) {
+    throw Error("A running household desktop is not shown or takes no input");
+  }
+});
