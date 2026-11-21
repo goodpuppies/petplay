@@ -123,7 +123,11 @@ there are tested in a novr server first (`petplay-test-server-isolation`) and la
      on request.
    - The scene stream, the rdp tab and the feed receiver all take it. Share codes become an
      iroh descriptor sent over the actor route.
-4. **Remote desktops as displays.**
+4. **Remote desktops as displays.** (Done 2026-11-21 for household desktops: they are display
+   outputs from `householdDesktops`, fed by `remoteMediaOverlay` from desktopSource's feed;
+   `WorkspaceOutput.inputActor` routes a display's mouse, and the keyboard follows the display
+   clicked last. One output per machine, the whole capture: a remote machine's monitors as
+   separate outputs (its `LAYOUT`) is still open. The Windows receiver takes share codes only.)
    - The feed receiver starts per desktopSource found on a topic.
    - `WorkspaceOutput` gets `inputActor` instead of `input: "none"`, and display instances
      route mouse and keyboard to it.

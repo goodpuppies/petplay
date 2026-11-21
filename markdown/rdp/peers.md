@@ -78,6 +78,11 @@ The topic only gets two processes talking. Access is decided over iroh:
 2. The rdp app lists several desktops: a picker in the toolbar. (Done 2026-11-20. Machines
    that leave drop off; a restarted agent replaces its old entry.)
 3. `desktopSource` offers an iroh feed. PetPlay shows a found desktop through
-   `remoteMediaOverlay`, with input through the same `desktopInput`.
+   `remoteMediaOverlay`, with input through the same `desktopInput`. (Done 2026-11-21 over
+   the tailnet instead of iroh: the native receiver takes the same pinned WebTransport feed the
+   browser does. `petplay/householdDesktops.ts` lists the household's desktops as display
+   outputs and starts one when a display shows it; input goes to that machine's desktopInput
+   with the proof. Needs stageforge networking on. An iroh feed is still needed for peers
+   outside the tailnet, i.e. two users.)
 4. Two users: a password, the grant prompts in VR, and an active-share indicator.
 5. VRChat identity.
