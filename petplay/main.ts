@@ -286,6 +286,8 @@ type SupervisedSceneActors = {
   desktopInput: ActorId;
   /** This machine's desktop capture (`rdp/desktopSource.ts`); the overlay host's frames. */
   desktopSource: ActorId;
+  /** VRChat instance peer discovery + TOFU identity (`petplay/vrcPeers.ts`). */
+  vrcPeers: ActorId;
   desktopControlEnabled: boolean;
 };
 
@@ -361,6 +363,8 @@ const clientActors = {
   vrcCameraView: null as ActorId | null,
   /** Started on demand by `STARTVRCDEPTH` — VRChat window capture and depth block decode. */
   vrchatDepth: null as ActorId | null,
+  /** Always-on VRChat instance peer discovery + TOFU trust (`petplay/vrcPeers.ts`). */
+  vrcPeers: null as ActorId | null,
 };
 
 function clientActorRegistry() {
@@ -377,6 +381,7 @@ function clientActorRegistry() {
     ...(clientActors.desktopView ? { desktopView: clientActors.desktopView } : {}),
     ...(clientActors.vrcCameraView ? { vrcCameraView: clientActors.vrcCameraView } : {}),
     ...(clientActors.vrchatDepth ? { vrchatDepth: clientActors.vrchatDepth } : {}),
+    ...(clientActors.vrcPeers ? { vrcPeers: clientActors.vrcPeers } : {}),
     ...(supervisedActors ? { openvr: supervisedActors.ivr } : {}),
     ...(attachment
       ? {
@@ -491,6 +496,7 @@ function registerSceneActors(actors: SupervisedSceneActors): void {
   clientActors.cameraOrigin = actors.cameraOrigin;
   clientActors.desktopInput = actors.desktopInput;
   clientActors.desktopSource = actors.desktopSource;
+  clientActors.vrcPeers = actors.vrcPeers;
   registerClientActors();
 }
 
@@ -855,6 +861,7 @@ function startWebXr(
       wristMenuActor: actors.wristMenu,
       displayOverlayHostActor,
       desktopInputActor: actors.desktopInput,
+      vrcPeersActor: actors.vrcPeers,
       overlayKey: "petplay.webxr.overlay",
       overlayName: "PetPlay WebXR Overlay",
       overlayWidthInMeters: 3,
@@ -911,6 +918,7 @@ async function createSupervisedScene() {
   const agentRepl = await PostMan.create("./agentRepl.ts", import.meta.url);
   const desktopInput = await PostMan.create("../rdp/desktopInput.ts", import.meta.url);
   const desktopSource = await PostMan.create("../rdp/desktopSource.ts", import.meta.url);
+  const vrcPeers = await PostMan.create("./vrcPeers.ts", import.meta.url);
   const desktopControlEnabled = getDesktopControlEnabled();
   const actors: SupervisedSceneActors = {
     ivr: resolveActorId(ivr),
@@ -920,12 +928,18 @@ async function createSupervisedScene() {
     agentRepl: resolveActorId(agentRepl),
     desktopInput: resolveActorId(desktopInput),
     desktopSource: resolveActorId(desktopSource),
+    vrcPeers: resolveActorId(vrcPeers),
     desktopControlEnabled,
   };
   console.log("[petplay boot] control-plane actors created");
 
   PostMan.PostMessage({
     target: cameraOrigin,
+    type: "ASSIGNWEBXR",
+    payload: webxr,
+  });
+  PostMan.PostMessage({
+    target: vrcPeers,
     type: "ASSIGNWEBXR",
     payload: webxr,
   });
@@ -1244,13 +1258,21 @@ async function createNoOpenVrScene() {
   const agentRepl = desktopControlEnabled || getAgentReplEnabled()
     ? await PostMan.create("./agentRepl.ts", import.meta.url)
     : null;
+  const vrcPeers = await PostMan.create("./vrcPeers.ts", import.meta.url);
 
   clientActors.wristMenu = resolveActorId(wristMenu);
   clientActors.webxr = resolveActorId(webxr);
   clientActors.agentRepl = agentRepl ? resolveActorId(agentRepl) : null;
   clientActors.cameraOrigin = cameraOrigin ? resolveActorId(cameraOrigin) : null;
   clientActors.desktopInput = desktopInput;
+  clientActors.vrcPeers = resolveActorId(vrcPeers);
   registerClientActors();
+
+  PostMan.PostMessage({
+    target: vrcPeers,
+    type: "ASSIGNWEBXR",
+    payload: webxr,
+  });
 
   PostMan.PostMessage({
     target: webxr,
@@ -1269,6 +1291,7 @@ async function createNoOpenVrScene() {
       wristMenuActor: wristMenu,
       displayOverlayHostActor: null,
       desktopInputActor: desktopInput,
+      vrcPeersActor: resolveActorId(vrcPeers),
       overlayRenderMode: "raylib" as OverlayRenderMode,
       nativeRaylibDebug: false,
       nativeRaylibDebugWithHost: false,

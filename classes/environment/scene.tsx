@@ -10,11 +10,13 @@ import {
   useThree,
 } from "@react-three/fiber/webgpu";
 import { getPassthroughKey, subscribePassthroughKey } from "./passthroughKeyStore.ts";
+import { VrcTofuPromptOverlay } from "./vrcTofuPromptOverlay.tsx";
 import { vrcCameraStore } from "./vrcCameraStore.ts";
 import { readVrcCameraDebugSnapshot } from "../vrcCameraDebugState.ts";
 import { updateDepthSurface, updateOccluderSurface } from "../vrchatDepth/surface.ts";
 import { vrcDepthDebugStore } from "./vrcDepthDebugStore.ts";
 import { DisplayInstance } from "./displayInstance/logic.tsx";
+import { SharedIndicator } from "./sharedIndicator.tsx";
 import {
   DEFAULT_DISPLAY_DEPTH,
   DEFAULT_DISPLAY_HEIGHT,
@@ -170,6 +172,8 @@ type WebXRSceneProps = {
   displayOverlayHostActor?: string | null;
   /** The desktopInput actor every display and the keyboard inject through. */
   desktopInputActor?: string | null;
+  /** VRChat instance peer discovery + TOFU actor (`petplay/vrcPeers.ts`). */
+  vrcPeersActor?: string | null;
   directOpenVrInputSource?: DirectOpenVrInputSource;
 };
 
@@ -2258,6 +2262,7 @@ export function WebXRScene(
     XROrigin: _XROrigin,
     displayOverlayHostActor = null,
     desktopInputActor = null,
+    vrcPeersActor = null,
     directOpenVrInputSource,
   }: WebXRSceneProps,
 ) {
@@ -2327,6 +2332,7 @@ export function WebXRScene(
         onKey={routedKeyboardSink}
         directOpenVrInputSource={directOpenVrInputSource}
       />
+      <VrcTofuPromptOverlay vrcPeersActor={vrcPeersActor} />
       <SettingsWindowOverlay />
       <ToastOverlay />
     </>

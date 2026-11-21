@@ -3,6 +3,11 @@ import {
   parsePassthroughKey,
   setPassthroughKey,
 } from "../classes/environment/passthroughKeyStore.ts";
+import {
+  type VrcPeerUpdateEntry,
+  type VrcTofuPromptItem,
+  vrcTofuStore,
+} from "../classes/environment/vrcTofuStore.ts";
 import { initializeLinuxScheduling } from "../classes/linuxScheduling.ts";
 import { getRenderScale, subscribeRenderResolution } from "../classes/renderResolution.ts";
 import {
@@ -259,6 +264,7 @@ type StartWebXRPayload = {
   mainActor?: string | null;
   displayOverlayHostActor?: string | null;
   desktopInputActor?: string | null;
+  vrcPeersActor?: string | null;
   sessionMode?: SupportedSessionMode;
   alpha?: boolean;
   overlayKey?: string;
@@ -835,6 +841,7 @@ new PostMan(
             wristMenuActor: payload?.wristMenuActor,
             displayOverlayHostActor: payload?.displayOverlayHostActor,
             desktopInputActor: payload?.desktopInputActor ?? null,
+            vrcPeersActor: payload?.vrcPeersActor ?? null,
             sessionMode: payload?.sessionMode,
             alpha: payload?.alpha,
             skipWebGpuXrDraw: overlayMode === "raylib" && !payload?.debugWindow,
@@ -1021,6 +1028,34 @@ new PostMan(
         .add(new THREE.Vector3(...pose.position));
       scene.add(cube);
       return { enabled: true, position: cube.position.toArray(), size: 0.5 };
+    },
+    VRCPEERSUPDATE: (payload: { peers?: VrcPeerUpdateEntry[] } | null) => {
+      vrcTofuStore.setPeers(Array.isArray(payload?.peers) ? payload.peers : []);
+      return { prompts: vrcTofuStore.prompts().length };
+    },
+    VRCTOFUTESTPROMPT: (
+      payload: {
+        clear?: boolean;
+        displayName?: string;
+        userId?: string;
+        fingerprint?: string;
+        mismatch?: boolean;
+      } | null,
+    ) => {
+      if (payload?.clear) {
+        vrcTofuStore.clear();
+        return { prompts: vrcTofuStore.prompts() };
+      }
+      const item: VrcTofuPromptItem = {
+        actorId: "vrcPeers@test",
+        vrcUserId: payload?.userId ?? "usr_00000000-0000-0000-0000-000000000001",
+        displayName: payload?.displayName ?? "TestFriend",
+        fingerprint: payload?.fingerprint ?? "35c5-36c8-3ffc",
+        trust: payload?.mismatch ? "key_mismatch" : "pending",
+        pinnedFingerprint: payload?.mismatch ? "a1b2-c3d4-e5f6" : null,
+      };
+      vrcTofuStore.pushPrompt(item);
+      return { prompts: vrcTofuStore.prompts() };
     },
     VRCCAMERADEBUGUPDATE: (
       payload: {

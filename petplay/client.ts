@@ -120,6 +120,10 @@ function help(): string {
     "             --scan=on|off|clear --voxel=<m>`",
     "             (markdown/vrchat-depth)",
     "             `vrcdepth debug [--stop]`: desktop MKB fly camera, live depth + player pose",
+    "  vrc        VRChat instance peer discovery + TOFU trust:",
+    "             `vrc status`, `vrc peers`, `vrc trusted`,",
+    "             `vrc trust <usr_...|displayName> [--force]`, `vrc untrust <usr_...>`,",
+    "             `vrc test-prompt [displayName] [--mismatch]`, `vrc clear-test`",
     "  repair     repair the XR presentation in place (--restart restarts the stack)",
     "  reboot     stop the server, start it again with the same arguments, and",
     "             bring the desktop surface back (--no-detach skips the SteamVR",
@@ -740,6 +744,84 @@ async function cmdVrcDepth(): Promise<number> {
   return 2;
 }
 
+async function cmdVrc(): Promise<number> {
+  const health = await requireServer();
+  const vrcPeers = health.actors?.vrcPeers;
+  const webxr = health.actors?.webxr;
+  const positional = Deno.args.filter((a) => !a.startsWith("-"));
+  const sub = positional[1] ?? "status";
+  if (sub === "test-prompt") {
+    const displayName = positional[2] ?? "TestFriend";
+    const mismatch = hasFlag("--mismatch");
+    if (vrcPeers) {
+      console.log(
+        JSON.stringify(
+          await sendMessage(vrcPeers, "SIMULATEPEER", { displayName, mismatch }),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    if (!webxr) throw new Error("server has neither vrcPeers nor webxr actor");
+    console.log(
+      JSON.stringify(
+        await sendMessage(webxr, "VRCTOFUTESTPROMPT", { displayName, mismatch }),
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  if (sub === "clear-test") {
+    if (vrcPeers) {
+      console.log(JSON.stringify(await sendMessage(vrcPeers, "CLEARSIMULATED"), null, 2));
+      return 0;
+    }
+    if (!webxr) throw new Error("server has neither vrcPeers nor webxr actor");
+    console.log(
+      JSON.stringify(await sendMessage(webxr, "VRCTOFUTESTPROMPT", { clear: true }), null, 2),
+    );
+    return 0;
+  }
+  if (!vrcPeers) throw new Error("server has no vrcPeers actor (reboot server to load it)");
+  if (sub === "status") {
+    console.log(JSON.stringify(await sendMessage(vrcPeers, "STATUS"), null, 2));
+    return 0;
+  }
+  if (sub === "peers") {
+    console.log(JSON.stringify(await sendMessage(vrcPeers, "LISTPEERS"), null, 2));
+    return 0;
+  }
+  if (sub === "trusted") {
+    console.log(JSON.stringify(await sendMessage(vrcPeers, "LISTTRUSTED"), null, 2));
+    return 0;
+  }
+  if (sub === "trust") {
+    const target = positional[2];
+    if (!target) {
+      console.error(`${LOG_PREFIX} vrc trust requires <usr_...|displayName>`);
+      return 2;
+    }
+    const payload = target.startsWith("usr_")
+      ? { userId: target, force: hasFlag("--force") }
+      : { displayName: target, force: hasFlag("--force") };
+    console.log(JSON.stringify(await sendMessage(vrcPeers, "TRUST", payload), null, 2));
+    return 0;
+  }
+  if (sub === "untrust") {
+    const userId = positional[2];
+    if (!userId) {
+      console.error(`${LOG_PREFIX} vrc untrust requires <usr_...>`);
+      return 2;
+    }
+    console.log(JSON.stringify(await sendMessage(vrcPeers, "UNTRUST", { userId }), null, 2));
+    return 0;
+  }
+  console.error(`${LOG_PREFIX} vrc: unknown subcommand "${sub}"`);
+  return 2;
+}
+
 async function main(): Promise<number> {
   const command = Deno.args.find((arg) => !arg.startsWith("-")) ?? "status";
   switch (command) {
@@ -753,6 +835,8 @@ async function main(): Promise<number> {
       return await cmdCamera();
     case "vrcdepth":
       return await cmdVrcDepth();
+    case "vrc":
+      return await cmdVrc();
     case "repair":
       return await cmdRepair();
     case "reboot":

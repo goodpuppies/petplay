@@ -82,6 +82,8 @@ type StartOptions = {
   displayOverlayHostActor?: string | null;
   /** The desktopInput actor the scene's displays and keyboard inject through. */
   desktopInputActor?: string | null;
+  /** VRChat instance peer discovery + TOFU actor (`petplay/vrcPeers.ts`). */
+  vrcPeersActor?: string | null;
   /**
    * When the OpenVR ghost uses only the Raylib path (`overlayRenderMode: "raylib"`), the WebGPU
    * projection layer does not need a full scene draw — Raythree reads the Three graph and
@@ -1561,6 +1563,7 @@ export class WebXRHost {
             XROrigin,
             displayOverlayHostActor: options.displayOverlayHostActor ?? null,
             desktopInputActor: options.desktopInputActor ?? null,
+            vrcPeersActor: options.vrcPeersActor ?? null,
             directOpenVrInputSource: this.directOpenVrInputSource,
           }),
         ),
