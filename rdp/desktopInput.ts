@@ -39,6 +39,20 @@ const state = actorState({
 });
 
 let injector: DesktopInjector | null = null;
+/**
+ * Where incoming positions land: they are fractions of the desktop the sender sees, and this
+ * is that desktop's rectangle as a fraction of the whole one input addresses (Windows' virtual
+ * desktop, or Linux's workspace). One monitor of several, when only it is captured.
+ */
+let region = { x: 0, y: 0, width: 1, height: 1 };
+
+export type InputRegion = typeof region;
+
+function place<E extends InputEvent>(event: E): E {
+  if (!("x" in event) || event.x === undefined || event.y === undefined) return event;
+  const x = Math.min(1, Math.max(0, event.x)), y = Math.min(1, Math.max(0, event.y));
+  return { ...event, x: region.x + x * region.width, y: region.y + y * region.height };
+}
 const guard = new HouseholdGuard();
 const heldButtons = new Set<"left" | "right" | "middle">();
 /** Held keys by identity, with the event that pressed them. */
@@ -86,7 +100,7 @@ export function inject(event: unknown): boolean {
   }
   try {
     const target = platform();
-    target.inject(event);
+    target.inject(place(event));
     state.helperRunning = target.status.running;
     state.lastError = target.status.lastError;
   } catch (error) {
@@ -141,6 +155,14 @@ new PostMan(
     INPUT: refuseWhenGuarded(guard, (event: InputEvent) => inject(event)),
     INPUTS: refuseWhenGuarded(guard, injectAll),
     RELEASEALL: refuseWhenGuarded(guard, releaseAllAndReply),
+    /** The captured desktop's rectangle within the injectable one (see `region`). */
+    REGION: refuseWhenGuarded(guard, (payload: InputRegion) => {
+      const ok = [payload?.x, payload?.y, payload?.width, payload?.height].every(Number.isFinite) &&
+        payload.width > 0 && payload.height > 0;
+      if (!ok) throw new Error("REGION needs {x, y, width, height} as fractions");
+      region = { x: payload.x, y: payload.y, width: payload.width, height: payload.height };
+      return true;
+    }),
     /** Join the household: its topic, and proofs from here on. Once. */
     SETHOUSEHOLD: refuseWhenGuarded(guard, async (payload: { secret: string; topic: string }) => {
       await guard.enable(payload.secret, state.id);

@@ -6,7 +6,10 @@
  * requests only with the household proof (`classes/household.ts`).
  *
  *   deno run -A rdp/agent.ts [--host=<tailnet address>] [--media-port=4460]
- *     [--secret-file=PATH] [--topics=wss://…] [--relay=https://…]
+ *     [--secret-file=PATH] [--topics=wss://…] [--relay=https://…] [--monitor=N]
+ *
+ * Windows shares one monitor (`--monitor`, a `capture-wgc --list` index; default the primary),
+ * captured and encoded on the GPU; input positions map onto that monitor.
  *
  * `--host` is where other machines' browsers reach the encoder; default this machine's tailnet
  * IPv4 (`tailscale ip -4`). Compiled for machines without a checkout by `rdp/buildAgent.ts`,
@@ -17,8 +20,11 @@ import { parseArgs } from "jsr:@std/cli/parse-args";
 import { PostalService, resolveActorId } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";
 import { householdSecret, householdTopic } from "./classes/household.ts";
+import { regionOf, wgcMonitors } from "./classes/wgcMediaFeed.ts";
 
-const args = parseArgs(Deno.args, { string: ["host", "media-port", "secret-file", "topics", "relay"] });
+const args = parseArgs(Deno.args, {
+  string: ["host", "media-port", "secret-file", "topics", "relay", "monitor"],
+});
 
 async function tailnetAddress(): Promise<string | null> {
   try {
@@ -49,7 +55,23 @@ const call = (target: string, type: string, payload: unknown = null) =>
 
 const input = resolveActorId(await postal.add("./desktopInput.ts", import.meta.url));
 const source = resolveActorId(await postal.add("./desktopSource.ts", import.meta.url));
-await call(source, "CONFIGURE", { host, port });
+// Windows captures one monitor; input positions are fractions of it, mapped onto the virtual
+// desktop. Linux captures the whole workspace.
+let monitor: number | undefined;
+if (Deno.build.os === "windows") {
+  const monitors = await wgcMonitors();
+  const chosen = args.monitor !== undefined
+    ? monitors.find((m) => m.index === Number(args.monitor))
+    : monitors.find((m) => m.primary) ?? monitors[0];
+  if (!chosen) {
+    console.error(`No monitor ${args.monitor ?? "(primary)"}; found ${monitors.map((m) => m.index).join(", ")}`);
+    Deno.exit(1);
+  }
+  monitor = chosen.index;
+  await call(input, "REGION", regionOf(chosen, monitors));
+  console.log(`agent: sharing monitor ${chosen.index} (${chosen.name}, ${chosen.width}x${chosen.height})`);
+}
+await call(source, "CONFIGURE", { host, port, ...(monitor !== undefined ? { monitor } : {}) });
 await call(source, "SETINPUT", input);
 // Last: from here on only the household's proofs are accepted.
 await call(input, "SETHOUSEHOLD", household);
@@ -71,4 +93,6 @@ async function exit(): Promise<void> {
   Deno.exit(0);
 }
 Deno.addSignalListener("SIGINT", () => void exit());
-Deno.addSignalListener("SIGTERM", () => void exit());
+// Windows has SIGINT and SIGBREAK only.
+if (Deno.build.os !== "windows") Deno.addSignalListener("SIGTERM", () => void exit());
+else Deno.addSignalListener("SIGBREAK", () => void exit());

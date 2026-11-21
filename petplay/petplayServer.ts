@@ -5,6 +5,7 @@ import { listenForProcessExitRequests } from "../classes/processExitRequest.ts";
 import { watchLogParent } from "../classes/runLog.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
+import { householdSecret } from "../rdp/classes/household.ts";
 
 const EXIT_STABILIZE_MS = 3000;
 /** Topic server (submodules/petplayserver), deployed on ldeploy; override with PETPLAY_TOPIC_URL. */
@@ -30,9 +31,20 @@ export async function startPetplayServer(
   createTemp();
   console.log("Press Ctrl-C to close");
 
+  /**
+   * On with the flag or PETPLAY_STAGEFORGE_NETWORKING=1, and by default on a machine with a
+   * household secret (`.secret`): the household's other desktops are found through it
+   * (`petplay/householdDesktops.ts`). PETPLAY_STAGEFORGE_NETWORKING=0 keeps it off.
+   */
   function isStageforgeNetworkingEnabled(): boolean {
-    return Deno.args.includes("--stageforge-networking") ||
-      Deno.env.get("PETPLAY_STAGEFORGE_NETWORKING") === "1";
+    const env = Deno.env.get("PETPLAY_STAGEFORGE_NETWORKING");
+    if (Deno.args.includes("--stageforge-networking") || env === "1") return true;
+    if (env === "0") return false;
+    try {
+      return householdSecret() !== null;
+    } catch {
+      return false;
+    }
   }
 
   let petplayExiting = false;

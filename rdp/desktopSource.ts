@@ -24,11 +24,15 @@
  *
  * `LAYOUT` returns the monitors as crops of the capture (`workspaceDisplays.ts`).
  *
- * The encoder is Linux only (the media socket); frame sinks work wherever the helper does.
+ * The encoder: on Linux the helper publishes into `petplay-media`'s media socket; on Windows
+ * `petplay-media capture-wgc` captures one monitor itself (`classes/wgcMediaFeed.ts`, `{monitor}`
+ * in the request), all on the GPU, and its feed also carries an iroh share `code`. Frame sinks
+ * work wherever the helper does.
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { join } from "@std/path";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
+import { WgcMediaFeed } from "./classes/wgcMediaFeed.ts";
 import { CaptureHelper } from "../classes/ScreenCapturer/captureHelper.ts";
 import { clampCaptureFps, DEFAULT_CAPTURE_FPS } from "../classes/ScreenCapturer/scclass.ts";
 import {
@@ -48,9 +52,15 @@ export type SourceRequest = {
   port: number;
   fps?: number;
   bitrate?: number;
+  /** Windows: the monitor to capture (`capture-wgc --list` index). */
+  monitor?: number;
 };
 
-export type FeedInfo = { host: string; port: number; fingerprint: string };
+/**
+ * Where receivers reach the encoder: its pinned WebTransport listener, and on Windows also an
+ * iroh share `code`, which native receivers prefer (it passes firewalls).
+ */
+export type FeedInfo = { host: string; port: number; fingerprint: string; code?: string };
 export type DesktopDescription = { machine: string; input: string | null; feed: FeedInfo | null };
 export type CaptureStatus = { event: "lost" | "recovered" | "unavailable"; message?: string };
 
@@ -79,7 +89,7 @@ let feedRequest: SourceRequest | null = null;
 let feedDefaults: SourceRequest | null = null;
 let pairedInput: string | null = null;
 const guard = new HouseholdGuard();
-let encoder: DesktopMediaFeed | null = null;
+let encoder: DesktopMediaFeed | WgcMediaFeed | null = null;
 const subscribers = new Set<string>();
 
 let helper: CaptureHelper | null = null;
@@ -194,22 +204,35 @@ function onExit(exited: CaptureHelper, status: Deno.CommandStatus): void {
   }, delay);
 }
 
-async function startEncoder(directory?: string): Promise<DesktopMediaFeed> {
+async function startEncoder(directory?: string): Promise<DesktopMediaFeed | WgcMediaFeed> {
   const request = feedRequest!;
-  const feed = await DesktopMediaFeed.start({
-    host: request.host,
-    port: request.port,
-    fps: request.fps,
-    bitrate: request.bitrate,
-    directory,
-  });
+  const feed = Deno.build.os === "windows"
+    ? await WgcMediaFeed.start({
+      host: request.host,
+      port: request.port,
+      monitor: request.monitor ?? 0,
+      fps: request.fps,
+      bitrate: request.bitrate,
+    })
+    : await DesktopMediaFeed.start({
+      host: request.host,
+      port: request.port,
+      fps: request.fps,
+      bitrate: request.bitrate,
+      directory,
+    });
   encoder = feed;
-  state.feed = { host: request.host, port: feed.info.port, fingerprint: feed.info.fingerprint };
+  state.feed = {
+    host: request.host,
+    port: feed.info.port,
+    fingerprint: feed.info.fingerprint,
+    ...("code" in feed.info ? { code: feed.info.code } : {}),
+  };
   void superviseEncoder(feed);
   return feed;
 }
 
-async function superviseEncoder(feed: DesktopMediaFeed): Promise<void> {
+async function superviseEncoder(feed: DesktopMediaFeed | WgcMediaFeed): Promise<void> {
   await feed.exited;
   let delay = 1000;
   while (!shuttingDown && encoder === feed) {
@@ -238,8 +261,8 @@ async function stopFeed(): Promise<void> {
 }
 
 async function startFeed(payload?: Partial<SourceRequest>): Promise<FeedInfo> {
-  if (Deno.build.os !== "linux") {
-    throw new Error("desktopSource encodes through the Linux media socket only");
+  if (Deno.build.os !== "linux" && Deno.build.os !== "windows") {
+    throw new Error(`desktopSource has no encoder on ${Deno.build.os}`);
   }
   if (encoder && state.feed) return state.feed;
   const request = { ...feedDefaults, ...payload } as SourceRequest;

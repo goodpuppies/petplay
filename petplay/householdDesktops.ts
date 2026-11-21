@@ -199,7 +199,8 @@ async function keep(desktop: Desktop): Promise<void> {
       target: desktop.overlay,
       type: "STARTMEDIA",
       payload: {
-        feed,
+        // A share code passes the other machine's firewall; the pinned listener may not.
+        ...(feed.code ? { code: feed.code } : { feed }),
         feedId: `household:${desktop.machine}`,
         name: desktop.machine,
       },
