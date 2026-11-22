@@ -302,14 +302,22 @@ function StepperControl({
 function ActionButton({
   label,
   tone = "outline",
+  disabled = false,
   onClick,
 }: {
   label: string;
   tone?: "outline" | "accent" | "danger";
+  disabled?: boolean;
   onClick: () => void;
 }) {
-  const bg = tone === "accent" ? COLOR.accent : tone === "danger" ? COLOR.danger : COLOR.ground;
-  const ink = tone === "accent" ? COLOR.onAccent : COLOR.ink;
+  const bg = disabled
+    ? COLOR.ground
+    : tone === "accent"
+    ? COLOR.accent
+    : tone === "danger"
+    ? COLOR.danger
+    : COLOR.ground;
+  const ink = disabled ? COLOR.inkDim : tone === "accent" ? COLOR.onAccent : COLOR.ink;
   return (
     <Container
       paddingX={20}
@@ -318,8 +326,8 @@ function ActionButton({
       alignItems="center"
       justifyContent="center"
       backgroundColor={bg}
-      backgroundOpacity={1}
-      onClick={onClick}
+      backgroundOpacity={disabled ? 0.55 : 1}
+      onClick={disabled ? undefined : onClick}
     >
       <Text color={ink} fontSize={16}>{label}</Text>
     </Container>
@@ -759,56 +767,93 @@ function CameraPage({ showGuides }: { showGuides: boolean }) {
 }
 
 function InstallPage({ showGuides }: { showGuides: boolean }) {
+  const [, refresh] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
   const real = installState();
   const build = getBuildInfo();
-  const [installed, setInstalled] = useState(real.installed);
-  const [autoLaunch, setAutoLaunch] = useState(real.installed);
-  const [statusMsg, setStatusMsg] = useState<string>(
-    real.canInstall
-      ? (real.installed ? "Installed: starts with SteamVR" : "Not installed in SteamVR")
-      : "Source checkout · deno task steamvr:register",
-  );
+
+  const defaultStatus = !real.canInstall
+    ? "Source checkout · deno task steamvr:register"
+    : !real.installed
+    ? "Not installed in SteamVR"
+    : real.runningInstalled || real.upToDate
+    ? "Installed: starts with SteamVR"
+    : `${real.installedBuild?.version ?? "Another version"} installed; this is ${real.thisBuild.version}`;
+
+  const run = async (which: "install" | "uninstall") => {
+    if (busy || !real.canInstall) return;
+    setBusy(true);
+    setMessage(which === "install" ? "Installing…" : "Uninstalling…");
+    try {
+      const output = await new Deno.Command(Deno.execPath(), {
+        args: [`--${which}`],
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes).trim();
+      const text = output.success ? decode(output.stdout) : decode(output.stderr);
+      const summary = text.split(/\r?\n/).filter(Boolean).at(-1) ??
+        (output.success ? "Done." : "Failed.");
+      setMessage(summary);
+      pushToast({
+        source: "Install",
+        title: summary,
+        tone: output.success ? "info" : "warning",
+      });
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setMessage(text);
+      pushToast({ source: "Install", title: text, tone: "warning" });
+    } finally {
+      setBusy(false);
+      refresh((n) => n + 1);
+    }
+  };
+
+  const showInstallBtn = !real.installed || (!real.runningInstalled && !real.upToDate);
 
   return (
     <Grid cols={1} rows={4} gap={GAP} padding={0} showGuides={showGuides}>
       <SettingRow row={0} title="Version" description={describeBuild()}>
         <Text color={COLOR.accent} fontSize={22}>{build.version}</Text>
       </SettingRow>
-      <SettingRow row={1} title="SteamVR Registration" description={statusMsg}>
-        <ActionButton
-          label={installed ? "UPDATE" : "INSTALL"}
-          tone="accent"
-          onClick={() => {
-            setInstalled(true);
-            setAutoLaunch(true);
-            setStatusMsg("Installed: starts with SteamVR");
-          }}
-        />
-        {installed && (
+      <SettingRow row={1} title="SteamVR Registration" description={message ?? defaultStatus}>
+        {showInstallBtn && (
           <ActionButton
-            label="UNINSTALL"
+            label={busy ? "WORKING…" : real.installed ? "UPDATE" : "INSTALL"}
+            tone="accent"
+            disabled={busy || !real.canInstall}
+            onClick={() => void run("install")}
+          />
+        )}
+        {real.installed && (
+          <ActionButton
+            label={busy ? "WORKING…" : "UNINSTALL"}
             tone="danger"
-            onClick={() => {
-              setInstalled(false);
-              setAutoLaunch(false);
-              setStatusMsg("Uninstalled from SteamVR");
-            }}
+            disabled={busy || !real.canInstall}
+            onClick={() => void run("uninstall")}
           />
         )}
       </SettingRow>
-      <SettingRow row={2} title="Start with SteamVR" description="Launch PetPlay automatically with SteamVR">
+      <SettingRow
+        row={2}
+        title="Start with SteamVR"
+        description={real.installed ? real.installedPath : "Registers PetPlay as a SteamVR startup overlay"}
+      >
         <ToggleControl
-          value={autoLaunch}
+          value={real.installed}
           onChange={(next) => {
-            setAutoLaunch(next);
-            if (next) setInstalled(true);
-            setStatusMsg(next ? "Auto-start enabled" : "Auto-start disabled");
+            if (busy || !real.canInstall) return;
+            if (next && !real.installed) void run("install");
+            else if (!next && real.installed) void run("uninstall");
           }}
         />
       </SettingRow>
       <SettingRow row={3} title="Logs Directory" description={logsDir()}>
         <Text color={COLOR.inkDim} fontSize={15}>
-          {real.canInstall ? "Packaged" : "Dev checkout"}
+          {real.canInstall ? (real.runningInstalled ? "Installed" : "Portable") : "Dev checkout"}
         </Text>
       </SettingRow>
     </Grid>
