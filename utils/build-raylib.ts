@@ -20,6 +20,14 @@ async function run(command: string, args: string[], cwd?: string): Promise<void>
 /** Build the official 5.5 recipe with our small external-GLFW patch. */
 export async function buildRaylib(target: NativeBuildTarget, sysroot?: string): Promise<string> {
   if (!target.endsWith("linux-gnu")) throw new Error("This raylib recipe targets Linux only");
+  const output = fromFileUrl(new URL(`dist/native/${target}/libraylib.so`, root));
+  if (
+    Deno.env.get("PETPLAY_PREBUILT_RAYLIB") === "1" &&
+    await Deno.stat(output).then(() => true, () => false)
+  ) {
+    console.log(`Reusing ${output}`);
+    return output;
+  }
   if (target !== nativeBuildTarget() && !sysroot) {
     throw new Error("Cross-building raylib requires --sysroot=<target root with libglfw.so>");
   }
@@ -68,7 +76,6 @@ export async function buildRaylib(target: NativeBuildTarget, sysroot?: string): 
     prefix,
     ...(sysroot ? [`-Dtarget_sysroot=${resolve(sysroot)}`] : []),
   ], source);
-  const output = fromFileUrl(new URL(`dist/native/${target}/libraylib.so`, root));
   await Deno.mkdir(fromFileUrl(new URL(`dist/native/${target}/`, root)), { recursive: true });
   await Deno.copyFile(`${prefix}/lib/libraylib.so`, output);
   console.log(`Built ${output}`);

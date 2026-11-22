@@ -16,26 +16,45 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      DENO_DIR: ${{ runner.temp }}/deno-cache
     steps:
       - uses: actions/checkout@v4
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.9.7
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.DENO_DIR }}
+          key: deno-check-${{ runner.os }}-${{ runner.arch }}-v2.9.7-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-check-${{ runner.os }}-${{ runner.arch }}-v2.9.7-
+      - id: webxr-commit
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:submodules/threewebxrwebgpudeno)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: webxr-runtime
+        with:
+          path: submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/build
+          key: webxr-runtime-${{ steps.webxr-commit.outputs.sha }}
       - uses: actions/setup-node@v4
+        if: steps.webxr-runtime.outputs.cache-hit != 'true'
         with:
           node-version: 24
       - uses: pnpm/action-setup@v4
+        if: steps.webxr-runtime.outputs.cache-hit != 'true'
         with:
           version: 10.33.4
       - run: deno task preconf
       - run: deno install --allow-import
       - run: deno task check
       # Vendor diagnostics are handled by the check task above.
-      - run: deno test -A --no-check classes utils
+      - run: deno test -A --no-check --parallel classes utils
       - name: Install desktop smoke dependencies
         run: sudo apt-get update && sudo apt-get install -y xvfb xauth libglfw3 libgl1-mesa-dri libasound2t64
-      - run: deno task build:webxr
+      - if: steps.webxr-runtime.outputs.cache-hit != 'true'
+        run: deno task build:webxr
       - name: Playtest with software OpenGL
         run: xvfb-run -a deno task playtest smoke --port=4095
         env:
@@ -66,36 +85,64 @@ jobs:
             file: dist/petplay-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      DENO_DIR: ${{ runner.temp }}/deno-cache
     steps:
       - uses: actions/checkout@v4
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.9.7
-      - uses: actions/setup-node@v4
+      - uses: actions/cache@v4
         with:
-          node-version: 24
-      # The capture helper only changes with its submodule, so a hit skips Rust entirely.
-      - id: capture-helper-commit
+          path: ${{ env.DENO_DIR }}
+          key: deno-build-${{ runner.os }}-${{ runner.arch }}-v2.9.7-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-build-${{ runner.os }}-${{ runner.arch }}-v2.9.7-
+      # Native helpers and the WebXR bundle only change with their submodules, so hits skip Rust/Node.
+      - id: submodules
         shell: bash
-        run: echo "sha=$(git rev-parse HEAD:submodules/screen-streamer)" >> "$GITHUB_OUTPUT"
-      - id: media-helper-commit
-        shell: bash
-        run: echo "sha=$(git rev-parse HEAD:submodules/petplay_mediatransport)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "capture=$(git rev-parse HEAD:submodules/screen-streamer)" >> "$GITHUB_OUTPUT"
+          echo "media=$(git rev-parse HEAD:submodules/petplay_mediatransport)" >> "$GITHUB_OUTPUT"
+          echo "webxr=$(git rev-parse HEAD:submodules/threewebxrwebgpudeno)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: webxr-runtime
+        with:
+          path: submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/build
+          key: webxr-runtime-${{ steps.submodules.outputs.webxr }}
+      # Cache the installed binaries in dist/native/ rather than dist/cargo* so Swatinem/rust-cache's
+      # LIFO post-step cleanup cannot delete them before actions/cache saves them.
       - uses: actions/cache@v4
         id: capture-helper
         with:
           path: |
-            dist/cargo/*/release/screen-streamer
-            dist/cargo/*/release/screen-streamer.exe
-          key: capture-helper-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ steps.capture-helper-commit.outputs.sha }}
+            dist/native/*/screen-streamer
+            dist/native/*/screen-streamer.exe
+          key: capture-helper-v2-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ steps.submodules.outputs.capture }}
       - uses: actions/cache@v4
         id: media-helper
         with:
           path: |
-            dist/cargo-media/*/release/petplay-media
-            dist/cargo-media/*/release/petplay-media.exe
-          key: media-helper-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ steps.media-helper-commit.outputs.sha }}-${{ steps.capture-helper-commit.outputs.sha }}
+            dist/native/*/petplay-media
+            dist/native/*/petplay-media.exe
+          key: media-helper-v2-${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ steps.submodules.outputs.media }}-${{ steps.submodules.outputs.capture }}
+      - uses: actions/cache@v4
+        id: arm64-raylib
+        if: runner.arch == 'ARM64'
+        with:
+          path: |
+            dist/native/aarch64-unknown-linux-gnu/libraylib.so
+            dist/glfw-fixture/usr
+          key: arm64-raylib-glfw-zig-0.13.0-${{ hashFiles('utils/build-raylib.ts', 'utils/native/raylib/**') }}
+      - uses: actions/setup-node@v4
+        if: steps.webxr-runtime.outputs.cache-hit != 'true'
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        if: steps.webxr-runtime.outputs.cache-hit != 'true'
+        with:
+          version: 10.33.4
       - uses: dtolnay/rust-toolchain@stable
         if: steps.capture-helper.outputs.cache-hit != 'true' || steps.media-helper.outputs.cache-hit != 'true'
         with:
@@ -106,12 +153,24 @@ jobs:
           workspaces: |
             submodules/screen-streamer -> ../../dist/cargo
             submodules/petplay_mediatransport -> ../../dist/cargo-media
-      # A cached helper still needs PipeWire at runtime for build-native's startup probe.
-      - name: Install Linux capture and media dependencies
+      # A cached helper still needs PipeWire at runtime for build-native's startup probe;
+      # ARM64 also needs software-GL smoke deps (and cmake/X11 headers only when building GLFW/raylib).
+      - name: Install Linux build and runtime dependencies
         if: runner.os == 'Linux'
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          ${{ (steps.capture-helper.outputs.cache-hit == 'true' && steps.media-helper.outputs.cache-hit == 'true') && 'libpipewire-0.3-0t64' || 'pkg-config clang libpipewire-0.3-dev libdbus-1-dev libva-dev libgbm-dev libasound2-dev libopus-dev' }}
+        run: |
+          pkgs=()
+          if [[ "${{ steps.capture-helper.outputs.cache-hit }}" == "true" && "${{ steps.media-helper.outputs.cache-hit }}" == "true" ]]; then
+            pkgs+=(libpipewire-0.3-0t64)
+          else
+            pkgs+=(pkg-config clang libpipewire-0.3-dev libdbus-1-dev libva-dev libgbm-dev libasound2-dev libopus-dev)
+          fi
+          if [[ "${{ runner.arch }}" == "ARM64" ]]; then
+            pkgs+=(xvfb xauth libgl1-mesa-dri)
+            if [[ "${{ steps.arm64-raylib.outputs.cache-hit }}" != "true" ]]; then
+              pkgs+=(cmake libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev)
+            fi
+          fi
+          sudo apt-get update && sudo apt-get install -y "${pkgs[@]}"
       - name: Test Linux capture buffer handling
         if: runner.os == 'Linux' && steps.capture-helper.outputs.cache-hit != 'true'
         run: >-
@@ -120,25 +179,21 @@ jobs:
           --manifest-path submodules/screen-streamer/Cargo.toml --workspace --lib
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/dist/cargo
-      - name: Install ARM64 raylib build dependencies
-        if: runner.arch == 'ARM64'
-        run: sudo apt-get update && sudo apt-get install -y cmake libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev xvfb xauth libgl1-mesa-dri
       - uses: mlugg/setup-zig@v2
-        if: runner.arch == 'ARM64'
+        if: runner.arch == 'ARM64' && steps.arm64-raylib.outputs.cache-hit != 'true'
         with:
           version: 0.13.0
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.4
       - run: deno task preconf
       - run: deno install --allow-import
       - name: Build test-only GLFW 3.4 (matching Frame's required API)
-        if: runner.arch == 'ARM64'
+        if: runner.arch == 'ARM64' && steps.arm64-raylib.outputs.cache-hit != 'true'
         run: bash utils/native/raylib/build-ci-glfw.sh
       - run: deno task build ${{ matrix.args }}
         env:
           PETPLAY_PREBUILT_CAPTURE_HELPER: ${{ steps.capture-helper.outputs.cache-hit == 'true' && '1' || '' }}
           PETPLAY_PREBUILT_MEDIA_HELPER: ${{ steps.media-helper.outputs.cache-hit == 'true' && '1' || '' }}
+          PETPLAY_PREBUILT_WEBXR: ${{ steps.webxr-runtime.outputs.cache-hit == 'true' && '1' || '' }}
+          PETPLAY_PREBUILT_RAYLIB: ${{ runner.arch == 'ARM64' && steps.arm64-raylib.outputs.cache-hit == 'true' && '1' || '' }}
           PETPLAY_RAYLIB_SYSROOT: ${{ runner.arch == 'ARM64' && format('{0}/dist/glfw-fixture', github.workspace) || '' }}
       - name: Smoke test compiled ARM64 executable with bundled raylib
         if: runner.arch == 'ARM64'

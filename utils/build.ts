@@ -15,13 +15,21 @@ import { parseBuildConfiguration } from "../classes/buildConfiguration.ts";
 const configuration = parseBuildConfiguration(Deno.args);
 const { mode, target, output } = configuration;
 
-const webxr = await new Deno.Command(Deno.execPath(), {
-  args: ["task", "build:webxr"],
-  stdin: "inherit",
-  stdout: "inherit",
-  stderr: "inherit",
-}).output();
-if (!webxr.success) throw new Error(`WebXR runtime build failed (${webxr.code})`);
+const webxrBundle =
+  "submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/build/iwer.module.js";
+const prebuiltWebxr = Deno.env.get("PETPLAY_PREBUILT_WEBXR") === "1" &&
+  await Deno.stat(webxrBundle).then(() => true, () => false);
+if (prebuiltWebxr) {
+  console.log(`Reusing ${webxrBundle}`);
+} else {
+  const webxr = await new Deno.Command(Deno.execPath(), {
+    args: ["task", "build:webxr"],
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  if (!webxr.success) throw new Error(`WebXR runtime build failed (${webxr.code})`);
+}
 
 await Deno.mkdir("dist", { recursive: true });
 // The per-run log (classes/runLog.ts) names the build a tester ran.
