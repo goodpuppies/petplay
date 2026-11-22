@@ -90,6 +90,7 @@ export class LinuxAudioShare {
       }).spawn();
       recorder = new Deno.Command("pw-record", {
         args: [
+          "--raw",
           "--target",
           sink,
           "-P",
