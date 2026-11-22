@@ -113,6 +113,7 @@ export async function startPetplayServer(
         ]);
       }
     }
+    await disableStageforgeNetworking("process-exit");
     if (Deno.build.os === "windows") {
       await releaseWindowsSyntheticDisplayMouseState();
       await releaseWindowsSyntheticKeyboardState();
@@ -252,17 +253,50 @@ export async function startPetplayServer(
   setWorkerChildArgs(childProcessArgs);
 
   PostalService.performanceLoggingActive = false;
-  if (stageforgeNetworkingEnabled) {
-    // Actors in other processes reach the ones here through iroh: `petplay-media link`
-    // (built with --features iroh) publishes this process's endpoint id and relay in topic
-    // records. See markdown/rdp/README.md.
+
+  let activeIroh: { stop(): Promise<void> } | null = null;
+  let networkingEnabled = false;
+
+  async function enableStageforgeNetworking(): Promise<boolean> {
+    if (networkingEnabled) return true;
     console.log(`Stageforge networking enabled (${STAGEFORGE_SIGNALING_URL})`);
     const { irohCarrier } = await import("../classes/irohCarrier.ts");
-    postalservice.registerRemoteCarrier(irohCarrier());
+    const carrier = irohCarrier();
+    activeIroh = carrier;
+    networkingEnabled = true;
+    postalservice.registerRemoteCarrier(carrier);
     postalservice.initSignalingClient(STAGEFORGE_SIGNALING_URL);
+    return true;
+  }
+
+  async function disableStageforgeNetworking(reason = "disabled"): Promise<boolean> {
+    if (!networkingEnabled && !activeIroh) return false;
+    networkingEnabled = false;
+    postalservice.closeRemote(reason);
+    const carrier = activeIroh;
+    activeIroh = null;
+    await carrier?.stop().catch(() => {});
+    console.log(`Stageforge networking disabled (${reason})`);
+    return false;
+  }
+
+  postalservice.functions = {
+    ...postalservice.functions,
+    SETNETWORKING: async (
+      payload: { enabled?: boolean } | null,
+    ): Promise<{ enabled: boolean }> => {
+      const enabled = payload?.enabled === true
+        ? await enableStageforgeNetworking()
+        : await disableStageforgeNetworking("setting");
+      return { enabled };
+    },
+  };
+
+  if (stageforgeNetworkingEnabled) {
+    await enableStageforgeNetworking();
   } else {
     console.log(
-      "Stageforge networking disabled. Enable it with --stageforge-networking or PETPLAY_STAGEFORGE_NETWORKING=1.",
+      "Stageforge networking disabled. Enable it in Settings (Peer Networking) or with --stageforge-networking.",
     );
   }
 

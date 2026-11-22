@@ -28,6 +28,8 @@ import {
   useWorkspaceLayoutSnapshot,
 } from "../workspaceLayoutStore.ts";
 import { useVrcCameraControls, useVrcCameraSnapshot } from "../vrcCameraStore.ts";
+import { PostMan, System } from "../../../submodules/stageforge/mod.ts";
+import { pushToast } from "../toastStore.ts";
 
 export const SETTINGS_WINDOW_COLS = 8;
 export const SETTINGS_WINDOW_ROWS = 5;
@@ -348,6 +350,37 @@ function BooleanSettingRow({
   );
 }
 
+function PeerNetworkingRow({ row }: { row: number }) {
+  const value = useSetting("stageforgeNetworking");
+  return (
+    <SettingRow
+      row={row}
+      title="Peer Networking"
+      description="Connect via iroh + topic server for VRChat sharing"
+    >
+      <ToggleControl
+        value={value}
+        onChange={(next) => {
+          setSetting("stageforgeNetworking", next);
+          try {
+            PostMan.PostMessage({
+              target: System,
+              type: "SETNETWORKING",
+              payload: { enabled: next },
+            });
+          } catch {
+            // Standalone UI preview runs outside a Stageforge actor worker.
+          }
+          pushToast({
+            source: "Settings",
+            title: next ? "Peer networking enabled" : "Peer networking disabled",
+          });
+        }}
+      />
+    </SettingRow>
+  );
+}
+
 function GeneralPage({ showGuides }: { showGuides: boolean }) {
   return (
     <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
@@ -375,12 +408,7 @@ function GeneralPage({ showGuides }: { showGuides: boolean }) {
         description="Show wireframe frames around spatial windows"
         setting="grabboxOutline"
       />
-      <BooleanSettingRow
-        row={4}
-        title="Peer Networking"
-        description="Connect via iroh + topic server for VRChat sharing (restart)"
-        setting="stageforgeNetworking"
-      />
+      <PeerNetworkingRow row={4} />
     </Grid>
   );
 }
