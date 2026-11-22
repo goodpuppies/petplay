@@ -8,9 +8,15 @@ import {
   setOverlayTransformAbsolute,
 } from "../classes/openvrTransform.ts";
 import { TransformStabilizer2 } from "../classes/transformStabilizer2.ts";
+import {
+  decodeVrcOriginPose,
+  type VrcOriginSource,
+  type VrcOriginWorldPose,
+} from "../classes/vrcOriginCodec.ts";
 
 const state = actorState({
   origin: null as OpenVR.HmdMatrix34 | null,
+  originSource: null as VrcOriginSource | null,
   name: "origin",
   vrc: "",
   hmd: "",
@@ -36,6 +42,7 @@ new PostMan(
         assignedVrc: state.vrc !== "",
         assignedHmd: state.hmd !== "",
         hasOrigin: state.origin != null,
+        originSource: state.originSource,
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -87,13 +94,7 @@ function stopOrigin(): true {
   return true;
 }
 
-const PositionX: string = "/avatar/parameters/CustomObjectSync/PositionX";
-const PositionY: string = "/avatar/parameters/CustomObjectSync/PositionY";
-const PositionZ: string = "/avatar/parameters/CustomObjectSync/PositionZ";
-const RotationY: string = "/avatar/parameters/CustomObjectSync/RotationY";
-
-const lastKnownPosition: LastKnownPosition = { x: 0, y: 0, z: 0 };
-const lastKnownRotation: LastKnownRotation = { y: 0 };
+let lastKnownPose: VrcOriginWorldPose | null = null;
 
 function originReaction() {
   if (state.overlays.length > 0) {
@@ -145,11 +146,9 @@ async function main(overlaymame: string, overlaytexture: string) {
     }
     while (true) {
       if (state.vrc !== "" && state.hmd !== "") {
-        let finalMatrix: OpenVR.HmdMatrix34;
-        let pureMatrix: OpenVR.HmdMatrix34;
-        let hmdTransform: OpenVR.HmdMatrix34;
+        let extracted: [OpenVR.HmdMatrix34, OpenVR.HmdMatrix34, OpenVR.HmdMatrix34] | null = null;
         try {
-          [finalMatrix, pureMatrix, hmdTransform] = await extractOrigin();
+          extracted = await extractOrigin();
         } catch (error) {
           LogChannel.error(
             "vrcorigin",
@@ -158,6 +157,11 @@ async function main(overlaymame: string, overlaytexture: string) {
           await wait(33);
           continue;
         }
+        if (!extracted) {
+          await wait(33);
+          continue;
+        }
+        const [finalMatrix, pureMatrix, hmdTransform] = extracted;
 
         if (state.transformStabilizer) {
           const stabilizedMatrix = state.transformStabilizer.getStabilizedTransform(
@@ -200,13 +204,9 @@ async function main(overlaymame: string, overlaytexture: string) {
   }
 }
 
-function transformCoordinate(value: number): number {
-  return (value - 0.5) * 340;
-}
-function transformRotation(value: number): number {
-  return value * 2 * Math.PI;
-}
-async function extractOrigin() {
+async function extractOrigin(): Promise<
+  [OpenVR.HmdMatrix34, OpenVR.HmdMatrix34, OpenVR.HmdMatrix34] | null
+> {
   interface coord {
     [key: string]: number;
   }
@@ -224,22 +224,25 @@ async function extractOrigin() {
     payload: null,
   }, true) as coord;
 
-  if (coordinate[PositionX] !== undefined) lastKnownPosition.x = coordinate[PositionX];
-  if (coordinate[PositionY] !== undefined) lastKnownPosition.y = coordinate[PositionY];
-  if (coordinate[PositionZ] !== undefined) lastKnownPosition.z = coordinate[PositionZ];
-  if (coordinate[RotationY] !== undefined) lastKnownRotation.y = coordinate[RotationY];
+  const decoded = decodeVrcOriginPose(coordinate);
+  if (decoded) {
+    lastKnownPose = decoded;
+    state.originSource = decoded.source;
+  }
+  if (!lastKnownPose) return null;
+
   const hmdX = hmdMatrix[0][3]; // Extract HMD X position
   const hmdY = hmdMatrix[1][3]; // Extract HMD Y position
   const hmdZ = hmdMatrix[2][3]; // Extract HMD Z position
-  const vrChatYaw = transformRotation(lastKnownRotation.y);
+  const vrChatYaw = lastKnownPose.yawRad;
   const correctedYaw = hmdYaw + vrChatYaw;
   const cosVrChatYaw = Math.cos(correctedYaw);
   const sinVrChatYaw = Math.sin(correctedYaw);
   const rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
   const rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
-  const transformedX = transformCoordinate(lastKnownPosition.x) + rotatedHmdX;
-  const transformedY = transformCoordinate(lastKnownPosition.y);
-  const transformedZ = transformCoordinate(lastKnownPosition.z) - rotatedHmdZ;
+  const transformedX = lastKnownPose.position[0] + rotatedHmdX;
+  const transformedY = lastKnownPose.position[1];
+  const transformedZ = lastKnownPose.position[2] - rotatedHmdZ;
   const cosCorrectedYaw = Math.cos(correctedYaw);
   const sinCorrectedYaw = Math.sin(correctedYaw);
   const rotatedX = transformedX * cosCorrectedYaw - transformedZ * sinCorrectedYaw;
@@ -269,15 +272,6 @@ async function extractOrigin() {
     ],
   };
   return [finalMatrix, pureMatrix, hmdTransform];
-}
-
-interface LastKnownPosition {
-  x: number;
-  y: number;
-  z: number;
-}
-interface LastKnownRotation {
-  y: number;
 }
 
 function setTransform(transform: OpenVR.HmdMatrix34) {

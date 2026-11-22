@@ -30,10 +30,15 @@ jobs:
         with:
           path: dist
           name: petplay-linux-arm64-experimental
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.7
+      - name: Build Unity origin package
+        run: deno task build:unity-origin
       - name: Hash release executables
         run: |
           cd dist
-          sha256sum petplay petplay.exe petplay-aarch64 > SHA256SUMS
+          sha256sum petplay petplay.exe petplay-aarch64 PetPlay-VRCOrigin.unitypackage > SHA256SUMS
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -42,6 +47,7 @@ jobs:
             dist/petplay
             dist/petplay.exe
             dist/petplay-aarch64
+            dist/PetPlay-VRCOrigin.unitypackage
             dist/SHA256SUMS
             resources/licenses/raylib.txt
             resources/licenses/scap.txt

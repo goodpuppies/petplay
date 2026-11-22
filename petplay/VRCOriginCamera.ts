@@ -3,6 +3,7 @@ import { ActorId, actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { listenOscReceiver } from "../classes/oscReceiverSocket.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import type { Vec3Tuple, VrcCameraDebugPose } from "../classes/vrcCameraDebugState.ts";
+import { decodeVrcOriginPose, isVrcOriginOscAddress } from "../classes/vrcOriginCodec.ts";
 
 type OscMessage = {
   address: string;
@@ -219,7 +220,7 @@ async function stopCameraOrigin(): Promise<true> {
 }
 
 function handleOscMessage(message: OscMessage): void {
-  if (message.address.startsWith(CUSTOM_OBJECT_SYNC_PREFIX)) {
+  if (isVrcOriginOscAddress(message.address)) {
     const value = message.args[0];
     if (typeof value === "number") {
       state.customObjectSyncCoordinates[message.address] = value;
@@ -318,21 +319,8 @@ function updatePositionEstimate(pose: VrcCameraDebugPose): void {
 }
 
 function decodeCustomObjectSyncTargetWorld(): Vec3Tuple | null {
-  const x = state.customObjectSyncCoordinates[CUSTOM_OBJECT_SYNC_POSITION_X];
-  const y = state.customObjectSyncCoordinates[CUSTOM_OBJECT_SYNC_POSITION_Y];
-  const z = state.customObjectSyncCoordinates[CUSTOM_OBJECT_SYNC_POSITION_Z];
-  if (x == null || y == null || z == null) {
-    return null;
-  }
-  return [
-    transformCustomObjectCoordinate(x),
-    transformCustomObjectCoordinate(y),
-    transformCustomObjectCoordinate(z),
-  ];
-}
-
-function transformCustomObjectCoordinate(value: number): number {
-  return (value - 0.5) * 340;
+  const pose = decodeVrcOriginPose(state.customObjectSyncCoordinates);
+  return pose ? [...pose.position] : null;
 }
 
 function fitCameraLookAtTarget(samples: CameraRaySample[]): CameraPositionEstimate | null {
@@ -530,7 +518,8 @@ class CameraOscQueryDriver {
     if (this.options.oscPort !== preferredPort) {
       this.options.httpPort = getAvailableTcpPort(this.options.oscPort);
     }
-    this.options.name = `${this.options.name}-${this.options.oscPort}`;
+    const instanceTag = Date.now().toString(36).slice(-4);
+    this.options.name = `${this.options.name}-${this.options.oscPort}-${instanceTag}`;
     this.httpServer = Deno.serve(
       { hostname: "127.0.0.1", port: this.options.httpPort },
       this.handleHttpRequest.bind(this),
@@ -709,9 +698,20 @@ class OscQueryMdnsAdvertiser {
 function buildAddressTree(): OSCQueryNode {
   return {
     FULL_PATH: "/",
-    DESCRIPTION: "PetPlay camera origin OSCQuery receiver",
+    DESCRIPTION: "PetPlay camera and origin OSCQuery receiver",
     ACCESS: 0,
     CONTENTS: {
+      "avatar": {
+        FULL_PATH: "/avatar",
+        ACCESS: 0,
+        CONTENTS: {
+          "parameters": {
+            FULL_PATH: "/avatar/parameters",
+            ACCESS: 2,
+            DESCRIPTION: "Avatar parameters (PetPlay/Origin and CustomObjectSync)",
+          },
+        },
+      },
       "usercamera": {
         FULL_PATH: "/usercamera",
         ACCESS: 0,

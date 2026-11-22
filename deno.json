@@ -82,6 +82,7 @@
     "keyb:reset": "deno run -A petplay/resetKeyboard.ts",
     "build:raylib": "deno run -A utils/build-raylib.ts",
     "build:native": "deno run -A utils/build-native.ts",
+    "build:unity-origin": "deno run -A utils/build-unity-origin-package.ts",
     "build:webxr": "cd submodules/threewebxrwebgpudeno/submodules/iwer && pnpm install --frozen-lockfile --filter iwer... --ignore-scripts && pnpm run build",
     "build": {
       "command": "deno run -A utils/build.ts"
