@@ -659,12 +659,13 @@ export function commitNodeTransform(
 }
 
 /**
- * Recenter: move the whole layout rigidly so the primary display (lowest-ordinal root display)
- * sits at `offset` in front of the head, facing it. Only yaw is taken from the head, so looking
- * down at the wrist while recentering does not tilt every display. The primary also stands back
- * up: its roll goes and its tilt is kept only up to `RECENTER_MAX_TILT`, so a display that was
- * tipped over or turned away comes back readable. Every root moves by the same transform, which
- * keeps the arrangement between separate roots; children follow their parents.
+ * Recenter: de-anchor every root hierarchy back to the world (`SCENE_ORIGIN_ID`) and move the
+ * whole layout rigidly so the primary display (lowest-ordinal root display) sits at `offset` in
+ * front of the head, facing it. Only yaw is taken from the head, so looking down at the wrist
+ * while recentering does not tilt every display. The primary also stands back up: its roll goes
+ * and its tilt is kept only up to `RECENTER_MAX_TILT`, so a display that was tipped over, turned
+ * away, or stranded on a head/hand anchor comes back readable. Every root moves by the same
+ * transform, which keeps the arrangement between separate roots; children follow their parents.
  */
 /** The most forward or backward tilt Recenter keeps on the primary display. */
 const RECENTER_MAX_TILT = Math.PI / 6;
@@ -682,9 +683,10 @@ export function recenterSpatialRoots(
     return recenterSpatialRoots(rebuilt, headPosition, headYaw, offset, outputs);
   }
 
-  // Windows attached to the head or a hand already sit where they belong.
+  // Recenter is the escape hatch when windows get lost (including head/hand-anchored ones), so
+  // every root is included and de-anchored back to the world.
   const roots = Object.values(current.nodes).filter((node) =>
-    node.parentId == null && !node.constraint && node.originId === SCENE_ORIGIN_ID
+    node.parentId == null && !node.constraint
   );
   const primary = roots
     .filter((node): node is DisplaySpatialNode => node.kind === "display")
@@ -712,6 +714,7 @@ export function recenterSpatialRoots(
   const turn = upright.multiply(primaryRotation.invert());
 
   const graph = cloneGraph(current);
+  const recenteredRoots = new Set(roots.map((node) => node.id));
   for (const node of roots) {
     const position = new THREE.Vector3(...node.localTransform.position)
       .sub(primaryPosition)
@@ -727,12 +730,21 @@ export function recenterSpatialRoots(
     );
     graph.nodes[node.id] = {
       ...node,
+      originId: SCENE_ORIGIN_ID,
       localTransform: {
         ...node.localTransform,
         position: position.toArray() as [number, number, number],
         rotation: [rotation.x, rotation.y, rotation.z],
       },
     };
+  }
+  for (const node of Object.values(graph.nodes)) {
+    if (
+      node.originId !== SCENE_ORIGIN_ID &&
+      recenteredRoots.has(getSpatialRootId(graph, node.id))
+    ) {
+      graph.nodes[node.id] = { ...node, originId: SCENE_ORIGIN_ID };
+    }
   }
   // A keyboard that no longer hangs from a display comes back under the primary one, so one
   // dropped out of reach, left on a hand or deleted is a Recenter away. A taken bottom slot keeps

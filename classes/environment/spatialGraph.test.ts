@@ -792,7 +792,7 @@ Deno.test("opacity is clamped, and full opacity clears the field", () => {
   assert(!("opacity" in restored.nodes["display-1"]), "opaque leaves no field behind");
 });
 
-Deno.test("anchoring a child re-anchors its whole hierarchy; recenter and snapping skip it", () => {
+Deno.test("anchoring a child re-anchors its whole hierarchy; snapping skips across origins and recenter de-anchors it", () => {
   let graph = spawnHingedDisplay(createInitialSpatialGraph(), "display-1", "right");
   const pose = {
     position: [0.1, -0.05, -0.4],
@@ -809,10 +809,15 @@ Deno.test("anchoring a child re-anchors its whole hierarchy; recenter and snappi
   assert(graph.nodes["display-1"].localTransform.position[2] === -0.4, "root pose replaced");
   assert(graph.nodes["display-2"].parentId === "display-1", "hierarchy kept");
 
-  // Recenter only moves world-anchored windows: nothing is left to move here.
+  // Recenter de-anchors head/hand-attached hierarchies back to the world in front of the head.
+  const recentered = recenterSpatialRoots(graph, [0, 1.6, 0], 0, [0, -0.08, -1.35]);
+  assert(recentered.nodes["display-1"].originId === "scene-origin", "root de-anchored to world");
+  assert(recentered.nodes["display-2"].originId === "scene-origin", "child de-anchored to world");
+  assert(recentered.nodes["display-2"].parentId === "display-1", "hierarchy kept after recenter");
+  const primaryAfter = worldPointOf(recentered, "display-1", [0, 0, 0]);
   assert(
-    recenterSpatialRoots(graph, [0, 1.6, 0], 0, [0, -0.08, -1.35]) === graph,
-    "hand-attached layout is not recentered",
+    Math.abs(primaryAfter.y - 1.52) < 1e-4 && Math.abs(primaryAfter.z + 1.35) < 1e-4,
+    "de-anchored root recentered in front of the head",
   );
 
   // A world display placed on the hand display's left slot does not latch onto it. A spawned
