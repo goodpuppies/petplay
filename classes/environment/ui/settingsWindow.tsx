@@ -381,9 +381,28 @@ function PeerNetworkingRow({ row }: { row: number }) {
   );
 }
 
+function GrabThresholdRow({ row }: { row: number }) {
+  const threshold = useSetting("grabThreshold");
+  const clamp = (v: number) => Math.round(Math.min(0.95, Math.max(0.05, v)) * 100) / 100;
+  return (
+    <SettingRow
+      row={row}
+      title="Grab Threshold"
+      description="Index grip squeeze force required to grab (5% to 95%)"
+    >
+      <StepperControl
+        label={`${Math.round(threshold * 100)}%`}
+        fraction={(threshold - 0.05) / 0.9}
+        onDecrement={() => setSetting("grabThreshold", clamp(threshold - 0.05))}
+        onIncrement={() => setSetting("grabThreshold", clamp(threshold + 0.05))}
+      />
+    </SettingRow>
+  );
+}
+
 function GeneralPage({ showGuides }: { showGuides: boolean }) {
   return (
-    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={6} gap={GAP} padding={0} showGuides={showGuides}>
       <BooleanSettingRow
         row={0}
         title="Controller Lasers"
@@ -408,7 +427,8 @@ function GeneralPage({ showGuides }: { showGuides: boolean }) {
         description="Show wireframe frames around spatial windows"
         setting="grabboxOutline"
       />
-      <PeerNetworkingRow row={4} />
+      <GrabThresholdRow row={4} />
+      <PeerNetworkingRow row={5} />
     </Grid>
   );
 }

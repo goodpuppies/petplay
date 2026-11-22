@@ -55,6 +55,18 @@
             }
           },
           "mode": "button",
+          "parameters": {
+            "force_threshold": "0.45"
+          },
+          "path": "/user/hand/left/input/grip"
+        },
+        {
+          "inputs": {
+            "force": {
+              "output": "/actions/main/in/GrabForceLeft"
+            }
+          },
+          "mode": "force_sensor",
           "path": "/user/hand/left/input/grip"
         },
         {
@@ -100,6 +112,18 @@
             }
           },
           "mode": "button",
+          "parameters": {
+            "force_threshold": "0.45"
+          },
+          "path": "/user/hand/right/input/grip"
+        },
+        {
+          "inputs": {
+            "force": {
+              "output": "/actions/main/in/GrabForceRight"
+            }
+          },
+          "mode": "force_sensor",
           "path": "/user/hand/right/input/grip"
         },
         {

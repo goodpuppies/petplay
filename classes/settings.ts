@@ -179,6 +179,12 @@ export const SETTINGS_SCHEMA = {
     label: "Enable peer-to-peer networking (iroh + topic server) for VRChat/household sharing",
     valid: isBoolean,
   } satisfies SettingSpec<boolean>,
+  grabThreshold: {
+    default: 0.45 as number,
+    label: "Index grip squeeze force required to grab (0.05 to 0.95)",
+    valid: (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0.05 && v <= 0.95,
+  } satisfies SettingSpec<number>,
 };
 
 export type Settings = {

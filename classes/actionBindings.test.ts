@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
 import { fromFileUrl } from "@std/path";
+import { applyGrabThreshold } from "./directOpenVrInputSource.ts";
 
 const root = new URL("../", import.meta.url);
 const manifest = JSON.parse(Deno.readTextFileSync(new URL("resources/actions.json", root)));
@@ -151,4 +152,34 @@ Deno.test("every default binding drags the playspace from the left hand", () => 
     assertEquals(chords.length, 0, binding_url);
     assert(/^\/user\/hand\/left\/input\/(joystick|thumbstick)$/.test(clicks[0].path), binding_url);
   }
+});
+
+Deno.test("Index bindings expose analog grip force and applyGrabThreshold uses hysteresis", () => {
+  const knuckles = JSON.parse(
+    Deno.readTextFileSync(new URL("resources/bindings_knuckles.json", root)),
+  );
+  const sources = knuckles.bindings["/actions/main"].sources as Array<{
+    mode: string;
+    path: string;
+    inputs: Record<string, { output: string }>;
+    parameters?: Record<string, string>;
+  }>;
+  for (const [hand, side] of [["left", "Left"], ["right", "Right"]] as const) {
+    const forceSource = sources.find((s) =>
+      s.mode === "force_sensor" && s.path === `/user/hand/${hand}/input/grip`
+    );
+    assert(forceSource, `missing force_sensor grip source for ${hand}`);
+    assertEquals(forceSource.inputs.force?.output, `/actions/main/in/GrabForce${side}`);
+    const clickSource = sources.find((s) =>
+      s.mode === "button" && s.path === `/user/hand/${hand}/input/grip`
+    );
+    assert(Number(clickSource?.parameters?.force_threshold) >= 0.4);
+  }
+
+  // Rising edge requires >= threshold (0.45); holding stays latched down to 0.35.
+  assertEquals(applyGrabThreshold(0.2, false, 0.45), false);
+  assertEquals(applyGrabThreshold(0.44, false, 0.45), false);
+  assertEquals(applyGrabThreshold(0.45, false, 0.45), true);
+  assertEquals(applyGrabThreshold(0.36, true, 0.45), true);
+  assertEquals(applyGrabThreshold(0.34, true, 0.45), false);
 });

@@ -23,6 +23,20 @@ import type { OpenVrHmdEmulationPose } from "./openVrOverlayFramePacing.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
+import { getSetting } from "./settings.ts";
+
+/** Release band below the grab threshold to prevent chatter while holding a squeeze. */
+const GRAB_HYSTERESIS = 0.10;
+
+/** Evaluates an analog grip force (0..1) against `threshold` with hysteresis. */
+export function applyGrabThreshold(force: number, wasHeld: boolean, threshold: number): boolean {
+  if (!Number.isFinite(force)) return false;
+  const clamped = Math.min(0.95, Math.max(0.05, threshold));
+  if (wasHeld) {
+    return force >= Math.max(0.02, clamped - GRAB_HYSTERESIS);
+  }
+  return force >= clamped;
+}
 import { tempFile } from "./utils.ts";
 import { type HapticPulse, setHapticSink } from "./environment/haptics.ts";
 
@@ -108,6 +122,10 @@ export class DirectOpenVrInputSource {
 
   private grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private grabRightHandle = OpenVR.k_ulInvalidActionHandle;
+  private grabForceLeftHandle = OpenVR.k_ulInvalidActionHandle;
+  private grabForceRightHandle = OpenVR.k_ulInvalidActionHandle;
+  private grabForceLeftHeld = false;
+  private grabForceRightHeld = false;
   private triggerLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
   private joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
@@ -161,6 +179,14 @@ export class DirectOpenVrInputSource {
     OpenVR.InputAnalogActionDataStruct,
   );
   private readonly joystickRight = createStruct<OpenVR.InputAnalogActionData>(
+    null,
+    OpenVR.InputAnalogActionDataStruct,
+  );
+  private readonly grabForceLeft = createStruct<OpenVR.InputAnalogActionData>(
+    null,
+    OpenVR.InputAnalogActionDataStruct,
+  );
+  private readonly grabForceRight = createStruct<OpenVR.InputAnalogActionData>(
     null,
     OpenVR.InputAnalogActionDataStruct,
   );
@@ -256,6 +282,13 @@ export class DirectOpenVrInputSource {
 
     this.grabLeftHandle = getActionHandle("/actions/main/in/GrabLeft");
     this.grabRightHandle = getActionHandle("/actions/main/in/GrabRight");
+    try {
+      this.grabForceLeftHandle = getActionHandle("/actions/main/in/GrabForceLeft");
+      this.grabForceRightHandle = getActionHandle("/actions/main/in/GrabForceRight");
+    } catch {
+      this.grabForceLeftHandle = OpenVR.k_ulInvalidActionHandle;
+      this.grabForceRightHandle = OpenVR.k_ulInvalidActionHandle;
+    }
     this.triggerLeftHandle = getActionHandle("/actions/main/in/TriggerLeft");
     this.triggerRightHandle = getActionHandle("/actions/main/in/TriggerRight");
     this.joystickLeftHandle = getActionHandle("/actions/main/in/JoystickLeft");
@@ -437,6 +470,46 @@ export class DirectOpenVrInputSource {
       OpenVR.InputAnalogActionDataStruct.byteSize,
       this.rightHandPathHandle,
     );
+    let grabForceLActive = false;
+    let grabForceRActive = false;
+    if (this.grabForceLeftHandle !== OpenVR.k_ulInvalidActionHandle) {
+      this.vrInput.GetAnalogActionData(
+        this.grabForceLeftHandle,
+        this.grabForceLeft[0],
+        OpenVR.InputAnalogActionDataStruct.byteSize,
+        this.leftHandPathHandle,
+      );
+      const forceL = OpenVR.InputAnalogActionDataStruct.read(this.grabForceLeft[1]);
+      if (forceL.bActive) {
+        grabForceLActive = true;
+        this.grabForceLeftHeld = applyGrabThreshold(
+          forceL.x,
+          this.grabForceLeftHeld,
+          getSetting("grabThreshold"),
+        );
+      } else {
+        this.grabForceLeftHeld = false;
+      }
+    }
+    if (this.grabForceRightHandle !== OpenVR.k_ulInvalidActionHandle) {
+      this.vrInput.GetAnalogActionData(
+        this.grabForceRightHandle,
+        this.grabForceRight[0],
+        OpenVR.InputAnalogActionDataStruct.byteSize,
+        this.rightHandPathHandle,
+      );
+      const forceR = OpenVR.InputAnalogActionDataStruct.read(this.grabForceRight[1]);
+      if (forceR.bActive) {
+        grabForceRActive = true;
+        this.grabForceRightHeld = applyGrabThreshold(
+          forceR.x,
+          this.grabForceRightHeld,
+          getSetting("grabThreshold"),
+        );
+      } else {
+        this.grabForceRightHeld = false;
+      }
+    }
 
     const grabL = OpenVR.InputDigitalActionDataStruct.read(this.grabLeft[1]);
     const grabR = OpenVR.InputDigitalActionDataStruct.read(this.grabRight[1]);
@@ -449,9 +522,16 @@ export class DirectOpenVrInputSource {
     const middleModL = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierLeft[1]);
     const middleModR = OpenVR.InputDigitalActionDataStruct.read(this.middleClickModifierRight[1]);
 
+    const leftGrabDown = grabForceLActive
+      ? this.grabForceLeftHeld
+      : Boolean(grabL.bActive && grabL.bState);
+    const rightGrabDown = grabForceRActive
+      ? this.grabForceRightHeld
+      : Boolean(grabR.bActive && grabR.bState);
+
     // Index starts space drag with a grip chord: the grip must not also grab what it points at.
-    this.leftBuffers.grab[0] = grabL.bActive && grabL.bState && !this.spaceDragHeld ? 1 : 0;
-    this.rightBuffers.grab[0] = grabR.bActive && grabR.bState ? 1 : 0;
+    this.leftBuffers.grab[0] = leftGrabDown && !this.spaceDragHeld ? 1 : 0;
+    this.rightBuffers.grab[0] = rightGrabDown ? 1 : 0;
     this.leftBuffers.trigger[0] = trigL.bActive && trigL.bState ? 1 : 0;
     this.rightBuffers.trigger[0] = trigR.bActive && trigR.bState ? 1 : 0;
     this.leftBuffers.joystick[0] = joystickL.bActive ? joystickL.x : 0;
@@ -490,6 +570,10 @@ export class DirectOpenVrInputSource {
     this.inputReady = false;
     this.grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.grabRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.grabForceLeftHandle = OpenVR.k_ulInvalidActionHandle;
+    this.grabForceRightHandle = OpenVR.k_ulInvalidActionHandle;
+    this.grabForceLeftHeld = false;
+    this.grabForceRightHeld = false;
     this.triggerLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.triggerRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
