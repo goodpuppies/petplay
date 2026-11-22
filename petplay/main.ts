@@ -1072,18 +1072,21 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
       type: "ASSIGNWEBXR",
       payload: actors.webxr,
     });
-    // The VRChat origin marker (a PetPlay-logo overlay that follows the
-    // avatar's CustomObjectSync position) and its pushes into the WebXR scene
-    // are opt-in: outside VRChat it is just a stray logo near the play-space
-    // origin.
-    if (Deno.args.includes("--vrc-origin")) {
-      PostMan.PostMessage({ target: origin, type: "ADDOVERLAY", payload: actors.webxr });
-      PostMan.PostMessage({
-        target: origin,
-        type: "STARTORIGIN",
-        payload: { name: "originoverlay", texture: "./resources/PetPlay.png" },
-      });
-    }
+    // Always wire VRCOrigin into webxr so shared VRChat world coordinates work
+    // automatically whenever PetPlay/Origin/* (or legacy CustomObjectSync/*) OSC
+    // arrives; the floating world-origin debug marker stays opt-in.
+    const showOriginMarker = Deno.args.includes("--vrc-origin") ||
+      Deno.args.includes("--vrc-origin-marker");
+    PostMan.PostMessage({ target: origin, type: "ADDOVERLAY", payload: actors.webxr });
+    PostMan.PostMessage({
+      target: origin,
+      type: "STARTORIGIN",
+      payload: {
+        name: "originoverlay",
+        texture: "./resources/PetPlay.png",
+        showMarker: showOriginMarker,
+      },
+    });
     PostMan.PostMessage({ target: actors.cameraOrigin, type: "STARTCAMERAORIGIN", payload: null });
     registerSceneActors(actors);
     LogChannel.log("actor", `[supervisor] OpenVR attached (attach #${supervisor.attachCount})`);

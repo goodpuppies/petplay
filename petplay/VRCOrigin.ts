@@ -7,26 +7,39 @@ import {
   getOverlayTransformAbsolute,
   setOverlayTransformAbsolute,
 } from "../classes/openvrTransform.ts";
-import { TransformStabilizer2 } from "../classes/transformStabilizer2.ts";
 import {
   decodeVrcOriginPose,
   type VrcOriginSource,
   type VrcOriginWorldPose,
 } from "../classes/vrcOriginCodec.ts";
+import {
+  type Matrix34Tuple,
+  VrcOriginSolver,
+  type VrcWorldToStandingTransform,
+} from "../classes/vrcOriginTransform.ts";
+
+const ACTIVE_POLL_MS = 16;
+const IDLE_POLL_MS = 250;
 
 const state = actorState({
   origin: null as OpenVR.HmdMatrix34 | null,
+  transform: null as VrcWorldToStandingTransform | null,
+  worldPose: null as VrcOriginWorldPose | null,
   originSource: null as VrcOriginSource | null,
   name: "origin",
   vrc: "",
   hmd: "",
+  running: false,
+  showMarker: false,
   overlayClass: null as OpenVR.IVROverlay | null,
   overlayHandle: 0n as OpenVR.OverlayHandle,
   overlayerror: OpenVR.OverlayError.VROverlayError_None,
   originChangeCount: 0,
-  transformStabilizer: null as TransformStabilizer2 | null,
   overlays: [] as string[],
 });
+
+let solver = new VrcOriginSolver();
+let loopGeneration = 0;
 
 new PostMan(
   state,
@@ -37,12 +50,16 @@ new PostMan(
     },
     __HEALTH__: (_payload: unknown) => {
       return {
+        running: state.running,
+        showMarker: state.showMarker,
         overlayReady: state.overlayClass != null,
         overlayHandleActive: state.overlayHandle !== 0n,
         assignedVrc: state.vrc !== "",
         assignedHmd: state.hmd !== "",
         hasOrigin: state.origin != null,
         originSource: state.originSource,
+        worldPose: state.worldPose,
+        transform: state.transform,
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -59,8 +76,20 @@ new PostMan(
     GETVRCORIGIN: (_payload: void) => {
       return state.origin;
     },
-    STARTORIGIN: (payload: { name: string; texture: string }) => {
-      main(payload.name, payload.texture);
+    GETVRCORIGINSTATE: (_payload: void) => {
+      return {
+        hasOrigin: state.origin != null,
+        source: state.originSource,
+        worldPose: state.worldPose,
+        transform: state.transform,
+        matrix: state.origin,
+      };
+    },
+    STARTORIGIN: (payload: { name?: string; texture?: string; showMarker?: boolean } | null) => {
+      const showMarker = payload?.showMarker ?? Boolean(payload?.texture);
+      const name = payload?.name ?? "originoverlay";
+      const texture = payload?.texture ?? "./resources/PetPlay.png";
+      main(name, texture, showMarker);
     },
     STOPORIGIN: (_payload: void) => {
       return stopOrigin();
@@ -76,12 +105,24 @@ new PostMan(
       state.overlayClass = new OpenVR.IVROverlay(systemPtr);
     },
     ADDOVERLAY: (payload: string) => {
-      state.overlays.push(payload);
+      if (!state.overlays.includes(payload)) {
+        state.overlays.push(payload);
+      }
+      // Push the current origin immediately if we already have one.
+      if (state.origin) {
+        PostMan.PostMessage({
+          target: payload as ActorId,
+          type: "ORIGINUPDATE",
+          payload: state.origin,
+        });
+      }
     },
   } as const,
 );
 
 function stopOrigin(): true {
+  loopGeneration++;
+  state.running = false;
   if (state.overlayClass && state.overlayHandle) {
     try {
       state.overlayClass.DestroyOverlay(state.overlayHandle);
@@ -91,13 +132,15 @@ function stopOrigin(): true {
   }
   state.overlayHandle = 0n as OpenVR.OverlayHandle;
   state.origin = null;
+  state.transform = null;
+  state.worldPose = null;
+  state.originSource = null;
+  solver.reset();
   return true;
 }
 
-let lastKnownPose: VrcOriginWorldPose | null = null;
-
-function originReaction() {
-  if (state.overlays.length > 0) {
+function originReaction(): void {
+  if (state.overlays.length > 0 && state.origin) {
     PostMan.PostMessage({
       target: state.overlays,
       type: "ORIGINUPDATE",
@@ -106,175 +149,118 @@ function originReaction() {
   }
 }
 
-async function main(overlaymame: string, overlaytexture: string) {
+function createDebugMarkerOverlay(overlayName: string, overlayTexture: string): void {
+  const overlay = state.overlayClass;
+  if (!overlay) return;
+  const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
+  const error = overlay.CreateOverlay(overlayName, overlayName, overlayHandlePTR);
+  if (error !== OpenVR.OverlayError.VROverlayError_None) {
+    throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
+  }
+  const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
+  state.overlayHandle = overlayHandle;
+  const path = tempFile(overlayTexture, import.meta.dirname!);
+  const e = overlay.SetOverlayFromFile(overlayHandle, path);
+  if (e !== OpenVR.OverlayError.VROverlayError_None) {
+    LogChannel.error("vrcorigin", `SetOverlayFromFile failed: ${OpenVR.OverlayError[e]}`);
+  }
+  overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
+  overlay.ShowOverlay(overlayHandle);
+}
+
+function markerMatrixFromOrigin(origin: Matrix34Tuple): OpenVR.HmdMatrix34 {
+  // Lay the marker flat on the VRChat world-origin floor, facing up (-90 deg around X).
+  const c = origin[0][0];
+  const s = origin[0][2];
+  return {
+    m: [
+      [c, -s, 0, origin[0][3]],
+      [0, 0, 1, origin[1][3] + 0.02],
+      [-s, -c, 0, origin[2][3]],
+    ],
+  };
+}
+
+async function main(overlayName: string, overlayTexture: string, showMarker: boolean) {
+  const generation = ++loopGeneration;
+  solver = new VrcOriginSolver();
+  state.running = true;
+  state.showMarker = showMarker;
+
   try {
-    state.transformStabilizer = new TransformStabilizer2();
-    LogChannel.log("vrcorigin", "Creating origin...");
-    const overlay = state.overlayClass as OpenVR.IVROverlay;
-    const overlayHandlePTR = P.BigUint64P<OpenVR.OverlayHandle>();
-    const error = overlay.CreateOverlay(overlaymame, overlaymame, overlayHandlePTR);
-    if (error !== OpenVR.OverlayError.VROverlayError_None) {
-      throw new Error(`Failed to create overlay: ${OpenVR.OverlayError[error]}`);
+    if (showMarker) {
+      LogChannel.log("vrcorigin", "Creating origin marker overlay...");
+      createDebugMarkerOverlay(overlayName, overlayTexture);
     }
-    const overlayHandle = new Deno.UnsafePointerView(overlayHandlePTR).getBigUint64();
-    state.overlayHandle = overlayHandle;
-    const path = tempFile(overlaytexture, import.meta.dirname!);
-    console.log(path);
-    const e = overlay.SetOverlayFromFile(overlayHandle, path);
-    if (e !== OpenVR.OverlayError.VROverlayError_None) console.error(e);
-    overlay.SetOverlayWidthInMeters(overlayHandle, 0.5);
-    overlay.ShowOverlay(overlayHandle);
-    const initialTransform: OpenVR.HmdMatrix34 = {
-      m: [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 1.0],
-        [0.0, 0.0, 1.0, -2.0],
-      ],
-    };
-    setTransform(initialTransform);
 
-    let lastOrigin: OpenVR.HmdMatrix34 | null = null;
-    let lastLogTime = Date.now();
-    function isOriginChanged(newOrigin: OpenVR.HmdMatrix34): boolean {
-      if (!lastOrigin) return true;
-      for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < 4; j++) {
-          if (newOrigin.m[i][j] !== lastOrigin.m[i][j]) return true;
-        }
+    while (generation === loopGeneration) {
+      if (state.vrc === "" || state.hmd === "") {
+        await wait(IDLE_POLL_MS);
+        continue;
       }
-      return false;
-    }
-    while (true) {
-      if (state.vrc !== "" && state.hmd !== "") {
-        let extracted: [OpenVR.HmdMatrix34, OpenVR.HmdMatrix34, OpenVR.HmdMatrix34] | null = null;
-        try {
-          extracted = await extractOrigin();
-        } catch (error) {
-          LogChannel.error(
-            "vrcorigin",
-            `extractOrigin failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          await wait(33);
-          continue;
-        }
-        if (!extracted) {
-          await wait(33);
-          continue;
-        }
-        const [finalMatrix, pureMatrix, hmdTransform] = extracted;
 
-        if (state.transformStabilizer) {
-          const stabilizedMatrix = state.transformStabilizer.getStabilizedTransform(
-            pureMatrix,
-            hmdTransform,
-            finalMatrix,
-          );
-          setTransform(finalMatrix);
-          // Use stabilized matrix for origin updates too
-          if (isOriginChanged(stabilizedMatrix)) {
-            state.origin = stabilizedMatrix;
-            originReaction();
-            state.originChangeCount++;
-            lastOrigin = stabilizedMatrix;
-          }
-        } else {
-          setTransform(finalMatrix);
-          if (isOriginChanged(pureMatrix)) {
-            state.origin = pureMatrix;
-            originReaction();
-            state.originChangeCount++;
-            lastOrigin = pureMatrix;
-          }
-        }
-        const currentTime = Date.now();
-        if (currentTime - lastLogTime >= 1000) {
-          LogChannel.log(
-            "origin",
-            `Origin changed ${state.originChangeCount} times in the last second`,
-          );
-          state.originChangeCount = 0;
-          lastLogTime = currentTime;
-        }
-        await wait(11);
+      let updated = false;
+      try {
+        updated = await pollOriginOnce();
+      } catch (error) {
+        LogChannel.error(
+          "vrcorigin",
+          `pollOriginOnce failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await wait(IDLE_POLL_MS);
+        continue;
       }
-      await wait(11);
+
+      await wait(updated || state.origin != null ? ACTIVE_POLL_MS : IDLE_POLL_MS);
     }
   } catch (e) {
     LogChannel.error("vrcorigin", `Error in origin: ${(e as Error).message}`);
+  } finally {
+    if (generation === loopGeneration) {
+      state.running = false;
+    }
   }
 }
 
-async function extractOrigin(): Promise<
-  [OpenVR.HmdMatrix34, OpenVR.HmdMatrix34, OpenVR.HmdMatrix34] | null
-> {
-  interface coord {
-    [key: string]: number;
-  }
+async function pollOriginOnce(): Promise<boolean> {
+  const coordinate = await PostMan.PostMessage({
+    target: state.vrc,
+    type: "GETCOORDINATE",
+    payload: null,
+  }, true) as Record<string, number> | null;
+
+  if (!coordinate) return false;
+  const worldPose = decodeVrcOriginPose(coordinate);
+  if (!worldPose) return false;
+
   const hmdPose = await PostMan.PostMessage({
     target: state.hmd,
     type: "GETHMDPOSITION",
     payload: null,
   }, true) as OpenVR.TrackedDevicePose;
-  const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m;
-  const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[0][0]);
 
-  const coordinate = await PostMan.PostMessage({
-    target: state.vrc,
-    type: "GETCOORDINATE",
-    payload: null,
-  }, true) as coord;
+  if (!hmdPose?.bPoseIsValid) return false;
+  const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
 
-  const decoded = decodeVrcOriginPose(coordinate);
-  if (decoded) {
-    lastKnownPose = decoded;
-    state.originSource = decoded.source;
+  const solved = solver.update(worldPose, hmdMatrix);
+  state.worldPose = worldPose;
+  state.originSource = worldPose.source;
+  state.transform = solved.transform;
+
+  const nextOrigin: OpenVR.HmdMatrix34 = { m: solved.matrix };
+  if (state.showMarker && state.overlayHandle) {
+    setTransform(markerMatrixFromOrigin(solved.matrix));
   }
-  if (!lastKnownPose) return null;
 
-  const hmdX = hmdMatrix[0][3]; // Extract HMD X position
-  const hmdY = hmdMatrix[1][3]; // Extract HMD Y position
-  const hmdZ = hmdMatrix[2][3]; // Extract HMD Z position
-  const vrChatYaw = lastKnownPose.yawRad;
-  const correctedYaw = hmdYaw + vrChatYaw;
-  const cosVrChatYaw = Math.cos(correctedYaw);
-  const sinVrChatYaw = Math.sin(correctedYaw);
-  const rotatedHmdX = hmdX * cosVrChatYaw - hmdZ * sinVrChatYaw;
-  const rotatedHmdZ = hmdX * sinVrChatYaw + hmdZ * cosVrChatYaw;
-  const transformedX = lastKnownPose.position[0] + rotatedHmdX;
-  const transformedY = lastKnownPose.position[1];
-  const transformedZ = lastKnownPose.position[2] - rotatedHmdZ;
-  const cosCorrectedYaw = Math.cos(correctedYaw);
-  const sinCorrectedYaw = Math.sin(correctedYaw);
-  const rotatedX = transformedX * cosCorrectedYaw - transformedZ * sinCorrectedYaw;
-  const rotatedZ = transformedX * sinCorrectedYaw + transformedZ * cosCorrectedYaw;
-  const pureMatrix: OpenVR.HmdMatrix34 = {
-    m: [
-      [cosCorrectedYaw, 0, sinCorrectedYaw, rotatedX],
-      [0, 1, 0, -transformedY],
-      [-sinCorrectedYaw, 0, cosCorrectedYaw, -rotatedZ],
-    ],
-  };
-  const hmdTransform: OpenVR.HmdMatrix34 = {
-    m: [
-      [hmdMatrix[0][0], hmdMatrix[0][1], hmdMatrix[0][2], hmdX],
-      [hmdMatrix[1][0], hmdMatrix[1][1], hmdMatrix[1][2], hmdY],
-      [hmdMatrix[2][0], hmdMatrix[2][1], hmdMatrix[2][2], hmdZ],
-    ],
-  };
-  const angle = -Math.PI / 2; // -90 degrees, pointing straight down
-  const s = Math.sin(angle);
-  const c = Math.cos(angle);
-  const finalMatrix: OpenVR.HmdMatrix34 = {
-    m: [
-      [cosCorrectedYaw, sinCorrectedYaw * s, sinCorrectedYaw * c, rotatedX],
-      [0, c, -s, -transformedY + 2.9],
-      [-sinCorrectedYaw, cosCorrectedYaw * s, cosCorrectedYaw * c, -rotatedZ],
-    ],
-  };
-  return [finalMatrix, pureMatrix, hmdTransform];
+  if (solved.changed) {
+    state.origin = nextOrigin;
+    state.originChangeCount++;
+    originReaction();
+  }
+  return true;
 }
 
-function setTransform(transform: OpenVR.HmdMatrix34) {
+function setTransform(transform: OpenVR.HmdMatrix34): void {
   if (!state.overlayClass || !state.overlayHandle) return;
   setOverlayTransformAbsolute(state.overlayClass, state.overlayHandle, transform);
 }
