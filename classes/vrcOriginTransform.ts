@@ -31,6 +31,14 @@ export interface VrcWorldToStandingTransform {
   translation: Vec3;
 }
 
+/** Pose of a shared display in right-handed VRChat world space (`worldRH`). */
+export type SharedDisplayWorldPose = {
+  position: Vec3;
+  rotation: Vec3;
+  scale: Vec3;
+  updatedAt: number;
+};
+
 /** Converts a Unity left-handed world position to right-handed world space (`[x, y, -z]`). */
 export function unityWorldPositionToRightHanded(p: Vec3): Vec3 {
   return [p[0], p[1], -p[2]];

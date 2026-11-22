@@ -2,6 +2,7 @@
 import { PostMan, System } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 import type { WorkspaceOutput } from "./workspaceDisplays.ts";
+import type { SharedDisplayWorldPose } from "../vrcOriginTransform.ts";
 export type RemoteFeedHealth = {
   running?: boolean;
   frames?: number;
@@ -85,7 +86,7 @@ export function resolveDisplayFeedProvider(
  * False when there is none (no share key on this machine).
  */
 export async function setSharedScreens(
-  screens: Array<{ name: string; input: boolean }>,
+  screens: Array<{ name: string; input: boolean; worldPose?: SharedDisplayWorldPose }>,
 ): Promise<boolean> {
   const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
   const share = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith("displayShare@"));

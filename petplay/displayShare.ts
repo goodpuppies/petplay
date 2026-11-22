@@ -29,9 +29,10 @@ import {
 } from "../rdp/classes/household.ts";
 import type { DesktopDescription, ScreenInfo, SourceRequest } from "../rdp/desktopSource.ts";
 import type { InputEvent } from "../rdp/classes/input/inputEvent.ts";
+import type { SharedDisplayWorldPose } from "../classes/vrcOriginTransform.ts";
 
 /** A shared screen, by name (Windows: `DISPLAY2`; Linux: ignored, the workspace). */
-export type SharedScreen = { name: string; input: boolean };
+export type SharedScreen = { name: string; input: boolean; worldPose?: SharedDisplayWorldPose };
 
 /** The encoders' local listeners (loopback only); viewers use the share codes. */
 const MEDIA_PORT = 4460;
@@ -106,19 +107,31 @@ async function describe(): Promise<DesktopDescription> {
   const offered = described.screens
     ? described.screens.flatMap((screen) => {
       const shared = sharedAs(screen.name);
-      return shared ? [{ ...screen, input: shared.input }] : [];
+      return shared
+        ? [{
+          ...screen,
+          input: shared.input,
+          ...(shared.worldPose ? { worldPose: shared.worldPose } : {}),
+        }]
+        : [];
     })
     // Linux: one workspace, shared when any display is; no screens means nothing shared.
     : state.all || state.shared.length > 0
     ? undefined
     : [];
+  const wholeWorldPose = offered === undefined
+    ? state.shared.find((s) => s.worldPose != null)?.worldPose
+    : undefined;
   return {
     ...described,
     // Input comes here, with the proof, and goes on to the local desktopInput.
     input: state.id,
     ...(offered ? { screens: offered } : {}),
     ...(offered === undefined
-      ? { wholeInput: state.all || state.shared.some((s) => s.input) }
+      ? {
+        wholeInput: state.all || state.shared.some((s) => s.input),
+        ...(wholeWorldPose ? { wholeWorldPose } : {}),
+      }
       : {}),
   };
 }
@@ -264,11 +277,19 @@ new PostMan(
     /** Share these screens (the scene's shared displays). */
     SETSHARED: async (payload: { screens: SharedScreen[] }) => {
       const next = (payload?.screens ?? []).filter((s) => typeof s?.name === "string")
-        .map((s) => ({ name: s.name, input: s.input === true }));
+        .map((s) => ({
+          name: s.name,
+          input: s.input === true,
+          ...(s.worldPose ? { worldPose: s.worldPose } : {}),
+        }));
+      const prevSet = JSON.stringify(state.shared.map((s) => ({ name: s.name, input: s.input })));
+      const nextSet = JSON.stringify(next.map((s) => ({ name: s.name, input: s.input })));
       if (JSON.stringify(next) === JSON.stringify(state.shared)) return true;
       state.shared = next;
-      console.log(`[displayShare] sharing ${next.map((s) => s.name).join(", ") || "nothing"}`);
-      await settle();
+      if (prevSet !== nextSet) {
+        console.log(`[displayShare] sharing ${next.map((s) => s.name).join(", ") || "nothing"}`);
+        await settle();
+      }
       return true;
     },
     /** Share every screen, with input (`--share-all-displays`). */

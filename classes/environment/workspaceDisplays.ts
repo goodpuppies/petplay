@@ -1,3 +1,5 @@
+import type { SharedDisplayWorldPose } from "../vrcOriginTransform.ts";
+
 export type WorkspaceRect = {
   /** Normalized against the complete captured workspace. */
   x: number;
@@ -21,6 +23,8 @@ export type WorkspaceOutput = {
    * runs there is no `overlayHostActor`, and it shows nothing rather than the local desktop.
    */
   household?: { desktop: string; provider: string };
+  /** Sharer's pose for this display in right-handed VRChat world space, when known. */
+  worldPose?: SharedDisplayWorldPose;
   id: string;
   name: string;
   priority: number;

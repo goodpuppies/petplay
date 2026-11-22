@@ -52,6 +52,7 @@ import {
   loadWorkspaceOutputs,
   type WorkspaceOutput,
 } from "../classes/environment/workspaceDisplays.ts";
+import type { SharedDisplayWorldPose } from "../classes/vrcOriginTransform.ts";
 
 export type SourceRequest = {
   /** Where receivers reach the encoder: 127.0.0.1, or this machine's tailnet address. */
@@ -81,6 +82,8 @@ export type ScreenInfo = {
   region: { x: number; y: number; width: number; height: number };
   /** Offered by a sharer (`petplay/displayShare.ts`): whether viewers may drive it. */
   input?: boolean;
+  /** Offered by a sharer: pose of this display in right-handed VRChat world space. */
+  worldPose?: SharedDisplayWorldPose;
 };
 export type DesktopDescription = {
   machine: string;
@@ -93,6 +96,8 @@ export type DesktopDescription = {
   screens?: ScreenInfo[];
   /** A sharer's whole workspace (no `screens`): whether viewers may drive it. */
   wholeInput?: boolean;
+  /** A sharer's whole workspace (no `screens`): display pose in right-handed VRChat world space. */
+  wholeWorldPose?: SharedDisplayWorldPose;
   /** The machine's sound can be had (`AUDIO`). */
   audio?: boolean;
 };

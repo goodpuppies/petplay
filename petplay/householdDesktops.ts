@@ -27,6 +27,7 @@ import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { householdProof, householdSecret, householdTopic } from "../rdp/classes/household.ts";
 import type { DesktopDescription, FeedInfo, ScreenInfo } from "../rdp/desktopSource.ts";
 import type { WorkspaceOutput } from "../classes/environment/workspaceDisplays.ts";
+import type { SharedDisplayWorldPose } from "../classes/vrcOriginTransform.ts";
 
 const POLL_MS = 2000;
 /** A desktop no display shows keeps its overlay this long, for a quick switch back. */
@@ -56,6 +57,8 @@ type Desktop = {
   input: ActorId | null;
   /** The sharer lets viewers drive it. */
   inputAllowed: boolean;
+  /** Sharer's display pose in right-handed VRChat world space, when available. */
+  worldPose: SharedDisplayWorldPose | null;
   /** Displays (spatial node ids) showing it. */
   holders: Set<string>;
   overlay: ActorId | null;
@@ -265,6 +268,8 @@ function forget(key: string): void {
 const described = new Map<string, number>();
 /** A sharer's shared screens change as its displays are toggled. */
 const RESCAN_MS = 5000;
+/** Rescan shown sharers faster so shared VRChat world-space display poses stay fresh. */
+const SHOWN_RESCAN_MS = 2000;
 
 /** Other machines' desktops on the topic (and trusted VRChat peer sources). */
 async function discover(): Promise<void> {
@@ -285,8 +290,10 @@ async function discover(): Promise<void> {
     }
     if ((quiet.get(id)?.until ?? 0) > now) return false;
     const at = described.get(id);
+    const hasShown = [...desktops.values()].some((d) => d.source === id && d.holders.size > 0);
+    const interval = hasShown ? SHOWN_RESCAN_MS : RESCAN_MS;
     return at === undefined ||
-      ((isPeer || id.startsWith("displayShare@")) && now - at >= RESCAN_MS);
+      ((isPeer || id.startsWith("displayShare@")) && now - at >= interval);
   });
   // At once: a source gone without leaving the address book must not hold up the others.
   await Promise.all(due.map(async (id) => {
@@ -338,9 +345,11 @@ function apply(id: ActorId, description: DesktopDescription): void {
   for (const screen of screens) {
     const key = screen ? `${machine}:${screen.index}` : machine;
     const inputAllowed = screen ? screen.input !== false : description.wholeInput !== false;
+    const worldPose = screen ? (screen.worldPose ?? null) : (description.wholeWorldPose ?? null);
     const existing = desktops.get(key);
     if (existing) {
       existing.inputAllowed = inputAllowed;
+      existing.worldPose = worldPose;
       continue;
     }
     desktops.set(key, {
@@ -353,6 +362,7 @@ function apply(id: ActorId, description: DesktopDescription): void {
       region: screen?.region ?? null,
       input: description.input as ActorId | null,
       inputAllowed,
+      worldPose,
       holders: holders.get(key) ?? new Set<string>(),
       overlay: null,
       feed: null,
@@ -514,6 +524,7 @@ function outputs(): WorkspaceOutput[] {
       logicalHeight: sized ? d.height : 1080,
       crop: { x: 0, y: 0, width: 1, height: 1 },
       household: { desktop: d.key, provider: state.id },
+      ...(d.worldPose ? { worldPose: d.worldPose } : {}),
       ...(running ? { overlayHostActor: d.overlay! } : {}),
       ...(running && d.input && d.inputAllowed
         ? { inputActor: d.input }

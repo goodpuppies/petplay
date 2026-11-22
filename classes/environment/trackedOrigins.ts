@@ -7,11 +7,13 @@
  */
 import * as THREE from "three/webgpu";
 import { SCENE_ORIGIN_ID } from "./spatialGraph.ts";
+import { getVRCOriginMatrixElements, isVRCOriginKnown } from "../webxrShadowScene.ts";
 
-export const TRACKED_ORIGIN_IDS = ["head", "left-hand", "right-hand"] as const;
+export const VRC_WORLD_ORIGIN_ID = "vrc-world" as const;
+export const TRACKED_ORIGIN_IDS = ["head", "left-hand", "right-hand", VRC_WORLD_ORIGIN_ID] as const;
 export type TrackedOriginId = typeof TRACKED_ORIGIN_IDS[number];
 export type SpatialOriginId = typeof SCENE_ORIGIN_ID | TrackedOriginId;
-export type HandOriginId = Exclude<TrackedOriginId, "head">;
+export type HandOriginId = Exclude<TrackedOriginId, "head" | typeof VRC_WORLD_ORIGIN_ID>;
 
 export const SPATIAL_ORIGIN_IDS: readonly SpatialOriginId[] = [
   SCENE_ORIGIN_ID,
@@ -23,6 +25,7 @@ export const SPATIAL_ORIGIN_LABEL: Record<SpatialOriginId, string> = {
   head: "Head",
   "left-hand": "Left hand",
   "right-hand": "Right hand",
+  [VRC_WORLD_ORIGIN_ID]: "VRC World",
 };
 
 export function isTrackedOriginId(id: string): id is TrackedOriginId {
@@ -68,6 +71,11 @@ export function getTrackedOriginWorldMatrix(
   if (id === "head") {
     head.updateWorldMatrix(true, false);
     target.copy(head.matrixWorld);
+    return true;
+  }
+  if (id === VRC_WORLD_ORIGIN_ID) {
+    if (!isVRCOriginKnown()) return false;
+    target.fromArray(getVRCOriginMatrixElements());
     return true;
   }
   return getHandOriginWorldMatrix(id, target);

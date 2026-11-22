@@ -133,7 +133,10 @@ import {
   SPATIAL_ORIGIN_LABEL,
   type SpatialOriginId,
   type TrackedOriginId,
+  VRC_WORLD_ORIGIN_ID,
 } from "./trackedOrigins.ts";
+import { isVRCOriginKnown } from "../webxrShadowScene.ts";
+import type { SharedDisplayWorldPose } from "../vrcOriginTransform.ts";
 import { DisplaySettingsPanel } from "./ui/displaySettingsPanel.tsx";
 import {
   contextToolbarFootprint,
@@ -726,6 +729,7 @@ function WindowLayer({
   }, [fontsLoaded]);
   const layer = React.useRef<THREE.Group>(null);
   usePrewarmHiddenUiLayout(visible, layer);
+  const scene = useThree((r3fState) => r3fState.scene);
   const camera = useThree((r3fState) => r3fState.camera);
   const renderer = useThree((r3fState) => r3fState.gl);
   const position = React.useMemo(() => new THREE.Vector3(), []);
@@ -754,21 +758,65 @@ function WindowLayer({
   >([]);
   const [remoteOutputs, setRemoteOutputs] = React.useState<WorkspaceOutput[]>([]);
   // The screens shared with others (a display's Share action), for displayShare.
+  // Includes VRChat world-space pose when VRC origin is tracked so trusted peers see the screen
+  // in the same 3D spot in the VRChat world.
   const sharedScreens = React.useMemo(() => {
-    const byName = new Map<string, boolean>();
+    const round4 = (v: number) => Math.round(v * 1e4) / 1e4;
+    const roundTuple = (t: [number, number, number]): [number, number, number] => [
+      round4(t[0]),
+      round4(t[1]),
+      round4(t[2]),
+    ];
+    const vrcKnown = isVRCOriginKnown();
+    const head = vrcKnown ? getHeadObject(renderer, camera as unknown as THREE.Camera) : null;
+    const byName = new Map<string, { input: boolean; worldPose?: SharedDisplayWorldPose }>();
     for (const node of Object.values(graph.nodes)) {
       if (node.kind !== "display" || !node.shared) continue;
       const output = localWorkspaceOutputs.find((o) => o.id === node.workspaceOutputId);
-      if (output) byName.set(output.name, (byName.get(output.name) ?? false) || !!node.remoteInput);
+      if (!output) continue;
+      const prev = byName.get(output.name);
+      let worldPose = prev?.worldPose;
+      if (!worldPose && vrcKnown && head) {
+        const local = node.originId === VRC_WORLD_ORIGIN_ID && node.parentId === null
+          ? node.localTransform
+          : anchoredRootTransform(scene, head, node.id, VRC_WORLD_ORIGIN_ID);
+        if (local && local !== "untracked") {
+          worldPose = {
+            position: roundTuple(local.position),
+            rotation: roundTuple(local.rotation),
+            scale: roundTuple(local.scale),
+            updatedAt: 0,
+          };
+        }
+      }
+      byName.set(output.name, {
+        input: (prev?.input ?? false) || !!node.remoteInput,
+        ...(worldPose ? { worldPose } : {}),
+      });
     }
-    return JSON.stringify([...byName].sort().map(([name, input]) => ({ name, input })));
-  }, [graph, localWorkspaceOutputs]);
+    return JSON.stringify(
+      [...byName].sort(([a], [b]) => a.localeCompare(b)).map(([name, info]) => ({
+        name,
+        input: info.input,
+        ...(info.worldPose ? { worldPose: info.worldPose } : {}),
+      })),
+    );
+  }, [graph, localWorkspaceOutputs, scene, camera, renderer]);
   React.useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // displayShare may not be up yet at launch: try until it takes the list.
+    const parsed = JSON.parse(sharedScreens) as Array<{
+      name: string;
+      input: boolean;
+      worldPose?: SharedDisplayWorldPose;
+    }>;
+    const now = Date.now();
+    const payload = parsed.map((entry) =>
+      entry.worldPose ? { ...entry, worldPose: { ...entry.worldPose, updatedAt: now } } : entry
+    );
     const send = async () => {
-      const taken = await setSharedScreens(JSON.parse(sharedScreens)).catch(() => false);
+      const taken = await setSharedScreens(payload).catch(() => false);
       if (!taken && !cancelled) timer = setTimeout(() => void send(), 5000);
     };
     void send();
@@ -777,6 +825,43 @@ function WindowLayer({
       if (timer) clearTimeout(timer);
     };
   }, [sharedScreens]);
+  // Follow a remote sharer's VRChat world pose while this viewer's display is anchored to VRC World.
+  const appliedRemotePoseAtRef = React.useRef(new Map<string, number>());
+  React.useEffect(() => {
+    if (!isVRCOriginKnown()) return;
+    const updates: Array<{ id: string; transform: SpatialTransform; updatedAt: number }> = [];
+    for (const node of Object.values(graphRef.current.nodes)) {
+      if (
+        node.kind !== "display" || node.parentId !== null ||
+        node.originId !== VRC_WORLD_ORIGIN_ID || !node.workspaceOutputId
+      ) continue;
+      const remote = remoteOutputs.find((o) => o.id === node.workspaceOutputId);
+      const pose = remote?.worldPose;
+      if (!pose) continue;
+      const lastAt = appliedRemotePoseAtRef.current.get(node.id) ?? 0;
+      if (pose.updatedAt <= lastAt) continue;
+      updates.push({
+        id: node.id,
+        transform: {
+          position: [...pose.position],
+          rotation: [...pose.rotation],
+          scale: [...pose.scale],
+        },
+        updatedAt: pose.updatedAt,
+      });
+    }
+    if (updates.length === 0) return;
+    for (const u of updates) appliedRemotePoseAtRef.current.set(u.id, u.updatedAt);
+    setGraph((current) => {
+      let next = current;
+      for (const u of updates) {
+        const node = next.nodes[u.id];
+        if (!node || node.parentId !== null || node.originId !== VRC_WORLD_ORIGIN_ID) continue;
+        next = commitNodeTransform(next, u.id, u.transform);
+      }
+      return next;
+    });
+  }, [remoteOutputs]);
   const workspaceOutputs = React.useMemo(() => [...localWorkspaceOutputs, ...remoteOutputs], [
     localWorkspaceOutputs,
     remoteOutputs,
@@ -1066,7 +1151,9 @@ function SpatialRootOrigin(
     <group
       ref={ref}
       matrixAutoUpdate={false}
-      userData={{ renderTrackingAnchor: tracked ? originId : undefined }}
+      userData={{
+        renderTrackingAnchor: tracked && originId !== VRC_WORLD_ORIGIN_ID ? originId : undefined,
+      }}
     >
       {children}
     </group>
@@ -1658,9 +1745,19 @@ function DisplaySpatialNodeView({
               feeds={workspaceOutputs.map((o) => ({ id: o.id, name: o.name }))}
               selectedFeedId={node.workspaceOutputId ?? null}
               onSelectFeed={(id) =>
-                setGraph((current) =>
-                  assignWorkspaceOutput(current, node.id, id, workspaceOutputs)
-                )}
+                setGraph((current) => {
+                  let next = assignWorkspaceOutput(current, node.id, id, workspaceOutputs);
+                  const chosen = workspaceOutputs.find((o) => o.id === id);
+                  const root = next.nodes[node.id];
+                  if (chosen?.worldPose && isVRCOriginKnown() && root && root.parentId === null) {
+                    next = setSpatialRootOrigin(next, node.id, VRC_WORLD_ORIGIN_ID, {
+                      position: [...chosen.worldPose.position],
+                      rotation: [...chosen.worldPose.rotation],
+                      scale: [...chosen.worldPose.scale],
+                    });
+                  }
+                  return next;
+                })}
               anchorLabel={getSpatialRootId(graph, node.id) === node.id
                 ? "Anchored to"
                 : "Group anchored to"}
