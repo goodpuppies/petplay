@@ -16,23 +16,23 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      DENO_DIR: ${{ runner.temp }}/deno-cache
     steps:
       - uses: actions/checkout@v4
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.9.7
+      - id: webxr-commit
+        shell: bash
+        run: |
+          printf 'DENO_DIR=%s/deno-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "sha=$(git rev-parse HEAD:submodules/threewebxrwebgpudeno)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
-          path: ${{ env.DENO_DIR }}
+          path: ${{ runner.temp }}/deno-cache
           key: deno-check-${{ runner.os }}-${{ runner.arch }}-v2.9.7-${{ hashFiles('deno.lock') }}
           restore-keys: |
             deno-check-${{ runner.os }}-${{ runner.arch }}-v2.9.7-
-      - id: webxr-commit
-        shell: bash
-        run: echo "sha=$(git rev-parse HEAD:submodules/threewebxrwebgpudeno)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         id: webxr-runtime
         with:
@@ -85,27 +85,26 @@ jobs:
             file: dist/petplay-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    env:
-      DENO_DIR: ${{ runner.temp }}/deno-cache
     steps:
       - uses: actions/checkout@v4
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.9.7
-      - uses: actions/cache@v4
-        with:
-          path: ${{ env.DENO_DIR }}
-          key: deno-build-${{ runner.os }}-${{ runner.arch }}-v2.9.7-${{ hashFiles('deno.lock') }}
-          restore-keys: |
-            deno-build-${{ runner.os }}-${{ runner.arch }}-v2.9.7-
       # Native helpers and the WebXR bundle only change with their submodules, so hits skip Rust/Node.
       - id: submodules
         shell: bash
         run: |
+          printf 'DENO_DIR=%s/deno-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "capture=$(git rev-parse HEAD:submodules/screen-streamer)" >> "$GITHUB_OUTPUT"
           echo "media=$(git rev-parse HEAD:submodules/petplay_mediatransport)" >> "$GITHUB_OUTPUT"
           echo "webxr=$(git rev-parse HEAD:submodules/threewebxrwebgpudeno)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/deno-cache
+          key: deno-build-${{ runner.os }}-${{ runner.arch }}-v2.9.7-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-build-${{ runner.os }}-${{ runner.arch }}-v2.9.7-
       - uses: actions/cache@v4
         id: webxr-runtime
         with:
