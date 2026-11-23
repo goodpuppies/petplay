@@ -6,14 +6,14 @@
  * - Windows: `petplay-media capture-wgc --list-windows` / `--focus-window <hwnd>` /
  *   `--window <hwnd>` using `EnumWindows` + `IGraphicsCaptureItemInterop::CreateForWindow`.
  */
+import { PostMan } from "../../submodules/stageforge/mod.ts";
 import { DesktopMediaFeed } from "../../classes/sceneStreamMedia.ts";
 import { petplayMediaPath } from "../../classes/petplayMediaPath.ts";
-import { captureSessionEnvironment } from "../../classes/ScreenCapturer/captureSessionEnvironment.ts";
-import { screenStreamerPath } from "../../classes/ScreenCapturer/screenStreamerPath.ts";
 import {
   loadWorkspaceOutputs,
   workspaceOutputsFromKscreen,
 } from "../../classes/environment/workspaceDisplays.ts";
+import { ensureScreenStreamer, linuxWaylandEnv } from "./screenStreamerActor.ts";
 import { mediaBinary, wgcMonitors } from "./wgcMediaFeed.ts";
 
 export type WindowRegion = { x: number; y: number; width: number; height: number };
@@ -32,25 +32,6 @@ export type WindowInfo = {
   /** Fraction of the virtual desktop, for mapping pointer input to this window. */
   region?: WindowRegion;
 };
-
-function linuxWaylandEnv(): Record<string, string> {
-  const env = captureSessionEnvironment();
-  if (!env.WAYLAND_DISPLAY && !Deno.env.get("WAYLAND_DISPLAY")) {
-    const runtime = env.XDG_RUNTIME_DIR ?? Deno.env.get("XDG_RUNTIME_DIR") ??
-      `/run/user/${Deno.uid()}`;
-    try {
-      for (const entry of Deno.readDirSync(runtime)) {
-        if (/^wayland-\d+$/.test(entry.name)) {
-          env.WAYLAND_DISPLAY = entry.name;
-          break;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return env;
-}
 
 function attachRegions(
   windows: WindowInfo[],
@@ -120,17 +101,12 @@ export async function listCapturableWindows(): Promise<WindowInfo[]> {
     return attachRegions(parsed, await workspaceBounds());
   }
   if (Deno.build.os === "linux") {
-    const { success, stdout, stderr } = await new Deno.Command(screenStreamerPath(), {
-      args: ["--list-windows"],
-      env: linuxWaylandEnv(),
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    if (!success) {
-      throw new Error(new TextDecoder().decode(stderr).trim() || "screen-streamer --list-windows failed");
-    }
-    const parsed = JSON.parse(new TextDecoder().decode(stdout)) as WindowInfo[];
-    return attachRegions(parsed, await workspaceBounds());
+    const streamer = await ensureScreenStreamer();
+    const parsed = await PostMan.PostMessage({
+      target: streamer,
+      type: "LISTWINDOWS",
+    }, true) as WindowInfo[];
+    return attachRegions(Array.isArray(parsed) ? parsed : [], await workspaceBounds());
   }
   return [];
 }
@@ -147,12 +123,12 @@ export async function focusCapturableWindow(id: string): Promise<void> {
     return;
   }
   if (Deno.build.os === "linux") {
-    await new Deno.Command(screenStreamerPath(), {
-      args: [`--focus-window=${id}`],
-      env: linuxWaylandEnv(),
-      stdout: "null",
-      stderr: "null",
-    }).output();
+    const streamer = await ensureScreenStreamer();
+    await PostMan.PostMessage({
+      target: streamer,
+      type: "FOCUSWINDOW",
+      payload: { window: id },
+    }, true);
   }
 }
 
@@ -266,35 +242,29 @@ export class WindowMediaFeed {
       bitrate: options.bitrate ?? 8_000_000,
       share: options.share,
     });
-    const helper = new Deno.Command(screenStreamerPath(), {
-      args: [
-        `--window=${options.windowId}`,
-        "--no-frame-socket",
-        "--no-input",
-        `--media-socket=${encoder.socketPath}`,
-        `--fps=${options.fps ?? 30}`,
-      ],
-      env: linuxWaylandEnv(),
-      stdin: "null",
-      stdout: "null",
-      stderr: "null",
-    }).spawn();
+    const streamer = await ensureScreenStreamer();
+    const captureId = `win:${options.windowId}`;
+    await PostMan.PostMessage({
+      target: streamer,
+      type: "START_CAPTURE",
+      payload: {
+        id: captureId,
+        target: { kind: "window", window: options.windowId },
+        mediaSocket: encoder.socketPath,
+        fps: options.fps ?? 30,
+      },
+    }, true);
 
     const stop = async () => {
-      try {
-        helper.kill("SIGTERM");
-      } catch { /* exited */ }
-      await Promise.race([helper.status, new Promise((r) => setTimeout(r, 1500))]);
-      try {
-        helper.kill("SIGKILL");
-      } catch { /* exited */ }
+      await PostMan.PostMessage({
+        target: streamer,
+        type: "STOP_CAPTURE",
+        payload: { id: captureId },
+      }, true).catch(() => {});
       await encoder.stop();
     };
 
-    const exited = Promise.race([
-      helper.status.then(() => {}),
-      encoder.exited.then(() => {}),
-    ]).then(stop);
+    const exited = encoder.exited.then(() => stop());
 
     return new WindowMediaFeed(
       {
@@ -448,7 +418,7 @@ export class WindowAtlas {
   private readonly stdinWriter: WritableStreamDefaultWriter<Uint8Array>;
   private readonly encoder = new TextEncoder();
   private readonly dir: string;
-  private readonly helpers = new Map<string, Deno.ChildProcess>();
+  private readonly activeWindows = new Set<string>();
   private readonly slots = new Map<string, AtlasSlotLayout>();
   private slotSeq = 0;
   private stopped = false;
@@ -583,11 +553,11 @@ export class WindowAtlas {
   }
 
   hasWindow(windowId: string): boolean {
-    return this.helpers.has(windowId);
+    return this.activeWindows.has(windowId);
   }
 
   get windowCount(): number {
-    return this.helpers.size;
+    return this.activeWindows.size;
   }
 
   feedInfoFor(windowId: string) {
@@ -604,49 +574,47 @@ export class WindowAtlas {
   }
 
   async addWindow(windowId: string, fps = 30): Promise<ReturnType<WindowAtlas["feedInfoFor"]>> {
-    if (this.helpers.has(windowId)) return this.feedInfoFor(windowId);
+    if (this.activeWindows.has(windowId)) return this.feedInfoFor(windowId);
     const socketPath = `${this.dir}/win-${++this.slotSeq}.sock`;
     await this.stdinWriter.write(this.encoder.encode(`ADD ${windowId} ${socketPath}\n`));
     // Brief pause so atlas binds the Unix seqpacket socket before screen-streamer connects.
     await new Promise((r) => setTimeout(r, 40));
-    const helper = new Deno.Command(screenStreamerPath(), {
-      args: [
-        `--window=${windowId}`,
-        "--no-frame-socket",
-        "--no-input",
-        `--media-socket=${socketPath}`,
-        `--fps=${fps}`,
-      ],
-      env: linuxWaylandEnv(),
-      stdin: "null",
-      stdout: "null",
-      stderr: "null",
-    }).spawn();
-    this.helpers.set(windowId, helper);
-    void helper.status.then(async () => {
-      if (this.helpers.get(windowId) !== helper) return;
-      this.helpers.delete(windowId);
-      this.slots.delete(windowId);
-      if (!this.stopped) {
-        await this.stdinWriter.write(this.encoder.encode(`REMOVE ${windowId}\n`)).catch(() => {});
-        this.onWindowExited?.(windowId);
-      }
-    });
+    const streamer = await ensureScreenStreamer();
+    await PostMan.PostMessage({
+      target: streamer,
+      type: "START_CAPTURE",
+      payload: {
+        id: `win:${windowId}`,
+        target: { kind: "window", window: windowId },
+        mediaSocket: socketPath,
+        fps,
+      },
+    }, true);
+    this.activeWindows.add(windowId);
     return this.feedInfoFor(windowId);
   }
 
-  async removeWindow(windowId: string): Promise<void> {
-    const helper = this.helpers.get(windowId);
-    if (!helper) return;
-    this.helpers.delete(windowId);
+  /** Called by desktopSource when `screenStreamer` pushes `CAPTURE_ENDED` for `win:<id>`. */
+  handleCaptureEnded(windowId: string): void {
+    if (!this.activeWindows.delete(windowId)) return;
     this.slots.delete(windowId);
-    try {
-      helper.kill("SIGTERM");
-    } catch { /* gone */ }
-    await Promise.race([helper.status, new Promise((r) => setTimeout(r, 1000))]);
-    try {
-      helper.kill("SIGKILL");
-    } catch { /* gone */ }
+    if (!this.stopped) {
+      void this.stdinWriter.write(this.encoder.encode(`REMOVE ${windowId}\n`)).catch(() => {});
+      this.onWindowExited?.(windowId);
+    }
+  }
+
+  async removeWindow(windowId: string): Promise<void> {
+    if (!this.activeWindows.delete(windowId)) return;
+    this.slots.delete(windowId);
+    const streamer = await ensureScreenStreamer().catch(() => null);
+    if (streamer) {
+      await PostMan.PostMessage({
+        target: streamer,
+        type: "STOP_CAPTURE",
+        payload: { id: `win:${windowId}` },
+      }, true).catch(() => {});
+    }
     if (!this.stopped) {
       await this.stdinWriter.write(this.encoder.encode(`REMOVE ${windowId}\n`)).catch(() => {});
     }
@@ -667,7 +635,7 @@ export class WindowAtlas {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    for (const id of [...this.helpers.keys()]) await this.removeWindow(id);
+    for (const id of [...this.activeWindows]) await this.removeWindow(id);
     try {
       await this.stdinWriter.close();
     } catch { /* closed */ }

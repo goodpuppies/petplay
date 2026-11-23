@@ -4,10 +4,12 @@
  * keyboard's Linux mapping (`createLinuxKeyboardSink`). A wheel at a position first tries a
  * discrete X11 wheel, for X11/Xwayland apps that ignore uinput's high-resolution wheel.
  */
+import { type ActorId, PostMan } from "../../../submodules/stageforge/mod.ts";
 import { createLinuxKeyboardSink } from "../../../classes/environment/keyboard/linuxSystemKeyboard.ts";
 import { tryLinuxX11Scroll } from "../../../classes/environment/displayInstance/linuxX11Scroll.ts";
 import type { KeyboardSink } from "../../../classes/environment/keyboard/types.ts";
 import { screenStreamerPath } from "../helperPaths.ts";
+import { ensureScreenStreamer } from "../screenStreamerActor.ts";
 import { type InputEvent, toKeyboardLogicEvent } from "./inputEvent.ts";
 import type { DesktopInjector, InjectorStatus } from "./injector.ts";
 
@@ -20,6 +22,7 @@ export class LinuxDesktopInput implements DesktopInjector {
   readonly status: InjectorStatus = { running: false, lastError: null };
   #helper: Deno.ChildProcess | null = null;
   #writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  #streamer: Promise<ActorId> | null = null;
   #encoder = new TextEncoder();
   #keyboard: KeyboardSink = createLinuxKeyboardSink((command) => this.#write(command));
   #x11Wheel: boolean;
@@ -56,6 +59,7 @@ export class LinuxDesktopInput implements DesktopInjector {
     const writer = this.#writer;
     this.#helper = null;
     this.#writer = null;
+    this.#streamer = null;
     await writer?.close().catch(() => {});
     await child?.status;
     this.status.running = false;
@@ -66,12 +70,31 @@ export class LinuxDesktopInput implements DesktopInjector {
   }
 
   #write(lines: string): void {
-    void this.#ensureHelper().write(this.#encoder.encode(`${lines}\n`)).catch((error) => {
-      this.status.lastError = String(error);
+    // Test helpers (e.g. `.sh` scripts in `browser.test.ts`) read raw stdin verbs directly.
+    const override = Deno.env.get("PETPLAY_SCREEN_STREAMER");
+    if (override && !override.endsWith("screen-streamer")) {
+      void this.#ensureLegacyTestHelper().write(this.#encoder.encode(`${lines}\n`)).catch((error) => {
+        this.status.lastError = String(error);
+      });
+      return;
+    }
+    this.#streamer ??= ensureScreenStreamer().then((id) => {
+      this.status.running = true;
+      return id;
+    }).catch((err) => {
+      this.status.lastError = String(err);
+      this.#streamer = null;
+      throw err;
     });
+    void this.#streamer.then((id) => {
+      for (const line of lines.split("\n")) {
+        if (!line) continue;
+        PostMan.PostMessage({ target: id, type: "INPUT", payload: { line } });
+      }
+    }).catch(() => {});
   }
 
-  #ensureHelper(): WritableStreamDefaultWriter<Uint8Array> {
+  #ensureLegacyTestHelper(): WritableStreamDefaultWriter<Uint8Array> {
     if (this.#writer) return this.#writer;
     const child = new Deno.Command(screenStreamerPath(), {
       args: ["--input-only"],

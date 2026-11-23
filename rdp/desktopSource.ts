@@ -40,6 +40,9 @@ import { join } from "@std/path";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
 import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
 import {
+  ensureScreenStreamer,
+} from "./classes/screenStreamerActor.ts";
+import {
   type AtlasLayoutEvent,
   focusCapturableWindow,
   listCapturableWindows,
@@ -381,7 +384,14 @@ function notifyFeedEnded(windowId?: string): void {
 }
 
 let helper: CaptureHelper | null = null;
+let actorCaptureArgs: { framePort: number | null; mediaSocket: string | null; fps: number } | null =
+  null;
 let applying: Promise<void> = Promise.resolve();
+
+function useLegacyHelperOverride(): boolean {
+  const override = Deno.env.get("PETPLAY_SCREEN_STREAMER");
+  return Boolean(override && !override.endsWith("screen-streamer"));
+}
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let restartDelay = RESTART_MIN_MS;
 let startedAt = 0;
@@ -427,6 +437,55 @@ async function apply(): Promise<void> {
     restartTimer = null;
   }
   const want = shuttingDown ? null : wanted();
+  if (!useLegacyHelperOverride()) {
+    if (
+      actorCaptureArgs && want &&
+      actorCaptureArgs.framePort === want.framePort &&
+      actorCaptureArgs.mediaSocket === want.mediaSocket &&
+      actorCaptureArgs.fps === want.fps
+    ) return;
+    if (actorCaptureArgs) {
+      actorCaptureArgs = null;
+      const streamer = await ensureScreenStreamer().catch(() => null);
+      if (streamer) {
+        await PostMan.PostMessage({
+          target: streamer,
+          type: "STOP_CAPTURE",
+          payload: { id: "workspace" },
+        }, true).catch(() => {});
+      }
+    }
+    state.capturing = false;
+    state.captureStarted = false;
+    state.capturePid = null;
+    state.captureArgs = want;
+    if (!want || state.refused) return;
+    try {
+      const streamer = await ensureScreenStreamer();
+      await PostMan.PostMessage({
+        target: streamer,
+        type: "START_CAPTURE",
+        payload: {
+          id: "workspace",
+          target: { kind: "workspace" },
+          ...(want.framePort != null ? { framePort: want.framePort } : {}),
+          ...(want.mediaSocket ? { mediaSocket: want.mediaSocket } : {}),
+          fps: want.fps,
+          tokenPath: join(configDir(), "screencast-restore-token"),
+          subscriber: state.id,
+        },
+      }, true);
+      actorCaptureArgs = want;
+      state.capturing = true;
+    } catch (error) {
+      const msg = String(error);
+      state.lastError = msg;
+      state.refused = true;
+      notify({ event: "unavailable", message: msg });
+    }
+    return;
+  }
+
   const current = helper;
   if (
     current && want && current.framePort === want.framePort &&
@@ -639,6 +698,49 @@ new PostMan(
   state,
   {
     __INIT__: () => {},
+    /** Notifications pushed from the native `screenStreamer` StageForge actor. */
+    CAPTURE_STARTED: (payload: { id?: string } | null) => {
+      if (payload?.id === "workspace") {
+        state.captureStarted = true;
+        startedAt = performance.now();
+        if (recovering) {
+          recovering = false;
+          notify({ event: "recovered" });
+        }
+      }
+      return true;
+    },
+    CAPTURE_ENDED: (payload: { id?: string; error?: string | null } | null) => {
+      const id = payload?.id ?? "";
+      if (id.startsWith("win:")) {
+        atlas?.handleCaptureEnded(id.slice(4));
+        return true;
+      }
+      if (id === "workspace" && actorCaptureArgs && !shuttingDown) {
+        actorCaptureArgs = null;
+        state.capturing = false;
+        const message = payload?.error ?? "workspace capture ended";
+        state.lastError = message;
+        if (!state.captureStarted) {
+          state.refused = true;
+          recovering = false;
+          notify({ event: "unavailable", message });
+          return true;
+        }
+        state.captureStarted = false;
+        if (!recovering) notify({ event: "lost", message });
+        recovering = true;
+        if (performance.now() - startedAt > STABLE_MS) restartDelay = RESTART_MIN_MS;
+        const delay = restartDelay;
+        restartDelay = Math.min(RESTART_MAX_MS, restartDelay * 2);
+        restartTimer = setTimeout(() => {
+          restartTimer = null;
+          state.captureRestarts++;
+          void reconcile();
+        }, delay);
+      }
+      return true;
+    },
     __HEALTH__: () => ({
       ...state,
       frameSink,
