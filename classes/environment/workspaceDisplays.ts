@@ -29,6 +29,8 @@ export type WorkspaceOutput = {
   kind?: "monitor" | "window";
   /** Window identifier (KWin UUID on KDE, HWND hex on Windows) when `kind === "window"`. */
   windowId?: string;
+  /** True when the window is currently minimized on the host desktop. */
+  minimized?: boolean;
   /** True when backed by a local source (e.g. a local window) that may be shared with others. */
   local?: boolean;
   /** Optional startup/capture error to show on the display's loading placeholder. */

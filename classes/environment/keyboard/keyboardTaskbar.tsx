@@ -108,6 +108,9 @@ export function KeyboardTaskbar({
       const aActive = activeOutputIds.has(a.id) ? 0 : 1;
       const bActive = activeOutputIds.has(b.id) ? 0 : 1;
       if (aActive !== bActive) return aActive - bActive;
+      const aMin = a.minimized ? 1 : 0;
+      const bMin = b.minimized ? 1 : 0;
+      if (aMin !== bMin) return aMin - bMin;
       return a.name.localeCompare(b.name);
     });
     return list;

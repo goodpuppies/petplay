@@ -54,8 +54,21 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
   ]).finally(() => clearTimeout(handle));
 }
 
+function shortAppName(app: string): string {
+  const trimmed = app.trim();
+  if (!trimmed) return "";
+  // Reverse-DNS ids like "com.t3tools.T3Code" or "org.kde.dolphin" -> last segment.
+  const seg = trimmed.includes(".") ? trimmed.split(".").at(-1) ?? trimmed : trimmed;
+  return seg.replace(/^steam_app_\d+$/i, "").trim();
+}
+
 function shortWindowLabel(w: WindowInfo): string {
-  const raw = (w.title || w.app || w.id).trim();
+  const title = (w.title || "").trim();
+  const app = shortAppName(w.app || "");
+  let raw = title || app || w.id;
+  if (app && title && !title.toLowerCase().includes(app.toLowerCase())) {
+    raw = `${app}: ${title}`;
+  }
   return raw.length > 26 ? `${raw.slice(0, 25)}…` : raw;
 }
 
@@ -233,6 +246,7 @@ function outputs(): WorkspaceOutput[] {
       name: shortWindowLabel(entry.info),
       kind: "window",
       windowId: entry.info.id,
+      ...(entry.info.minimized ? { minimized: true } : {}),
       local: true,
       priority: -2,
       logicalX: entry.info.x,
