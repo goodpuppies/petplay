@@ -9,7 +9,7 @@
  * wss://topic.petplay.fi), `relay=` (an iroh relay instead of n0's), and the media receiver's
  * (`buffer=`, `software`).
  */
-import { PostalService } from "../../submodules/stageforge/mod.ts";
+import { PostalService, Transport } from "../../submodules/stageforge/mod.ts";
 import { irohWebCarrier, type IrohWebModule } from "../../classes/irohWebCarrier.ts";
 import { parseSessionFragment, sessionTopic } from "../classes/session.ts";
 import type { TabDomEvent, TabViewport } from "../classes/tabProtocol.ts";
@@ -49,13 +49,14 @@ async function main(): Promise<void> {
   postal.registerRemoteCarrier(irohWebCarrier(wasm, { relay: params.get("relay") ?? undefined }));
   postal.initSignalingClient(params.get("topics") ?? "wss://topic.petplay.fi");
   const client = await postal.add("./client.js");
+  const liaison = await postal.add("./liaison.js");
 
   const canvas = document.getElementById("tab") as HTMLCanvasElement;
   const offscreen = canvas.transferControlToOffscreen();
-  const { port1, port2 } = new MessageChannel();
+  let bridgePort: MessagePort | null = null;
   const webrtcPeers = new Map<string, { pc: RTCPeerConnection; stop(): void }>();
   const postWebRtc = (event: PageWebRtcEvent, transfer: Transferable[] = []) =>
-    port1.postMessage(event, transfer);
+    bridgePort?.postMessage(event, transfer);
 
   function closeWebRtc(id: string): void {
     const peer = webrtcPeers.get(id);
@@ -172,15 +173,19 @@ async function main(): Promise<void> {
     }
   }
 
-  port1.onmessage = (event) => {
-    const message = event.data as ToPage | PageWebRtcCommand;
-    if ("webrtc" in message) {
-      void handleWebRtc(message);
-      return;
-    }
-    if (message.status) show(message.status === "connected" ? "" : message.status);
-  };
-  const send = (dom: TabDomEvent) => port1.postMessage({ dom });
+  Transport.accept("page.bridge", (transport) => {
+    const port = transport.connection as MessagePort;
+    bridgePort = port;
+    port.onmessage = (event) => {
+      const message = event.data as ToPage | PageWebRtcCommand;
+      if ("webrtc" in message) {
+        void handleWebRtc(message);
+        return;
+      }
+      if (message.status) show(message.status === "connected" ? "" : message.status);
+    };
+  });
+  const send = (dom: TabDomEvent) => bridgePort?.postMessage({ dom });
 
   const pointer = (event: PointerEvent | MouseEvent) => {
     const p = event as PointerEvent;
@@ -227,21 +232,27 @@ async function main(): Promise<void> {
       send({ type, code: event.code, key: event.key, repeat: event.repeat, ...mods(event) });
     });
   }
-  addEventListener("resize", () => port1.postMessage({ viewport: viewport() }));
+  addEventListener("resize", () => bridgePort?.postMessage({ viewport: viewport() }));
 
   await postal.PostMessage({
     target: client,
     type: "ATTACH",
     payload: {
       canvas: offscreen,
-      port: port2,
       viewport: viewport(),
       topic,
       secret,
       search: location.search,
+      liaison,
     },
-    transfer: [offscreen, port2],
+    transfer: [offscreen],
   } as never, true);
+
+  await postal.PostMessage({
+    target: liaison,
+    type: "START",
+    payload: { role: "client", topic, secret, consumers: [client] },
+  }, true);
 }
 
 main().catch((error) => {

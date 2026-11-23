@@ -47,8 +47,8 @@ import type { WindowInfo } from "./classes/windowCapture.ts";
 import type { InputEvent } from "./desktopInput.ts";
 
 export type UiStart = {
-  /** Public rendezvous topic for this session; defaults to a fresh random `rdp-<id>`. */
-  topic?: string;
+  /** Public rendezvous topic for this session; omit or pass `false` when `rdp-liaison` handles discovery. */
+  topic?: string | false;
   /** The session secret; tabs must present it when opening `rdp.ui`. */
   secret: string;
   /** Where the tab's WebSocket reaches this actor (a tailnet address); default loopback. */
@@ -558,7 +558,9 @@ new PostMan(
       }
       config = payload;
       secret = payload.secret;
-      const topic = payload.topic ?? sessionTopic(newSessionId());
+      const topic = payload.topic === false
+        ? null
+        : payload.topic ?? sessionTopic(newSessionId());
       registerTransportKind(webSocketTransport({
         hostname: payload.websocket?.hostname ?? "127.0.0.1",
         port: payload.websocket?.port,
@@ -588,7 +590,7 @@ new PostMan(
       await discover();
       void pollFeed();
       feedTimer = setInterval(() => void pollFeed(), FEED_POLL_MS);
-      PostMan.setTopic(topic);
+      if (topic) PostMan.setTopic(topic);
       state.topic = topic;
       return { topic };
     },

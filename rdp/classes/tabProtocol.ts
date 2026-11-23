@@ -8,8 +8,19 @@
  */
 
 export const UI_PURPOSE = "rdp.ui";
-/** Actor name of the UI actor; a tab picks its contact by this prefix. */
+/** Actor name of the UI / compositor actor; a tab picks its contact by this prefix. */
 export const UI_ACTOR_NAME = "rdp-ui";
+/** Actor name of the media multiplexer actor; when present on the topic, tabs open `rdp.media` to it. */
+export const MEDIA_MUX_ACTOR_NAME = "rdp-mux";
+/** Actor name of the session liaison actor (the only session actor that joins `rdp-<id>`). */
+export const LIAISON_ACTOR_NAME = "rdp-liaison";
+
+/** Direct actor addresses shared by `rdp-liaison` after authenticating a session. */
+export type SessionDirectory = {
+  ui?: string;
+  mediaMux?: string;
+  [role: string]: string | undefined;
+};
 
 export type TabViewport = { width: number; height: number; dpr: number };
 
@@ -51,7 +62,18 @@ export type TabKeyEvent = Modifiers & {
 
 export type TabDomEvent = TabPointerEvent | TabWheelEvent | TabKeyEvent;
 
-export type FeedInfo = { host: string; port: number; fingerprint: string; webrtc?: boolean };
+export type FeedCrop = { x: number; y: number; width: number; height: number };
+
+export type FeedInfo = {
+  host: string;
+  port: number;
+  fingerprint: string;
+  code?: string;
+  webrtc?: boolean;
+  audio?: boolean;
+  /** Default full frame `{x:0,y:0,width:1,height:1}`. When backed by an atlas, this window's slot. */
+  crop?: FeedCrop;
+};
 
 export type ToUi =
   | { viewport: TabViewport }

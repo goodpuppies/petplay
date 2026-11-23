@@ -15,9 +15,9 @@ import { irohCarrier } from "../classes/irohCarrier.ts";
 import { tailnetAddress } from "./classes/tailnet.ts";
 
 const args = parseArgs(Deno.args, {
-  string: ["host", "media-port", "site-port", "topics", "relay"],
-  boolean: ["capture", "input", "site"],
-  default: { capture: true, input: true, site: true },
+  string: ["host", "media-port", "site-port", "topics", "relay", "vrchat-socket", "vrchat-layout"],
+  boolean: ["capture", "input", "site", "compositor", "vrchat"],
+  default: { capture: true, input: true, site: true, compositor: false, vrchat: false },
   negatable: ["capture", "input", "site"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
@@ -37,6 +37,13 @@ const { link } = await postal.PostMessage({
     site: args.site ? { port: args["site-port"] ? Number(args["site-port"]) : undefined } : false,
     capture: args.capture,
     input: args.input,
+    mode: args.compositor ? "compositor" : "classic",
+    vrchat: args.vrchat || args["vrchat-socket"]
+      ? {
+        socketPath: args["vrchat-socket"],
+        layout: args["vrchat-layout"] === "side-by-side" ? "side-by-side" : "mono",
+      }
+      : false,
   },
 }, true) as { link: string };
 

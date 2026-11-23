@@ -117,3 +117,49 @@ export function refuseWhenGuarded<P, R>(
     return handler(payload);
   };
 }
+
+export type PostMessageFn = (
+  message: { target: string; type: string; payload: unknown },
+  wait: true,
+) => Promise<unknown>;
+
+/**
+ * Pure client helper for household actors: caches per-recipient HMAC proofs and wraps
+ * `GUARDED` vs direct RPC calls. Used inside `mediaMux`, `inputRouter`, and `ui`.
+ */
+export class HouseholdClient {
+  readonly #secret: string | null;
+  readonly #proofs = new Map<string, Promise<string>>();
+
+  constructor(secret?: string | null) {
+    this.#secret = secret ?? null;
+  }
+
+  get active(): boolean {
+    return this.#secret !== null;
+  }
+
+  proof(actor: string): Promise<string> {
+    if (!this.#secret) throw new Error("HouseholdClient: no household secret configured");
+    let made = this.#proofs.get(actor);
+    if (!made) this.#proofs.set(actor, made = householdProof(this.#secret, actor));
+    return made;
+  }
+
+  async request<T>(
+    post: PostMessageFn,
+    target: string,
+    type: string,
+    payload: unknown = null,
+    guarded = this.active,
+  ): Promise<T> {
+    if (guarded) {
+      return await post({
+        target,
+        type: "GUARDED",
+        payload: { proof: await this.proof(target), type, payload },
+      }, true) as T;
+    }
+    return await post({ target, type, payload }, true) as T;
+  }
+}

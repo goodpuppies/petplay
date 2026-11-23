@@ -19,6 +19,7 @@ import {
   messages,
   PostMan,
   registerTransportKind,
+  System,
   Transport,
   type TransportMessages,
   webSocketTransport,
@@ -33,6 +34,8 @@ import { type FeedFrame, SceneView, viewState } from "../../web/scene-stream/sce
 import { MediaFeeds } from "../../web/scene-stream/mediaFeeds.ts";
 import {
   type FeedInfo,
+  MEDIA_MUX_ACTOR_NAME,
+  type SessionDirectory,
   type TabDomEvent,
   type TabViewport,
   type ToTab,
@@ -50,7 +53,6 @@ import {
 
 type Attach = {
   canvas: OffscreenCanvas;
-  port: MessagePort;
   viewport: TabViewport;
   /** Public rendezvous topic for this session (see rdp/classes/session.ts). */
   topic: string;
@@ -58,6 +60,8 @@ type Attach = {
   secret: string;
   /** The page's query string: media receiver options (`buffer`, `software`). */
   search: string;
+  /** Optional local `rdp-liaison` actor; when present, `rdp-tab` stays off the topic server. */
+  liaison?: string;
 };
 
 /** Page ← client: what the page shows over the canvas. */
@@ -68,6 +72,7 @@ const CONTACT_POLL_MS = 200;
 const state = actorState({
   name: "rdp-tab",
   ui: null as string | null,
+  mux: null as string | null,
   connected: false,
   deltas: 0,
   bytes: 0,
@@ -118,8 +123,9 @@ function updateFeeds(feeds: Record<string, FeedInfo>): void {
       dropWebRtcFeed(name);
       const entry: WebRtcFeed = { key, transport: null, handle: null };
       webrtcFeeds.set(name, entry);
-      if (!state.ui) continue;
-      void Transport.open(state.ui, {
+      const mediaActor = state.mux ?? state.ui;
+      if (!mediaActor) continue;
+      void Transport.open(mediaActor, {
         purpose: MEDIA_PURPOSE,
         kinds: [WEBRTC_VIDEO_KIND],
         params: { secret, feed: name },
@@ -212,11 +218,22 @@ function onTabMessage(raw: unknown): void {
   }
 }
 
-/** Find the UI actor among the topic's contacts and open the transport to it. */
+let directoryUi: string | null = null;
+let directoryMux: string | null = null;
+
+/** Find the UI actor (from `rdp-liaison` directory or topic contacts) and open the transport to it. */
 async function connect(): Promise<void> {
   for (;;) {
-    const ui = [...state.addressBook].find((id) => String(id).startsWith(`${UI_ACTOR_NAME}@`));
-    if (ui && !tab) {
+    const mux = directoryMux ??
+      [...state.addressBook].find((id) => String(id).startsWith(`${MEDIA_MUX_ACTOR_NAME}@`));
+    if (mux && state.mux !== mux) {
+      state.mux = mux;
+      if (Object.keys(latestFeeds).length > 0) updateFeeds(latestFeeds);
+    }
+    const ui = directoryUi ??
+      [...state.addressBook].find((id) => String(id).startsWith(`${UI_ACTOR_NAME}@`));
+    if (ui && (!tab || state.ui !== ui)) {
+      if (tab && state.ui !== ui) tab.close("ui actor updated");
       state.ui = ui;
       status("connecting to the desktop…");
       try {
@@ -275,7 +292,7 @@ function schedule(): void {
 }
 
 new PostMan(state, {
-  ATTACH: async ({ canvas, port, viewport: initial, topic, secret: session, search }: Attach) => {
+  ATTACH: async ({ canvas, viewport: initial, topic, secret: session, search, liaison }: Attach) => {
     secret = session;
     const searchParams = new URLSearchParams(search);
     forceWebRtc = searchParams.has("webrtc");
@@ -284,6 +301,11 @@ new PostMan(state, {
     media = new MediaFeeds(view, searchParams, (feed, width, height) => {
       toUi({ feedSize: { feed, width, height } });
     });
+    const bridge = await Transport.open(System, {
+      purpose: "page.bridge",
+      kinds: ["messageport"],
+    });
+    const port = bridge.connection as MessagePort;
     page = port;
     const webrtcVideo = webRtcVideoBrowserTransport((cmd) => page?.postMessage(cmd));
     port.onmessage = (event) => {
@@ -299,10 +321,16 @@ new PostMan(state, {
     registerTransportKind(webSocketTransport());
     registerTransportKind(webTransportTransport());
     registerTransportKind(webrtcVideo);
-    PostMan.setTopic(topic);
+    if (!liaison) PostMan.setTopic(topic);
     status("looking for the desktop…");
     void connect();
     schedule();
+    return true;
+  },
+  DIRECTORY: (payload: { services: SessionDirectory }) => {
+    const services = payload?.services ?? {};
+    if (services.ui) directoryUi = services.ui;
+    if (services.mediaMux) directoryMux = services.mediaMux;
     return true;
   },
   __HEALTH__: () => ({ ...state, addressBook: [...state.addressBook] }),

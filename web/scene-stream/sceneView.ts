@@ -51,6 +51,7 @@ export class SceneView {
   private readonly lights = new Map<RowId, THREE.Light>();
   private readonly items = new Map<RowId, THREE.Object3D>();
   private readonly ui = new Map<RowId, UiEntry>();
+  private readonly videoSurfaces = new Map<RowId, THREE.Mesh>();
   private readonly tracked = new Map<RowId, TrackedSpace | TrackedPair>();
   private poses: Partial<Record<TrackedSpace, THREE.Matrix4>> = {};
   private readonly quadGeometry = new THREE.PlaneGeometry(1, 1);
@@ -395,7 +396,9 @@ export class SceneView {
         const d = data as VideoSurfaceData;
         const geometry = this.geometries.get(d.geometry);
         if (!geometry) return null;
-        return new THREE.Mesh(geometry, videoMaterial(this.feedTexture(d.feed), d));
+        const mesh = new THREE.Mesh(geometry, videoMaterial(this.feedTexture(d.feed), d));
+        this.videoSurfaces.set(id, mesh);
+        return mesh;
       }
       case "textRun": {
         const d = data as TextRunData;
@@ -422,8 +425,11 @@ export class SceneView {
     if (this.ui.has(id) && object instanceof THREE.Mesh) {
       (object.material as THREE.Material).dispose();
       if (object.geometry !== this.quadGeometry) object.geometry.dispose();
+    } else if (this.videoSurfaces.has(id) && object instanceof THREE.Mesh) {
+      (object.material as THREE.Material).dispose();
     }
     this.ui.delete(id);
+    this.videoSurfaces.delete(id);
     this.items.delete(id);
   }
 
@@ -437,34 +443,51 @@ export class SceneView {
   }
 
   /**
-   * UI draws without depth testing, in an explicit order: roots back to front by view depth,
-   * then each root's own order. Text sorts back to front within its layer.
+   * UI draws without depth testing, in an explicit order: roots and video surfaces back to front
+   * by view depth, then each root's own order. Text sorts back to front within its layer.
+   * Interleaving `videoSurface` meshes with UI roots lets stacked floating windows (uikit chrome
+   * + video surface) composite in exact z-order over a wallpaper.
    */
   private sortUi(camera: THREE.Camera): void {
     const viewZ = (object: THREE.Object3D) =>
       new THREE.Vector3().setFromMatrixPosition(object.matrixWorld).applyMatrix4(camera.matrixWorldInverse).z;
-    const roots = new Map<number, { z: number; n: number }>();
-    const entries = [...this.ui.values()].filter((e) => e.object.parent && e.object.visible);
+    const roots = new Map<number, { z: number; n: number; items: UiEntry[] }>();
     const depth = new Map<UiEntry, number>();
-    for (const entry of entries) {
+    for (const entry of this.ui.values()) {
+      if (!entry.object.parent || !entry.object.visible) continue;
       const z = viewZ(entry.object);
       depth.set(entry, z);
-      const r = roots.get(entry.order[0]) ?? { z: 0, n: 0 };
+      const r = roots.get(entry.order[0]) ?? { z: 0, n: 0, items: [] };
       r.z += z;
       r.n++;
+      r.items.push(entry);
       roots.set(entry.order[0], r);
     }
+
+    type Layer =
+      | { kind: "ui"; z: number; items: UiEntry[] }
+      | { kind: "video"; z: number; mesh: THREE.Mesh };
+    const layers: Layer[] = [];
+    for (const r of roots.values()) layers.push({ kind: "ui", z: r.z / r.n, items: r.items });
+    for (const mesh of this.videoSurfaces.values()) {
+      if (!mesh.parent || !mesh.visible) continue;
+      layers.push({ kind: "video", z: viewZ(mesh), mesh });
+    }
     // View space looks down -Z: more negative is farther, drawn first.
-    const rootRank = new Map(
-      [...roots.entries()].sort((a, b) => a[1].z / a[1].n - b[1].z / b[1].n).map(([root], i) => [root, i]),
-    );
-    entries.sort((a, b) => {
-      const ra = rootRank.get(a.order[0])!, rb = rootRank.get(b.order[0])!;
-      if (ra !== rb) return ra - rb;
-      for (let k = 1; k < 8; k++) if (a.order[k] !== b.order[k]) return a.order[k]! - b.order[k]!;
-      return a.order[1] === 1 ? depth.get(a)! - depth.get(b)! : 0;
-    });
-    entries.forEach((entry, i) => entry.object.renderOrder = UI_RENDER_ORDER_BASE + i);
+    layers.sort((a, b) => a.z - b.z);
+
+    let order = UI_RENDER_ORDER_BASE;
+    for (const layer of layers) {
+      if (layer.kind === "video") {
+        layer.mesh.renderOrder = order++;
+        continue;
+      }
+      layer.items.sort((a, b) => {
+        for (let k = 1; k < 8; k++) if (a.order[k] !== b.order[k]) return a.order[k]! - b.order[k]!;
+        return a.order[1] === 1 ? depth.get(a)! - depth.get(b)! : 0;
+      });
+      for (const entry of layer.items) entry.object.renderOrder = order++;
+    }
   }
 }
 

@@ -14,7 +14,13 @@ const out = `${root}dist/rdp`;
 const linkWeb = `${root}submodules/petplay_mediatransport/link-web/pkg-web`;
 
 await Deno.mkdir(`${out}/link`, { recursive: true });
-for (const [entry, file] of [["rdp/browser/page.ts", "page.js"], ["rdp/browser/client.ts", "client.js"]]) {
+for (
+  const [entry, file] of [
+    ["rdp/browser/page.ts", "page.js"],
+    ["rdp/browser/client.ts", "client.js"],
+    ["rdp/liaison.ts", "liaison.js"],
+  ]
+) {
   const { code, stderr } = await new Deno.Command(Deno.execPath(), {
     args: ["bundle", "--platform", "browser", "--minify", "-o", `${out}/${file}`, `${root}${entry}`],
     stdout: "inherit",

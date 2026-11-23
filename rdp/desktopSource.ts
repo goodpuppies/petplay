@@ -87,6 +87,8 @@ export type FeedInfo = {
   code?: string;
   /** True when the encoder can also answer WebRTC H.264 SDP offers (`WEBRTC_OFFER`). */
   webrtc?: boolean;
+  /** Optional crop rect (normalized 0..1) when backed by a multi-window atlas. */
+  crop?: { x: number; y: number; width: number; height: number };
 };
 /** One monitor a Windows machine offers as its own feed. */
 export type ScreenInfo = {
@@ -104,6 +106,7 @@ export type ScreenInfo = {
 };
 export type DesktopDescription = {
   machine: string;
+  kind?: "desktop" | "vrchat";
   input: string | null;
   feed: FeedInfo | null;
   /**
@@ -182,7 +185,10 @@ function startWindowFeed(payload: Partial<SourceRequest> & { window: string }): 
     const entry = { feed, port };
     windowFeeds.set(windowId, entry);
     void feed.exited.then(() => {
-      if (windowFeeds.get(windowId) === entry) windowFeeds.delete(windowId);
+      if (windowFeeds.get(windowId) === entry) {
+        windowFeeds.delete(windowId);
+        notifyFeedEnded(windowId);
+      }
     });
     return feed.info;
   })().finally(() => startingWindows.delete(windowId));
@@ -244,6 +250,21 @@ async function stopAudio(): Promise<void> {
   await running?.encoder.stop();
 }
 const subscribers = new Set<string>();
+const endSubscribers = new Set<string>();
+
+function notifyFeedEnded(windowId?: string): void {
+  for (const target of endSubscribers) {
+    try {
+      PostMan.PostMessage({
+        target,
+        type: "FEED_ENDED",
+        payload: { source: state.id, ...(windowId ? { window: windowId } : {}) },
+      });
+    } catch {
+      endSubscribers.delete(target);
+    }
+  }
+}
 
 let helper: CaptureHelper | null = null;
 let applying: Promise<void> = Promise.resolve();
@@ -492,6 +513,7 @@ async function describe(): Promise<DesktopDescription> {
   }
   return {
     machine: Deno.hostname(),
+    kind: "desktop",
     input: pairedInput,
     feed: state.feed,
     ...(screens ? { screens } : {}),
@@ -534,6 +556,11 @@ new PostMan(
     }),
     SUBSCRIBESTATUS: refuseWhenGuarded(guard, (actor: string) => {
       if (typeof actor === "string") subscribers.add(actor);
+      return true;
+    }),
+    SUBSCRIBE_END: refuseWhenGuarded(guard, (payload: { actor?: string } | string) => {
+      const actor = typeof payload === "string" ? payload : payload?.actor;
+      if (typeof actor === "string" && actor) endSubscribers.add(actor);
       return true;
     }),
     /** Where the encoder serves when `START` comes without a payload. */
@@ -603,6 +630,13 @@ new PostMan(
         const feed = running.get(monitorOf(p));
         if (!feed) throw new Error("no running feed for WebRTC offer");
         return { sdp: await feed.encoder.acceptWebRtcOffer(p.sdp) };
+      },
+      SUBSCRIBE_END: (payload) => {
+        const actor = typeof payload === "string"
+          ? payload
+          : (payload as { actor?: unknown } | null)?.actor;
+        if (typeof actor === "string" && actor) endSubscribers.add(actor);
+        return true;
       },
     }),
     /** Start the encoder feed; returns where receivers reach it. */

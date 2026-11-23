@@ -42,6 +42,10 @@ export type RdpStart = {
   secret?: string;
   /** False: no household even if this machine has `.secret`. Also off when `actors` is given. */
   household?: false;
+  /** "classic" (default single-desktop UI) or "compositor" (multi-machine WM + wallpaper). */
+  mode?: "classic" | "compositor";
+  /** Optional VRChat `petplay_ovrdriver` media socket path for `vrchatSource` in compositor mode. */
+  vrchat?: { socketPath?: string; port?: number; layout?: "mono" | "side-by-side" } | boolean;
 };
 
 const state = actorState({
@@ -85,16 +89,93 @@ new PostMan(state, {
         if (actor) await call(actor, "SETHOUSEHOLD", household);
       }
     }
-    const ui = actors.ui = resolveActorId(await PostMan.create("./ui.tsx", import.meta.url));
-    await call(ui, "START", {
-      topic,
-      secret,
-      websocket: { hostname: host },
-      webtransport: { hostname: host },
-      source,
-      input,
-      household,
-    });
+    if (payload.mode === "compositor") {
+      const localSources: Array<{
+        actor: ActorId;
+        kind: "desktop" | "vrchat";
+        input?: ActorId | null;
+        guarded?: boolean;
+      }> = [];
+      if (source) {
+        localSources.push({
+          actor: source,
+          kind: "desktop",
+          input: input ?? null,
+          guarded: Boolean(household && actors.source),
+        });
+      }
+      if (payload.vrchat) {
+        const vrcCfg = typeof payload.vrchat === "object" ? payload.vrchat : {};
+        const vrchat = actors.vrchat = resolveActorId(
+          await PostMan.create("./vrchatSource.ts", import.meta.url),
+        );
+        await call(vrchat, "CONFIGURE", {
+          host,
+          port: vrcCfg.port ?? ((payload.mediaPort ?? 4460) + 50),
+          socketPath: vrcCfg.socketPath,
+          layout: vrcCfg.layout,
+        });
+        if (household) await call(vrchat, "SETHOUSEHOLD", household);
+        localSources.push({
+          actor: vrchat,
+          kind: "vrchat",
+          input: null,
+          guarded: Boolean(household),
+        });
+      }
+      const mediaMux = actors.mediaMux = resolveActorId(
+        await PostMan.create("./mediaMux.ts", import.meta.url),
+      );
+      await call(mediaMux, "START", {
+        secret,
+        localSources,
+        household,
+      });
+      const inputRouter = actors.inputRouter = resolveActorId(
+        await PostMan.create("./inputRouter.ts", import.meta.url),
+      );
+      await call(inputRouter, "START", { household });
+      const compositor = actors.ui = resolveActorId(
+        await PostMan.create("./compositor.tsx", import.meta.url),
+      );
+      await call(compositor, "START", {
+        topic: false,
+        secret,
+        mediaMux,
+        inputRouter,
+        websocket: { hostname: host },
+        webtransport: { hostname: host },
+      });
+      const liaison = actors.liaison = resolveActorId(
+        await PostMan.create("./liaison.ts", import.meta.url),
+      );
+      await call(liaison, "START", {
+        role: "host",
+        topic,
+        secret,
+        services: { ui: compositor, mediaMux },
+      });
+    } else {
+      const ui = actors.ui = resolveActorId(await PostMan.create("./ui.tsx", import.meta.url));
+      await call(ui, "START", {
+        topic: false,
+        secret,
+        websocket: { hostname: host },
+        webtransport: { hostname: host },
+        source,
+        input,
+        household,
+      });
+      const liaison = actors.liaison = resolveActorId(
+        await PostMan.create("./liaison.ts", import.meta.url),
+      );
+      await call(liaison, "START", {
+        role: "host",
+        topic,
+        secret,
+        services: { ui },
+      });
+    }
 
     let base = "";
     if (payload.site !== false) {
