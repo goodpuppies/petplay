@@ -79,6 +79,7 @@ import {
   type DisplaySpatialNode,
   displayToolbarSide,
   displayToolbarSwapSide,
+  nodeToolbarSide,
   getDisplayAttachmentRole,
   getSpatialChildren,
   getSpatialRootId,
@@ -1627,6 +1628,25 @@ function DisplaySpatialNodeView({
     workspaceCrop.height,
   ]);
   const selectNode = React.useCallback(() => onSelectNode(node.id), [node.id, onSelectNode]);
+  const nodeSizes = React.useMemo(() => {
+    const map = new Map<string, [number, number, number]>();
+    for (const candidate of Object.values(graph.nodes)) {
+      if (candidate.kind === "keyboard") {
+        map.set(candidate.id, candidate.snapSource.size);
+      } else if (candidate.kind === "display") {
+        const feed = candidate.workspaceOutputId != null && candidate.workspaceOutputConnected !== false
+          ? workspaceOutputs.find((o) => o.id === candidate.workspaceOutputId)
+          : undefined;
+        const size = displayPanelSize(
+          feed && feed.logicalWidth > 0 && feed.logicalHeight > 0
+            ? feed.logicalWidth / feed.logicalHeight
+            : DISPLAY_ASPECT_WIDTH_OVER_HEIGHT,
+        );
+        map.set(candidate.id, [size.width, size.height, DEFAULT_DISPLAY_DEPTH]);
+      }
+    }
+    return map;
+  }, [graph, workspaceOutputs]);
   // The menu's size is part of where it fits.
   const toolbarScale = useSetting("contextToolbarScale");
   const contextActions = React.useMemo<SpatialContextAction[]>(() => {
@@ -1656,13 +1676,14 @@ function DisplaySpatialNodeView({
     }
     // Sized as if the swap button shows: so far, swap, lock, delete and settings.
     const swapFootprint = contextToolbarFootprint(actions.length + 4);
-    const swapSide = displayToolbarSwapSide(graph, node.id, swapFootprint);
+    const swapSide = displayToolbarSwapSide(graph, node.id, swapFootprint, nodeSizes);
     if (swapSide != null) {
       actions.push({
         id: "swap-menu-side",
         label: `Move menu ${swapSide}`,
         icon: swapSide === "right" ? "arrow_forward" : "arrow_back",
-        run: () => setGraph((current) => swapDisplayToolbarSide(current, node.id, swapFootprint)),
+        run: () =>
+          setGraph((current) => swapDisplayToolbarSide(current, node.id, swapFootprint, nodeSizes)),
       });
     }
     actions.push({
@@ -1687,6 +1708,7 @@ function DisplaySpatialNodeView({
     setGraph,
     workspaceOutputs,
     toolbarScale,
+    nodeSizes,
     localOutput,
     node.shared,
     node.remoteInput,
@@ -1697,7 +1719,7 @@ function DisplaySpatialNodeView({
     () => contextToolbarFootprint(contextActions.length + 1),
     [contextActions.length, toolbarScale],
   );
-  const toolbarSide = displayToolbarSide(graph, node.id, toolbarFootprint);
+  const toolbarSide = displayToolbarSide(graph, node.id, toolbarFootprint, nodeSizes);
   const scene = useThree((r3fState) => r3fState.scene);
   const camera = useThree((r3fState) => r3fState.camera);
   const renderer = useThree((r3fState) => r3fState.gl);
@@ -2080,6 +2102,20 @@ function KeyboardSpatialNodeView({
     [windowOutputs, activeOutputIds, selectedOutputId, activateTaskbarOutput],
   );
 
+  const kbToolbarScale = useSetting("contextToolbarScale");
+  const kbToolbarFootprint = React.useMemo(
+    () => contextToolbarFootprint(contextActions.length + 1),
+    [contextActions.length, kbToolbarScale],
+  );
+  const kbNodeSizes = React.useMemo(() => {
+    const map = new Map<string, [number, number, number]>();
+    for (const candidate of Object.values(graph.nodes)) {
+      if (candidate.kind === "keyboard") map.set(candidate.id, candidate.snapSource.size);
+    }
+    return map;
+  }, [graph]);
+  const kbToolbarSide = nodeToolbarSide(graph, node.id, kbToolbarFootprint, kbNodeSizes);
+
   return (
     <group
       ref={nodeRef}
@@ -2113,7 +2149,18 @@ function KeyboardSpatialNodeView({
         <SpatialContextToolbar
           open={selectedNodeId === node.id}
           title="Keyboard"
-          position={[0, -node.snapSource.size[1] * 0.5, node.snapSource.size[2]]}
+          side={kbToolbarSide}
+          position={kbToolbarSide === "left" || kbToolbarSide === "right"
+            ? [
+              (kbToolbarSide === "right" ? 0.5 : -0.5) * node.snapSource.size[0],
+              node.snapSource.size[1] * 0.5,
+              node.snapSource.size[2],
+            ]
+            : [
+              0,
+              (kbToolbarSide === "above" ? 0.5 : -0.5) * node.snapSource.size[1],
+              node.snapSource.size[2],
+            ]}
           actions={contextActions}
           settings={
             <>

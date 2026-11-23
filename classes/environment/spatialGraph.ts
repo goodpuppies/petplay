@@ -1015,18 +1015,41 @@ export function displayToolbarSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
   footprint?: ToolbarFootprint,
+  nodeSizes?: ReadonlyMap<SpatialNodeId, [number, number, number]>,
 ): DisplayToolbarSide {
-  if (!displayToolbarEdgeTaken(graph, displayId, "bottom", footprint)) return "below";
-  if (!displayToolbarEdgeTaken(graph, displayId, "top", footprint)) return "above";
-  const node = graph.nodes[displayId];
-  const preferred = node?.kind === "display" && node.toolbarSidePreference === "right"
+  return nodeToolbarSide(graph, displayId, footprint, nodeSizes);
+}
+
+/**
+ * Universal side picker for any GrabBox node's context toolbar (display or keyboard).
+ * Checks attachment slots, parent hinge edges, and actual GrabBox OBB overlap on all four sides
+ * (`bottom`, `top`, `left`, `right`), using `nodeSizes` when provided for non-16:9 displays.
+ */
+export function nodeToolbarSide(
+  graph: SpatialGraph,
+  nodeId: SpatialNodeId,
+  footprint?: ToolbarFootprint,
+  nodeSizes?: ReadonlyMap<SpatialNodeId, [number, number, number]>,
+): DisplayToolbarSide {
+  if (!displayToolbarEdgeTaken(graph, nodeId, "bottom", footprint, nodeSizes)) return "below";
+  if (!displayToolbarEdgeTaken(graph, nodeId, "top", footprint, nodeSizes)) return "above";
+  const node = graph.nodes[nodeId];
+  const preferred: "left" | "right" = node?.kind === "display" && node.toolbarSidePreference === "right"
     ? "right"
     : "left";
-  const other = preferred === "left" ? "right" : "left";
-  return displayToolbarEdgeTaken(graph, displayId, preferred, footprint) &&
-      !displayToolbarEdgeTaken(graph, displayId, other, footprint)
-    ? other
-    : preferred;
+  const other: "left" | "right" = preferred === "left" ? "right" : "left";
+  const prefTaken = displayToolbarEdgeTaken(graph, nodeId, preferred, footprint, nodeSizes);
+  const otherTaken = displayToolbarEdgeTaken(graph, nodeId, other, footprint, nodeSizes);
+  if (prefTaken && !otherTaken) return other;
+  if (!prefTaken) return preferred;
+  // Every side is occupied: avoid colliding with a directly hinged neighbor on preferred if
+  // `other` is only softly blocked, otherwise fall back to `above` over overlapping a side window.
+  const prefHinged = isEdgeDirectlyHinged(graph, nodeId, preferred);
+  const otherHinged = isEdgeDirectlyHinged(graph, nodeId, other);
+  if (prefHinged && !otherHinged) return other;
+  if (!prefHinged) return preferred;
+  if (!isEdgeDirectlyHinged(graph, nodeId, "top")) return "above";
+  return preferred;
 }
 
 /**
@@ -1040,51 +1063,72 @@ export type ToolbarFootprint = {
   gap: number;
 };
 
-function displayToolbarEdgeTaken(
+function isEdgeDirectlyHinged(
   graph: SpatialGraph,
-  displayId: SpatialNodeId,
+  nodeId: SpatialNodeId,
   side: SpatialAttachmentSide,
-  footprint?: ToolbarFootprint,
 ): boolean {
-  const constraint = graph.nodes[displayId]?.constraint;
+  const constraint = graph.nodes[nodeId]?.constraint;
   const parentSide = constraint?.kind === "hinge"
     ? constraint.attachmentSlotId.match(/-(left|right|top|bottom)-slot$/)?.[1] as
       | SpatialAttachmentSide
       | undefined
     : undefined;
-  return isAttachmentSlotOccupied(graph, `${displayId}-${side}-slot`) ||
-    (parentSide != null && OPPOSITE_SIDE[parentSide] === side) ||
-    (footprint != null && toolbarSpaceBlocked(graph, displayId, side, footprint));
+  return isAttachmentSlotOccupied(graph, `${nodeId}-${side}-slot`) ||
+    (parentSide != null && OPPOSITE_SIDE[parentSide] === side);
 }
 
-/** Where on the window (local, on its front) the menu docks for each side. */
-const TOOLBAR_DOCK: Record<SpatialAttachmentSide, [number, number, number]> = {
-  bottom: [0, -DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
-  top: [0, DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
-  // Beside the window the column hangs from the top corner.
-  left: [-DISPLAY_PANEL_WIDTH / 2, DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
-  right: [DISPLAY_PANEL_WIDTH / 2, DEFAULT_DISPLAY_HEIGHT / 2, DEFAULT_DISPLAY_DEPTH],
-};
+function displayToolbarEdgeTaken(
+  graph: SpatialGraph,
+  displayId: SpatialNodeId,
+  side: SpatialAttachmentSide,
+  footprint?: ToolbarFootprint,
+  nodeSizes?: ReadonlyMap<SpatialNodeId, [number, number, number]>,
+): boolean {
+  return isEdgeDirectlyHinged(graph, displayId, side) ||
+    (footprint != null && toolbarSpaceBlocked(graph, displayId, side, footprint, nodeSizes));
+}
+
+function toolbarDockForSize(
+  size: [number, number, number],
+  side: SpatialAttachmentSide,
+): [number, number, number] {
+  const [w, h, d] = size;
+  switch (side) {
+    case "bottom":
+      return [0, -h / 2, d];
+    case "top":
+      return [0, h / 2, d];
+    case "left":
+      return [-w / 2, h / 2, d];
+    case "right":
+      return [w / 2, h / 2, d];
+  }
+}
+
 /** How far in front of and behind the menu's plane counts as in its way. */
-const TOOLBAR_CLEARANCE_DEPTH = 0.12;
+const TOOLBAR_CLEARANCE_DEPTH = 0.28;
 
 /**
  * Whether the space the menu would take on `side` overlaps another window or keyboard in the
- * same origin, attached or not: something floating just below a window has no slot to say so.
+ * same origin, attached or not: something floating just beside or below a window has no slot
+ * to say so.
  */
 export function toolbarSpaceBlocked(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
   side: SpatialAttachmentSide,
   footprint: ToolbarFootprint,
+  nodeSizes?: ReadonlyMap<SpatialNodeId, [number, number, number]>,
 ): boolean {
   const display = graph.nodes[displayId];
-  if (display == null) return false;
+  if (display == null || (display.kind !== "display" && display.kind !== "keyboard")) return false;
   const world = getSpatialNodeWorldMatrix(graph, displayId);
   const position = new THREE.Vector3();
   const quaternion = new THREE.Quaternion();
   world.decompose(position, quaternion, new THREE.Vector3());
-  const dock = new THREE.Vector3(...TOOLBAR_DOCK[side]).applyMatrix4(world);
+  const selfSize = nodeSizes?.get(displayId) ?? nodeSnapSource(display).size;
+  const dock = new THREE.Vector3(...toolbarDockForSize(selfSize, side)).applyMatrix4(world);
   const vertical = side === "left" || side === "right";
   const [w, h] = vertical ? footprint.vertical : footprint.horizontal;
   const g = footprint.gap;
@@ -1103,9 +1147,10 @@ export function toolbarSpaceBlocked(
     if (other.id === displayId || other.originId !== display.originId) return false;
     if (other.kind !== "display" && other.kind !== "keyboard") return false;
     const source = nodeSnapSource(other);
+    const otherSize = nodeSizes?.get(other.id) ?? source.size;
     const matrix = getSpatialNodeWorldMatrix(graph, other.id)
       .multiply(composeTransform(source.localTransform));
-    return region.intersectsOBB(orientedBoxFromMatrix(source.size, matrix));
+    return region.intersectsOBB(orientedBoxFromMatrix(otherSize, matrix));
   });
 }
 
@@ -1114,21 +1159,23 @@ export function displayToolbarSwapSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
   footprint?: ToolbarFootprint,
+  nodeSizes?: ReadonlyMap<SpatialNodeId, [number, number, number]>,
 ): "left" | "right" | null {
   if (graph.nodes[displayId]?.kind !== "display") return null;
-  const side = displayToolbarSide(graph, displayId, footprint);
+  const side = displayToolbarSide(graph, displayId, footprint, nodeSizes);
   if (side !== "left" && side !== "right") return null;
   const other = side === "left" ? "right" : "left";
-  return displayToolbarEdgeTaken(graph, displayId, other, footprint) ? null : other;
+  return displayToolbarEdgeTaken(graph, displayId, other, footprint, nodeSizes) ? null : other;
 }
 
 export function swapDisplayToolbarSide(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
   footprint?: ToolbarFootprint,
+  nodeSizes?: ReadonlyMap<SpatialNodeId, [number, number, number]>,
 ): SpatialGraph {
   const node = graph.nodes[displayId];
-  const nextSide = displayToolbarSwapSide(graph, displayId, footprint);
+  const nextSide = displayToolbarSwapSide(graph, displayId, footprint, nodeSizes);
   if (node?.kind !== "display" || nextSide == null) return graph;
   return {
     ...graph,
