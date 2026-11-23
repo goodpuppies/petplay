@@ -296,11 +296,16 @@ export class OpenVrOverlayFramePacer {
         ) ?? 90;
         const frameDurationMs = 1000 / this.displayHzCache;
         const secondsSinceLastVsync = this.vsyncSecondsBuffer[0];
-        if (secondsSinceLastVsync * 1000 >= frameDurationMs) {
+        const msSinceVsync = secondsSinceLastVsync * 1000;
+        if (msSinceVsync < 0 || msSinceVsync >= frameDurationMs) {
           // Over Steam Link, an app-limited scene app (e.g. VRChat at 35 Hz) slows
-          // `GetTimeSinceLastVsync`'s frame counter below the HMD's native refresh rate.
-          // Pace to the HMD's own frame period instead of stalling behind the scene app.
-          const elapsedMs = this.lastPacedAt > 0 ? performance.now() - this.lastPacedAt : frameDurationMs;
+          // `GetTimeSinceLastVsync`'s frame counter below the HMD's native refresh rate,
+          // and Steam Link's predicted vsync clock can also report negative `secondsSinceLastVsync`
+          // (e.g. -20 ms). Never compute `frameDurationMs - msSinceVsync` when it is outside
+          // `[0, frameDurationMs)`, which would otherwise sleep 20-35 ms on every frame.
+          const elapsedMs = this.lastPacedAt > 0
+            ? performance.now() - this.lastPacedAt
+            : frameDurationMs;
           const remainingMs = Math.max(0, frameDurationMs - elapsedMs);
           if (remainingMs >= 0.5 && remainingMs <= MAX_VSYNC_COARSE_YIELD_MS) {
             const t0 = performance.now();
@@ -309,7 +314,7 @@ export class OpenVrOverlayFramePacer {
           }
           spinSync = false;
         } else {
-          const untilNextVsyncMs = frameDurationMs - secondsSinceLastVsync * 1000;
+          const untilNextVsyncMs = frameDurationMs - msSinceVsync;
           const coarseWaitMs = Math.max(0, untilNextVsyncMs - spinTailMs);
           if (coarseWaitMs >= 0.5 && coarseWaitMs <= MAX_VSYNC_COARSE_YIELD_MS) {
             const t0 = performance.now();
@@ -341,7 +346,8 @@ export class OpenVrOverlayFramePacer {
       this.vr.GetTimeSinceLastVsync(this.vsyncSecondsPtr, this.vsyncFramePtr) &&
       this.vsyncFrameBuffer[0] === last
     ) {
-      if (this.vsyncSecondsBuffer[0] * 1000 >= frameDurationMs) {
+      const ms = this.vsyncSecondsBuffer[0] * 1000;
+      if (ms < 0 || ms >= frameDurationMs) {
         return { waitedMs: performance.now() - t0, sceneAppLimited: true };
       }
       if (performance.now() - t0 > 2 * spinTailMs) await wait(VSYNC_LATE_POLL_MS);
