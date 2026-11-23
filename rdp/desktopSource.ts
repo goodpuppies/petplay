@@ -186,8 +186,26 @@ const startingOutputFeeds = new Map<number, Promise<FeedInfo>>();
 const OUTPUT_PORT_OFFSET = 10;
 /** Running per-window feeds keyed by window id (Windows WGC, or Linux fallback). */
 const windowFeeds = new Map<string, { feed: WindowMediaFeed; port: number }>();
+const windowFrameSinks = new Map<
+  string,
+  { port: number; fps: number; retryTimer: ReturnType<typeof setTimeout> | null }
+>();
 const startingWindows = new Map<string, Promise<FeedInfo>>();
 const resizingWindows = new Set<string>();
+
+async function startWindowFrameSink(windowId: string, port: number, fps: number): Promise<void> {
+  const streamer = await ensureScreenStreamer();
+  await PostMan.PostMessage({
+    target: streamer,
+    type: "START_CAPTURE",
+    payload: {
+      id: `win-sink:${windowId}`,
+      target: { kind: "window", window: windowId },
+      framePort: port,
+      fps,
+    },
+  }, true);
+}
 const WINDOW_PORT_OFFSET = 200;
 const ATLAS_PORT_OFFSET = 190;
 let nextWindowSlot = 0;
@@ -847,6 +865,20 @@ new PostMan(
         atlas?.handleCaptureEnded(id.slice(4));
         return true;
       }
+      if (id.startsWith("win-sink:") && !shuttingDown) {
+        const windowId = id.slice("win-sink:".length);
+        const sink = windowFrameSinks.get(windowId);
+        if (sink && sink.retryTimer == null) {
+          sink.retryTimer = setTimeout(() => {
+            sink.retryTimer = null;
+            if (shuttingDown || !windowFrameSinks.has(windowId)) return;
+            void startWindowFrameSink(windowId, sink.port, sink.fps).catch((err) => {
+              console.warn(`[desktopSource] restart win-sink:${windowId} failed:`, err);
+            });
+          }, 500);
+        }
+        return true;
+      }
       if (id === "workspace" && actorCaptureArgs && !shuttingDown) {
         actorCaptureArgs = null;
         state.capturing = false;
@@ -1043,17 +1075,11 @@ new PostMan(
         if (typeof payload?.window !== "string" || !payload.window || !Number.isInteger(payload.port)) {
           throw new Error("ADDWINDOWFRAMESINK needs {window, port}");
         }
-        const streamer = await ensureScreenStreamer();
-        await PostMan.PostMessage({
-          target: streamer,
-          type: "START_CAPTURE",
-          payload: {
-            id: `win-sink:${payload.window}`,
-            target: { kind: "window", window: payload.window },
-            framePort: payload.port,
-            fps: clampCaptureFps(payload.fps ?? DEFAULT_CAPTURE_FPS),
-          },
-        }, true);
+        const fps = clampCaptureFps(payload.fps ?? DEFAULT_CAPTURE_FPS);
+        const prev = windowFrameSinks.get(payload.window);
+        if (prev?.retryTimer != null) clearTimeout(prev.retryTimer);
+        windowFrameSinks.set(payload.window, { port: payload.port, fps, retryTimer: null });
+        await startWindowFrameSink(payload.window, payload.port, fps);
         return true;
       },
     ),
@@ -1063,6 +1089,9 @@ new PostMan(
         if (Deno.build.os !== "linux" || typeof payload?.window !== "string" || !payload.window) {
           return false;
         }
+        const prev = windowFrameSinks.get(payload.window);
+        if (prev?.retryTimer != null) clearTimeout(prev.retryTimer);
+        windowFrameSinks.delete(payload.window);
         const streamer = await ensureScreenStreamer().catch(() => null);
         if (!streamer) return false;
         await PostMan.PostMessage({
