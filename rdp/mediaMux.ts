@@ -119,7 +119,10 @@ function requestSource<T>(source: ActorId, type: string, payload: unknown = null
 
 function feedMap(): Record<string, FeedInfo> {
   const out: Record<string, FeedInfo> = {};
-  for (const [id, entry] of feeds) out[id] = entry.info;
+  for (const [id, entry] of feeds) {
+    const streamKey = entry.info.streamId ?? id;
+    if (!(streamKey in out)) out[streamKey] = entry.info;
+  }
   return out;
 }
 
@@ -384,7 +387,8 @@ new PostMan(
           throw new Error("not part of this session");
         }
         const feedId = typeof params.feed === "string" ? params.feed : "";
-        const entry = feeds.get(feedId);
+        const entry = feeds.get(feedId) ??
+          [...feeds.values()].find((e) => e.info.streamId === feedId);
         if (!entry) throw new Error(`unknown media feed: ${feedId}`);
         const offerPayload: { sdp: string; window?: string; monitor?: number } = { sdp: offerSdp };
         if (entry.target.kind === "window") offerPayload.window = entry.target.window;

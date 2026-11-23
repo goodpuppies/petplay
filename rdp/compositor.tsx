@@ -56,6 +56,8 @@ export type CompositorStart = {
 type WindowEntry = FloatingWindowData & {
   source: ActorId;
   target: FeedTarget;
+  /** Shared stream key in `ToTab.media.feeds` (equals `feedId` unless backed by an atlas). */
+  streamId?: string;
   windowId?: string;
   region?: InputRegion;
   windowSize?: { width: number; height: number };
@@ -254,7 +256,8 @@ async function openWindow(req: {
     "ACQUIRE",
     { source: req.source, target },
   );
-  feeds = { ...feeds, [feedId]: info };
+  const streamKey = info.streamId ?? feedId;
+  feeds = { ...feeds, [streamKey]: info };
   broadcastMedia();
 
   const vp = state.viewport ?? { width: 1280, height: 720 };
@@ -268,6 +271,7 @@ async function openWindow(req: {
   const entry: WindowEntry = {
     id,
     feedId,
+    streamId: info.streamId,
     source: req.source,
     target,
     windowId: req.window?.id,
@@ -381,21 +385,24 @@ function render(): void {
         crop={wpFeed?.crop}
         onBackgroundClick={() => focusWindow(null)}
       />
-      {windows.map((win, index) => (
-        <FloatingWindow
-          key={win.id}
-          window={win}
-          zBase={10 + index * 10}
-          focused={win.id === focusedId}
-          hasFeed={Boolean(feeds[win.feedId])}
-          onFocus={() => focusWindow(win.id)}
-          onMove={(x, y, w, h) => moveWindow(win.id, x, y, w, h)}
-          onMinimize={() => setMinimized(win.id, true)}
-          onMuteToggle={() => toggleMute(win.id)}
-          onClose={() => void closeWindow(win.id)}
-          onInput={(event) => sendWindowInput(win, event)}
-        />
-      ))}
+      {windows.map((win, index) => {
+        const streamKey = win.streamId ?? win.feedId;
+        return (
+          <FloatingWindow
+            key={win.id}
+            window={{ ...win, feedId: streamKey }}
+            zBase={10 + index * 10}
+            focused={win.id === focusedId}
+            hasFeed={Boolean(feeds[streamKey])}
+            onFocus={() => focusWindow(win.id)}
+            onMove={(x, y, w, h) => moveWindow(win.id, x, y, w, h)}
+            onMinimize={() => setMinimized(win.id, true)}
+            onMuteToggle={() => toggleMute(win.id)}
+            onClose={() => void closeWindow(win.id)}
+            onInput={(event) => sendWindowInput(win, event)}
+          />
+        );
+      })}
       <Taskbar
         sources={sources}
         windowsBySource={windowsBySource}

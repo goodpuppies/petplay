@@ -87,6 +87,8 @@ export type FeedInfo = {
   code?: string;
   /** True when the encoder can also answer WebRTC H.264 SDP offers (`WEBRTC_OFFER`). */
   webrtc?: boolean;
+  /** Optional shared stream key (e.g. a per-machine GPU atlas) to deduplicate browser streams. */
+  streamId?: string;
   /** Optional crop rect (normalized 0..1) when backed by a multi-window atlas. */
   crop?: { x: number; y: number; width: number; height: number };
 };

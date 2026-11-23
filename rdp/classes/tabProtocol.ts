@@ -71,6 +71,8 @@ export type FeedInfo = {
   code?: string;
   webrtc?: boolean;
   audio?: boolean;
+  /** Optional shared stream key (e.g. a per-machine GPU atlas) to deduplicate browser streams. */
+  streamId?: string;
   /** Default full frame `{x:0,y:0,width:1,height:1}`. When backed by an atlas, this window's slot. */
   crop?: FeedCrop;
 };
