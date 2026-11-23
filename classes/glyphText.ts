@@ -64,10 +64,15 @@ export class GlyphTextRenderer {
   private instances = new ArrayBuffer(0);
   private floats = new Float32Array(0);
   private words = new Uint32Array(0);
+  private gpuBufferBytes = 0;
+  private lastBoundFirst = -1;
   private readonly mvp = new THREE.Matrix4();
   private readonly world = new THREE.Matrix4();
   private readonly scratch = new Int32Array(4);
   private readonly flag = new Uint8Array(1);
+  private readonly runPages: number[] = [];
+  private readonly runFirsts: number[] = [];
+  private readonly runCounts: number[] = [];
   private warnedMissing = false;
   private disposed = false;
 
@@ -109,6 +114,24 @@ export class GlyphTextRenderer {
       gl.glVertexAttribPointer(0, 2, GL.FLOAT, 0, 8, null);
       gl.glGenBuffers(1, ids);
       this.instanceBuffer = ids[0]!;
+      // Sampler units never change; set them once on the program.
+      gl.glUseProgram(this.program);
+      gl.glUniform1i(this.uniforms.curves, 0);
+      gl.glUniform1i(this.uniforms.headers, 1);
+      gl.glUniform1i(this.uniforms.references, 2);
+      // Pre-enable all instance attributes and divisors once on this VAO.
+      gl.glBindBuffer(GL.ARRAY_BUFFER, this.instanceBuffer);
+      for (const [location, size, offset, integer] of ATTRIBUTES) {
+        const at = bufferOffset(offset * 4);
+        gl.glEnableVertexAttribArray(location);
+        gl.glVertexAttribDivisor(location, 1);
+        if (integer) {
+          gl.glVertexAttribIPointer(location, size, GL.UNSIGNED_INT, INSTANCE_WORDS * 4, at);
+        } else {
+          gl.glVertexAttribPointer(location, size, GL.FLOAT, 0, INSTANCE_WORDS * 4, at);
+        }
+      }
+      this.lastBoundFirst = 0;
 
       gl.glBindBuffer(GL.PIXEL_UNPACK_BUFFER, 0);
       gl.glPixelStorei(GL.UNPACK_ALIGNMENT, 1);
@@ -154,32 +177,47 @@ export class GlyphTextRenderer {
     this.reserve(count);
 
     // Instances in the producer's order; consecutive glyphs on the same page draw together.
-    const runs: { page: number; first: number; count: number }[] = [];
+    let runCount = 0;
     let index = 0;
-    for (const text of texts) {
+    for (let ti = 0; ti < texts.length; ti++) {
+      const text = texts[ti]!;
       if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) continue;
       this.mvp.multiplyMatrices(projectionView, this.world.fromArray(text.worldMatrix));
       const m = this.mvp.elements;
       const placements = text.geometry.vectorGlyphs!;
-      const tint = [
-        toSrgb(text.color[0]),
-        toSrgb(text.color[1]),
-        toSrgb(text.color[2]),
-        text.color[3],
-      ];
+      const tr = toSrgb(text.color[0]);
+      const tg = toSrgb(text.color[1]);
+      const tb = toSrgb(text.color[2]);
+      const ta = text.color[3];
       for (let p = 0; p < placements.length; p += PLACEMENT_WORDS) {
         const code = placements[p]!;
         const penX = placements[p + 1]!;
         const penY = placements[p + 2]!;
         const size = placements[p + 3]!;
         const slot = placements[p + 4]!;
-        const found = this.lookup(slot, code);
-        if (found == null) continue;
-        const { glyph, page } = found;
-        const run = runs.at(-1);
-        if (run != null && run.page === page) run.count++;
-        else runs.push({ page, first: index, count: 1 });
-        this.writeInstance(index, m, penX, penY, size, glyph, tint);
+        const fontEntry = this.fonts[slot];
+        const glyph = fontEntry?.font.glyphs.get(code);
+        if (fontEntry == null || glyph == null) {
+          if (!this.warnedMissing) {
+            this.warnedMissing = true;
+            console.warn(
+              `[raythree] Glyph text: no baked outline for U+${
+                code.toString(16).toUpperCase().padStart(4, "0")
+              } (font ${slot}); skipped`,
+            );
+          }
+          continue;
+        }
+        const page = fontEntry.pageBase + glyph.page;
+        if (runCount > 0 && this.runPages[runCount - 1] === page) {
+          this.runCounts[runCount - 1]!++;
+        } else {
+          this.runPages[runCount] = page;
+          this.runFirsts[runCount] = index;
+          this.runCounts[runCount] = 1;
+          runCount++;
+        }
+        this.writeInstance(index, m, penX, penY, size, glyph, tr, tg, tb, ta);
         index++;
       }
     }
@@ -187,7 +225,7 @@ export class GlyphTextRenderer {
 
     const gl = this.gl;
     this.raylib.symbols.rlDrawRenderBatchActive();
-    const saved = this.saveState();
+    const saved = this.saveDrawState();
     try {
       gl.glGetIntegerv(GL.VIEWPORT, this.scratch);
       if (this.scratch[2]! <= 0 || this.scratch[3]! <= 0) throw new Error("Invalid Glyph viewport");
@@ -195,9 +233,6 @@ export class GlyphTextRenderer {
       gl.glUniform1f(this.uniforms.exponent, tuning?.glyphCoverageExponent ?? 1);
       gl.glUniform1f(this.uniforms.weight, tuning?.glyphWeightPixels ?? 0);
       gl.glUniform1f(this.uniforms.aaWidth, tuning?.glyphAaWidth ?? 1);
-      gl.glUniform1i(this.uniforms.curves, 0);
-      gl.glUniform1i(this.uniforms.headers, 1);
-      gl.glUniform1i(this.uniforms.references, 2);
       gl.glUniform2f(this.uniforms.viewport, this.scratch[2]!, this.scratch[3]!);
       gl.glBindVertexArray(this.vao);
       gl.glDisable(GL.DEPTH_TEST);
@@ -210,33 +245,38 @@ export class GlyphTextRenderer {
       gl.glBlendEquationSeparate(GL.FUNC_ADD, GL.FUNC_ADD);
       gl.glBlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA);
       gl.glBindBuffer(GL.ARRAY_BUFFER, this.instanceBuffer);
+      // Buffer-orphan with glBufferData(STREAM_DRAW) so the driver never stalls on an in-flight eye.
       gl.glBufferData(
         GL.ARRAY_BUFFER,
         BigInt(index * INSTANCE_WORDS * 4),
         Deno.UnsafePointer.of(this.floats),
         GL.STREAM_DRAW,
       );
-      for (const run of runs) {
-        const textures = this.pages[run.page]!.textures;
+      for (let r = 0; r < runCount; r++) {
+        const page = this.runPages[r]!;
+        const first = this.runFirsts[r]!;
+        const countInRun = this.runCounts[r]!;
+        const textures = this.pages[page]!.textures;
         for (let unit = 0; unit < 3; unit++) {
           gl.glActiveTexture(GL.TEXTURE0 + unit);
           gl.glBindTexture(GL.TEXTURE_2D, textures[unit]!);
         }
-        // GL 3.3 has no base-instance draw: point the attributes at this run's first instance.
-        for (const [location, size, offset, integer] of ATTRIBUTES) {
-          const at = bufferOffset((run.first * INSTANCE_WORDS + offset) * 4);
-          gl.glEnableVertexAttribArray(location);
-          gl.glVertexAttribDivisor(location, 1);
-          if (integer) {
-            gl.glVertexAttribIPointer(location, size, GL.UNSIGNED_INT, INSTANCE_WORDS * 4, at);
-          } else {
-            gl.glVertexAttribPointer(location, size, GL.FLOAT, 0, INSTANCE_WORDS * 4, at);
+        // Only re-point vertex attributes when `first` changes (99% of roots have a single run at 0).
+        if (first !== this.lastBoundFirst) {
+          for (const [location, size, offset, integer] of ATTRIBUTES) {
+            const at = bufferOffset((first * INSTANCE_WORDS + offset) * 4);
+            if (integer) {
+              gl.glVertexAttribIPointer(location, size, GL.UNSIGNED_INT, INSTANCE_WORDS * 4, at);
+            } else {
+              gl.glVertexAttribPointer(location, size, GL.FLOAT, 0, INSTANCE_WORDS * 4, at);
+            }
           }
+          this.lastBoundFirst = first;
         }
-        gl.glDrawArraysInstanced(GL.TRIANGLES, 0, 6, run.count);
+        gl.glDrawArraysInstanced(GL.TRIANGLES, 0, 6, countInRun);
       }
     } finally {
-      this.restoreState(saved);
+      this.restoreDrawState(saved);
     }
     return visible;
   }
@@ -282,17 +322,32 @@ export class GlyphTextRenderer {
     penY: number,
     size: number,
     glyph: GlyphFontGlyph,
-    tint: number[],
+    tr: number,
+    tg: number,
+    tb: number,
+    ta: number,
   ): void {
     const f = this.floats;
     const u = this.words;
     const at = index * INSTANCE_WORDS;
-    for (let row = 0; row < 4; row++) {
-      f[at + row] = m[row]! * size;
-      f[at + 4 + row] = -m[4 + row]! * size;
-      f[at + 8 + row] = m[8 + row]!;
-      f[at + 12 + row] = m[row]! * penX + m[4 + row]! * penY + m[12 + row]!;
-    }
+    const m0 = m[0]!, m1 = m[1]!, m2 = m[2]!, m3 = m[3]!;
+    const m4 = m[4]!, m5 = m[5]!, m6 = m[6]!, m7 = m[7]!;
+    f[at] = m0 * size;
+    f[at + 1] = m1 * size;
+    f[at + 2] = m2 * size;
+    f[at + 3] = m3 * size;
+    f[at + 4] = -m4 * size;
+    f[at + 5] = -m5 * size;
+    f[at + 6] = -m6 * size;
+    f[at + 7] = -m7 * size;
+    f[at + 8] = m[8]!;
+    f[at + 9] = m[9]!;
+    f[at + 10] = m[10]!;
+    f[at + 11] = m[11]!;
+    f[at + 12] = m0 * penX + m4 * penY + m[12]!;
+    f[at + 13] = m1 * penX + m5 * penY + m[13]!;
+    f[at + 14] = m2 * penX + m6 * penY + m[14]!;
+    f[at + 15] = m3 * penX + m7 * penY + m[15]!;
     const [minX, minY, maxX, maxY] = glyph.bounds;
     f[at + 16] = minX;
     f[at + 17] = minY;
@@ -310,10 +365,10 @@ export class GlyphTextRenderer {
     f[at + 27] = sy;
     f[at + 28] = -minX * sx;
     f[at + 29] = -minY * sy;
-    f[at + 30] = tint[0]!;
-    f[at + 31] = tint[1]!;
-    f[at + 32] = tint[2]!;
-    f[at + 33] = tint[3]!;
+    f[at + 30] = tr;
+    f[at + 31] = tg;
+    f[at + 32] = tb;
+    f[at + 33] = ta;
   }
 
   private reserve(count: number): void {
@@ -352,7 +407,71 @@ export class GlyphTextRenderer {
     return id[0]!;
   }
 
-  /** What this renderer changes, so raylib's cached state stays true afterwards. */
+  /** Minimal state save for `draw()` (skips pixel-unpack state that only `constructor` touches). */
+  private saveDrawState(): SavedDrawState {
+    const gl = this.gl;
+    const integer = (name: number) => {
+      gl.glGetIntegerv(name, this.scratch);
+      return this.scratch[0]!;
+    };
+    const enabled = (cap: number) => gl.glIsEnabled(cap) !== 0;
+    const active = integer(GL.ACTIVE_TEXTURE);
+    gl.glActiveTexture(GL.TEXTURE0);
+    const t0 = integer(GL.TEXTURE_BINDING_2D);
+    gl.glActiveTexture(GL.TEXTURE0 + 1);
+    const t1 = integer(GL.TEXTURE_BINDING_2D);
+    gl.glActiveTexture(GL.TEXTURE0 + 2);
+    const t2 = integer(GL.TEXTURE_BINDING_2D);
+    gl.glActiveTexture(active);
+    gl.glGetBooleanv(GL.DEPTH_WRITEMASK, this.flag);
+    return {
+      program: integer(GL.CURRENT_PROGRAM),
+      vao: integer(GL.VERTEX_ARRAY_BINDING),
+      array: integer(GL.ARRAY_BUFFER_BINDING),
+      active,
+      t0,
+      t1,
+      t2,
+      depthMask: this.flag[0]!,
+      blendOn: enabled(GL.BLEND),
+      depthOn: enabled(GL.DEPTH_TEST),
+      cullOn: enabled(GL.CULL_FACE),
+      stencilOn: enabled(GL.STENCIL_TEST),
+      scissorOn: enabled(GL.SCISSOR_TEST),
+      srgbOn: enabled(GL.FRAMEBUFFER_SRGB),
+      srcRgb: integer(GL.BLEND_SRC_RGB),
+      dstRgb: integer(GL.BLEND_DST_RGB),
+      srcAlpha: integer(GL.BLEND_SRC_ALPHA),
+      dstAlpha: integer(GL.BLEND_DST_ALPHA),
+      eqRgb: integer(GL.BLEND_EQUATION_RGB),
+      eqAlpha: integer(GL.BLEND_EQUATION_ALPHA),
+    };
+  }
+
+  private restoreDrawState(s: SavedDrawState): void {
+    const gl = this.gl;
+    gl.glActiveTexture(GL.TEXTURE0);
+    gl.glBindTexture(GL.TEXTURE_2D, s.t0);
+    gl.glActiveTexture(GL.TEXTURE0 + 1);
+    gl.glBindTexture(GL.TEXTURE_2D, s.t1);
+    gl.glActiveTexture(GL.TEXTURE0 + 2);
+    gl.glBindTexture(GL.TEXTURE_2D, s.t2);
+    gl.glActiveTexture(s.active);
+    gl.glUseProgram(s.program);
+    gl.glBindVertexArray(s.vao);
+    gl.glBindBuffer(GL.ARRAY_BUFFER, s.array);
+    gl.glDepthMask(s.depthMask);
+    s.blendOn ? gl.glEnable(GL.BLEND) : gl.glDisable(GL.BLEND);
+    s.depthOn ? gl.glEnable(GL.DEPTH_TEST) : gl.glDisable(GL.DEPTH_TEST);
+    s.cullOn ? gl.glEnable(GL.CULL_FACE) : gl.glDisable(GL.CULL_FACE);
+    s.stencilOn ? gl.glEnable(GL.STENCIL_TEST) : gl.glDisable(GL.STENCIL_TEST);
+    s.scissorOn ? gl.glEnable(GL.SCISSOR_TEST) : gl.glDisable(GL.SCISSOR_TEST);
+    s.srgbOn ? gl.glEnable(GL.FRAMEBUFFER_SRGB) : gl.glDisable(GL.FRAMEBUFFER_SRGB);
+    gl.glBlendFuncSeparate(s.srcRgb, s.dstRgb, s.srcAlpha, s.dstAlpha);
+    gl.glBlendEquationSeparate(s.eqRgb, s.eqAlpha);
+  }
+
+  /** What this renderer changes in constructor, so raylib's cached state stays true afterwards. */
   private saveState(): SavedState {
     const gl = this.gl;
     const integer = (name: number) => {
@@ -408,6 +527,29 @@ export class GlyphTextRenderer {
     gl.glBlendEquationSeparate(equationRgb!, equationAlpha!);
   }
 }
+
+type SavedDrawState = {
+  program: number;
+  vao: number;
+  array: number;
+  active: number;
+  t0: number;
+  t1: number;
+  t2: number;
+  depthMask: number;
+  blendOn: boolean;
+  depthOn: boolean;
+  cullOn: boolean;
+  stencilOn: boolean;
+  scissorOn: boolean;
+  srgbOn: boolean;
+  srcRgb: number;
+  dstRgb: number;
+  srcAlpha: number;
+  dstAlpha: number;
+  eqRgb: number;
+  eqAlpha: number;
+};
 
 type SavedState = {
   program: number;
