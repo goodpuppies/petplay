@@ -635,6 +635,16 @@ function CommonOverlayChords({
     const clicks = Math.floor(scrollAccumulator.current[hand]);
     if (clicks === 0) return;
     scrollAccumulator.current[hand] -= clicks;
+    const displaySink = displayObject?.userData.onDisplayMouse as DisplayMouseSink | undefined;
+    if (displaySink) {
+      displaySink({
+        kind: "wheel",
+        deltaY: -Math.sign(axis) * clicks,
+        x: hit.uv.x,
+        y: 1 - hit.uv.y,
+      });
+      return;
+    }
     const node = graph.nodes[pointedId];
     const crop = node?.kind === "display"
       ? node.workspaceCrop ?? { x: 0, y: 0, width: 1, height: 1 }
@@ -1773,6 +1783,10 @@ function DisplaySpatialNodeView({
         workspaceOutputId: node.workspaceOutputId ?? null,
         workspaceOutputName: node.workspaceOutputName ?? null,
         workspaceOutputConnected: node.workspaceOutputConnected ?? null,
+        onDisplayMouse: activeDisplayOverlayHostActor != null && feedAcceptsMouse &&
+            !node.mouseBlocked
+          ? croppedMouseSink
+          : undefined,
       }}
     >
       <SnapSlotMarkers graph={graph} ownerId={node.id} setGraph={setGraph} />

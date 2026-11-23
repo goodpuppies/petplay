@@ -59,7 +59,13 @@ export function createSmoothedDisplayMouseSink(
 
   return (event) => {
     if (event.kind === "wheel") {
-      sink(event);
+      // Keep wheel at the smoothed pointer position when the ray is stationary so scrolling
+      // doesn't jitter or jump the cursor.
+      const pos = filtered != null &&
+          Math.hypot(event.x - filtered.x, event.y - filtered.y) <= snapDistance
+        ? filtered
+        : { x: event.x, y: event.y };
+      sink({ ...event, x: pos.x, y: pos.y });
       return;
     }
     if (event.kind === "button") {
