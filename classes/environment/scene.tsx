@@ -28,8 +28,8 @@ import type { DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel } from "./keyboard/keyboard.tsx";
 import {
   KEYBOARD_TASKBAR_GAP,
-  KEYBOARD_TASKBAR_HEIGHT,
   KeyboardTaskbar,
+  keyboardTaskbarHeight,
 } from "./keyboard/keyboardTaskbar.tsx";
 import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
@@ -2068,7 +2068,7 @@ function KeyboardSpatialNodeView({
         onDismiss={node.locked ? undefined : dismissKeyboard}
         opacity={node.opacity}
         topBar={renderKeyboardTopBar}
-        topBarHeight={KEYBOARD_TASKBAR_HEIGHT}
+        topBarHeight={keyboardTaskbarHeight(windowOutputs.length)}
         topBarGap={KEYBOARD_TASKBAR_GAP}
       >
         <SpatialContextToolbar

@@ -362,11 +362,54 @@ export function spawnDisplayForWorkspaceOutput(
 
   let graph = current;
   let displays = displayNodesByOrdinal(graph);
-  graph = displays.length === 0
-    ? ensureDefaultSpatialContent(graph)
-    : spawnHingedDisplay(graph, displays.at(-1)!.id);
-  displays = displayNodesByOrdinal(graph);
-  const created = displays.at(-1);
+  const existingIds = new Set(Object.keys(graph.nodes));
+  let created: DisplaySpatialNode | undefined;
+
+  if (displays.length === 0) {
+    graph = ensureDefaultSpatialContent(graph);
+    displays = displayNodesByOrdinal(graph);
+    created = displays.find((d) => !existingIds.has(d.id)) ?? displays.at(-1);
+  } else {
+    // Try attaching to any existing display with a free hinge slot first.
+    for (let i = displays.length - 1; i >= 0; i--) {
+      const expanded = spawnHingedDisplay(graph, displays[i]!.id);
+      if (expanded !== graph) {
+        graph = expanded;
+        created = displayNodesByOrdinal(graph).find((d) => !existingIds.has(d.id));
+        break;
+      }
+    }
+    // If every hinge slot is occupied, spawn a free-floating display offset from the primary one
+    // rather than overwriting an existing display.
+    if (created == null) {
+      graph = cloneGraph(graph);
+      const anchor = displays[0]!;
+      const ordinal = graph.nextDisplayOrdinal++;
+      const id = `display-${ordinal}`;
+      const offset = ((ordinal - 1) % 4) * 0.08;
+      const freeDisplay: DisplaySpatialNode = {
+        id,
+        kind: "display",
+        ordinal,
+        parentId: null,
+        originId: anchor.originId,
+        localTransform: {
+          position: [
+            anchor.localTransform.position[0] + 0.15 + offset,
+            anchor.localTransform.position[1] + 0.06 + offset * 0.5,
+            anchor.localTransform.position[2] + 0.08,
+          ],
+          rotation: [...anchor.localTransform.rotation],
+          scale: [...anchor.localTransform.scale],
+        },
+        onParentDelete: "preserve",
+      };
+      graph.nodes[id] = freeDisplay;
+      addDisplayAttachmentSlots(graph, id);
+      graph = reconcileDisplayControls(graph);
+      created = graph.nodes[id] as DisplaySpatialNode;
+    }
+  }
   return created == null ? graph : assignWorkspaceOutput(graph, created.id, output.id, [output]);
 }
 

@@ -1,10 +1,11 @@
 /**
  * Compact window taskbar integrated into the top of the VR keyboard UI.
  *
- * Renders as a pure uikit row inside `KeyboardFromJson` (inheriting the keyboard's `pixelSize`,
+ * Renders as a pure uikit block inside `KeyboardFromJson` (inheriting the keyboard's `pixelSize`,
  * `opacity`, `GrabBox` bounds, and hinge spacing). Lists only windows (`kind === "window"`):
- * clicking an active window selects its VR display and focuses it; clicking an inactive window
- * spawns a window-backed `DisplayInstance` for it.
+ * automatically expands up to 2 rows (up to 16 windows visible at once, with `‹`/`›` paging if
+ * more are open). Clicking a window spawns a new `DisplayInstance` showing just that window (or
+ * focuses its display if already open).
  */
 import React, { useMemo, useState } from "react";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
@@ -13,12 +14,22 @@ import { COLOR, GAP, INNER_GAP, RADIUS } from "../ui/tokens.ts";
 import { pulseForPointerEvent } from "../haptics.ts";
 import type { WorkspaceOutput } from "../workspaceDisplays.ts";
 
-/** Taskbar height and gap above the key trays, in keyboard uikit layout units. */
-export const KEYBOARD_TASKBAR_HEIGHT = 60;
+/** Gap above the key trays in keyboard uikit layout units. */
 export const KEYBOARD_TASKBAR_GAP = 10;
 
-const ITEM_HEIGHT = 44;
-const PAGE_SIZE = 5;
+const PER_ROW = 8;
+const MAX_ROWS = 2;
+const PAGE_SIZE = PER_ROW * MAX_ROWS;
+const ITEM_HEIGHT = 36;
+const ROW_GAP = 6;
+const PAD = INNER_GAP;
+
+/** Exact taskbar height in keyboard uikit layout units for `windowCount` windows. */
+export function keyboardTaskbarHeight(windowCount: number): number {
+  if (windowCount <= 0) return 0;
+  const rows = Math.min(MAX_ROWS, Math.max(1, Math.ceil(windowCount / PER_ROW)));
+  return PAD * 2 + rows * ITEM_HEIGHT + (rows - 1) * ROW_GAP;
+}
 
 export type KeyboardTaskbarProps = {
   /** Total keyboard width in uikit layout units (from `keyboardContentBoundsUnits`). */
@@ -31,7 +42,7 @@ export type KeyboardTaskbarProps = {
   onActivateWindow: (output: WorkspaceOutput) => void;
 };
 
-function shortLabel(name: string, max = 16): string {
+function shortLabel(name: string, max = 13): string {
   const trimmed = name.trim();
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
@@ -59,7 +70,7 @@ function TaskbarButton({
       flexGrow={1}
       flexBasis={0}
       height={ITEM_HEIGHT}
-      paddingX={12}
+      paddingX={8}
       borderRadius={RADIUS.slot}
       borderWidth={active && !selected ? 1 : 0}
       borderColor={COLOR.accent}
@@ -77,7 +88,7 @@ function TaskbarButton({
         onClick();
       }}
     >
-      <Text color={ink} fontSize={17}>{label}</Text>
+      <Text color={ink} fontSize={14}>{label}</Text>
     </Container>
   );
 }
@@ -106,13 +117,19 @@ export function KeyboardTaskbar({
 
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const clampedPage = Math.min(page, pageCount - 1);
-  const visibleItems = sorted.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
+  const pageItems = sorted.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
+  const rowCount = Math.min(MAX_ROWS, Math.max(1, Math.ceil(sorted.length / PER_ROW)));
+  const rows: WorkspaceOutput[][] = [];
+  for (let r = 0; r < rowCount; r++) {
+    rows.push(pageItems.slice(r * PER_ROW, (r + 1) * PER_ROW));
+  }
+  const totalHeight = keyboardTaskbarHeight(sorted.length);
 
   return (
     <Container
       width={widthUnits}
-      height={KEYBOARD_TASKBAR_HEIGHT}
-      padding={INNER_GAP}
+      height={totalHeight}
+      padding={PAD}
       gap={INNER_GAP}
       flexDirection="row"
       alignItems="center"
@@ -122,8 +139,8 @@ export function KeyboardTaskbar({
     >
       {pageCount > 1 && (
         <Container
-          width={40}
-          height={ITEM_HEIGHT}
+          width={36}
+          height={totalHeight - PAD * 2}
           flexShrink={0}
           borderRadius={RADIUS.slot}
           backgroundColor={COLOR.tile}
@@ -141,26 +158,36 @@ export function KeyboardTaskbar({
 
       <Container
         flexGrow={1}
-        flexDirection="row"
-        alignItems="center"
-        gap={INNER_GAP}
+        flexDirection="column"
+        gap={ROW_GAP}
         backgroundOpacity={0}
       >
-        {visibleItems.map((win) => (
-          <TaskbarButton
-            key={win.id}
-            label={shortLabel(win.name)}
-            active={activeOutputIds.has(win.id)}
-            selected={selectedOutputId === win.id}
-            onClick={() => onActivateWindow(win)}
-          />
+        {rows.map((row, rowIdx) => (
+          <Container
+            key={rowIdx}
+            flexDirection="row"
+            alignItems="center"
+            gap={ROW_GAP}
+            height={ITEM_HEIGHT}
+            backgroundOpacity={0}
+          >
+            {row.map((win) => (
+              <TaskbarButton
+                key={win.id}
+                label={shortLabel(win.name)}
+                active={activeOutputIds.has(win.id)}
+                selected={selectedOutputId === win.id}
+                onClick={() => onActivateWindow(win)}
+              />
+            ))}
+          </Container>
         ))}
       </Container>
 
       {pageCount > 1 && (
         <Container
-          width={40}
-          height={ITEM_HEIGHT}
+          width={36}
+          height={totalHeight - PAD * 2}
           flexShrink={0}
           borderRadius={RADIUS.slot}
           backgroundColor={COLOR.tile}
