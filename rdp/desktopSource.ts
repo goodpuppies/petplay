@@ -1049,7 +1049,7 @@ new PostMan(
           type: "START_CAPTURE",
           payload: {
             id: `win-sink:${payload.window}`,
-            target: { kind: "window", window_id: payload.window },
+            target: { kind: "window", window: payload.window },
             framePort: payload.port,
             fps: clampCaptureFps(payload.fps ?? DEFAULT_CAPTURE_FPS),
           },

@@ -600,6 +600,7 @@ function outputs(): WorkspaceOutput[] {
       ...(running && d.input && d.inputAllowed
         ? { inputActor: d.input }
         : { input: "none" as const }),
+      ...(d.error ? { error: d.error } : {}),
     };
   });
 }

@@ -31,6 +31,8 @@ export type WorkspaceOutput = {
   windowId?: string;
   /** True when backed by a local source (e.g. a local window) that may be shared with others. */
   local?: boolean;
+  /** Optional startup/capture error to show on the display's loading placeholder. */
+  error?: string;
   id: string;
   name: string;
   priority: number;

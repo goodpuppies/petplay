@@ -26,6 +26,9 @@ import {
 } from "./displayMetrics.ts";
 import type { DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel } from "./keyboard/keyboard.tsx";
+import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
+import { Text } from "./ui/text.tsx";
+import { COLOR } from "./ui/tokens.ts";
 import {
   KEYBOARD_TASKBAR_GAP,
   KeyboardTaskbar,
@@ -1760,12 +1763,48 @@ function DisplaySpatialNodeView({
           // The open toolbar carries the badge instead.
           visible={hovered && attachmentRole != null && selectedNodeId !== node.id}
         />
-        {(localOutput && node.shared) || household
+        {household && !selectedFeed?.overlayHostActor
+          ? (
+            <group
+              position={[0, 0, DEFAULT_DISPLAY_DEPTH]}
+              {...({ pointerEvents: "none" } as Record<string, unknown>)}
+            >
+              <Container
+                pixelSize={0.001}
+                width={Math.round(panel.width * 1000)}
+                height={Math.round(panel.height * 1000)}
+                flexDirection="column"
+                alignItems="center"
+                justifyContent="center"
+                gap={14}
+                padding={24}
+                borderRadius={24}
+                borderWidth={2}
+                borderColor={COLOR.outline}
+                backgroundColor={COLOR.ground}
+                backgroundOpacity={0.92}
+              >
+                <Text color={COLOR.ink} fontSize={28}>
+                  {selectedFeed?.name ?? node.workspaceOutputName ?? "Window"}
+                </Text>
+                <Text
+                  color={selectedFeed?.error ? COLOR.danger : COLOR.inkDim}
+                  fontSize={20}
+                >
+                  {selectedFeed?.error ? selectedFeed.error : "Loading…"}
+                </Text>
+              </Container>
+            </group>
+          )
+          : null}
+        {(localOutput && node.shared) || (household && !selectedFeed?.local)
           ? (
             <SharedIndicator
               position={[-panel.width * 0.5 + 0.04, panel.height * 0.5 + 0.055, DEFAULT_DISPLAY_DEPTH]}
               // Accented: whoever sees it may also drive it.
-              remoteInput={household ? selectedFeed?.inputActor != null : node.remoteInput ?? false}
+              remoteInput={household && !selectedFeed?.local
+                ? selectedFeed?.inputActor != null
+                : node.remoteInput ?? false}
             />
           )
           : null}

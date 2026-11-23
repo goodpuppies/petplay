@@ -243,6 +243,7 @@ function outputs(): WorkspaceOutput[] {
       household: { desktop: entry.info.id, provider: state.id },
       ...(ready ? { overlayHostActor: state.overlay! } : {}),
       ...(ready && state.input ? { inputActor: state.input } : { input: "none" as const }),
+      ...(entry.error ? { error: entry.error } : {}),
     };
   });
 }
