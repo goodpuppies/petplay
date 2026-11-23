@@ -7,6 +7,7 @@
  *   `--window <hwnd>` using `EnumWindows` + `IGraphicsCaptureItemInterop::CreateForWindow`.
  */
 import { DesktopMediaFeed } from "../../classes/sceneStreamMedia.ts";
+import { petplayMediaPath } from "../../classes/petplayMediaPath.ts";
 import { captureSessionEnvironment } from "../../classes/ScreenCapturer/captureSessionEnvironment.ts";
 import { screenStreamerPath } from "../../classes/ScreenCapturer/screenStreamerPath.ts";
 import {
@@ -400,7 +401,7 @@ export class WindowMediaFeed {
             body: sdp,
           });
           const text = await resp.text();
-          if (!resp.ok) throw new Error(`WebRTC offer rejected (${resp.status}): ${text}`);
+          if (!resp.ok) throw new Error(`WebRTC offer rejected (${responseStatus(resp)}): ${text}`);
           return text;
         },
         stop,
@@ -412,5 +413,271 @@ export class WindowMediaFeed {
       } catch { /* exited */ }
       throw error;
     }
+  }
+}
+
+function responseStatus(r: Response): number {
+  return r.status;
+}
+
+export type AtlasSlotLayout = {
+  srcW: number;
+  srcH: number;
+  crop: { x: number; y: number; width: number; height: number };
+};
+
+export type AtlasLayoutEvent = {
+  width: number;
+  height: number;
+  slots: Record<string, AtlasSlotLayout>;
+};
+
+/**
+ * Per-machine Linux GPU Atlas (`petplay-media atlas`): composites all captured windows on this
+ * machine into ONE VA-API NV12 surface and ONE H.264 WebRTC/WebTransport stream.
+ * Resizing a window updates its `crop` and `srcSize` live with zero encoder or WebRTC restart.
+ */
+export class WindowAtlas {
+  readonly streamId: string;
+  readonly host: string;
+  readonly port: number;
+  readonly fingerprint: string;
+  readonly webrtc: boolean;
+  private readonly webrtcOfferUrl: string | null;
+  private readonly child: Deno.ChildProcess;
+  private readonly stdinWriter: WritableStreamDefaultWriter<Uint8Array>;
+  private readonly encoder = new TextEncoder();
+  private readonly dir: string;
+  private readonly helpers = new Map<string, Deno.ChildProcess>();
+  private readonly slots = new Map<string, AtlasSlotLayout>();
+  private slotSeq = 0;
+  private stopped = false;
+  onLayout: ((layout: AtlasLayoutEvent) => void) | null = null;
+  onWindowExited: ((windowId: string) => void) | null = null;
+
+  private constructor(
+    args: {
+      streamId: string;
+      host: string;
+      port: number;
+      fingerprint: string;
+      webrtcOfferUrl: string | null;
+      child: Deno.ChildProcess;
+      dir: string;
+    },
+  ) {
+    this.streamId = args.streamId;
+    this.host = args.host;
+    this.port = args.port;
+    this.fingerprint = args.fingerprint;
+    this.webrtcOfferUrl = args.webrtcOfferUrl;
+    this.webrtc = Boolean(args.webrtcOfferUrl);
+    this.child = args.child;
+    this.stdinWriter = args.child.stdin.getWriter();
+    this.dir = args.dir;
+  }
+
+  static async start(options: {
+    host: string;
+    port: number;
+    width?: number;
+    height?: number;
+    fps?: number;
+    bitrate?: number;
+  }): Promise<WindowAtlas> {
+    const dir = await Deno.makeTempDir({
+      dir: Deno.env.get("XDG_RUNTIME_DIR") ?? `/run/user/${Deno.uid()}`,
+      prefix: "pp-win-atlas-",
+    });
+    const child = new Deno.Command(petplayMediaPath(), {
+      args: [
+        "atlas",
+        `${options.host}:${options.port}`,
+        "--width",
+        String(options.width ?? 2560),
+        "--height",
+        String(options.height ?? 1440),
+        "--fps",
+        String(options.fps ?? 30),
+        "--bitrate",
+        String(options.bitrate ?? 12_000_000),
+      ],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+
+    const log: string[] = [];
+    const keep = (l: string) => {
+      log.push(l);
+      if (log.length > 100) log.shift();
+    };
+    const drain = async (stream: ReadableStream<Uint8Array>, onLine: (l: string) => void) => {
+      let buf = "";
+      try {
+        for await (
+          const chunk of stream.pipeThrough(
+            new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>,
+          )
+        ) {
+          buf += chunk;
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            onLine(buf.slice(0, nl));
+            buf = buf.slice(nl + 1);
+          }
+        }
+      } catch { /* closed */ }
+    };
+    void drain(child.stderr, keep);
+
+    let atlasRef: WindowAtlas | null = null;
+    const ready = await new Promise<{ fingerprint: string; webrtcOfferUrl: string | null }>(
+      (resolve, reject) => {
+        let fingerprint: string | null = null;
+        let webrtcOfferUrl: string | null = null;
+        const timer = setTimeout(
+          () => reject(new Error(`petplay-media atlas not ready: ${log.at(-1) ?? "no output"}`)),
+          10_000,
+        );
+        void drain(child.stdout, (line) => {
+          keep(line);
+          if (line.startsWith("ATLAS_LAYOUT ")) {
+            try {
+              const parsed = JSON.parse(line.slice("ATLAS_LAYOUT ".length)) as AtlasLayoutEvent;
+              if (atlasRef) {
+                atlasRef.slots.clear();
+                for (const [id, slot] of Object.entries(parsed.slots)) {
+                  atlasRef.slots.set(id, slot);
+                }
+                atlasRef.onLayout?.(parsed);
+              }
+            } catch { /* ignore */ }
+            return;
+          }
+          webrtcOfferUrl ??= line.match(/^WEBRTC_READY (\S+)/)?.[1] ?? null;
+          fingerprint ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
+          if (line.startsWith("MEDIA_READY") && fingerprint) {
+            clearTimeout(timer);
+            resolve({ fingerprint, webrtcOfferUrl });
+          }
+        });
+        child.status.then((status) => {
+          clearTimeout(timer);
+          reject(new Error(`petplay-media atlas exited (${status.code}): ${log.at(-1) ?? ""}`));
+        });
+      },
+    );
+
+    const atlas = new WindowAtlas({
+      streamId: `atlas-${Deno.hostname()}`,
+      host: options.host,
+      port: options.port,
+      fingerprint: ready.fingerprint,
+      webrtcOfferUrl: ready.webrtcOfferUrl,
+      child,
+      dir,
+    });
+    atlasRef = atlas;
+    return atlas;
+  }
+
+  hasWindow(windowId: string): boolean {
+    return this.helpers.has(windowId);
+  }
+
+  get windowCount(): number {
+    return this.helpers.size;
+  }
+
+  feedInfoFor(windowId: string) {
+    const slot = this.slots.get(windowId);
+    return {
+      host: this.host,
+      port: this.port,
+      fingerprint: this.fingerprint,
+      webrtc: this.webrtc,
+      streamId: this.streamId,
+      crop: slot?.crop ?? { x: 0, y: 0, width: 1, height: 1 },
+      ...(slot ? { srcSize: { width: slot.srcW, height: slot.srcH } } : {}),
+    };
+  }
+
+  async addWindow(windowId: string, fps = 30): Promise<ReturnType<WindowAtlas["feedInfoFor"]>> {
+    if (this.helpers.has(windowId)) return this.feedInfoFor(windowId);
+    const socketPath = `${this.dir}/win-${++this.slotSeq}.sock`;
+    await this.stdinWriter.write(this.encoder.encode(`ADD ${windowId} ${socketPath}\n`));
+    // Brief pause so atlas binds the Unix seqpacket socket before screen-streamer connects.
+    await new Promise((r) => setTimeout(r, 40));
+    const helper = new Deno.Command(screenStreamerPath(), {
+      args: [
+        `--window=${windowId}`,
+        "--no-frame-socket",
+        "--no-input",
+        `--media-socket=${socketPath}`,
+        `--fps=${fps}`,
+      ],
+      env: linuxWaylandEnv(),
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).spawn();
+    this.helpers.set(windowId, helper);
+    void helper.status.then(async () => {
+      if (this.helpers.get(windowId) !== helper) return;
+      this.helpers.delete(windowId);
+      this.slots.delete(windowId);
+      if (!this.stopped) {
+        await this.stdinWriter.write(this.encoder.encode(`REMOVE ${windowId}\n`)).catch(() => {});
+        this.onWindowExited?.(windowId);
+      }
+    });
+    return this.feedInfoFor(windowId);
+  }
+
+  async removeWindow(windowId: string): Promise<void> {
+    const helper = this.helpers.get(windowId);
+    if (!helper) return;
+    this.helpers.delete(windowId);
+    this.slots.delete(windowId);
+    try {
+      helper.kill("SIGTERM");
+    } catch { /* gone */ }
+    await Promise.race([helper.status, new Promise((r) => setTimeout(r, 1000))]);
+    try {
+      helper.kill("SIGKILL");
+    } catch { /* gone */ }
+    if (!this.stopped) {
+      await this.stdinWriter.write(this.encoder.encode(`REMOVE ${windowId}\n`)).catch(() => {});
+    }
+  }
+
+  async acceptWebRtcOffer(sdp: string): Promise<string> {
+    if (!this.webrtcOfferUrl) throw new Error("atlas has no WebRTC endpoint");
+    const resp = await fetch(this.webrtcOfferUrl, {
+      method: "POST",
+      headers: { "content-type": "application/sdp" },
+      body: sdp,
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`atlas WebRTC offer rejected (${resp.status}): ${text}`);
+    return text;
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    for (const id of [...this.helpers.keys()]) await this.removeWindow(id);
+    try {
+      await this.stdinWriter.close();
+    } catch { /* closed */ }
+    try {
+      this.child.kill("SIGTERM");
+    } catch { /* gone */ }
+    await Promise.race([this.child.status, new Promise((r) => setTimeout(r, 1500))]);
+    try {
+      this.child.kill("SIGKILL");
+    } catch { /* gone */ }
+    await Deno.remove(this.dir, { recursive: true }).catch(() => {});
   }
 }

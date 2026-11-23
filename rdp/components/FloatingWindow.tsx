@@ -38,6 +38,8 @@ export type FloatingWindowData = {
   minimized: boolean;
   muted: boolean;
   crop?: FeedCrop;
+  /** Native pixel size of this window's content (used for aspect-fitting without stretching). */
+  srcSize?: { width: number; height: number };
 };
 
 export type FloatingWindowProps = {
@@ -135,11 +137,30 @@ export function FloatingWindow({
   if (win.minimized) return null;
 
   const contentH = Math.max(40, win.height - WINDOW_TITLEBAR_HEIGHT);
+  const availW = Math.max(16, win.width - 2);
+  const availH = Math.max(16, contentH - 2);
+  // Aspect-fit the video inside the window content area when native size is known, so
+  // windows never stretch across mismatched remote/host monitor aspect ratios.
+  let fitW = availW;
+  let fitH = availH;
+  if (win.srcSize && win.srcSize.width > 0 && win.srcSize.height > 0) {
+    const aspect = win.srcSize.width / win.srcSize.height;
+    if (availW / availH > aspect) {
+      fitH = availH;
+      fitW = availH * aspect;
+    } else {
+      fitW = availW;
+      fitH = availW / aspect;
+    }
+  }
+  const fitLeft = win.x + 1 + (availW - fitW) / 2;
+  const fitTop = win.y + WINDOW_TITLEBAR_HEIGHT + 1 + (availH - fitH) / 2;
+
   // Orthographic center coordinates: (0,0) is tab center, +Y is up.
   const frameCx = win.x + win.width / 2 - tab.width / 2;
   const frameCy = tab.height / 2 - (win.y + win.height / 2);
-  const videoCx = frameCx;
-  const videoCy = tab.height / 2 - (win.y + WINDOW_TITLEBAR_HEIGHT + contentH / 2);
+  const videoCx = fitLeft + fitW / 2 - tab.width / 2;
+  const videoCy = tab.height / 2 - (fitTop + fitH / 2);
   const gripCx = win.x + win.width - RESIZE_HANDLE_SIZE / 2 - tab.width / 2;
   const gripCy = tab.height / 2 - (win.y + win.height - RESIZE_HANDLE_SIZE / 2);
 
@@ -147,8 +168,8 @@ export function FloatingWindow({
     const native = event.nativeEvent as unknown as { offsetX: number; offsetY: number };
     onInputRef.current({
       t: "pointer",
-      x: clamp01((native.offsetX - win.x) / win.width),
-      y: clamp01((native.offsetY - (win.y + WINDOW_TITLEBAR_HEIGHT)) / contentH),
+      x: clamp01((native.offsetX - fitLeft) / fitW),
+      y: clamp01((native.offsetY - fitTop) / fitH),
     });
   };
 
@@ -299,7 +320,7 @@ export function FloatingWindow({
         ? (
           <group
             position={[videoCx, videoCy, zBase + 1]}
-            scale={[win.width - 2, contentH - 2, 1]}
+            scale={[fitW, fitH, 1]}
             userData={{ videoSurface: marker }}
           />
         )
@@ -308,7 +329,7 @@ export function FloatingWindow({
       {/* Invisible hit-test plane for video pointer/wheel input at zBase + 2 */}
       <mesh
         position={[videoCx, videoCy, zBase + 2]}
-        scale={[win.width - 2, contentH - 2, 1]}
+        scale={[fitW, fitH, 1]}
         userData={{ bridge: { kind: "skip" } }}
         onPointerMove={(event) => {
           event.stopPropagation();

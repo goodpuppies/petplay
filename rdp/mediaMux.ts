@@ -462,6 +462,33 @@ new PostMan(
       handleFeedEnded(payload);
       return true;
     },
+    ATLAS_UPDATED: (
+      payload: {
+        source?: string;
+        slots?: Record<string, { crop?: FeedInfo["crop"]; srcSize?: { width: number; height: number } }>;
+      } | null,
+    ) => {
+      if (!payload?.source || !payload.slots) return true;
+      const layouts: Record<string, { crop?: FeedInfo["crop"]; srcSize?: { width: number; height: number } }> = {};
+      let changed = false;
+      for (const [feedId, entry] of feeds) {
+        if (entry.source !== payload.source || entry.target.kind !== "window") continue;
+        const slot = payload.slots[entry.target.window];
+        if (!slot) continue;
+        entry.info = {
+          ...entry.info,
+          ...(slot.crop ? { crop: slot.crop } : {}),
+          ...(slot.srcSize ? { srcSize: slot.srcSize } : {}),
+        };
+        layouts[feedId] = slot;
+        changed = true;
+      }
+      if (changed) {
+        publishState();
+        notifySubscribers("WINDOW_LAYOUTS_UPDATED", { layouts });
+      }
+      return true;
+    },
     __SHUTDOWN__: () => stop(),
   } as const,
 );

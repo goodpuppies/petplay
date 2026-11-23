@@ -40,9 +40,11 @@ import { join } from "@std/path";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
 import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
 import {
+  type AtlasLayoutEvent,
   focusCapturableWindow,
   listCapturableWindows,
   resizeCapturableWindow,
+  WindowAtlas,
   type WindowInfo,
   WindowMediaFeed,
 } from "./classes/windowCapture.ts";
@@ -90,6 +92,8 @@ export type FeedInfo = {
   webrtc?: boolean;
   /** Optional shared stream key (e.g. a per-machine GPU atlas) to deduplicate browser streams. */
   streamId?: string;
+  /** Native pixel size of this window inside its atlas slot. */
+  srcSize?: { width: number; height: number };
   /** Optional crop rect (normalized 0..1) when backed by a multi-window atlas. */
   crop?: { x: number; y: number; width: number; height: number };
 };
@@ -156,15 +160,73 @@ const guard = new HouseholdGuard();
 /** Running feeds by monitor; Linux has one, monitor 0, the whole workspace. */
 type Running = { encoder: DesktopMediaFeed | WgcMediaFeed; request: SourceRequest; info: FeedInfo };
 const running = new Map<number, Running>();
-/** Running per-window feeds keyed by window id (KWin UUID or Windows HWND hex). */
+/** Running per-window feeds keyed by window id (Windows WGC, or Linux fallback). */
 const windowFeeds = new Map<string, { feed: WindowMediaFeed; port: number }>();
 const startingWindows = new Map<string, Promise<FeedInfo>>();
 const resizingWindows = new Set<string>();
 const WINDOW_PORT_OFFSET = 200;
+const ATLAS_PORT_OFFSET = 190;
 let nextWindowSlot = 0;
+let atlas: WindowAtlas | null = null;
+let startingAtlas: Promise<WindowAtlas> | null = null;
+
+function notifyAtlasLayout(layout: AtlasLayoutEvent): void {
+  const slots: Record<string, { crop: FeedInfo["crop"]; srcSize: { width: number; height: number } }> = {};
+  for (const [winId, s] of Object.entries(layout.slots)) {
+    slots[winId] = { crop: s.crop, srcSize: { width: s.srcW, height: s.srcH } };
+  }
+  for (const target of endSubscribers) {
+    try {
+      PostMan.PostMessage({
+        target,
+        type: "ATLAS_UPDATED",
+        payload: { source: state.id, slots },
+      });
+    } catch {
+      endSubscribers.delete(target);
+    }
+  }
+}
+
+async function ensureAtlas(host: string, basePort: number, fps?: number): Promise<WindowAtlas> {
+  if (atlas) return atlas;
+  if (startingAtlas) return await startingAtlas;
+  startingAtlas = WindowAtlas.start({
+    host,
+    port: basePort + ATLAS_PORT_OFFSET,
+    fps: fps ?? 30,
+  }).then((started) => {
+    atlas = started;
+    started.onLayout = (layout) => notifyAtlasLayout(layout);
+    started.onWindowExited = (windowId) => {
+      if (!resizingWindows.has(windowId)) notifyFeedEnded(windowId);
+    };
+    return started;
+  }).finally(() => {
+    startingAtlas = null;
+  });
+  return await startingAtlas;
+}
 
 function startWindowFeed(payload: Partial<SourceRequest> & { window: string }): Promise<FeedInfo> {
   const windowId = payload.window;
+  if (Deno.build.os === "linux") {
+    if (atlas?.hasWindow(windowId)) return Promise.resolve(atlas.feedInfoFor(windowId));
+    const pending = startingWindows.get(windowId);
+    if (pending) return pending;
+    const host = payload.host ?? feedDefaults?.host;
+    const basePort = payload.port ?? feedDefaults?.port;
+    if (typeof host !== "string" || !Number.isInteger(basePort)) {
+      return Promise.reject(new Error("START {window} needs {host, port}, or CONFIGURE first"));
+    }
+    const starting = (async () => {
+      const a = await ensureAtlas(host, basePort as number, payload.fps ?? feedDefaults?.fps);
+      return await a.addWindow(windowId, payload.fps ?? feedDefaults?.fps ?? 30);
+    })().finally(() => startingWindows.delete(windowId));
+    startingWindows.set(windowId, starting);
+    return starting;
+  }
+
   const existing = windowFeeds.get(windowId);
   if (existing) return Promise.resolve(existing.feed.info);
   const pending = startingWindows.get(windowId);
@@ -205,6 +267,15 @@ async function resizeWindowAndRestart(
   width: number,
   height: number,
 ): Promise<{ window: WindowInfo | null; feed: FeedInfo | null }> {
+  // With GPU Atlas active on Linux, resizing the host window needs NO encoder or WebRTC restart:
+  // screen-streamer keeps streaming on the same socket and atlas updates crop + srcSize live!
+  if (atlas?.hasWindow(windowId)) {
+    await resizeCapturableWindow(windowId, width, height);
+    await sleep(100);
+    const list = await listCapturableWindows().catch(() => []);
+    const updated = list.find((w) => w.id === windowId) ?? null;
+    return { window: updated, feed: atlas.feedInfoFor(windowId) };
+  }
   const wasRunning = windowFeeds.has(windowId);
   resizingWindows.add(windowId);
   try {
@@ -226,6 +297,20 @@ async function resizeWindowAndRestart(
 }
 
 async function stopWindowFeed(windowId?: string): Promise<void> {
+  if (atlas) {
+    if (windowId !== undefined) {
+      await atlas.removeWindow(windowId);
+      if (atlas.windowCount === 0) {
+        const toStop = atlas;
+        atlas = null;
+        await toStop.stop();
+      }
+    } else {
+      const toStop = atlas;
+      atlas = null;
+      await toStop.stop();
+    }
+  }
   const entries = windowId !== undefined
     ? (windowFeeds.has(windowId) ? [[windowId, windowFeeds.get(windowId)!] as const] : [])
     : [...windowFeeds.entries()];
@@ -621,6 +706,7 @@ new PostMan(
       FEED: (payload) => {
         const p = payload as { monitor?: number; window?: string } | null;
         if (typeof p?.window === "string" && p.window) {
+          if (atlas?.hasWindow(p.window)) return atlas.feedInfoFor(p.window);
           return windowFeeds.get(p.window)?.feed.info ?? null;
         }
         return running.get(monitorOf(p))?.info ?? null;
@@ -662,6 +748,9 @@ new PostMan(
         const p = payload as { sdp?: unknown; monitor?: number; window?: string } | null;
         if (typeof p?.sdp !== "string" || !p.sdp) throw new Error("WEBRTC_OFFER needs {sdp}");
         if (typeof p.window === "string" && p.window) {
+          if (atlas?.hasWindow(p.window)) {
+            return { sdp: await atlas.acceptWebRtcOffer(p.sdp) };
+          }
           const wf = windowFeeds.get(p.window);
           if (!wf) throw new Error(`no running window feed for ${p.window}`);
           return { sdp: await wf.feed.acceptWebRtcOffer(p.sdp) };
@@ -689,6 +778,7 @@ new PostMan(
       guard,
       (payload?: { monitor?: number; window?: string } | null): FeedInfo | null => {
         if (typeof payload?.window === "string" && payload.window) {
+          if (atlas?.hasWindow(payload.window)) return atlas.feedInfoFor(payload.window);
           return windowFeeds.get(payload.window)?.feed.info ?? null;
         }
         return running.get(monitorOf(payload))?.info ?? null;
@@ -729,6 +819,9 @@ new PostMan(
           throw new Error("WEBRTC_OFFER needs {sdp}");
         }
         if (typeof payload.window === "string" && payload.window) {
+          if (atlas?.hasWindow(payload.window)) {
+            return { sdp: await atlas.acceptWebRtcOffer(payload.sdp) };
+          }
           const wf = windowFeeds.get(payload.window);
           if (!wf) throw new Error(`no running window feed for ${payload.window}`);
           return { sdp: await wf.feed.acceptWebRtcOffer(payload.sdp) };

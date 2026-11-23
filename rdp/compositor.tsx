@@ -154,7 +154,7 @@ function sendWindowInput(win: WindowEntry, event: InputEvent): void {
     guarded: src.guarded,
     region: win.region,
     windowSize: win.windowSize,
-    feedSize: feedSizes.get(win.feedId),
+    feedSize: win.srcSize ?? feedSizes.get(win.streamId ?? win.feedId),
     focus: win.windowId
       ? { source: win.source, window: win.windowId, guarded: src.guarded }
       : undefined,
@@ -307,6 +307,7 @@ async function openWindow(req: {
     minimized: false,
     muted: false,
     crop: info.crop,
+    srcSize: info.srcSize,
   };
   windows.push(entry);
   focusedId = id;
@@ -656,6 +657,24 @@ new PostMan(
       feeds = payload?.feeds ?? {};
       broadcastMedia();
       render();
+      return true;
+    },
+    WINDOW_LAYOUTS_UPDATED: (
+      payload: {
+        layouts?: Record<string, { crop?: FeedInfo["crop"]; srcSize?: { width: number; height: number } }>;
+      },
+    ) => {
+      const layouts = payload?.layouts;
+      if (!layouts) return true;
+      let changed = false;
+      for (const win of windows) {
+        const slot = layouts[win.feedId];
+        if (!slot) continue;
+        if (slot.crop) win.crop = slot.crop;
+        if (slot.srcSize) win.srcSize = slot.srcSize;
+        changed = true;
+      }
+      if (changed) render();
       return true;
     },
     FEED_ENDED: (payload: { feedId: string }) => {

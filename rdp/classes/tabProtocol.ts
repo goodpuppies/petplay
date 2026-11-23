@@ -73,6 +73,8 @@ export type FeedInfo = {
   audio?: boolean;
   /** Optional shared stream key (e.g. a per-machine GPU atlas) to deduplicate browser streams. */
   streamId?: string;
+  /** Native pixel size of this window inside its atlas slot (for aspect-fitting without stretch). */
+  srcSize?: { width: number; height: number };
   /** Default full frame `{x:0,y:0,width:1,height:1}`. When backed by an atlas, this window's slot. */
   crop?: FeedCrop;
 };
