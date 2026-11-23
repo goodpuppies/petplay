@@ -435,12 +435,19 @@ function render(): void {
         wallpaperLabel={wallpaper?.label ?? null}
         viewerCount={tabs.size}
         onRefreshLauncher={() => void refreshLauncher()}
-        onOpenWindow={(src, w) => void openWindow({ source: src.actor, window: w })}
+        onOpenWindow={(src, w) =>
+          void openWindow({ source: src.actor, window: w }).catch((err) => {
+            state.lastError = `openWindow: ${err}`;
+            console.error("[compositor] openWindow:", err);
+          })}
         onOpenDesktop={(src) =>
           void openWindow({
             source: src.actor,
             target: { kind: "desktop" },
             title: `${src.machine} Desktop`,
+          }).catch((err) => {
+            state.lastError = `openDesktop: ${err}`;
+            console.error("[compositor] openDesktop:", err);
           })}
         onSelectWallpaper={(src) =>
           void setWallpaper(src ? { source: src.actor } : null).catch((err) => {
