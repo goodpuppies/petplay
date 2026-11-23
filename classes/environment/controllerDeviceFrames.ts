@@ -66,6 +66,20 @@ export function settleFollowRelease(seq: number, pose: ArrayLike<number> | null)
  * screen attached to the controller lets go as soon as the window does.
  */
 const displaySyncs = new Set<() => void>();
+const followReleaseActors = new Map<string, number>();
+
+export function registerFollowReleaseActor(actorId: string): () => void {
+  followReleaseActors.set(actorId, (followReleaseActors.get(actorId) ?? 0) + 1);
+  return () => {
+    const next = (followReleaseActors.get(actorId) ?? 1) - 1;
+    if (next <= 0) followReleaseActors.delete(actorId);
+    else followReleaseActors.set(actorId, next);
+  };
+}
+
+export function getFollowReleaseActors(): string[] {
+  return [...followReleaseActors.keys()];
+}
 
 export function registerDisplaySync(sync: () => void): () => void {
   displaySyncs.add(sync);

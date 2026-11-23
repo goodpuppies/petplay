@@ -32,6 +32,7 @@ import * as THREE from "three";
 import { selectActiveControllerIndex } from "../classes/openVrControllerSelection.ts";
 import { OpenVrControllerTipPoseResolver } from "../classes/openVrControllerTipPose.ts";
 import {
+  getFollowReleaseActors,
   setControllerDeviceFrameResolver,
   setFollowReleaseSender,
   settleFollowRelease,
@@ -3146,12 +3147,25 @@ function initializeRaylibOpenVrPacer(
     // Screens attached to the controller freeze at once, in parallel with the renderer. A
     // two-hand carry keeps them absolute, so there is nothing to freeze there.
     const deviceIndex = pair ? undefined : resolveControllerDeviceFrame(space)?.deviceIndex;
-    if (state.displayOverlayHostActor && deviceIndex != null) {
-      PostMan.PostMessage({
-        target: state.displayOverlayHostActor,
-        type: "FOLLOWRELEASE",
-        payload: { deviceIndex },
-      });
+    if (deviceIndex != null) {
+      const sent = new Set<string>();
+      if (state.displayOverlayHostActor) {
+        sent.add(state.displayOverlayHostActor);
+        PostMan.PostMessage({
+          target: state.displayOverlayHostActor,
+          type: "FOLLOWRELEASE",
+          payload: { deviceIndex },
+        });
+      }
+      for (const actorId of getFollowReleaseActors()) {
+        if (sent.has(actorId)) continue;
+        sent.add(actorId);
+        PostMan.PostMessage({
+          target: actorId,
+          type: "FOLLOWRELEASE",
+          payload: { deviceIndex },
+        });
+      }
     }
     if (!state.decoupledRenderer || !state.renderOwner) return false;
     PostMan.PostMessage({
@@ -3250,6 +3264,9 @@ async function awaitProjectionPresentWindow(
   if (!pacer || !phase || vsyncFrameIndex == null) return true;
   const window = state.raylibPresentWindow;
   const periodMs = 1000 / (state.nominalHmdDisplayHz ?? 90);
+  // Over Steam Link with an app-limited scene app (e.g. VRChat at 34 Hz), `GetTimeSinceLastVsync`
+  // reports negative values or values past one HMD period; do not drop frames against that clock.
+  if (phase.msSinceVsync < 0 || phase.msSinceVsync >= periodMs) return true;
   const sincePacedVsync = (sample: { msSinceVsync: number; frameIndex: bigint }) =>
     Number(sample.frameIndex - vsyncFrameIndex) * periodMs + sample.msSinceVsync;
   let elapsed = sincePacedVsync(phase);

@@ -13,6 +13,7 @@ import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.t
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
 import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
+import { tryCreateOpenVrOverlayFramePacer } from "../classes/openVrOverlayFramePacing.ts";
 import { withOverlayFlipY } from "../classes/overlayTextureFlip.ts";
 import { setOverlayTransform } from "../classes/openvrTransform.ts";
 import { FrameReceiver } from "../classes/ScreenCapturer/frameReceiver.ts";
@@ -48,6 +49,13 @@ type WindowStream = {
   loop: Promise<void>;
 };
 
+type CarryState = {
+  device?: number;
+  relative?: OpenVR.HmdMatrix34;
+  frozenAt?: number;
+};
+const CARRY_FREEZE_MAX_MS = 1000;
+
 type DisplayEntry = {
   id: string;
   windowId: string;
@@ -59,7 +67,61 @@ type DisplayEntry = {
   appliedCrop?: WorkspaceCrop;
   textureBound: boolean;
   visible: boolean;
+  carry?: CarryState;
 };
+
+let systemPointer: Deno.PointerValue = null;
+let releasePacer: ReturnType<typeof tryCreateOpenVrOverlayFramePacer> = null;
+
+function acceptCarriedTransform(carry: CarryState, sync: SyncVirtualDisplayPayload): boolean {
+  if (carry.frozenAt != null) {
+    const expired = performance.now() - carry.frozenAt > CARRY_FREEZE_MAX_MS;
+    if (sync.deviceIndex != null && !expired) return false;
+    carry.frozenAt = undefined;
+  }
+  carry.device = sync.deviceIndex;
+  carry.relative = sync.deviceIndex == null ? undefined : sync.hmd;
+  return true;
+}
+
+function composeDevicePose(
+  device: ArrayLike<number>,
+  relative: OpenVR.HmdMatrix34,
+): OpenVR.HmdMatrix34 {
+  const r = relative.m;
+  const m = [0, 1, 2].map((row) =>
+    [0, 1, 2, 3].map((col) =>
+      device[row] * r[0][col] + device[4 + row] * r[1][col] + device[8 + row] * r[2][col] +
+      (col === 3 ? device[12 + row] : 0)
+    )
+  );
+  return { m } as OpenVR.HmdMatrix34;
+}
+
+function freezeCarried(deviceIndex: number): void {
+  const overlay = overlayClass;
+  if (!overlay || systemPointer == null) return;
+  releasePacer ??= tryCreateOpenVrOverlayFramePacer(
+    Deno.UnsafePointer.value(systemPointer),
+    null,
+    true,
+    false,
+    "fast",
+    "local-window-overlay-release",
+  );
+  if (!releasePacer) return;
+  releasePacer.paceToDisplayAndRefreshPoses();
+  const pose = releasePacer.getCachedTrackedDevicePose(deviceIndex);
+  if (!pose) return;
+  for (const entry of displays.values()) {
+    const carry = entry.carry;
+    if (!carry || carry.device !== deviceIndex || !carry.relative || !entry.handle) continue;
+    setOverlayTransform(overlay, entry.handle, composeDevicePose(pose.matrix, carry.relative));
+    carry.device = undefined;
+    carry.relative = undefined;
+    carry.frozenAt = performance.now();
+  }
+}
 
 const state = actorState({
   name: "localWindowOverlay",
@@ -107,6 +169,7 @@ function ensureRuntimeAndGl(): void {
     });
     if (!pointers.overlay) throw new Error("Local window overlay IVROverlay unavailable");
     overlayClass = new OpenVR.IVROverlay(pointers.overlay);
+    systemPointer = pointers.system ?? null;
   }
   if (!glWindow) {
     glWindow = createWindow({
@@ -225,13 +288,15 @@ function applyDisplaySync(entry: DisplayEntry, sync: SyncVirtualDisplayPayload):
     overlay.SetOverlayCurvature(entry.handle, Math.max(0, Math.min(1, curvature)));
     entry.appliedCurvature = curvature;
   }
-  setOverlayTransform(
-    overlay,
-    entry.handle,
-    sync.hmd,
-    sync.deviceIndex,
-    syncUniverse(sync.rawUniverse),
-  );
+  if (acceptCarriedTransform(entry.carry ??= {}, sync)) {
+    setOverlayTransform(
+      overlay,
+      entry.handle,
+      sync.hmd,
+      sync.deviceIndex,
+      syncUniverse(sync.rawUniverse),
+    );
+  }
   if (!cropEquals(entry.appliedCrop, sync.crop)) {
     const [boundsPtr] = createStruct<OpenVR.TextureBounds>(
       withOverlayFlipY(textureBoundsForCrop(sync.crop)),
@@ -464,6 +529,9 @@ new PostMan(
     SYNCVIRTUALDISPLAY: (sync: SyncVirtualDisplayPayload) => {
       syncDisplay(sync);
     },
+    FOLLOWRELEASE: (payload: { deviceIndex: number }) => {
+      if (typeof payload?.deviceIndex === "number") freezeCarried(payload.deviceIndex);
+    },
     REMOVEVIRTUALDISPLAY: (payload: { id: string }) => {
       pendingSyncs.delete(payload.id);
       const prev = removalTimers.get(payload.id);
@@ -493,7 +561,10 @@ new PostMan(
       for (const timer of removalTimers.values()) clearTimeout(timer);
       removalTimers.clear();
       for (const id of [...displays.keys()]) destroyDisplayEntry(id);
-      for (const id of [...windows.keys()]) await stopWindow(id);
+      await Promise.race([
+        Promise.all([...windows.keys()].map((id) => stopWindow(id))),
+        wait(400),
+      ]);
       if (glWindow) {
         try {
           glWindow.close();

@@ -15,7 +15,11 @@ import { DisplayInstanceFrame, type DisplayInstanceFrameProps } from "./ui.tsx";
 import { DEFAULT_DISPLAY_HEIGHT, DISPLAY_ASPECT_WIDTH_OVER_HEIGHT } from "../displayMetrics.ts";
 import type { WorkspaceRect } from "../workspaceDisplays.ts";
 import { getHeadObject } from "../trackedOrigins.ts";
-import { getControllerDeviceFrame, registerDisplaySync } from "../controllerDeviceFrames.ts";
+import {
+  getControllerDeviceFrame,
+  registerDisplaySync,
+  registerFollowReleaseActor,
+} from "../controllerDeviceFrames.ts";
 import type { RenderTrackingFollow } from "../../overlayRenderTracking.ts";
 import { angleBetweenDeg, nextAutoHidden, stepAutoHideFade } from "./autoHide.ts";
 
@@ -318,6 +322,10 @@ export function DisplayInstance(
     }
   };
   React.useEffect(() => registerDisplaySync(() => syncOverlay.current()), []);
+  React.useEffect(() => {
+    if (!displayOverlayHostActor) return;
+    return registerFollowReleaseActor(displayOverlayHostActor);
+  }, [displayOverlayHostActor]);
   useFrame(() => syncOverlay.current(), displaySyncFrameOpts);
 
   return (
