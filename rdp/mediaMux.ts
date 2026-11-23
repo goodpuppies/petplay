@@ -430,14 +430,30 @@ new PostMan(
       await requestSource(payload.source, "FOCUSWINDOW", { window: payload.window });
       return true;
     },
-    RESIZE: (
+    RESIZE: async (
       payload: { source: ActorId; window: string; width: number; height: number },
-    ): Promise<WindowInfo | null> =>
-      requestSource<WindowInfo | null>(payload.source, "RESIZEWINDOW", {
-        window: payload.window,
-        width: payload.width,
-        height: payload.height,
-      }),
+    ): Promise<WindowInfo | null> => {
+      const result = await requestSource<{ window: WindowInfo | null; feed: FeedInfo | null }>(
+        payload.source,
+        "RESIZEWINDOW",
+        {
+          window: payload.window,
+          width: payload.width,
+          height: payload.height,
+        },
+      );
+      if (result?.feed) {
+        const key = targetKey(payload.source, { kind: "window", window: payload.window });
+        const feedId = feedsByKey.get(key);
+        const entry = feedId ? feeds.get(feedId) : undefined;
+        if (entry) {
+          entry.info = result.feed;
+          publishState();
+          notifySubscribers("FEEDS_UPDATED", { feeds: feedMap() });
+        }
+      }
+      return result?.window ?? null;
+    },
     SUBSCRIBE: (payload: { actor: ActorId }) => {
       if (typeof payload?.actor === "string" && payload.actor) subscribers.add(payload.actor);
       return { sources: state.sources, feeds: feedMap() };

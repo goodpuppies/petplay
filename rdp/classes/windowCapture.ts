@@ -162,8 +162,9 @@ export async function resizeCapturableWindow(
   height: number,
 ): Promise<void> {
   if (!id || !Number.isFinite(width) || !Number.isFinite(height)) return;
-  const w = Math.max(160, Math.round(width));
-  const h = Math.max(120, Math.round(height));
+  // Round to even dimensions so VA-API H.264 (`width % 2 == 0 && height % 2 == 0`) accepts them.
+  const w = Math.max(160, Math.round(width / 2) * 2);
+  const h = Math.max(120, Math.round(height / 2) * 2);
   if (Deno.build.os !== "linux") return;
 
   const env = linuxWaylandEnv();

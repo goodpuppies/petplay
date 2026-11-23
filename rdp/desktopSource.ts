@@ -159,6 +159,7 @@ const running = new Map<number, Running>();
 /** Running per-window feeds keyed by window id (KWin UUID or Windows HWND hex). */
 const windowFeeds = new Map<string, { feed: WindowMediaFeed; port: number }>();
 const startingWindows = new Map<string, Promise<FeedInfo>>();
+const resizingWindows = new Set<string>();
 const WINDOW_PORT_OFFSET = 200;
 let nextWindowSlot = 0;
 
@@ -190,13 +191,38 @@ function startWindowFeed(payload: Partial<SourceRequest> & { window: string }): 
     void feed.exited.then(() => {
       if (windowFeeds.get(windowId) === entry) {
         windowFeeds.delete(windowId);
-        notifyFeedEnded(windowId);
+        if (!resizingWindows.has(windowId)) notifyFeedEnded(windowId);
       }
     });
     return feed.info;
   })().finally(() => startingWindows.delete(windowId));
   startingWindows.set(windowId, starting);
   return starting;
+}
+
+async function resizeWindowAndRestart(
+  windowId: string,
+  width: number,
+  height: number,
+): Promise<{ window: WindowInfo | null; feed: FeedInfo | null }> {
+  const wasRunning = windowFeeds.has(windowId);
+  resizingWindows.add(windowId);
+  try {
+    if (wasRunning) await stopWindowFeed(windowId);
+    await resizeCapturableWindow(windowId, width, height);
+    await sleep(120);
+    const list = await listCapturableWindows().catch(() => []);
+    const updated = list.find((w) => w.id === windowId) ?? null;
+    const feed = wasRunning && updated
+      ? await startWindowFeed({ window: windowId }).catch((err) => {
+        state.lastError = `resize restart ${windowId}: ${err}`;
+        return null;
+      })
+      : null;
+    return { window: updated, feed };
+  } finally {
+    resizingWindows.delete(windowId);
+  }
 }
 
 async function stopWindowFeed(windowId?: string): Promise<void> {
@@ -624,10 +650,7 @@ new PostMan(
         ) {
           throw new Error("RESIZEWINDOW needs {window, width, height}");
         }
-        await resizeCapturableWindow(p.window, p.width, p.height);
-        await sleep(80);
-        const list = await listCapturableWindows().catch(() => []);
-        return list.find((w) => w.id === p.window) ?? null;
+        return await resizeWindowAndRestart(p.window, p.width, p.height);
       },
       LAYOUT: () => loadWorkspaceOutputs(),
       AUDIO: () => startAudio(),
@@ -681,20 +704,19 @@ new PostMan(
       await focusCapturableWindow(payload.window);
       return true;
     }),
-    /** Resize a window on this machine (KDE Plasma 6 Wayland) and return its updated geometry. */
+    /** Resize a window on this machine (KDE Plasma 6 Wayland) and restart its encoder at the new size. */
     RESIZEWINDOW: refuseWhenGuarded(
       guard,
-      async (payload: { window: string; width: number; height: number }): Promise<WindowInfo | null> => {
+      async (
+        payload: { window: string; width: number; height: number },
+      ): Promise<{ window: WindowInfo | null; feed: FeedInfo | null }> => {
         if (
           typeof payload?.window !== "string" || !payload.window ||
           typeof payload.width !== "number" || typeof payload.height !== "number"
         ) {
           throw new Error("RESIZEWINDOW needs {window, width, height}");
         }
-        await resizeCapturableWindow(payload.window, payload.width, payload.height);
-        await sleep(80);
-        const list = await listCapturableWindows().catch(() => []);
-        return list.find((w) => w.id === payload.window) ?? null;
+        return await resizeWindowAndRestart(payload.window, payload.width, payload.height);
       },
     ),
     /** Exchange a browser WebRTC SDP offer for the running encoder's ICE-lite SDP answer. */
