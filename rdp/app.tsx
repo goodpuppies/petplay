@@ -33,6 +33,11 @@ export type RdpAppProps = {
   desktops?: Array<{ id: string; label: string }>;
   selected?: string | null;
   onSelect?: (id: string) => void;
+  /** Capturable windows on the selected desktop (KDE Wayland / Windows). */
+  windows?: Array<{ id: string; title: string; app: string }>;
+  selectedWindow?: string | null;
+  onSelectWindow?: (id: string | null) => void;
+  onRefreshWindows?: () => void;
 };
 
 /** Where the video sits in tab pixels: the area below the toolbar, fitted to the feed's aspect. */
@@ -51,11 +56,23 @@ export function videoRect(
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 export function RdpApp(
-  { input, feed, status, desktops = [], selected = null, onSelect }: RdpAppProps,
+  {
+    input,
+    feed,
+    status,
+    desktops = [],
+    selected = null,
+    onSelect,
+    windows = [],
+    selectedWindow = null,
+    onSelectWindow,
+    onRefreshWindows,
+  }: RdpAppProps,
 ) {
   const tab = useTabSize();
   // The ref is what key handling reads: it changes at once, while state waits for a render.
   const [focused, setFocused] = useState(false);
+  const [windowMenuOpen, setWindowMenuOpen] = useState(false);
   const focusedRef = useRef(false);
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -150,13 +167,87 @@ export function RdpApp(
                 {desktops[0]?.label ?? "Desktop"}
               </Text>
             )}
+          {onSelectWindow
+            ? (
+              <Container
+                paddingX={10}
+                paddingY={5}
+                borderRadius={6}
+                backgroundColor={selectedWindow || windowMenuOpen ? "#3b4252" : "#2a2f39"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  unfocus();
+                  if (!windowMenuOpen) onRefreshWindows?.();
+                  setWindowMenuOpen((open) => !open);
+                }}
+              >
+                <Text fontSize={13} color={selectedWindow ? "#8fd18f" : "#c9d1dc"}>
+                  {selectedWindow
+                    ? `Window: ${
+                      (windows.find((w) => w.id === selectedWindow)?.title ?? "selected").slice(
+                        0,
+                        24,
+                      )
+                    }`
+                    : "Window ▾"}
+                </Text>
+              </Container>
+            )
+            : null}
           <Text fontSize={13} color="#9aa3b2">{status}</Text>
           <Container flexGrow={1} />
           <Text fontSize={13} color={focused ? "#8fd18f" : "#9aa3b2"}>
             {focused ? "keyboard -> desktop" : input ? "click the desktop to type" : "view only"}
           </Text>
         </Container>
-        {!rect
+        {windowMenuOpen
+          ? (
+            <Container
+              flexDirection="column"
+              padding={10}
+              gap={6}
+              backgroundColor="#1b1f27"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <Container
+                paddingX={10}
+                paddingY={6}
+                borderRadius={6}
+                backgroundColor={selectedWindow === null ? "#3b4252" : "#262b35"}
+                onClick={() => {
+                  setWindowMenuOpen(false);
+                  onSelectWindow?.(null);
+                }}
+              >
+                <Text fontSize={13} color="#e8ebf1">Full Desktop</Text>
+              </Container>
+              {windows.length === 0
+                ? (
+                  <Text fontSize={12} color="#9aa3b2">
+                    No capturable windows reported (KDE Wayland / Windows)
+                  </Text>
+                )
+                : windows.slice(0, 14).map((win) => (
+                  <Container
+                    key={win.id}
+                    paddingX={10}
+                    paddingY={6}
+                    borderRadius={6}
+                    backgroundColor={selectedWindow === win.id ? "#3b4252" : "#262b35"}
+                    onClick={() => {
+                      setWindowMenuOpen(false);
+                      onSelectWindow?.(win.id);
+                    }}
+                  >
+                    <Text fontSize={13} color="#e8ebf1">
+                      {`${win.title.slice(0, 64)}${win.app ? `  [${win.app}]` : ""}`}
+                    </Text>
+                  </Container>
+                ))}
+            </Container>
+          )
+          : null}
+        {!rect && !windowMenuOpen
           ? (
             <Container flexGrow={1} alignItems="center" justifyContent="center">
               <Text fontSize={15} color="#9aa3b2">Waiting for the desktop feed...</Text>
@@ -164,7 +255,7 @@ export function RdpApp(
           )
           : null}
       </TabBody>
-      {rect
+      {rect && !windowMenuOpen
         ? (
           <>
             <group

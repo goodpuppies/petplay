@@ -39,6 +39,12 @@ import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { join } from "@std/path";
 import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
 import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
+import {
+  focusCapturableWindow,
+  listCapturableWindows,
+  type WindowInfo,
+  WindowMediaFeed,
+} from "./classes/windowCapture.ts";
 import { linuxAudioAvailable, LinuxAudioShare } from "./classes/linuxAudioShare.ts";
 import { CaptureHelper } from "../classes/ScreenCapturer/captureHelper.ts";
 import { clampCaptureFps, DEFAULT_CAPTURE_FPS } from "../classes/ScreenCapturer/scclass.ts";
@@ -62,9 +68,13 @@ export type SourceRequest = {
   bitrate?: number;
   /** Windows: the monitor to capture (`capture-wgc --list` index). */
   monitor?: number;
+  /** Capture a single window by id (KWin UUID on KDE, HWND hex on Windows). */
+  window?: string;
   /** Also announce an iroh share code (Linux; Windows feeds always do). */
   share?: boolean;
 };
+
+export type { WindowInfo };
 
 /**
  * Where receivers reach the encoder: its pinned WebTransport listener, and on Windows also an
@@ -140,6 +150,53 @@ const guard = new HouseholdGuard();
 /** Running feeds by monitor; Linux has one, monitor 0, the whole workspace. */
 type Running = { encoder: DesktopMediaFeed | WgcMediaFeed; request: SourceRequest; info: FeedInfo };
 const running = new Map<number, Running>();
+/** Running per-window feeds keyed by window id (KWin UUID or Windows HWND hex). */
+const windowFeeds = new Map<string, { feed: WindowMediaFeed; port: number }>();
+const startingWindows = new Map<string, Promise<FeedInfo>>();
+const WINDOW_PORT_OFFSET = 200;
+let nextWindowSlot = 0;
+
+function startWindowFeed(payload: Partial<SourceRequest> & { window: string }): Promise<FeedInfo> {
+  const windowId = payload.window;
+  const existing = windowFeeds.get(windowId);
+  if (existing) return Promise.resolve(existing.feed.info);
+  const pending = startingWindows.get(windowId);
+  if (pending) return pending;
+  const host = payload.host ?? feedDefaults?.host;
+  const basePort = payload.port ?? feedDefaults?.port;
+  if (typeof host !== "string" || !Number.isInteger(basePort)) {
+    return Promise.reject(new Error("START {window} needs {host, port}, or CONFIGURE first"));
+  }
+  const usedPorts = new Set([...windowFeeds.values()].map((v) => v.port));
+  let port = (basePort as number) + WINDOW_PORT_OFFSET + (nextWindowSlot++ % 50);
+  while (usedPorts.has(port)) port += 2;
+  const starting = (async () => {
+    const feed = await WindowMediaFeed.start({
+      windowId,
+      host,
+      port,
+      fps: payload.fps ?? feedDefaults?.fps,
+      bitrate: payload.bitrate ?? feedDefaults?.bitrate,
+      share: payload.share || guard.active,
+    });
+    const entry = { feed, port };
+    windowFeeds.set(windowId, entry);
+    void feed.exited.then(() => {
+      if (windowFeeds.get(windowId) === entry) windowFeeds.delete(windowId);
+    });
+    return feed.info;
+  })().finally(() => startingWindows.delete(windowId));
+  startingWindows.set(windowId, starting);
+  return starting;
+}
+
+async function stopWindowFeed(windowId?: string): Promise<void> {
+  const entries = windowId !== undefined
+    ? (windowFeeds.has(windowId) ? [[windowId, windowFeeds.get(windowId)!] as const] : [])
+    : [...windowFeeds.entries()];
+  for (const [id] of entries) windowFeeds.delete(id);
+  await Promise.all(entries.map(([, e]) => e.feed.stop()));
+}
 let screens: ScreenInfo[] | null = null;
 /** The machine's sound: its feed, or the start in progress. */
 let audio: { encoder: WgcMediaFeed | LinuxAudioShare; info: FeedInfo } | null = null;
@@ -401,6 +458,12 @@ function startFeed(payload?: Partial<SourceRequest>): Promise<FeedInfo> {
   if (typeof request.host !== "string" || !Number.isInteger(request.port)) {
     return Promise.reject(new Error("START needs {host, port}, or CONFIGURE first"));
   }
+  feedDefaults ??= {
+    host: request.host,
+    port: request.port,
+    fps: request.fps,
+    bitrate: request.bitrate,
+  };
   shuttingDown = false;
   const starting = (async () => {
     const started = await startEncoder(monitor, request);
@@ -492,11 +555,35 @@ new PostMan(
     DESCRIBE: refuseWhenGuarded(guard, describe),
     GUARDED: guardedDispatch(guard, {
       DESCRIBE: describe,
-      START: (payload) => startFeed(payload as Partial<SourceRequest> | undefined),
-      FEED: (payload) => running.get(monitorOf(payload as { monitor?: number }))?.info ?? null,
+      START: (payload) => {
+        const p = payload as Partial<SourceRequest> | undefined;
+        if (typeof p?.window === "string" && p.window) {
+          return startWindowFeed(p as Partial<SourceRequest> & { window: string });
+        }
+        return startFeed(p);
+      },
+      FEED: (payload) => {
+        const p = payload as { monitor?: number; window?: string } | null;
+        if (typeof p?.window === "string" && p.window) {
+          return windowFeeds.get(p.window)?.feed.info ?? null;
+        }
+        return running.get(monitorOf(p))?.info ?? null;
+      },
       STOP: async (payload) => {
-        const monitor = (payload as { monitor?: number } | null)?.monitor;
+        const p = payload as { monitor?: number; window?: string } | null;
+        if (typeof p?.window === "string" && p.window) {
+          await stopWindowFeed(p.window);
+          return true;
+        }
+        const monitor = p?.monitor;
         await stopFeed(Number.isInteger(monitor) ? monitor : undefined);
+        return true;
+      },
+      LISTWINDOWS: () => listCapturableWindows(),
+      FOCUSWINDOW: async (payload) => {
+        const id = (payload as { window?: unknown } | null)?.window;
+        if (typeof id !== "string" || !id) throw new Error("FOCUSWINDOW needs {window}");
+        await focusCapturableWindow(id);
         return true;
       },
       LAYOUT: () => loadWorkspaceOutputs(),
@@ -506,26 +593,57 @@ new PostMan(
         return true;
       },
       WEBRTC_OFFER: async (payload) => {
-        const p = payload as { sdp?: unknown; monitor?: number } | null;
+        const p = payload as { sdp?: unknown; monitor?: number; window?: string } | null;
         if (typeof p?.sdp !== "string" || !p.sdp) throw new Error("WEBRTC_OFFER needs {sdp}");
+        if (typeof p.window === "string" && p.window) {
+          const wf = windowFeeds.get(p.window);
+          if (!wf) throw new Error(`no running window feed for ${p.window}`);
+          return { sdp: await wf.feed.acceptWebRtcOffer(p.sdp) };
+        }
         const feed = running.get(monitorOf(p));
         if (!feed) throw new Error("no running feed for WebRTC offer");
         return { sdp: await feed.encoder.acceptWebRtcOffer(p.sdp) };
       },
     }),
     /** Start the encoder feed; returns where receivers reach it. */
-    START: refuseWhenGuarded(guard, (payload?: Partial<SourceRequest>) => startFeed(payload)),
+    START: refuseWhenGuarded(guard, (payload?: Partial<SourceRequest>) => {
+      if (typeof payload?.window === "string" && payload.window) {
+        return startWindowFeed(payload as Partial<SourceRequest> & { window: string });
+      }
+      return startFeed(payload);
+    }),
     FEED: refuseWhenGuarded(
       guard,
-      (payload?: { monitor?: number } | null): FeedInfo | null =>
-        running.get(monitorOf(payload))?.info ?? null,
+      (payload?: { monitor?: number; window?: string } | null): FeedInfo | null => {
+        if (typeof payload?.window === "string" && payload.window) {
+          return windowFeeds.get(payload.window)?.feed.info ?? null;
+        }
+        return running.get(monitorOf(payload))?.info ?? null;
+      },
     ),
+    /** List capturable windows on this machine (KDE Plasma Wayland or Windows). */
+    LISTWINDOWS: refuseWhenGuarded(guard, (): Promise<WindowInfo[]> => listCapturableWindows()),
+    /** Focus and unminimize a window on this machine. */
+    FOCUSWINDOW: refuseWhenGuarded(guard, async (payload: { window: string }) => {
+      if (typeof payload?.window !== "string" || !payload.window) {
+        throw new Error("FOCUSWINDOW needs {window}");
+      }
+      await focusCapturableWindow(payload.window);
+      return true;
+    }),
     /** Exchange a browser WebRTC SDP offer for the running encoder's ICE-lite SDP answer. */
     WEBRTC_OFFER: refuseWhenGuarded(
       guard,
-      async (payload: { sdp: string; monitor?: number }): Promise<{ sdp: string }> => {
+      async (
+        payload: { sdp: string; monitor?: number; window?: string },
+      ): Promise<{ sdp: string }> => {
         if (typeof payload?.sdp !== "string" || !payload.sdp) {
           throw new Error("WEBRTC_OFFER needs {sdp}");
+        }
+        if (typeof payload.window === "string" && payload.window) {
+          const wf = windowFeeds.get(payload.window);
+          if (!wf) throw new Error(`no running window feed for ${payload.window}`);
+          return { sdp: await wf.feed.acceptWebRtcOffer(payload.sdp) };
         }
         const feed = running.get(monitorOf(payload));
         if (!feed) throw new Error("no running feed for WebRTC offer");
@@ -542,7 +660,11 @@ new PostMan(
     /** The monitors, as crops of the capture: KDE, Windows, or GNOME (hardcoded for now). */
     LAYOUT: refuseWhenGuarded(guard, (): Promise<WorkspaceOutput[]> => loadWorkspaceOutputs()),
     /** Stop a monitor's feed (`{monitor}`), or every feed; frame sinks keep capturing. */
-    STOP: refuseWhenGuarded(guard, async (payload?: { monitor?: number } | null) => {
+    STOP: refuseWhenGuarded(guard, async (payload?: { monitor?: number; window?: string } | null) => {
+      if (typeof payload?.window === "string" && payload.window) {
+        await stopWindowFeed(payload.window);
+        return true;
+      }
       await stopFeed(Number.isInteger(payload?.monitor) ? payload!.monitor : undefined);
       return true;
     }),
@@ -550,6 +672,7 @@ new PostMan(
       shuttingDown = true;
       frameSink = null;
       await stopAudio();
+      await stopWindowFeed();
       await stopFeed();
       await applying;
     },

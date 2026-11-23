@@ -1,0 +1,7 @@
+[Desktop Entry]
+Exec=/home/ellie/git/petplay/dist/native/x86_64-unknown-linux-gnu/screen-streamer
+X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1
+Type=Application
+Name=PetPlay Screen Streamer KWin Permission
+Comment=Allows PetPlay to list and capture individual KDE Plasma windows without a portal dialog
+NoDisplay=true

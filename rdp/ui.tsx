@@ -43,6 +43,7 @@ import { DESKTOP_FEED, type DesktopInputSink, RdpApp } from "./app.tsx";
 import { newSessionId, sameSecret, sessionTopic } from "./classes/session.ts";
 import { householdProof } from "./classes/household.ts";
 import { MEDIA_PURPOSE, webRtcVideoServerTransport } from "./classes/webRtcVideoTransport.ts";
+import type { WindowInfo } from "./classes/windowCapture.ts";
 import type { InputEvent } from "./desktopInput.ts";
 
 export type UiStart = {
@@ -107,16 +108,53 @@ let input: TransportMessages | null = null;
 let remoteInput: ActorId | null = null;
 const desktops = new Map<ActorId, Desktop>();
 let selected: ActorId | null = null;
+let windows: WindowInfo[] = [];
+let selectedWindow: WindowInfo | null = null;
+let windowFeed: FeedInfo | null = null;
 const proofs = new Map<string, Promise<string>>();
 let lastCamera = "";
 let frameTimer: ReturnType<typeof setInterval> | null = null;
 let certTimer: ReturnType<typeof setTimeout> | null = null;
 let feedTimer: ReturnType<typeof setInterval> | null = null;
 
+function mapInputEvent(event: InputEvent): InputEvent {
+  const region = selectedWindow?.region;
+  if (!region || event.t !== "pointer") return event;
+  let ry = region.y;
+  let rh = region.height;
+  // When KWin/WGC streams only the client area while window geometry includes the top titlebar,
+  // trim the top of `region` by the logical height difference (anchored at the bottom edge).
+  if (
+    feedSize && selectedWindow && selectedWindow.width > 0 && selectedWindow.height > 0 &&
+    feedSize.width > 0 && feedSize.height > 0
+  ) {
+    const scaleX = feedSize.width / selectedWindow.width;
+    const logicalFeedH = feedSize.height / scaleX;
+    const titlebarLogical = selectedWindow.height - logicalFeedH;
+    if (titlebarLogical > 2 && titlebarLogical < 120) {
+      const trimFrac = titlebarLogical / selectedWindow.height;
+      ry += trimFrac * rh;
+      rh *= 1 - trimFrac;
+    }
+  }
+  return {
+    t: "pointer",
+    x: Math.min(1, Math.max(0, region.x + event.x * region.width)),
+    y: Math.min(1, Math.max(0, ry + event.y * rh)),
+  };
+}
+
 const inputSink: DesktopInputSink = {
   send(event: InputEvent) {
-    if (input && !input.isClosed) input.send(event);
-    else if (remoteInput) void request(remoteInput, "INPUT", event).catch(() => {});
+    if (event.t === "button" && event.down && selectedWindow && selected) {
+      const desktop = desktops.get(selected);
+      if (desktop) {
+        void request(desktop.source, "FOCUSWINDOW", { window: selectedWindow.id }).catch(() => {});
+      }
+    }
+    const mapped = mapInputEvent(event);
+    if (input && !input.isClosed) input.send(mapped);
+    else if (remoteInput) void request(remoteInput, "INPUT", mapped).catch(() => {});
   },
 };
 
@@ -146,7 +184,7 @@ function summarize(): void {
     feed: d.feed != null,
   }));
   state.selected = selected;
-  state.feed = selected ? desktops.get(selected)?.feed ?? null : null;
+  state.feed = selectedWindow ? windowFeed : (selected ? desktops.get(selected)?.feed ?? null : null);
 }
 
 function send(message: ToTab): void {
@@ -156,15 +194,18 @@ function send(message: ToTab): void {
 function render(): void {
   if (!browserTab) return;
   const desktop = selected ? desktops.get(selected) : undefined;
+  const activeFeed = selectedWindow ? windowFeed : desktop?.feed ?? null;
   const status = !desktop
     ? "no desktop found yet"
-    : desktop.feed
+    : activeFeed
     ? feedSize ? `${feedSize.width}x${feedSize.height}` : "connecting video..."
+    : selectedWindow
+    ? "starting window capture..."
     : "starting the desktop's video...";
   browserTab.render(
     <RdpApp
       input={input || remoteInput ? inputSink : null}
-      feed={desktop?.feed ? feedSize ?? { width: 16, height: 9 } : null}
+      feed={activeFeed ? feedSize ?? { width: 16, height: 9 } : null}
       status={status}
       desktops={[...desktops.values()].map((d) => ({
         id: d.source,
@@ -172,6 +213,10 @@ function render(): void {
       }))}
       selected={selected}
       onSelect={(id) => void select(id as ActorId)}
+      windows={windows.map((w) => ({ id: w.id, title: w.title, app: w.app }))}
+      selectedWindow={selectedWindow?.id ?? null}
+      onSelectWindow={(id) => void selectWindow(id)}
+      onRefreshWindows={() => void refreshWindows()}
     />,
   );
 }
@@ -288,13 +333,84 @@ async function pollFeed(): Promise<void> {
 }
 
 function sendMedia(): void {
-  const feed = selected ? desktops.get(selected)?.feed : null;
+  const feed = selectedWindow ? windowFeed : (selected ? desktops.get(selected)?.feed : null);
   send({ media: { feeds: feed ? { [DESKTOP_FEED]: feed } : {} } });
+}
+
+async function refreshWindows(): Promise<void> {
+  const desktop = selected ? desktops.get(selected) : undefined;
+  if (!desktop) {
+    windows = [];
+    render();
+    return;
+  }
+  try {
+    const listed = await request<WindowInfo[]>(desktop.source, "LISTWINDOWS");
+    if (selected !== desktop.source) return;
+    windows = Array.isArray(listed) ? listed : [];
+    if (selectedWindow) {
+      const updated = windows.find((w) => w.id === selectedWindow!.id);
+      if (updated) selectedWindow = updated;
+    }
+  } catch {
+    windows = [];
+  }
+  render();
+}
+
+async function stopActiveWindow(): Promise<void> {
+  const prev = selectedWindow;
+  const desktop = selected ? desktops.get(selected) : undefined;
+  selectedWindow = null;
+  windowFeed = null;
+  if (prev && desktop) {
+    await request(desktop.source, "STOP", { window: prev.id }).catch(() => {});
+  }
+}
+
+async function selectWindow(windowId: string | null): Promise<void> {
+  const desktop = selected ? desktops.get(selected) : undefined;
+  if (!desktop) return;
+  if (selectedWindow?.id === windowId) return;
+  await stopActiveWindow();
+  feedSize = null;
+  if (!windowId) {
+    summarize();
+    sendMedia();
+    render();
+    return;
+  }
+  const win = windows.find((w) => w.id === windowId);
+  if (!win) return;
+  selectedWindow = win;
+  summarize();
+  sendMedia();
+  render();
+  try {
+    const feed = await request<FeedInfo>(desktop.source, "START", { window: win.id });
+    if (selectedWindow?.id !== win.id) {
+      await request(desktop.source, "STOP", { window: win.id }).catch(() => {});
+      return;
+    }
+    windowFeed = feed;
+    summarize();
+    sendMedia();
+    render();
+  } catch (error) {
+    report(`START window ${win.title}: ${error}`);
+    selectedWindow = null;
+    windowFeed = null;
+    summarize();
+    sendMedia();
+    render();
+  }
 }
 
 /** Show another desktop: its video, and input to its desktopInput. */
 async function select(id: ActorId): Promise<void> {
   if (selected === id || !desktops.has(id)) return;
+  await stopActiveWindow();
+  windows = [];
   releaseInput("switched desktops");
   selected = id;
   feedSize = null;
@@ -461,6 +577,7 @@ new PostMan(
         if (!desktop) throw new Error("no desktop selected");
         const { sdp } = await request<{ sdp: string }>(desktop.source, "WEBRTC_OFFER", {
           sdp: offerSdp,
+          ...(selectedWindow ? { window: selectedWindow.id } : {}),
         });
         return sdp;
       }));
