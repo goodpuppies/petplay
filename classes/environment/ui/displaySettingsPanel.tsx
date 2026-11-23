@@ -34,6 +34,7 @@ export type DisplaySettingsPanelProps = {
   onChangeAutoHide: (next: boolean) => void;
   grabOutline: boolean;
   onChangeGrabOutline: (next: boolean) => void;
+  showSharing?: boolean;
   shareDisplay?: boolean;
   onChangeShareDisplay?: (next: boolean) => void;
   allowRemoteControl?: boolean;
@@ -63,6 +64,7 @@ export function DisplaySettingsPanel({
   onChangeAutoHide,
   grabOutline,
   onChangeGrabOutline,
+  showSharing = true,
   shareDisplay = false,
   onChangeShareDisplay,
   allowRemoteControl = false,
@@ -72,7 +74,7 @@ export function DisplaySettingsPanel({
   pointerEventsType = "all",
   showGuides = false,
 }: DisplaySettingsPanelProps) {
-  const rows = 5;
+  const rows = showSharing ? 5 : 4;
   const panelHeight = unitSpan(rows) + GAP * 2;
   return (
     <Grid
@@ -176,31 +178,35 @@ export function DisplaySettingsPanel({
       </Cell>
 
       {/* Row 4: Sharing section (Share display + Allow remote control) */}
-      <Cell col={0} row={4} colSpan={4} rowSpan={1} surface="tile">
-        <Grid cols={1} rows={2} gap={INNER_GAP} padding={INNER_GAP} showGuides={showGuides}>
-          <Cell col={0} row={0} flexDirection="row" justifyContent="flex-start" paddingX={12}>
-            <Text color={COLOR.inkDim} fontSize={18}>Sharing</Text>
-          </Cell>
-          <Cell col={0} row={1}>
-            <Grid cols={2} rows={1} gap={INNER_GAP} padding={0} showGuides={showGuides}>
-              <Cell col={0} row={0} shape="round">
-                <GridToggle
-                  label="Share display"
-                  value={shareDisplay}
-                  onChange={(next) => onChangeShareDisplay?.(next)}
-                />
+      {showSharing
+        ? (
+          <Cell col={0} row={4} colSpan={4} rowSpan={1} surface="tile">
+            <Grid cols={1} rows={2} gap={INNER_GAP} padding={INNER_GAP} showGuides={showGuides}>
+              <Cell col={0} row={0} flexDirection="row" justifyContent="flex-start" paddingX={12}>
+                <Text color={COLOR.inkDim} fontSize={18}>Sharing</Text>
               </Cell>
-              <Cell col={1} row={0} shape="round">
-                <GridToggle
-                  label="Remote control"
-                  value={allowRemoteControl}
-                  onChange={(next) => onChangeAllowRemoteControl?.(next)}
-                />
+              <Cell col={0} row={1}>
+                <Grid cols={2} rows={1} gap={INNER_GAP} padding={0} showGuides={showGuides}>
+                  <Cell col={0} row={0} shape="round">
+                    <GridToggle
+                      label="Share display"
+                      value={shareDisplay}
+                      onChange={(next) => onChangeShareDisplay?.(next)}
+                    />
+                  </Cell>
+                  <Cell col={1} row={0} shape="round">
+                    <GridToggle
+                      label="Remote control"
+                      value={allowRemoteControl}
+                      onChange={(next) => onChangeAllowRemoteControl?.(next)}
+                    />
+                  </Cell>
+                </Grid>
               </Cell>
             </Grid>
           </Cell>
-        </Grid>
-      </Cell>
+        )
+        : null}
     </Grid>
   );
 }

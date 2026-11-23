@@ -1589,28 +1589,6 @@ function DisplaySpatialNodeView({
         run: () => setGraph((current) => swapDisplayToolbarSide(current, node.id, swapFootprint)),
       });
     }
-    if (localOutput) {
-      // Accent reports the state, as with Lock.
-      actions.push({
-        id: "share",
-        label: node.shared ? "Shared — stop" : "Share",
-        icon: "wifi",
-        tone: node.shared ? "accent" : "normal",
-        run: () =>
-          setGraph((current) =>
-            setSpatialNodeShared(current, node.id, !node.shared, node.remoteInput ?? false)
-          ),
-      });
-      if (node.shared) {
-        actions.push({
-          id: "remote-input",
-          label: node.remoteInput ? "Remote input — off" : "Allow remote input",
-          tone: node.remoteInput ? "accent" : "normal",
-          run: () =>
-            setGraph((current) => setSpatialNodeShared(current, node.id, true, !node.remoteInput)),
-        });
-      }
-    }
     actions.push({
       id: "lock",
       label: node.locked ? "Locked — unlock" : "Lock",
@@ -1799,6 +1777,15 @@ function DisplaySpatialNodeView({
                 setGraph((latest) => setSpatialNodeAutoHide(latest, node.id, next))}
               grabOutline={grabOutlineVisible}
               onChangeGrabOutline={(next) => setGrabboxOutlineVisible(next)}
+              showSharing={localOutput}
+              shareDisplay={Boolean(node.shared)}
+              onChangeShareDisplay={(next) =>
+                setGraph((current) =>
+                  setSpatialNodeShared(current, node.id, next, next ? (node.remoteInput ?? false) : false)
+                )}
+              allowRemoteControl={Boolean(node.remoteInput)}
+              onChangeAllowRemoteControl={(next) =>
+                setGraph((current) => setSpatialNodeShared(current, node.id, next ? true : Boolean(node.shared), next))}
               onResetPose={() =>
                 setGraph((current) => resetSpatialNodeTransform(current, node.id))}
             />
