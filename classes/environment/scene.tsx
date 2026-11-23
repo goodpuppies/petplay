@@ -1437,17 +1437,56 @@ function objectTransform(target: import("three").Object3D): SpatialTransform {
   };
 }
 
+/** How long a user must hold a grab on a locked node before we notify them it's locked. */
+const LOCKED_GRAB_NOTIFY_MS = 450;
+const LOCKED_GRAB_COOLDOWN_MS = 4_000;
+
 /** A locked node keeps its handle (so a grab is still swallowed) but every axis is frozen. */
 function useLockedGrabOptions(
   options: GrabBoxManipulationOptions,
   locked: boolean,
+  label = "Window",
 ): GrabBoxManipulationOptions {
+  const grabStartAtRef = React.useRef<number | null>(null);
+  const notifiedRef = React.useRef(false);
+  const lastNotifiedAtRef = React.useRef(-Infinity);
   return React.useMemo(
     () =>
       locked
-        ? { ...options, translate: false, rotate: false, scale: false, triggerResize: undefined }
+        ? {
+          ...options,
+          translate: false,
+          rotate: false,
+          scale: false,
+          triggerResize: undefined,
+          apply: (state: HandleState<unknown>, _target: import("three").Object3D) => {
+            const now = performance.now();
+            if (state.first) {
+              grabStartAtRef.current = now;
+              notifiedRef.current = false;
+            }
+            if (
+              !state.last && !notifiedRef.current &&
+              grabStartAtRef.current != null &&
+              now - grabStartAtRef.current >= LOCKED_GRAB_NOTIFY_MS &&
+              now - lastNotifiedAtRef.current >= LOCKED_GRAB_COOLDOWN_MS
+            ) {
+              notifiedRef.current = true;
+              lastNotifiedAtRef.current = now;
+              pushToast({
+                title: `${label} is locked`,
+                content: "Unlock it in the hover menu to move or resize.",
+                tone: "warning",
+                timeoutMs: 3000,
+              });
+            }
+            if (state.last) {
+              grabStartAtRef.current = null;
+            }
+          },
+        }
         : options,
-    [locked, options],
+    [locked, options, label],
   );
 }
 
@@ -1510,7 +1549,11 @@ function DisplaySpatialNodeView({
     () => withTriggerResize(manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform })),
     [commitFreeTransform, manipulationOptions],
   );
-  const grabOptions = useLockedGrabOptions(baseOptions, node.locked ?? false);
+  const grabOptions = useLockedGrabOptions(
+    baseOptions,
+    node.locked ?? false,
+    node.workspaceOutputName ?? `Display ${node.ordinal}`,
+  );
   const dismissDisplay = React.useCallback(
     () => setGraph((current) => deleteSpatialNode(current, node.id)),
     [node.id, setGraph],
@@ -2044,7 +2087,7 @@ function KeyboardSpatialNodeView({
     () => withTriggerResize(manipulationOptions ?? freeGrabOptions({ apply: commitFreeTransform })),
     [commitFreeTransform, manipulationOptions],
   );
-  const grabOptions = useLockedGrabOptions(baseOptions, node.locked ?? false);
+  const grabOptions = useLockedGrabOptions(baseOptions, node.locked ?? false, "Keyboard");
   const dismissKeyboard = React.useCallback(
     () => setGraph((current) => deleteSpatialNode(current, node.id)),
     [node.id, setGraph],

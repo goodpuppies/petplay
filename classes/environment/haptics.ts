@@ -10,13 +10,14 @@
 import { getSetting } from "../settings.ts";
 
 export type HapticHand = "left" | "right";
-export type HapticKind = "hover" | "click";
+export type HapticKind = "hover" | "click" | "notify";
 
 export type HapticPulse = { durationS: number; frequency: number; amplitude: number };
 
 export const HAPTIC_PULSES: Record<HapticKind, HapticPulse> = {
   hover: { durationS: 0.012, frequency: 180, amplitude: 0.15 },
   click: { durationS: 0.03, frequency: 160, amplitude: 0.5 },
+  notify: { durationS: 0.08, frequency: 140, amplitude: 0.65 },
 };
 
 /** Sweeping a ray across a row of buttons should feel like texture, not a buzz. */
@@ -29,7 +30,7 @@ const lastHoverAt: Record<HapticHand, number> = { left: -Infinity, right: -Infin
 let sink: HapticSink | null = null;
 
 /** Pulses requested since start, sink or not; read by playtests. */
-export const hapticStats = { hover: 0, click: 0, dropped: 0 };
+export const hapticStats = { hover: 0, click: 0, notify: 0, dropped: 0 };
 
 export function setHapticSink(next: HapticSink | null): void {
   sink = next;

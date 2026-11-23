@@ -1,24 +1,30 @@
 /**
- * Head-locked toast stack (see `toastStore.ts`): a column of black cards below the line of sight,
- * following the head with a little lag so it reads as attached to you without jittering with
- * every head tremor. It takes no pointer events: rays pass through to whatever is behind it.
+ * Wrist-mounted notification list (`WristToastStack`) replacing the old head-locked overlay.
+ *
+ * Notifications extend upwards as a vertical list directly above the wrist panel and vibrate the
+ * controller that wrist is on whenever a new notification arrives. Tapping a card with the
+ * opposite hand's ray dismisses it early.
+ *
+ * `ToastOverlay` is retained only for `--desktop` preview mode (where no wrist controller exists).
  */
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three/webgpu";
 import { useFrame, useThree } from "@react-three/fiber/webgpu";
+import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
 import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Text } from "./ui/text.tsx";
 import { measureMsdfText } from "../../submodules/threewebxrwebgpudeno/msdf-text.tsx";
-import { COLOR, OUTLINE_WIDTH } from "./ui/tokens.ts";
+import { COLOR, GAP, OUTLINE_WIDTH, RADIUS, SHELL_SIZE } from "./ui/tokens.ts";
 import { type Toast, toastQueue, useVisibleToasts } from "./toastStore.ts";
 import { wrapText } from "./ui/wrapText.ts";
+import { type HapticHand, pulseForPointerEvent, pulseHand } from "./haptics.ts";
 
-/** In head space: slightly below the line of sight, closer than the displays. */
+/** In head space (desktop preview fallback only). */
 const HEAD_OFFSET = new THREE.Vector3(0, -0.17, -0.6);
 const FOLLOW_RATE = 8;
 const TICK_INTERVAL_S = 0.25;
-const CARD_WIDTH = 480;
-const CARD_PADDING_X = 20;
+const CARD_WIDTH = SHELL_SIZE;
+const CARD_PADDING_X = 22;
 const TEXT_WIDTH = CARD_WIDTH - 2 * CARD_PADDING_X;
 const NO_POINTER_EVENTS = () => false;
 
@@ -46,7 +52,13 @@ function useWrapped(text: string, fontSize: number): string {
   return wrapped;
 }
 
-function ToastCard({ toast }: { toast: Toast }) {
+function ToastCard({
+  toast,
+  onDismiss,
+}: {
+  toast: Toast;
+  onDismiss?: () => void;
+}) {
   const title = useWrapped(toast.title, 22);
   const content = useWrapped(toast.content, 17);
   return (
@@ -55,12 +67,18 @@ function ToastCard({ toast }: { toast: Toast }) {
       flexDirection="column"
       gap={4}
       paddingX={CARD_PADDING_X}
-      paddingY={14}
-      borderRadius={22}
+      paddingY={16}
+      borderRadius={RADIUS.shell - GAP}
       backgroundColor={COLOR.ground}
-      backgroundOpacity={0.92}
+      backgroundOpacity={0.94}
       borderWidth={OUTLINE_WIDTH}
       borderColor={toneColor(toast)}
+      onClick={onDismiss
+        ? (event: unknown) => {
+          pulseForPointerEvent(event, "click");
+          onDismiss();
+        }
+        : undefined}
     >
       <Text color={COLOR.inkDim} fontSize={14}>{toast.source}</Text>
       <Text color={COLOR.ink} fontSize={22}>{title}</Text>
@@ -69,7 +87,70 @@ function ToastCard({ toast }: { toast: Toast }) {
   );
 }
 
+/**
+ * Notification list extending upward above the wrist panel. Vibrates `hostHandedness` on each
+ * new notification arrival and ticks `toastQueue` for expiration.
+ */
+export function WristToastStack({
+  hostHandedness,
+  position,
+  pointerEventsType = NO_POINTER_EVENTS,
+}: {
+  hostHandedness: HapticHand;
+  position: [number, number, number];
+  pointerEventsType?: AllowedPointerEventsType;
+}) {
+  const toasts = useVisibleToasts();
+  const sinceTick = useRef(0);
+  const lastVibratedId = useRef(0);
+
+  // Vibrate the wrist's controller whenever a newly arrived toast appears.
+  useEffect(() => {
+    let newest = lastVibratedId.current;
+    for (const toast of toasts) {
+      if (toast.id > newest) newest = toast.id;
+    }
+    if (newest > lastVibratedId.current) {
+      lastVibratedId.current = newest;
+      pulseHand(hostHandedness, "notify");
+    }
+  }, [toasts, hostHandedness]);
+
+  useFrame((_state, delta) => {
+    sinceTick.current += delta;
+    if (sinceTick.current >= TICK_INTERVAL_S) {
+      sinceTick.current = 0;
+      toastQueue.tick();
+    }
+  });
+
+  if (toasts.length === 0) return null;
+  return (
+    <group position={position} userData={{ toastOverlay: true, wristToastStack: true }}>
+      <Container
+        pixelSize={0.001}
+        anchorX="center"
+        anchorY="bottom"
+        pointerEventsType={pointerEventsType}
+        flexDirection="column-reverse"
+        alignItems="center"
+        gap={GAP}
+      >
+        {toasts.map((toast) => (
+          <ToastCard
+            key={toast.id}
+            toast={toast}
+            onDismiss={() => toastQueue.dismiss(toast.id)}
+          />
+        ))}
+      </Container>
+    </group>
+  );
+}
+
+/** Desktop-mode fallback only; in VR, notifications render on the wrist via `WristToastStack`. */
 export function ToastOverlay() {
+  const isDesktop = Deno.args.includes("--desktop");
   const toasts = useVisibleToasts();
   const group = useRef<THREE.Group>(null);
   const camera = useThree((state) => state.camera);
@@ -82,6 +163,7 @@ export function ToastOverlay() {
   });
 
   useFrame((_state, delta) => {
+    if (!isDesktop) return;
     const s = scratch.current;
     s.sinceTick += delta;
     if (s.sinceTick >= TICK_INTERVAL_S) {
@@ -96,21 +178,18 @@ export function ToastOverlay() {
     const xr = (renderer as unknown as {
       xr?: { getCamera?: (camera: THREE.Camera) => THREE.Camera };
     }).xr;
-    const head = Deno.args.includes("--desktop")
-      ? camera
-      : xr?.getCamera?.(camera as unknown as THREE.Camera) ?? camera;
+    const head = xr?.getCamera?.(camera as unknown as THREE.Camera) ?? camera;
     head.updateWorldMatrix(true, false);
     head.getWorldPosition(s.position);
     head.getWorldQuaternion(s.quaternion);
     s.position.add(HEAD_OFFSET.clone().applyQuaternion(s.quaternion));
-    // Snap on first show, so a toast never sweeps in from where the last one was.
     const t = s.placed ? 1 - Math.exp(-FOLLOW_RATE * delta) : 1;
     node.position.lerp(s.position, t);
     node.quaternion.slerp(s.quaternion, t);
     s.placed = true;
   });
 
-  if (toasts.length === 0) return null;
+  if (!isDesktop || toasts.length === 0) return null;
   return (
     <group ref={group} userData={{ toastOverlay: true }}>
       <Container

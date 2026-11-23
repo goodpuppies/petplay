@@ -27,6 +27,7 @@ import { isPointerBlockedByHost } from "./pointerFilter.ts";
 import { getSetting, setSetting, useSetting } from "../../settings.ts";
 import { defaultApply, type HandleState } from "@pmndrs/handle";
 import { wristOffsetForHand } from "./offset.ts";
+import { WristToastStack } from "../toastOverlay.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -457,6 +458,13 @@ export function WristMenuPanel(
             />
           </GrabBox>
         </group>
+        {attached && hostHandedness != null && (
+          <WristToastStack
+            hostHandedness={hostHandedness}
+            position={[0, WRIST_UI_HEIGHT / 2 + 0.036, 0]}
+            pointerEventsType={menuPointerType}
+          />
+        )}
         {
           /*
            * Depth-only occluder, the pattern displays and the keyboard use: it paints depth and no
