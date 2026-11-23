@@ -163,6 +163,7 @@ export class OpenVrOverlayFramePacer {
   private lastPredictedSeconds = 0;
   private lastHmd: OpenVrHmdEmulationPose | null = null;
   private lastFallbackPaceAt = 0;
+  private lastPacedAt = 0;
   private fallbackVsyncUnavailableLogged = false;
   /** Set when the vsync index stopped advancing (standby); cleared once it moves. */
   private vsyncStalled = false;
@@ -280,6 +281,7 @@ export class OpenVrOverlayFramePacer {
       await wait(VSYNC_STALLED_POLL_MS);
       return this.paceToDisplayAndRefreshPosesSync(performance.now() - t0);
     }
+    let spinSync = true;
     if (this.paceMode === "vsync" && this.lastVsyncFrameIndex !== 0n) {
       const gotVsync = this.vr.GetTimeSinceLastVsync(
         this.vsyncSecondsPtr,
@@ -294,25 +296,44 @@ export class OpenVrOverlayFramePacer {
         ) ?? 90;
         const frameDurationMs = 1000 / this.displayHzCache;
         const secondsSinceLastVsync = this.vsyncSecondsBuffer[0];
-        const untilNextVsyncMs = frameDurationMs - secondsSinceLastVsync * 1000;
-        const coarseWaitMs = Math.max(0, untilNextVsyncMs - spinTailMs);
-        if (coarseWaitMs >= 0.5 && coarseWaitMs <= MAX_VSYNC_COARSE_YIELD_MS) {
-          const t0 = performance.now();
-          await wait(coarseWaitMs);
-          yieldedMs = performance.now() - t0;
+        if (secondsSinceLastVsync * 1000 >= frameDurationMs) {
+          // Over Steam Link, an app-limited scene app (e.g. VRChat at 35 Hz) slows
+          // `GetTimeSinceLastVsync`'s frame counter below the HMD's native refresh rate.
+          // Pace to the HMD's own frame period instead of stalling behind the scene app.
+          const elapsedMs = this.lastPacedAt > 0 ? performance.now() - this.lastPacedAt : frameDurationMs;
+          const remainingMs = Math.max(0, frameDurationMs - elapsedMs);
+          if (remainingMs >= 0.5 && remainingMs <= MAX_VSYNC_COARSE_YIELD_MS) {
+            const t0 = performance.now();
+            await wait(remainingMs);
+            yieldedMs = performance.now() - t0;
+          }
+          spinSync = false;
+        } else {
+          const untilNextVsyncMs = frameDurationMs - secondsSinceLastVsync * 1000;
+          const coarseWaitMs = Math.max(0, untilNextVsyncMs - spinTailMs);
+          if (coarseWaitMs >= 0.5 && coarseWaitMs <= MAX_VSYNC_COARSE_YIELD_MS) {
+            const t0 = performance.now();
+            await wait(coarseWaitMs);
+            yieldedMs = performance.now() - t0;
+          }
+          const lateResult = await this.waitWhileVsyncLate(spinTailMs, frameDurationMs);
+          yieldedMs += lateResult.waitedMs;
+          if (lateResult.sceneAppLimited) spinSync = false;
         }
-        yieldedMs += await this.waitWhileVsyncLate(spinTailMs);
       }
     }
-    return this.paceToDisplayAndRefreshPosesSync(yieldedMs);
+    return this.paceToDisplayAndRefreshPosesSync(yieldedMs, spinSync);
   }
 
   /**
-   * After the coarse wait, spin at most two spin tails for the index, then poll it on short
-   * timers: the compositor is behind the display (an app-limited scene app over Steam Link sets
-   * its rate), and spinning through those gaps took a core from the scene app.
+   * After the coarse wait, spin at most two spin tails for the index; if `secondsSinceLastVsync`
+   * passes one HMD display period without the index moving (an app-limited scene app over Steam
+   * Link), stop waiting and let the overlay render at the HMD's native refresh rate.
    */
-  private async waitWhileVsyncLate(spinTailMs: number): Promise<number> {
+  private async waitWhileVsyncLate(
+    spinTailMs: number,
+    frameDurationMs: number,
+  ): Promise<{ waitedMs: number; sceneAppLimited: boolean }> {
     const t0 = performance.now();
     const last = this.lastVsyncFrameIndex;
     while (
@@ -320,9 +341,12 @@ export class OpenVrOverlayFramePacer {
       this.vr.GetTimeSinceLastVsync(this.vsyncSecondsPtr, this.vsyncFramePtr) &&
       this.vsyncFrameBuffer[0] === last
     ) {
+      if (this.vsyncSecondsBuffer[0] * 1000 >= frameDurationMs) {
+        return { waitedMs: performance.now() - t0, sceneAppLimited: true };
+      }
       if (performance.now() - t0 > 2 * spinTailMs) await wait(VSYNC_LATE_POLL_MS);
     }
-    return performance.now() - t0;
+    return { waitedMs: performance.now() - t0, sceneAppLimited: false };
   }
 
   /**
@@ -553,11 +577,18 @@ export class OpenVrOverlayFramePacer {
 
     const frameDuration = 1.0 / this.displayHzCache;
     const vsyncToPhotons = this.secondsVsyncToPhotonsCache;
+    // Wrap `secondsSinceLastVsync` into one display period so an app-limited Steam Link
+    // scene app (where `secondsSinceLastVsync` grows to 25–35 ms) doesn't collapse pose
+    // prediction and cause headswim.
+    const phaseInFrame = secondsSinceLastVsync >= 0
+      ? secondsSinceLastVsync % frameDuration
+      : 0;
     const predictedSecondsFromNow = Math.max(
       0,
-      frameDuration * (1 + this.extraPredictionFrames) - secondsSinceLastVsync + vsyncToPhotons,
+      frameDuration * (1 + this.extraPredictionFrames) - phaseInFrame + vsyncToPhotons,
     );
     this.lastPredictedSeconds = predictedSecondsFromNow;
+    this.lastPacedAt = performance.now();
 
     this.posesReadRaw = playspaceFrame.active;
     this.vr.GetDeviceToAbsoluteTrackingPose(
