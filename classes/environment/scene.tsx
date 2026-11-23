@@ -1628,6 +1628,18 @@ function DisplaySpatialNodeView({
     selectedFeed?.logicalHeight,
     node.id,
   ]);
+  // Raise and focus a window-backed display when hovered so the desktop cursor shows up on it
+  // immediately and clicks/scrolls land without waiting.
+  React.useEffect(() => {
+    if (!hovered || !remoteInput?.focusWindow || !remoteInput.focusWindowId) return;
+    if (
+      lastFocusedWindow?.id === remoteInput.focusWindowId &&
+      Date.now() - lastFocusedWindow.at < 800
+    ) {
+      return;
+    }
+    void remoteInput.focusWindow();
+  }, [hovered, remoteInput]);
   const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
     const mapped = {
       ...event,
