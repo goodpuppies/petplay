@@ -162,6 +162,7 @@ export class GlyphTextRenderer {
     texts: WebXRRaythreeUiSnapshot["texts"],
     projectionView: THREE.Matrix4,
     tuning?: TextRenderingSettings,
+    fastUiPass?: { width?: number; height?: number; restoreDepthTest: boolean },
   ): number | null {
     if (this.disposed) return null;
     let count = 0;
@@ -225,25 +226,36 @@ export class GlyphTextRenderer {
 
     const gl = this.gl;
     this.raylib.symbols.rlDrawRenderBatchActive();
-    const saved = this.saveDrawState();
+    const saved = fastUiPass ? null : this.saveDrawState();
     try {
-      gl.glGetIntegerv(GL.VIEWPORT, this.scratch);
-      if (this.scratch[2]! <= 0 || this.scratch[3]! <= 0) throw new Error("Invalid Glyph viewport");
+      let vpW: number;
+      let vpH: number;
+      if (fastUiPass?.width && fastUiPass?.height) {
+        vpW = fastUiPass.width;
+        vpH = fastUiPass.height;
+      } else {
+        gl.glGetIntegerv(GL.VIEWPORT, this.scratch);
+        vpW = this.scratch[2]!;
+        vpH = this.scratch[3]!;
+      }
+      if (vpW <= 0 || vpH <= 0) throw new Error("Invalid Glyph viewport");
       gl.glUseProgram(this.program);
       gl.glUniform1f(this.uniforms.exponent, tuning?.glyphCoverageExponent ?? 1);
       gl.glUniform1f(this.uniforms.weight, tuning?.glyphWeightPixels ?? 0);
       gl.glUniform1f(this.uniforms.aaWidth, tuning?.glyphAaWidth ?? 1);
-      gl.glUniform2f(this.uniforms.viewport, this.scratch[2]!, this.scratch[3]!);
+      gl.glUniform2f(this.uniforms.viewport, vpW, vpH);
       gl.glBindVertexArray(this.vao);
       gl.glDisable(GL.DEPTH_TEST);
       gl.glDepthMask(0);
-      gl.glDisable(GL.CULL_FACE);
-      gl.glDisable(GL.STENCIL_TEST);
-      gl.glDisable(GL.SCISSOR_TEST);
-      gl.glDisable(GL.FRAMEBUFFER_SRGB);
-      gl.glEnable(GL.BLEND);
-      gl.glBlendEquationSeparate(GL.FUNC_ADD, GL.FUNC_ADD);
-      gl.glBlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA);
+      if (!fastUiPass) {
+        gl.glDisable(GL.CULL_FACE);
+        gl.glDisable(GL.STENCIL_TEST);
+        gl.glDisable(GL.SCISSOR_TEST);
+        gl.glDisable(GL.FRAMEBUFFER_SRGB);
+        gl.glEnable(GL.BLEND);
+        gl.glBlendEquationSeparate(GL.FUNC_ADD, GL.FUNC_ADD);
+        gl.glBlendFuncSeparate(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA);
+      }
       gl.glBindBuffer(GL.ARRAY_BUFFER, this.instanceBuffer);
       // Buffer-orphan with glBufferData(STREAM_DRAW) so the driver never stalls on an in-flight eye.
       gl.glBufferData(
@@ -276,7 +288,16 @@ export class GlyphTextRenderer {
         gl.glDrawArraysInstanced(GL.TRIANGLES, 0, 6, countInRun);
       }
     } finally {
-      this.restoreDrawState(saved);
+      if (saved) {
+        this.restoreDrawState(saved);
+      } else {
+        gl.glActiveTexture(GL.TEXTURE0);
+        gl.glBindTexture(GL.TEXTURE_2D, 0);
+        gl.glUseProgram(0);
+        gl.glBindVertexArray(0);
+        gl.glBindBuffer(GL.ARRAY_BUFFER, 0);
+        if (fastUiPass?.restoreDepthTest) gl.glEnable(GL.DEPTH_TEST);
+      }
     }
     return visible;
   }

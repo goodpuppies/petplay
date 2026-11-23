@@ -64,10 +64,10 @@ export class WebXRRaythreeSceneBridge {
     probes?: WebXRRaythreeBuildProbes | null,
   ): WebXRRaythreeRenderPayload {
     const scene = context.scene as THREE.Scene;
-    // One world update for this frame, then two eye extracts (raythree’s extract()
-    // would otherwise call scene.updateMatrixWorld(true) twice per payload).
+    // One dirty-propagated world update for this frame (avoid force=true recomputing every
+    // static node's matrix every frame).
     const t0 = performance.now();
-    scene.updateMatrixWorld(true);
+    scene.updateMatrixWorld(false);
     probes?.sceneMatrix.record(performance.now() - t0);
     const eyeOpts = { skipSceneMatrixWorldUpdate: true } as const;
 

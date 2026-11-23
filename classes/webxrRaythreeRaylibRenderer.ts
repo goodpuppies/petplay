@@ -1979,7 +1979,12 @@ export class WebXRRaythreeRaylibRenderer {
       const vectorDrawn = this.textRenderer === "pathfinder"
         ? this.pathfinderText?.draw(rootTexts, this.uiMvpPV)
         : this.textRenderer === "glyph"
-        ? this.glyphText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
+        ? this.glyphText?.draw(
+          rootTexts,
+          this.uiMvpPV,
+          ui.textRendering,
+          { restoreDepthTest: this.foreground != null },
+        )
         : this.textRenderer === "windfoil"
         ? this.windfoilText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
         : null;

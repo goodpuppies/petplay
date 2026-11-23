@@ -246,11 +246,16 @@ export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnaps
   }
 
   scene.traverseVisible((object: Object3D) => {
+    const ud = object.userData as {
+      raythreeUiText?: unknown;
+      raythreeUiImage?: unknown;
+    } | undefined;
+    if (ud?.raythreeUiText == null && ud?.raythreeUiImage == null) return;
     // Text and images are ordinary scene objects, so their root has to be found
     // by walking up to the nearest uikit component.
     const rootIndex = resolveRootIndex(object, rootIndexFor);
-    maybeCollectText(object, snapshot.texts, rootIndex);
-    maybeCollectImage(object, snapshot.images, rootIndex);
+    if (ud.raythreeUiText != null) maybeCollectText(object, snapshot.texts, rootIndex);
+    if (ud.raythreeUiImage != null) maybeCollectImage(object, snapshot.images, rootIndex);
   });
 
   return snapshot;
