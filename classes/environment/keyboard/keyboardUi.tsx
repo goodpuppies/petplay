@@ -668,6 +668,10 @@ export type KeyboardFromJsonProps = {
   opacity?: number;
   /** `compact` = main only; `arrows` = main + arrow cluster (default); `full` = nav + numpad. */
   layoutMode?: KeyboardLayoutMode;
+  /** Optional uikit bar rendered above the key columns inside the keyboard's layout. */
+  topBar?: React.ReactNode;
+  /** Spacing in uikit layout units between `topBar` and the key columns. */
+  topBarGap?: number;
 };
 
 /** Main block plus the arrow cluster: what xso's nav group ends with, without the nav block. */
@@ -731,6 +735,8 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       pixelSize = DEFAULT_KEYBOARD_PIXEL_SIZE,
       layoutMode = getKeyboardLayoutMode(),
       opacity = 1,
+      topBar,
+      topBarGap = 0,
     },
     ref,
   ) {
@@ -1016,11 +1022,11 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
     const colH = (rows: number) => rows * rowH + Math.max(0, rows - 1) * keyPadding + packH;
     const columns = keyboardColumns(layoutMode, { mainRows, navRows, numpadRows });
     const columnBlockH = Math.max(...columns.map((column) => colH(column.rows.length)));
-    return (
+    const columnsRow = (
       <Container
-        ref={ref}
+        ref={topBar == null ? ref : undefined}
         pixelSize={pixelSize}
-        opacity={opacity}
+        opacity={topBar == null ? opacity : undefined}
         flexDirection="row"
         alignItems="flex-start"
         gap={0}
@@ -1038,6 +1044,24 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
           ]),
           makeColumn(column.rows, column.id),
         ])}
+      </Container>
+    );
+    if (topBar == null) return columnsRow;
+    return (
+      <Container
+        ref={ref}
+        pixelSize={pixelSize}
+        opacity={opacity}
+        flexDirection="column"
+        alignItems="stretch"
+        gap={0}
+        {...LAYOUT_CHROME}
+      >
+        {topBar}
+        {topBarGap > 0 && (
+          <Container minHeight={topBarGap} {...LAYOUT_CHROME} />
+        )}
+        {columnsRow}
       </Container>
     );
   },

@@ -50,6 +50,12 @@ export type KeyboardPanelProps = WorldKeyboardPanelProps & {
   onDismiss?: () => void;
   /** 0..1 (default opaque). */
   opacity?: number;
+  /** Optional uikit bar integrated into the top of the keyboard UI (included in GrabBox bounds). */
+  topBar?: (widthUnits: number) => React.ReactNode;
+  /** Height of `topBar` in keyboard uikit layout units. */
+  topBarHeight?: number;
+  /** Gap between `topBar` and the key columns in keyboard uikit layout units. */
+  topBarGap?: number;
   children?: React.ReactNode;
 };
 
@@ -75,6 +81,9 @@ export function KeyboardPanel(
     onSpatialFocus,
     onDismiss,
     opacity = 1,
+    topBar,
+    topBarHeight = 0,
+    topBarGap = 0,
     children,
   }: KeyboardPanelProps = {},
 ) {
@@ -107,11 +116,13 @@ export function KeyboardPanel(
   const locale = localeProp == null ? storeLocale : resolveKeyboardLocale(localeProp);
   const format = keyboardFormatFor(locale, layoutFormat);
 
+  const extraTopHeight = topBar != null && topBarHeight > 0 ? topBarHeight + topBarGap : 0;
+
   const boundsUnits = useMemo(
     () => (layoutReady != null
-      ? keyboardContentBoundsUnits(layoutReady, format, layoutMode, locale)
+      ? keyboardContentBoundsUnits(layoutReady, format, layoutMode, locale, extraTopHeight)
       : null),
-    [layoutReady, format, layoutMode, locale],
+    [layoutReady, format, layoutMode, locale, extraTopHeight],
   );
 
   const pixel = DEFAULT_KEYBOARD_PIXEL_SIZE;
@@ -172,6 +183,10 @@ export function KeyboardPanel(
                 layoutMode={layoutMode}
                 pixelSize={pixel}
                 opacity={opacity}
+                topBar={topBar != null && boundsUnits != null
+                  ? topBar(boundsUnits.width)
+                  : undefined}
+                topBarGap={topBarGap}
               />
             </group>
             {

@@ -26,7 +26,11 @@ import {
 } from "./displayMetrics.ts";
 import type { DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel } from "./keyboard/keyboard.tsx";
-import { KeyboardTaskbar } from "./keyboard/keyboardTaskbar.tsx";
+import {
+  KEYBOARD_TASKBAR_GAP,
+  KEYBOARD_TASKBAR_HEIGHT,
+  KeyboardTaskbar,
+} from "./keyboard/keyboardTaskbar.tsx";
 import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
 import { createDesktopInputSinks } from "./desktopInputSink.ts";
@@ -2017,6 +2021,26 @@ function KeyboardSpatialNodeView({
     }
   }, [graph, onSelectNode, setGraph]);
 
+  const windowOutputs = React.useMemo(
+    () => workspaceOutputs.filter((o) => o.kind === "window"),
+    [workspaceOutputs],
+  );
+  const renderKeyboardTopBar = React.useMemo(
+    () =>
+      windowOutputs.length > 0
+        ? (widthUnits: number) => (
+          <KeyboardTaskbar
+            widthUnits={widthUnits}
+            windows={windowOutputs}
+            activeOutputIds={activeOutputIds}
+            selectedOutputId={selectedOutputId}
+            onActivateWindow={activateTaskbarOutput}
+          />
+        )
+        : undefined,
+    [windowOutputs, activeOutputIds, selectedOutputId, activateTaskbarOutput],
+  );
+
   return (
     <group
       ref={nodeRef}
@@ -2043,16 +2067,10 @@ function KeyboardSpatialNodeView({
         onSpatialFocus={selectNode}
         onDismiss={node.locked ? undefined : dismissKeyboard}
         opacity={node.opacity}
+        topBar={renderKeyboardTopBar}
+        topBarHeight={KEYBOARD_TASKBAR_HEIGHT}
+        topBarGap={KEYBOARD_TASKBAR_GAP}
       >
-        <KeyboardTaskbar
-          widthMeters={node.snapSource.size[0]}
-          position={[0, node.snapSource.size[1] * 0.5 + 0.012, node.snapSource.size[2] * 0.5]}
-          outputs={workspaceOutputs}
-          activeOutputIds={activeOutputIds}
-          selectedOutputId={selectedOutputId}
-          onActivateOutput={activateTaskbarOutput}
-          opacity={node.opacity}
-        />
         <SpatialContextToolbar
           open={selectedNodeId === node.id}
           title="Keyboard"

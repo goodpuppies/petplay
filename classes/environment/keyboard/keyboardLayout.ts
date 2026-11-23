@@ -231,6 +231,7 @@ export function keyboardContentBoundsUnits(
   format: LayoutFormat,
   mode: KeyboardLayoutMode = "compact",
   locale: KeyboardLocale = getKeyboardLocale(),
+  extraTopHeight = 0,
 ): { width: number; height: number; depth: number } {
   const { mainRows, navRows, numpadRows, rowH, keyWidth, keyPadding, keyGroupsPadding } =
     getMainGroupRows(layout, format, locale);
@@ -259,7 +260,7 @@ export function keyboardContentBoundsUnits(
   const wMain = colWidth(mainRows);
   const columns = keyboardColumns(mode, { mainRows, navRows, numpadRows });
   if (columns.length === 1) {
-    const h = colH(mainRows.length);
+    const h = colH(mainRows.length) + extraTopHeight;
     const depth = rowH * 0.55;
     return { width: wMain, height: h, depth };
   }
@@ -267,7 +268,7 @@ export function keyboardContentBoundsUnits(
   const totalW = columns.reduce((sum, column) => sum + colWidth(column.rows), 0) +
     (columns.length - 1) * keyGroupsPadding;
 
-  const h = Math.max(...columns.map((column) => colH(column.rows.length)));
+  const h = Math.max(...columns.map((column) => colH(column.rows.length))) + extraTopHeight;
   const depth = rowH * 0.55;
   return { width: totalW, height: h, depth };
 }
