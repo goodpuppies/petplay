@@ -73,6 +73,12 @@ export class GlyphTextRenderer {
   private readonly runPages: number[] = [];
   private readonly runFirsts: number[] = [];
   private readonly runCounts: number[] = [];
+  private readonly placementCache = new WeakMap<Float32Array, ResolvedPlacements>();
+  private lastExponent = Number.NaN;
+  private lastWeight = Number.NaN;
+  private lastAaWidth = Number.NaN;
+  private lastVpW = -1;
+  private lastVpH = -1;
   private warnedMissing = false;
   private disposed = false;
 
@@ -154,6 +160,77 @@ export class GlyphTextRenderer {
     console.log("[raythree] text renderer=glyph (TypeScript, baked fonts)");
   }
 
+  /** Reads the current GL viewport once per eye so multiple UI roots can reuse it. */
+  readViewport(): { width: number; height: number } {
+    this.gl.glGetIntegerv(GL.VIEWPORT, this.scratch);
+    return { width: this.scratch[2]!, height: this.scratch[3]! };
+  }
+
+  private resolvePlacements(placements: Float32Array): ResolvedPlacements {
+    const cached = this.placementCache.get(placements);
+    if (cached != null) return cached;
+    const maxGlyphs = placements.length / PLACEMENT_WORDS;
+    const penX = new Float32Array(maxGlyphs);
+    const penY = new Float32Array(maxGlyphs);
+    const size = new Float32Array(maxGlyphs);
+    // 14 pre-baked words per glyph: bounds[4] (f32), curve/header/ref/bands[6] (u32), bandScale/Offset[4] (f32).
+    const staticFloats = new Float32Array(maxGlyphs * 14);
+    const staticWords = new Uint32Array(staticFloats.buffer);
+    const pages = new Int32Array(maxGlyphs);
+    let count = 0;
+    for (let p = 0; p < placements.length; p += PLACEMENT_WORDS) {
+      const code = placements[p]!;
+      const slot = placements[p + 4]!;
+      const fontEntry = this.fonts[slot];
+      const glyph = fontEntry?.font.glyphs.get(code);
+      if (fontEntry == null || glyph == null) {
+        if (!this.warnedMissing) {
+          this.warnedMissing = true;
+          console.warn(
+            `[raythree] Glyph text: no baked outline for U+${
+              code.toString(16).toUpperCase().padStart(4, "0")
+            } (font ${slot}); skipped`,
+          );
+        }
+        continue;
+      }
+      penX[count] = placements[p + 1]!;
+      penY[count] = placements[p + 2]!;
+      size[count] = placements[p + 3]!;
+      pages[count] = fontEntry.pageBase + glyph.page;
+      const off = count * 14;
+      const [minX, minY, maxX, maxY] = glyph.bounds;
+      staticFloats[off] = minX;
+      staticFloats[off + 1] = minY;
+      staticFloats[off + 2] = maxX;
+      staticFloats[off + 3] = maxY;
+      staticWords[off + 4] = glyph.curveBase;
+      staticWords[off + 5] = glyph.horizontalHeaderBase;
+      staticWords[off + 6] = glyph.verticalHeaderBase;
+      staticWords[off + 7] = glyph.referenceBase;
+      staticWords[off + 8] = glyph.horizontalBands;
+      staticWords[off + 9] = glyph.verticalBands;
+      const sx = glyph.verticalBands / (maxX - minX);
+      const sy = glyph.horizontalBands / (maxY - minY);
+      staticFloats[off + 10] = sx;
+      staticFloats[off + 11] = sy;
+      staticFloats[off + 12] = -minX * sx;
+      staticFloats[off + 13] = -minY * sy;
+      count++;
+    }
+    const resolved: ResolvedPlacements = {
+      count,
+      penX,
+      penY,
+      size,
+      staticFloats,
+      staticWords,
+      pages,
+    };
+    this.placementCache.set(placements, resolved);
+    return resolved;
+  }
+
   /**
    * Draws one UI root's texts. Returns the labels drawn, or `null` to have that group drawn with
    * MSDF instead (it lacks glyph placements).
@@ -167,7 +244,8 @@ export class GlyphTextRenderer {
     if (this.disposed) return null;
     let count = 0;
     let visible = 0;
-    for (const text of texts) {
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i]!;
       if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) continue;
       const glyphs = text.geometry.vectorGlyphs;
       if (glyphs == null) return null;
@@ -180,36 +258,31 @@ export class GlyphTextRenderer {
     // Instances in the producer's order; consecutive glyphs on the same page draw together.
     let runCount = 0;
     let index = 0;
+    const f = this.floats;
+    const u = this.words;
     for (let ti = 0; ti < texts.length; ti++) {
       const text = texts[ti]!;
       if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) continue;
       this.mvp.multiplyMatrices(projectionView, this.world.fromArray(text.worldMatrix));
       const m = this.mvp.elements;
-      const placements = text.geometry.vectorGlyphs!;
+      const m0 = m[0]!, m1 = m[1]!, m2 = m[2]!, m3 = m[3]!;
+      const m4 = m[4]!, m5 = m[5]!, m6 = m[6]!, m7 = m[7]!;
+      const m8 = m[8]!, m9 = m[9]!, m10 = m[10]!, m11 = m[11]!;
+      const m12 = m[12]!, m13 = m[13]!, m14 = m[14]!, m15 = m[15]!;
+      const resolved = this.resolvePlacements(text.geometry.vectorGlyphs!);
       const tr = toSrgb(text.color[0]);
       const tg = toSrgb(text.color[1]);
       const tb = toSrgb(text.color[2]);
       const ta = text.color[3];
-      for (let p = 0; p < placements.length; p += PLACEMENT_WORDS) {
-        const code = placements[p]!;
-        const penX = placements[p + 1]!;
-        const penY = placements[p + 2]!;
-        const size = placements[p + 3]!;
-        const slot = placements[p + 4]!;
-        const fontEntry = this.fonts[slot];
-        const glyph = fontEntry?.font.glyphs.get(code);
-        if (fontEntry == null || glyph == null) {
-          if (!this.warnedMissing) {
-            this.warnedMissing = true;
-            console.warn(
-              `[raythree] Glyph text: no baked outline for U+${
-                code.toString(16).toUpperCase().padStart(4, "0")
-              } (font ${slot}); skipped`,
-            );
-          }
-          continue;
-        }
-        const page = fontEntry.pageBase + glyph.page;
+      const n = resolved.count;
+      const penXArr = resolved.penX;
+      const penYArr = resolved.penY;
+      const sizeArr = resolved.size;
+      const sf = resolved.staticFloats;
+      const su = resolved.staticWords;
+      const pageArr = resolved.pages;
+      for (let g = 0; g < n; g++) {
+        const page = pageArr[g]!;
         if (runCount > 0 && this.runPages[runCount - 1] === page) {
           this.runCounts[runCount - 1]!++;
         } else {
@@ -218,7 +291,45 @@ export class GlyphTextRenderer {
           this.runCounts[runCount] = 1;
           runCount++;
         }
-        this.writeInstance(index, m, penX, penY, size, glyph, tr, tg, tb, ta);
+        const px = penXArr[g]!;
+        const py = penYArr[g]!;
+        const sz = sizeArr[g]!;
+        const at = index * INSTANCE_WORDS;
+        const off = g * 14;
+        f[at] = m0 * sz;
+        f[at + 1] = m1 * sz;
+        f[at + 2] = m2 * sz;
+        f[at + 3] = m3 * sz;
+        f[at + 4] = -m4 * sz;
+        f[at + 5] = -m5 * sz;
+        f[at + 6] = -m6 * sz;
+        f[at + 7] = -m7 * sz;
+        f[at + 8] = m8;
+        f[at + 9] = m9;
+        f[at + 10] = m10;
+        f[at + 11] = m11;
+        f[at + 12] = m0 * px + m4 * py + m12;
+        f[at + 13] = m1 * px + m5 * py + m13;
+        f[at + 14] = m2 * px + m6 * py + m14;
+        f[at + 15] = m3 * px + m7 * py + m15;
+        f[at + 16] = sf[off]!;
+        f[at + 17] = sf[off + 1]!;
+        f[at + 18] = sf[off + 2]!;
+        f[at + 19] = sf[off + 3]!;
+        u[at + 20] = su[off + 4]!;
+        u[at + 21] = su[off + 5]!;
+        u[at + 22] = su[off + 6]!;
+        u[at + 23] = su[off + 7]!;
+        u[at + 24] = su[off + 8]!;
+        u[at + 25] = su[off + 9]!;
+        f[at + 26] = sf[off + 10]!;
+        f[at + 27] = sf[off + 11]!;
+        f[at + 28] = sf[off + 12]!;
+        f[at + 29] = sf[off + 13]!;
+        f[at + 30] = tr;
+        f[at + 31] = tg;
+        f[at + 32] = tb;
+        f[at + 33] = ta;
         index++;
       }
     }
@@ -240,10 +351,26 @@ export class GlyphTextRenderer {
       }
       if (vpW <= 0 || vpH <= 0) throw new Error("Invalid Glyph viewport");
       gl.glUseProgram(this.program);
-      gl.glUniform1f(this.uniforms.exponent, tuning?.glyphCoverageExponent ?? 1);
-      gl.glUniform1f(this.uniforms.weight, tuning?.glyphWeightPixels ?? 0);
-      gl.glUniform1f(this.uniforms.aaWidth, tuning?.glyphAaWidth ?? 1);
-      gl.glUniform2f(this.uniforms.viewport, vpW, vpH);
+      const exp = tuning?.glyphCoverageExponent ?? 1;
+      const wgt = tuning?.glyphWeightPixels ?? 0;
+      const aaw = tuning?.glyphAaWidth ?? 1;
+      if (exp !== this.lastExponent) {
+        gl.glUniform1f(this.uniforms.exponent, exp);
+        this.lastExponent = exp;
+      }
+      if (wgt !== this.lastWeight) {
+        gl.glUniform1f(this.uniforms.weight, wgt);
+        this.lastWeight = wgt;
+      }
+      if (aaw !== this.lastAaWidth) {
+        gl.glUniform1f(this.uniforms.aaWidth, aaw);
+        this.lastAaWidth = aaw;
+      }
+      if (vpW !== this.lastVpW || vpH !== this.lastVpH) {
+        gl.glUniform2f(this.uniforms.viewport, vpW, vpH);
+        this.lastVpW = vpW;
+        this.lastVpH = vpH;
+      }
       gl.glBindVertexArray(this.vao);
       gl.glDisable(GL.DEPTH_TEST);
       gl.glDepthMask(0);
@@ -548,6 +675,16 @@ export class GlyphTextRenderer {
     gl.glBlendEquationSeparate(equationRgb!, equationAlpha!);
   }
 }
+
+type ResolvedPlacements = {
+  count: number;
+  penX: Float32Array;
+  penY: Float32Array;
+  size: Float32Array;
+  staticFloats: Float32Array;
+  staticWords: Uint32Array;
+  pages: Int32Array;
+};
 
 type SavedDrawState = {
   program: number;

@@ -3,7 +3,7 @@ import { getTextRenderingSettings, type TextRenderingSettings } from "./textRend
 import { captureVectorTextGlyphs, type VectorTextGeometrySource } from "./vectorTextGlyphs.ts";
 import { type Anchored, captureRenderAnchor } from "./overlayRenderTracking.ts";
 import type { InstancedBufferAttribute, Material, Object3D } from "three";
-import { collectUikitRootContextsFromObject } from "../submodules/threewebxrwebgpudeno/local-uikit/raylibUikitSceneRoots.ts";
+import type { RootContext } from "../submodules/threewebxrwebgpudeno/local-uikit/context.ts";
 import { Component } from "../submodules/threewebxrwebgpudeno/local-uikit/components/component.ts";
 import {
   type OrderInfo,
@@ -234,7 +234,26 @@ export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnaps
     return index;
   };
 
-  for (const rootCtx of collectUikitRootContextsFromObject(scene)) {
+  // Single visible scene walk: collect uikit root contexts, texts, and images in one pass
+  // instead of traversing the entire scene twice.
+  const roots = new Set<RootContext>();
+  const textObjects: Object3D[] = [];
+  const imageObjects: Object3D[] = [];
+  scene.traverseVisible((object: Object3D) => {
+    if (object instanceof Component) {
+      roots.add(object.root.value);
+    }
+    const ud = object.userData as {
+      raythreeUiText?: unknown;
+      raythreeUiImage?: unknown;
+    } | undefined;
+    if (ud != null) {
+      if (ud.raythreeUiText != null) textObjects.push(object);
+      if (ud.raythreeUiImage != null) imageObjects.push(object);
+    }
+  });
+
+  for (const rootCtx of roots) {
     const rootIndex = rootIndexFor(rootCtx);
     rootCtx.panelGroupManager.forEachGroup((group) => {
       const mesh = group.getInstancedPanelMesh();
@@ -245,18 +264,16 @@ export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnaps
     });
   }
 
-  scene.traverseVisible((object: Object3D) => {
-    const ud = object.userData as {
-      raythreeUiText?: unknown;
-      raythreeUiImage?: unknown;
-    } | undefined;
-    if (ud?.raythreeUiText == null && ud?.raythreeUiImage == null) return;
-    // Text and images are ordinary scene objects, so their root has to be found
-    // by walking up to the nearest uikit component.
+  for (let i = 0; i < textObjects.length; i++) {
+    const object = textObjects[i]!;
     const rootIndex = resolveRootIndex(object, rootIndexFor);
-    if (ud.raythreeUiText != null) maybeCollectText(object, snapshot.texts, rootIndex);
-    if (ud.raythreeUiImage != null) maybeCollectImage(object, snapshot.images, rootIndex);
-  });
+    maybeCollectText(object, snapshot.texts, rootIndex);
+  }
+  for (let i = 0; i < imageObjects.length; i++) {
+    const object = imageObjects[i]!;
+    const rootIndex = resolveRootIndex(object, rootIndexFor);
+    maybeCollectImage(object, snapshot.images, rootIndex);
+  }
 
   return snapshot;
 }
@@ -346,7 +363,8 @@ function maybeCollectPanels(
     // Freed uikit panel slots are cleared to an all-zero matrix; drawing them (and tinting) causes white smears.
     let localAbs = 0;
     for (let j = 0; j < 16; j++) {
-      localAbs += Math.abs(Number(instanceArray[matrixOffset + j] ?? 0));
+      const v = instanceArray[matrixOffset + j]!;
+      localAbs += v < 0 ? -v : v;
     }
     if (localAbs < 1e-4) {
       continue;
@@ -359,10 +377,10 @@ function maybeCollectPanels(
         o + 4 <= aData3Arr!.length
       ) {
         for (let k = 0; k < 4; k++) {
-          dataBlock16[k] = Number(aData0Arr![o + k]);
-          dataBlock16[4 + k] = Number(aData1Arr![o + k]);
-          dataBlock16[8 + k] = Number(aData2Arr![o + k]);
-          dataBlock16[12 + k] = Number(aData3Arr![o + k]);
+          dataBlock16[k] = aData0Arr![o + k]!;
+          dataBlock16[4 + k] = aData1Arr![o + k]!;
+          dataBlock16[8 + k] = aData2Arr![o + k]!;
+          dataBlock16[12 + k] = aData3Arr![o + k]!;
         }
         hasData = true;
       }
@@ -370,7 +388,7 @@ function maybeCollectPanels(
       const o = index * 16;
       if (o + 16 <= aDataMergedArr.length) {
         for (let k = 0; k < 16; k++) {
-          dataBlock16[k] = Number(aDataMergedArr[o + k]);
+          dataBlock16[k] = aDataMergedArr[o + k]!;
         }
         hasData = true;
       }
@@ -381,11 +399,11 @@ function maybeCollectPanels(
     const world = object.matrixWorld.elements;
     for (let k = 0; k < 16; k++) {
       panelInputs[k] = world[k]!;
-      panelInputs[16 + k] = Number(instanceArray[matrixOffset + k] ?? 0);
+      panelInputs[16 + k] = instanceArray[matrixOffset + k]!;
       panelInputs[32 + k] = dataBlock16[k]!;
       panelInputs[48 + k] = clippingArray == null
         ? DEFAULT_CLIPPING[k]!
-        : Number(clippingArray[dataOffset + k]);
+        : clippingArray[dataOffset + k]!;
     }
     let entry = cache[index];
     if (

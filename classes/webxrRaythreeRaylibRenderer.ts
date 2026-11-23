@@ -1961,6 +1961,16 @@ export class WebXRRaythreeRaylibRenderer {
     const panelsStart = performance.now();
     this.prepareUiPanelRuns(ops);
     panelsMs += performance.now() - panelsStart;
+    const glyphViewport = this.textRenderer === "glyph" && this.glyphText != null
+      ? this.glyphText.readViewport()
+      : null;
+    const glyphFastPass = glyphViewport != null
+      ? {
+        width: glyphViewport.width,
+        height: glyphViewport.height,
+        restoreDepthTest: this.foreground != null,
+      }
+      : { restoreDepthTest: this.foreground != null };
     for (const op of ops) {
       if (op.kind === "panels") {
         const start = performance.now();
@@ -1983,7 +1993,7 @@ export class WebXRRaythreeRaylibRenderer {
           rootTexts,
           this.uiMvpPV,
           ui.textRendering,
-          { restoreDepthTest: this.foreground != null },
+          glyphFastPass,
         )
         : this.textRenderer === "windfoil"
         ? this.windfoilText?.draw(rootTexts, this.uiMvpPV, ui.textRendering)
