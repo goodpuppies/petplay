@@ -46,8 +46,10 @@ export type FloatingWindowProps = {
   zBase: number;
   focused: boolean;
   hasFeed: boolean;
+  hasAudio?: boolean;
   onFocus: () => void;
   onMove: (x: number, y: number, width: number, height: number) => void;
+  onResizeEnd?: (width: number, height: number) => void;
   onMinimize: () => void;
   onMuteToggle: () => void;
   onClose: () => void;
@@ -68,8 +70,10 @@ export function FloatingWindow({
   zBase,
   focused,
   hasFeed,
+  hasAudio = false,
   onFocus,
   onMove,
+  onResizeEnd,
   onMinimize,
   onMuteToggle,
   onClose,
@@ -225,24 +229,28 @@ export function FloatingWindow({
                 {win.title.slice(0, 42)}
               </Text>
             </Container>
-            {/* Mute toggle */}
-            <Container
-              width={22}
-              height={22}
-              borderRadius={4}
-              backgroundColor={win.muted ? "#334155" : "#262f3f"}
-              alignItems="center"
-              justifyContent="center"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onMuteToggle();
-              }}
-            >
-              <Text fontSize={11} color={win.muted ? "#f87171" : "#cbd5e1"}>
-                {win.muted ? "M" : "A"}
-              </Text>
-            </Container>
+            {/* Mute toggle (only shown when the source advertises audio) */}
+            {hasAudio
+              ? (
+                <Container
+                  paddingX={6}
+                  height={22}
+                  borderRadius={4}
+                  backgroundColor={win.muted ? "#334155" : "#262f3f"}
+                  alignItems="center"
+                  justifyContent="center"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMuteToggle();
+                  }}
+                >
+                  <Text fontSize={10} color={win.muted ? "#f87171" : "#cbd5e1"}>
+                    {win.muted ? "Muted" : "Audio"}
+                  </Text>
+                </Container>
+              )
+              : null}
             {/* Minimize */}
             <Container
               width={22}
@@ -308,6 +316,7 @@ export function FloatingWindow({
         }}
         onPointerDown={(event) => {
           event.stopPropagation();
+          focusedRef.current = true;
           onFocus();
           (event.target as unknown as { setPointerCapture(id: number): void })
             .setPointerCapture(event.pointerId);
@@ -377,9 +386,24 @@ export function FloatingWindow({
           onPointerUp={(event) => {
             if (!resizeRef.current) return;
             event.stopPropagation();
+            const native = event.nativeEvent as unknown as { offsetX: number; offsetY: number };
+            const finalW = Math.round(
+              Math.max(
+                MIN_WINDOW_WIDTH,
+                resizeRef.current.origW + (native.offsetX - resizeRef.current.startX),
+              ),
+            );
+            const finalH = Math.round(
+              Math.max(
+                MIN_WINDOW_HEIGHT,
+                resizeRef.current.origH + (native.offsetY - resizeRef.current.startY),
+              ),
+            );
             resizeRef.current = null;
             (event.target as unknown as { releasePointerCapture(id: number): void })
               .releasePointerCapture(event.pointerId);
+            onMove(win.x, win.y, finalW, finalH);
+            onResizeEnd?.(finalW, finalH);
           }}
         />
       </group>

@@ -10,14 +10,15 @@
  * (PETPLAY_LINK_BINARY, or the release build).
  */
 import { parseArgs } from "jsr:@std/cli/parse-args";
-import { PostalService } from "../submodules/stageforge/mod.ts";
+import { fromFileUrl } from "@std/path";
+import { type ActorId, PostalService } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";
 import { tailnetAddress } from "./classes/tailnet.ts";
 
 const args = parseArgs(Deno.args, {
   string: ["host", "media-port", "site-port", "topics", "relay", "vrchat-socket", "vrchat-layout"],
-  boolean: ["capture", "input", "site", "compositor", "vrchat"],
-  default: { capture: true, input: true, site: true, compositor: false, vrchat: false },
+  boolean: ["capture", "input", "site", "compositor", "vrchat", "watch"],
+  default: { capture: true, input: true, site: true, compositor: false, vrchat: false, watch: false },
   negatable: ["capture", "input", "site"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
@@ -28,7 +29,7 @@ const iroh = irohCarrier({ relay: args.relay });
 postal.registerRemoteCarrier(iroh);
 postal.initSignalingClient(topics);
 const rdp = await postal.add("./rdp.ts", import.meta.url);
-const { link } = await postal.PostMessage({
+const { link, actors } = await postal.PostMessage({
   target: rdp,
   type: "START",
   payload: {
@@ -45,7 +46,7 @@ const { link } = await postal.PostMessage({
       }
       : false,
   },
-}, true) as { link: string };
+}, true) as { link: string; actors: Record<string, ActorId> };
 
 // Options the page needs to find the same topic server and relay.
 const query = new URLSearchParams();
@@ -53,6 +54,58 @@ if (args.topics) query.set("topics", args.topics);
 if (args.relay) query.set("relay", args.relay);
 const [base, secret] = link.split("#");
 console.log(`\nOpen: ${base}${query.size ? `?${query}` : ""}#${secret}\n`);
+
+if (args.watch && actors.ui) {
+  const uiActor = actors.ui;
+  const rdpDir = fromFileUrl(new URL("./", import.meta.url));
+  const browserDir = fromFileUrl(new URL("./browser/", import.meta.url));
+  const sceneStreamDir = fromFileUrl(new URL("../web/scene-stream/", import.meta.url));
+  const buildScript = fromFileUrl(new URL("./build.ts", import.meta.url));
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  let buildTimer: ReturnType<typeof setTimeout> | null = null;
+  let reloading = false;
+
+  console.log("[rdp --watch] watching UI and browser sources for hot-reload...");
+  void (async () => {
+    const watcher = Deno.watchFs([rdpDir, sceneStreamDir]);
+    for await (const event of watcher) {
+      if (event.kind !== "modify" && event.kind !== "create") continue;
+      const isBrowser = event.paths.some((p) =>
+        p.startsWith(browserDir) || p.startsWith(sceneStreamDir) || p.endsWith("liaison.ts")
+      );
+      const isUi = event.paths.some((p) =>
+        p.endsWith("compositor.tsx") || p.endsWith("ui.tsx") || p.endsWith("app.tsx") ||
+        p.includes("/components/")
+      );
+      if (isBrowser) {
+        if (buildTimer) clearTimeout(buildTimer);
+        buildTimer = setTimeout(async () => {
+          const res = await new Deno.Command(Deno.execPath(), {
+            args: ["run", "-A", buildScript],
+            stdout: "inherit",
+            stderr: "inherit",
+          }).output();
+          if (res.success) console.log("[rdp --watch] rebuilt dist/rdp (refresh browser tab)");
+        }, 200);
+      }
+      if (isUi) {
+        if (reloadTimer) clearTimeout(reloadTimer);
+        reloadTimer = setTimeout(async () => {
+          if (reloading) return;
+          reloading = true;
+          try {
+            const info = await postal.reload(uiActor);
+            console.log(`[rdp --watch] hot-reloaded ${uiActor} (reload #${info.reloadCount})`);
+          } catch (error) {
+            console.error("[rdp --watch] hot-reload failed:", error);
+          } finally {
+            reloading = false;
+          }
+        }, 150);
+      }
+    }
+  })();
+}
 
 let exiting = false;
 async function exit(): Promise<void> {

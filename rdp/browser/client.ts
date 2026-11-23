@@ -330,7 +330,13 @@ new PostMan(state, {
   DIRECTORY: (payload: { services: SessionDirectory }) => {
     const services = payload?.services ?? {};
     if (services.ui) directoryUi = services.ui;
-    if (services.mediaMux) directoryMux = services.mediaMux;
+    if (services.mediaMux) {
+      directoryMux = services.mediaMux;
+      if (state.mux !== services.mediaMux) {
+        state.mux = services.mediaMux;
+        if (Object.keys(latestFeeds).length > 0) updateFeeds(latestFeeds);
+      }
+    }
     return true;
   },
   __HEALTH__: () => ({ ...state, addressBook: [...state.addressBook] }),

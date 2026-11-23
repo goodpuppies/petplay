@@ -137,6 +137,18 @@ Deno.test("mediaMux + inputRouter + compositor: wallpaper, windows, FEED_ENDED, 
     assertEquals(restored.windows.length, 1);
     assertEquals(restored.windows[0]!.x, 120);
     assertEquals(restored.windows[0]!.muted, true);
+
+    // Full StageForge hot-reload (`postal.reload`) keeps ActorId, windows, wallpaper, and mediaMux.
+    const reloadedInfo = await postal.reload(comp);
+    assertEquals(reloadedInfo.reloadCount, 1);
+    const afterReload = await postal.PostMessage({
+      target: comp,
+      type: "GET_STATE",
+      payload: null,
+    }, true) as { windows: Array<{ x: number; muted: boolean }>; wallpaper: { label: string } | null };
+    assertEquals(afterReload.windows.length, 1);
+    assertEquals(afterReload.windows[0]!.x, 120);
+    assertEquals(afterReload.wallpaper?.label, "homepc · VRChat");
   } finally {
     for (const id of [...PostalService.actors.keys()].reverse()) {
       await postal.PostMessage({ target: id, type: "SHUTDOWN", payload: null }, true).catch(

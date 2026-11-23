@@ -155,6 +155,61 @@ export async function focusCapturableWindow(id: string): Promise<void> {
   }
 }
 
+/** Resize a window on KDE Plasma 6 Wayland via KWin's DBus Scripting API. */
+export async function resizeCapturableWindow(
+  id: string,
+  width: number,
+  height: number,
+): Promise<void> {
+  if (!id || !Number.isFinite(width) || !Number.isFinite(height)) return;
+  const w = Math.max(160, Math.round(width));
+  const h = Math.max(120, Math.round(height));
+  if (Deno.build.os !== "linux") return;
+
+  const env = linuxWaylandEnv();
+  const scriptName = `pp-resize-${crypto.randomUUID().slice(0, 8)}`;
+  const scriptPath = await Deno.makeTempFile({ prefix: "pp-kwin-resize-", suffix: ".js" });
+  const js = `
+const target = ${JSON.stringify(id)}.replace(/^\\{|\\}$/g, "");
+for (const win of workspace.windowList()) {
+  const wid = String(win.internalId || "").replace(/^\\{|\\}$/g, "");
+  if (wid === target) {
+    const g = win.frameGeometry;
+    win.frameGeometry = { x: g.x, y: g.y, width: ${w}, height: ${h} };
+    break;
+  }
+}
+`;
+  try {
+    await Deno.writeTextFile(scriptPath, js);
+    const load = await new Deno.Command("qdbus6", {
+      args: ["org.kde.KWin", "/Scripting", "loadScript", scriptPath, scriptName],
+      env,
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    if (!load.success) return;
+    const scriptId = new TextDecoder().decode(load.stdout).trim();
+    if (!/^\d+$/.test(scriptId)) return;
+    await new Deno.Command("qdbus6", {
+      args: ["org.kde.KWin", `/Scripting/Script${scriptId}`, "run"],
+      env,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    await new Deno.Command("qdbus6", {
+      args: ["org.kde.KWin", "/Scripting", "unloadScript", scriptName],
+      env,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+  } catch {
+    // Best-effort: non-KDE environments simply skip host window resize.
+  } finally {
+    await Deno.remove(scriptPath).catch(() => {});
+  }
+}
+
 export type WindowFeedOptions = {
   windowId: string;
   host: string;

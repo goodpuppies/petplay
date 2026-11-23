@@ -39,7 +39,11 @@ import type { WindowInfo } from "./classes/windowCapture.ts";
 import type { InputEvent, InputRegion } from "./desktopInput.ts";
 import type { RoutedInput } from "./inputRouter.ts";
 import type { FeedTarget, SourceSummary } from "./mediaMux.ts";
-import { FloatingWindow, type FloatingWindowData } from "./components/FloatingWindow.tsx";
+import {
+  FloatingWindow,
+  type FloatingWindowData,
+  WINDOW_TITLEBAR_HEIGHT,
+} from "./components/FloatingWindow.tsx";
 import { Taskbar } from "./components/Taskbar.tsx";
 import { WallpaperFeed } from "./components/WallpaperFeed.tsx";
 
@@ -78,6 +82,7 @@ type TabSession = {
 };
 
 export type CompositorSnapshot = {
+  config: CompositorStart | null;
   windows: WindowEntry[];
   wallpaper: WallpaperEntry | null;
   focusedId: string | null;
@@ -191,6 +196,21 @@ function moveWindow(id: string, x: number, y: number, width: number, height: num
   win.width = width;
   win.height = height;
   render();
+}
+
+async function resizeHostWindow(id: string, width: number, height: number): Promise<void> {
+  const win = windows.find((w) => w.id === id);
+  if (!win?.windowId || !config?.mediaMux) return;
+  const updated = await call<WindowInfo | null>(config.mediaMux, "RESIZE", {
+    source: win.source,
+    window: win.windowId,
+    width,
+    height: Math.max(120, height - WINDOW_TITLEBAR_HEIGHT),
+  }).catch(() => null);
+  if (updated) {
+    win.region = updated.region;
+    win.windowSize = { width: updated.width, height: updated.height };
+  }
 }
 
 function setMinimized(id: string, minimized?: boolean): void {
@@ -387,6 +407,7 @@ function render(): void {
       />
       {windows.map((win, index) => {
         const streamKey = win.streamId ?? win.feedId;
+        const src = sources.find((s) => s.actor === win.source);
         return (
           <FloatingWindow
             key={win.id}
@@ -394,8 +415,10 @@ function render(): void {
             zBase={10 + index * 10}
             focused={win.id === focusedId}
             hasFeed={Boolean(feeds[streamKey])}
+            hasAudio={Boolean(src?.audio)}
             onFocus={() => focusWindow(win.id)}
             onMove={(x, y, w, h) => moveWindow(win.id, x, y, w, h)}
+            onResizeEnd={(w, h) => void resizeHostWindow(win.id, w, h)}
             onMinimize={() => setMinimized(win.id, true)}
             onMuteToggle={() => toggleMute(win.id)}
             onClose={() => void closeWindow(win.id)}
@@ -554,71 +577,75 @@ function stop(): void {
   browserTab = null;
 }
 
+async function startCompositor(payload: CompositorStart): Promise<{ topic: string | null }> {
+  if (config) return { topic: state.topic };
+  if (typeof payload?.secret !== "string" || payload.secret.length < 16) {
+    throw new Error("compositor START needs secret (16+ characters)");
+  }
+  config = payload;
+  secret = payload.secret;
+  const topic = payload.topic === false ? null : payload.topic ?? null;
+
+  registerTransportKind(webSocketTransport({
+    hostname: payload.websocket?.hostname ?? "127.0.0.1",
+    port: payload.websocket?.port,
+    publicUrl: payload.websocket?.publicUrl,
+    reach: "network",
+  }));
+  if (payload.webtransport !== false) await listenWebTransport(payload.webtransport);
+
+  Transport.accept(UI_PURPOSE, (transport) => onTab(transport));
+
+  // Open direct messageport transport to inputRouter.
+  try {
+    inputChannel = messages(
+      await Transport.open(payload.inputRouter, { purpose: "rdp.input" }),
+    );
+  } catch (error) {
+    state.lastError = `inputRouter transport: ${error}`;
+  }
+
+  // Subscribe to mediaMux for source/feed updates and FEED_ENDED.
+  const sub = await call<{ sources: SourceSummary[]; feeds: Record<string, FeedInfo> }>(
+    payload.mediaMux,
+    "SUBSCRIBE",
+    { actor: state.id },
+  );
+  sources = sub.sources ?? [];
+  feeds = sub.feeds ?? {};
+  maybeAutoWallpaper();
+
+  frameTimer = setInterval(frame, FRAME_MS);
+  if (topic) PostMan.setTopic(topic);
+  state.topic = topic;
+  syncState();
+  return { topic };
+}
+
 new PostMan(
   state,
   {
     __INIT__: () => {},
     __HEALTH__: () => ({ ...state }),
     __SNAPSHOT__: (): CompositorSnapshot => ({
+      config,
       windows: windows.map((w) => ({ ...w })),
       wallpaper: wallpaper ? { ...wallpaper } : null,
       focusedId,
       nextWindowSeq,
     }),
-    __RESTORE__: (snap: CompositorSnapshot) => {
+    __RESTORE__: async (snap: CompositorSnapshot) => {
       if (!snap) return true;
       windows = Array.isArray(snap.windows) ? snap.windows.map((w) => ({ ...w })) : [];
       wallpaper = snap.wallpaper ? { ...snap.wallpaper } : null;
       focusedId = snap.focusedId ?? null;
       nextWindowSeq = Math.max(nextWindowSeq, snap.nextWindowSeq ?? 1);
+      if (snap.config && !config) await startCompositor(snap.config);
       syncState();
       render();
       return true;
     },
-    START: async (payload: CompositorStart) => {
-      if (config) return { topic: state.topic };
-      if (typeof payload?.secret !== "string" || payload.secret.length < 16) {
-        throw new Error("compositor START needs secret (16+ characters)");
-      }
-      config = payload;
-      secret = payload.secret;
-      const topic = payload.topic === false ? null : payload.topic ?? null;
-
-      registerTransportKind(webSocketTransport({
-        hostname: payload.websocket?.hostname ?? "127.0.0.1",
-        port: payload.websocket?.port,
-        publicUrl: payload.websocket?.publicUrl,
-        reach: "network",
-      }));
-      if (payload.webtransport !== false) await listenWebTransport(payload.webtransport);
-
-      Transport.accept(UI_PURPOSE, (transport) => onTab(transport));
-
-      // Open direct messageport transport to inputRouter.
-      try {
-        inputChannel = messages(
-          await Transport.open(payload.inputRouter, { purpose: "rdp.input" }),
-        );
-      } catch (error) {
-        state.lastError = `inputRouter transport: ${error}`;
-      }
-
-      // Subscribe to mediaMux for source/feed updates and FEED_ENDED.
-      const sub = await call<{ sources: SourceSummary[]; feeds: Record<string, FeedInfo> }>(
-        payload.mediaMux,
-        "SUBSCRIBE",
-        { actor: state.id },
-      );
-      sources = sub.sources ?? [];
-      feeds = sub.feeds ?? {};
-      maybeAutoWallpaper();
-
-      frameTimer = setInterval(frame, FRAME_MS);
-      if (topic) PostMan.setTopic(topic);
-      state.topic = topic;
-      syncState();
-      return { topic };
-    },
+    START: (payload: CompositorStart) => startCompositor(payload),
     SOURCES_UPDATED: (payload: { sources: SourceSummary[] }) => {
       sources = payload?.sources ?? [];
       maybeAutoWallpaper();

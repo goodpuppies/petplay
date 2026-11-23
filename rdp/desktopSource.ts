@@ -42,6 +42,7 @@ import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
 import {
   focusCapturableWindow,
   listCapturableWindows,
+  resizeCapturableWindow,
   type WindowInfo,
   WindowMediaFeed,
 } from "./classes/windowCapture.ts";
@@ -615,6 +616,19 @@ new PostMan(
         await focusCapturableWindow(id);
         return true;
       },
+      RESIZEWINDOW: async (payload) => {
+        const p = payload as { window?: unknown; width?: unknown; height?: unknown } | null;
+        if (
+          typeof p?.window !== "string" || !p.window ||
+          typeof p.width !== "number" || typeof p.height !== "number"
+        ) {
+          throw new Error("RESIZEWINDOW needs {window, width, height}");
+        }
+        await resizeCapturableWindow(p.window, p.width, p.height);
+        await sleep(80);
+        const list = await listCapturableWindows().catch(() => []);
+        return list.find((w) => w.id === p.window) ?? null;
+      },
       LAYOUT: () => loadWorkspaceOutputs(),
       AUDIO: () => startAudio(),
       STOPAUDIO: async () => {
@@ -667,6 +681,22 @@ new PostMan(
       await focusCapturableWindow(payload.window);
       return true;
     }),
+    /** Resize a window on this machine (KDE Plasma 6 Wayland) and return its updated geometry. */
+    RESIZEWINDOW: refuseWhenGuarded(
+      guard,
+      async (payload: { window: string; width: number; height: number }): Promise<WindowInfo | null> => {
+        if (
+          typeof payload?.window !== "string" || !payload.window ||
+          typeof payload.width !== "number" || typeof payload.height !== "number"
+        ) {
+          throw new Error("RESIZEWINDOW needs {window, width, height}");
+        }
+        await resizeCapturableWindow(payload.window, payload.width, payload.height);
+        await sleep(80);
+        const list = await listCapturableWindows().catch(() => []);
+        return list.find((w) => w.id === payload.window) ?? null;
+      },
+    ),
     /** Exchange a browser WebRTC SDP offer for the running encoder's ICE-lite SDP answer. */
     WEBRTC_OFFER: refuseWhenGuarded(
       guard,

@@ -661,7 +661,10 @@ function videoMaterial(feed: THREE.Texture, d: VideoSurfaceData): THREE.ShaderMa
         vec2 uv = vec2(uCrop.x + vUv.x * uCrop.z, uCrop.y + (1.0 - vUv.y) * uCrop.w);
         gl_FragColor = vec4(texture2D(uFeed, uv).rgb, uOpacity);
       }`,
-    transparent: d.opacity < 1,
+    // Always in the transparent pass so Three.js honors `renderOrder` relative to `uiQuad`/`textRun`
+    // (otherwise all opaque video surfaces draw before all transparent uikit panels, hiding video
+    // behind a floating window's opaque background).
+    transparent: true,
     side: THREE.FrontSide,
   });
 }

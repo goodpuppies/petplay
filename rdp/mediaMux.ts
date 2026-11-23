@@ -430,6 +430,14 @@ new PostMan(
       await requestSource(payload.source, "FOCUSWINDOW", { window: payload.window });
       return true;
     },
+    RESIZE: (
+      payload: { source: ActorId; window: string; width: number; height: number },
+    ): Promise<WindowInfo | null> =>
+      requestSource<WindowInfo | null>(payload.source, "RESIZEWINDOW", {
+        window: payload.window,
+        width: payload.width,
+        height: payload.height,
+      }),
     SUBSCRIBE: (payload: { actor: ActorId }) => {
       if (typeof payload?.actor === "string" && payload.actor) subscribers.add(payload.actor);
       return { sources: state.sources, feeds: feedMap() };
