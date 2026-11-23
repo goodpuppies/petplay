@@ -329,9 +329,12 @@ export function SpatialContextToolbar({
       );
     }
   });
-  // The settings rows are laid out for the full-width card, so beside the node they open in a
-  // card of their own, further out from it.
-  const detachedSettings = vertical || (side === "above" && settingsPosition != null);
+  // Self-contained `settingsPanel` (e.g. `DisplaySettingsPanel`) always pops up right at the
+  // hover menu, attached to the menu's outer edge so it never gets clipped by a narrower toolbar
+  // shell or teleported to a distant display corner. Legacy `settings` stays inline unless the
+  // toolbar is vertical or explicitly positioned.
+  const detachedSettings = settingsPanel != null || vertical ||
+    (side === "above" && settingsPosition != null);
   const shellFor = (n: number) => ({
     pixelSize: 0.001,
     width: unitSpan(n) + GAP * 2,
@@ -452,15 +455,23 @@ export function SpatialContextToolbar({
         </Container>
         {settingsOpen && detachedSettings && (
           <group
-            ref={vertical ? undefined : settingsGroup}
-            position={vertical ? [side === "right" ? besideCard : -besideCard, 0, 0] : undefined}
+            ref={vertical || settingsPosition == null ? undefined : settingsGroup}
+            position={vertical
+              ? [side === "right" ? besideCard : -besideCard, 0, 0]
+              : settingsPosition == null
+              ? [
+                0,
+                side === "above" ? cardHeight + GAP * 0.001 : -(cardHeight + GAP * 0.001),
+                0,
+              ]
+              : undefined}
           >
             {settingsPanel != null
               ? (
                 <Container
                   pixelSize={0.001}
-                  anchorX={side === "left" ? "right" : "left"}
-                  anchorY="top"
+                  anchorX={side === "left" ? "right" : side === "right" ? "left" : "center"}
+                  anchorY={side === "above" && settingsPosition == null ? "bottom" : "top"}
                   backgroundOpacity={0}
                 >
                   {settingsPanel}
@@ -469,8 +480,8 @@ export function SpatialContextToolbar({
               : (
                 <Container
                   {...settingsShell}
-                  anchorX={side === "left" ? "right" : "left"}
-                  anchorY="top"
+                  anchorX={side === "left" ? "right" : side === "right" ? "left" : "center"}
+                  anchorY={side === "above" && settingsPosition == null ? "bottom" : "top"}
                   flexDirection="column"
                 >
                   {settings}

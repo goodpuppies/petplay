@@ -26,6 +26,7 @@ import {
 } from "./displayMetrics.ts";
 import type { DisplayMouseSink } from "./displayInstance/mouse.ts";
 import { KeyboardPanel } from "./keyboard/keyboard.tsx";
+import { KeyboardTaskbar } from "./keyboard/keyboardTaskbar.tsx";
 import { getLaserOffset } from "./laserOffset.ts";
 import { createDesktopInputRouting } from "./keyboard/desktopKeyboardRouting.ts";
 import { createDesktopInputSinks } from "./desktopInputSink.ts";
@@ -1779,11 +1780,6 @@ function DisplaySpatialNodeView({
               (toolbarSide === "above" ? 0.5 : -0.5) * panel.height,
               DEFAULT_DISPLAY_DEPTH,
             ]}
-          settingsPosition={[
-            panel.width * 0.5,
-            panel.height * 0.5,
-            DEFAULT_DISPLAY_DEPTH,
-          ]}
           role={attachmentRole ?? undefined}
           actions={contextActions}
           settingsPanel={
@@ -1966,6 +1962,61 @@ function KeyboardSpatialNodeView({
     return actions;
   }, [node.id, node.locked, node.parentId, setGraph]);
 
+  const activeOutputIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    for (const candidate of Object.values(graph.nodes)) {
+      if (candidate.kind === "display" && candidate.workspaceOutputId) {
+        ids.add(candidate.workspaceOutputId);
+      }
+    }
+    return ids;
+  }, [graph]);
+  const selectedOutputId = React.useMemo(() => {
+    if (!selectedNodeId) return null;
+    const selected = graph.nodes[selectedNodeId];
+    return selected?.kind === "display" ? (selected.workspaceOutputId ?? null) : null;
+  }, [graph, selectedNodeId]);
+  const activateTaskbarOutput = React.useCallback((output: WorkspaceOutput) => {
+    const existing = Object.values(graph.nodes).find((candidate): candidate is DisplaySpatialNode =>
+      candidate.kind === "display" && candidate.workspaceOutputId === output.id
+    );
+    if (existing) {
+      onSelectNode(existing.id);
+    } else {
+      setGraph((current) => spawnDisplayForWorkspaceOutput(current, output));
+    }
+    if (output.kind === "window" && output.household && output.windowId) {
+      void (PostMan.PostMessage({
+        target: output.household.provider,
+        type: "INPUTTARGET",
+        payload: { desktop: output.household.desktop },
+      }, true) as Promise<{
+        focusSource?: string;
+        focusWindow?: string;
+        focusProof?: string;
+      } | null>).then((target) => {
+        if (!target?.focusSource || !target.focusWindow) return;
+        if (target.focusProof) {
+          PostMan.PostMessage({
+            target: target.focusSource,
+            type: "GUARDED",
+            payload: {
+              proof: target.focusProof,
+              type: "FOCUSWINDOW",
+              payload: { window: target.focusWindow },
+            },
+          });
+        } else {
+          PostMan.PostMessage({
+            target: target.focusSource,
+            type: "FOCUSWINDOW",
+            payload: { window: target.focusWindow },
+          });
+        }
+      }).catch(() => {});
+    }
+  }, [graph, onSelectNode, setGraph]);
+
   return (
     <group
       ref={nodeRef}
@@ -1993,6 +2044,15 @@ function KeyboardSpatialNodeView({
         onDismiss={node.locked ? undefined : dismissKeyboard}
         opacity={node.opacity}
       >
+        <KeyboardTaskbar
+          widthMeters={node.snapSource.size[0]}
+          position={[0, node.snapSource.size[1] * 0.5 + 0.012, node.snapSource.size[2] * 0.5]}
+          outputs={workspaceOutputs}
+          activeOutputIds={activeOutputIds}
+          selectedOutputId={selectedOutputId}
+          onActivateOutput={activateTaskbarOutput}
+          opacity={node.opacity}
+        />
         <SpatialContextToolbar
           open={selectedNodeId === node.id}
           title="Keyboard"
