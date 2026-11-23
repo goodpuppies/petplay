@@ -53,8 +53,11 @@ type DisplayEntry = {
   windowId: string;
   handle: bigint;
   sync: SyncVirtualDisplayPayload | null;
+  appliedWidth?: number;
   appliedAlpha?: number;
   appliedCurvature?: number;
+  appliedCrop?: WorkspaceCrop;
+  textureBound: boolean;
   visible: boolean;
 };
 
@@ -195,14 +198,23 @@ function createOverlayHandle(displayId: string, name?: string): bigint {
   if (err !== OpenVR.OverlayError.VROverlayError_None) {
     throw new Error(`CreateOverlay(${key}): ${OpenVR.OverlayError[err]}`);
   }
-  return new Deno.UnsafePointerView(out).getBigUint64();
+  const handle = new Deno.UnsafePointerView(out).getBigUint64();
+  overlay.SetOverlayTexelAspect(handle, 1);
+  return handle;
+}
+
+function cropEquals(a: WorkspaceCrop | undefined, b: WorkspaceCrop): boolean {
+  return a != null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
 function applyDisplaySync(entry: DisplayEntry, sync: SyncVirtualDisplayPayload): void {
   const overlay = overlayClass;
   if (!overlay) return;
   entry.sync = sync;
-  overlay.SetOverlayWidthInMeters(entry.handle, sync.widthMeters);
+  if (entry.appliedWidth !== sync.widthMeters) {
+    overlay.SetOverlayWidthInMeters(entry.handle, sync.widthMeters);
+    entry.appliedWidth = sync.widthMeters;
+  }
   const alpha = sync.opacity ?? 1;
   if (entry.appliedAlpha !== alpha) {
     overlay.SetOverlayAlpha(entry.handle, Math.max(0, Math.min(1, alpha)));
@@ -213,7 +225,6 @@ function applyDisplaySync(entry: DisplayEntry, sync: SyncVirtualDisplayPayload):
     overlay.SetOverlayCurvature(entry.handle, Math.max(0, Math.min(1, curvature)));
     entry.appliedCurvature = curvature;
   }
-  overlay.SetOverlayTexelAspect(entry.handle, 1);
   setOverlayTransform(
     overlay,
     entry.handle,
@@ -221,21 +232,29 @@ function applyDisplaySync(entry: DisplayEntry, sync: SyncVirtualDisplayPayload):
     sync.deviceIndex,
     syncUniverse(sync.rawUniverse),
   );
-  const [boundsPtr] = createStruct<OpenVR.TextureBounds>(
-    withOverlayFlipY(textureBoundsForCrop(sync.crop)),
-    OpenVR.TextureBoundsStruct,
-  );
-  overlay.SetOverlayTextureBounds(entry.handle, boundsPtr);
+  if (!cropEquals(entry.appliedCrop, sync.crop)) {
+    const [boundsPtr] = createStruct<OpenVR.TextureBounds>(
+      withOverlayFlipY(textureBoundsForCrop(sync.crop)),
+      OpenVR.TextureBoundsStruct,
+    );
+    overlay.SetOverlayTextureBounds(entry.handle, boundsPtr);
+    entry.appliedCrop = { ...sync.crop };
+  }
 
-  const stream = windows.get(entry.windowId);
-  if (stream && stream.frames > 0) {
-    const texPtr = Deno.UnsafePointer.of(stream.textureView.buffer) as Deno.PointerValue<
-      OpenVR.Texture
-    >;
-    overlay.SetOverlayTexture(entry.handle, texPtr);
-    if (!entry.visible) {
-      overlay.ShowOverlay(entry.handle);
-      entry.visible = true;
+  // Only bind the texture here on first attach; subsequent frame uploads bind in `pumpWindow`
+  // so high-frequency drag pose syncs never force vrcompositor to re-import the GL texture.
+  if (!entry.textureBound) {
+    const stream = windows.get(entry.windowId);
+    if (stream && stream.frames > 0) {
+      const texPtr = Deno.UnsafePointer.of(stream.textureView.buffer) as Deno.PointerValue<
+        OpenVR.Texture
+      >;
+      overlay.SetOverlayTexture(entry.handle, texPtr);
+      entry.textureBound = true;
+      if (!entry.visible) {
+        overlay.ShowOverlay(entry.handle);
+        entry.visible = true;
+      }
     }
   }
 }
@@ -268,6 +287,7 @@ function syncDisplay(sync: SyncVirtualDisplayPayload): void {
   let entry = displays.get(sync.id);
   if (entry && entry.windowId !== windowId) {
     entry.windowId = windowId;
+    entry.textureBound = false;
     entry.visible = false;
     overlayClass.HideOverlay(entry.handle);
   }
@@ -278,6 +298,7 @@ function syncDisplay(sync: SyncVirtualDisplayPayload): void {
       windowId,
       handle,
       sync,
+      textureBound: false,
       visible: false,
     };
     displays.set(sync.id, entry);
@@ -317,6 +338,7 @@ async function pumpWindow(stream: WindowStream): Promise<void> {
         for (const entry of displays.values()) {
           if (entry.windowId !== stream.windowId) continue;
           overlay.SetOverlayTexture(entry.handle, texPtr);
+          entry.textureBound = true;
           if (!entry.visible && entry.sync) {
             overlay.ShowOverlay(entry.handle);
             entry.visible = true;
@@ -393,6 +415,7 @@ async function stopWindow(windowId: string): Promise<void> {
         overlayClass.HideOverlay(entry.handle);
         overlayClass.ClearOverlayTexture(entry.handle);
       } catch { /* ignore */ }
+      entry.textureBound = false;
       entry.visible = false;
     }
   }

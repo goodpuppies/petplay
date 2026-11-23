@@ -1057,11 +1057,11 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
         gap={0}
         {...LAYOUT_CHROME}
       >
-        {topBar}
+        {columnsRow}
         {topBarGap > 0 && (
           <Container minHeight={topBarGap} {...LAYOUT_CHROME} />
         )}
-        {columnsRow}
+        {topBar}
       </Container>
     );
   },
