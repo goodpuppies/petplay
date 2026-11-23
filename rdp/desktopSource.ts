@@ -41,6 +41,7 @@ import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
 import { regionOf, WgcMediaFeed, wgcMonitors } from "./classes/wgcMediaFeed.ts";
 import {
   ensureScreenStreamer,
+  linuxWaylandEnv,
 } from "./classes/screenStreamerActor.ts";
 import {
   type AtlasLayoutEvent,
@@ -63,6 +64,7 @@ import { guardedDispatch, HouseholdGuard, refuseWhenGuarded } from "./classes/ho
 import {
   loadWorkspaceOutputs,
   type WorkspaceOutput,
+  workspaceOutputsFromKscreen,
 } from "../classes/environment/workspaceDisplays.ts";
 import type { SharedDisplayWorldPose } from "../classes/vrcOriginTransform.ts";
 
@@ -160,9 +162,14 @@ let externalMediaSocket: string | null = Deno.env.get("PETPLAY_DESKTOP_MEDIA_SOC
 let feedDefaults: SourceRequest | null = null;
 let pairedInput: string | null = null;
 const guard = new HouseholdGuard();
-/** Running feeds by monitor; Linux has one, monitor 0, the whole workspace. */
+/** Running feeds by monitor; Linux monitor 0 is the whole workspace. */
 type Running = { encoder: DesktopMediaFeed | WgcMediaFeed; request: SourceRequest; info: FeedInfo };
 const running = new Map<number, Running>();
+/** Linux KDE single-monitor feeds keyed by monitor index (`screens[index]`), using `stream_output`. */
+type OutputFeed = { name: string; encoder: DesktopMediaFeed; info: FeedInfo };
+const outputFeeds = new Map<number, OutputFeed>();
+const startingOutputFeeds = new Map<number, Promise<FeedInfo>>();
+const OUTPUT_PORT_OFFSET = 10;
 /** Running per-window feeds keyed by window id (Windows WGC, or Linux fallback). */
 const windowFeeds = new Map<string, { feed: WindowMediaFeed; port: number }>();
 const startingWindows = new Map<string, Promise<FeedInfo>>();
@@ -639,9 +646,112 @@ async function stopFeed(monitor?: number): Promise<void> {
 
 const startingFeeds = new Map<number, Promise<FeedInfo>>();
 
+async function loadLinuxScreens(): Promise<ScreenInfo[]> {
+  let outputs = await loadWorkspaceOutputs();
+  if (!outputs.length) {
+    try {
+      const res = await new Deno.Command("kscreen-doctor", {
+        args: ["-j"],
+        env: linuxWaylandEnv(),
+        stdout: "piped",
+        stderr: "null",
+      }).output();
+      if (res.success) {
+        outputs = workspaceOutputsFromKscreen(JSON.parse(new TextDecoder().decode(res.stdout)));
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return outputs.map((o, index) => ({
+    index,
+    name: o.name,
+    width: Math.round(o.logicalWidth),
+    height: Math.round(o.logicalHeight),
+    primary: index === 0,
+    region: o.crop,
+  }));
+}
+
+async function startLinuxOutputFeed(
+  monitor: number,
+  payload?: Partial<SourceRequest> | null,
+): Promise<FeedInfo> {
+  const existing = outputFeeds.get(monitor);
+  if (existing) return existing.info;
+  const pending = startingOutputFeeds.get(monitor);
+  if (pending) return await pending;
+  const currentScreens = screens ?? await loadLinuxScreens();
+  screens = currentScreens;
+  const screen = currentScreens.find((s) => s.index === monitor);
+  if (!screen) throw new Error(`unknown KDE monitor index ${monitor}`);
+
+  const host = payload?.host ?? feedDefaults?.host;
+  const basePort = payload?.port ?? feedDefaults?.port;
+  if (typeof host !== "string" || !Number.isInteger(basePort)) {
+    return Promise.reject(new Error("START {monitor} needs {host, port}, or CONFIGURE first"));
+  }
+  const fps = payload?.fps ?? feedDefaults?.fps ?? 30;
+  const starting = (async () => {
+    const encoder = await DesktopMediaFeed.start({
+      host,
+      port: (basePort as number) + OUTPUT_PORT_OFFSET + monitor,
+      fps,
+      bitrate: payload?.bitrate ?? feedDefaults?.bitrate,
+      share: payload?.share || guard.active,
+    });
+    const streamer = await ensureScreenStreamer();
+    await PostMan.PostMessage({
+      target: streamer,
+      type: "START_CAPTURE",
+      payload: {
+        id: `out:${screen.name}`,
+        target: { kind: "output", output: screen.name },
+        mediaSocket: encoder.socketPath,
+        fps,
+        subscriber: state.id,
+      },
+    }, true);
+    const info: FeedInfo = {
+      host,
+      port: encoder.info.port,
+      fingerprint: encoder.info.fingerprint,
+      ...(encoder.info.code ? { code: encoder.info.code } : {}),
+      ...(encoder.info.webrtcOfferUrl ? { webrtc: true } : {}),
+    };
+    outputFeeds.set(monitor, { name: screen.name, encoder, info });
+    return info;
+  })().finally(() => startingOutputFeeds.delete(monitor));
+  startingOutputFeeds.set(monitor, starting);
+  return await starting;
+}
+
+async function stopLinuxOutputFeed(monitor?: number): Promise<void> {
+  const entries = monitor !== undefined
+    ? (outputFeeds.has(monitor) ? [[monitor, outputFeeds.get(monitor)!] as const] : [])
+    : [...outputFeeds.entries()];
+  for (const [m] of entries) outputFeeds.delete(m);
+  const streamer = entries.length > 0 ? await ensureScreenStreamer().catch(() => null) : null;
+  await Promise.all(entries.map(async ([, entry]) => {
+    if (streamer) {
+      await PostMan.PostMessage({
+        target: streamer,
+        type: "STOP_CAPTURE",
+        payload: { id: `out:${entry.name}` },
+      }, true).catch(() => {});
+    }
+    await entry.encoder.stop();
+  }));
+}
+
 function startFeed(payload?: Partial<SourceRequest>): Promise<FeedInfo> {
   if (Deno.build.os !== "linux" && Deno.build.os !== "windows") {
     return Promise.reject(new Error(`desktopSource has no encoder on ${Deno.build.os}`));
+  }
+  // On Linux, an explicit `monitor` index captures just that single KDE output via `stream_output`
+  // (so unshared monitors never leave the GPU). Omitting `monitor` captures the whole workspace.
+  if (Deno.build.os === "linux" && Number.isInteger(payload?.monitor)) {
+    return startLinuxOutputFeed(payload!.monitor as number, payload);
   }
   const monitor = monitorOf(payload);
   const current = running.get(monitor);
@@ -680,6 +790,13 @@ async function describe(): Promise<DesktopDescription> {
         primary: m.primary,
         region: regionOf(m, monitors),
       }));
+    } catch (error) {
+      state.lastError = String(error);
+    }
+  } else if (Deno.build.os === "linux" && !screens) {
+    try {
+      const linuxScreens = await loadLinuxScreens();
+      if (linuxScreens.length > 0) screens = linuxScreens;
     } catch (error) {
       state.lastError = String(error);
     }
@@ -811,6 +928,9 @@ new PostMan(
           if (atlas?.hasWindow(p.window)) return atlas.feedInfoFor(p.window);
           return windowFeeds.get(p.window)?.feed.info ?? null;
         }
+        if (Deno.build.os === "linux" && Number.isInteger(p?.monitor)) {
+          return outputFeeds.get(p!.monitor as number)?.info ?? null;
+        }
         return running.get(monitorOf(p))?.info ?? null;
       },
       STOP: async (payload) => {
@@ -819,7 +939,12 @@ new PostMan(
           await stopWindowFeed(p.window);
           return true;
         }
+        if (Deno.build.os === "linux" && Number.isInteger(p?.monitor)) {
+          await stopLinuxOutputFeed(p!.monitor as number);
+          return true;
+        }
         const monitor = p?.monitor;
+        await stopLinuxOutputFeed();
         await stopFeed(Number.isInteger(monitor) ? monitor : undefined);
         return true;
       },
@@ -857,6 +982,11 @@ new PostMan(
           if (!wf) throw new Error(`no running window feed for ${p.window}`);
           return { sdp: await wf.feed.acceptWebRtcOffer(p.sdp) };
         }
+        if (Deno.build.os === "linux" && Number.isInteger(p.monitor)) {
+          const of = outputFeeds.get(p.monitor as number);
+          if (!of) throw new Error(`no running monitor feed for ${p.monitor}`);
+          return { sdp: await of.encoder.acceptWebRtcOffer(p.sdp) };
+        }
         const feed = running.get(monitorOf(p));
         if (!feed) throw new Error("no running feed for WebRTC offer");
         return { sdp: await feed.encoder.acceptWebRtcOffer(p.sdp) };
@@ -882,6 +1012,9 @@ new PostMan(
         if (typeof payload?.window === "string" && payload.window) {
           if (atlas?.hasWindow(payload.window)) return atlas.feedInfoFor(payload.window);
           return windowFeeds.get(payload.window)?.feed.info ?? null;
+        }
+        if (Deno.build.os === "linux" && Number.isInteger(payload?.monitor)) {
+          return outputFeeds.get(payload!.monitor as number)?.info ?? null;
         }
         return running.get(monitorOf(payload))?.info ?? null;
       },
@@ -948,6 +1081,11 @@ new PostMan(
         await stopWindowFeed(payload.window);
         return true;
       }
+      if (Deno.build.os === "linux" && Number.isInteger(payload?.monitor)) {
+        await stopLinuxOutputFeed(payload!.monitor as number);
+        return true;
+      }
+      await stopLinuxOutputFeed();
       await stopFeed(Number.isInteger(payload?.monitor) ? payload!.monitor : undefined);
       return true;
     }),
@@ -956,6 +1094,7 @@ new PostMan(
       frameSink = null;
       await stopAudio();
       await stopWindowFeed();
+      await stopLinuxOutputFeed();
       await stopFeed();
       await applying;
     },
