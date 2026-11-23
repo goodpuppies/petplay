@@ -11,10 +11,10 @@
 import { useSyncExternalStore } from "react";
 
 export const MAX_VISIBLE_TOASTS = 4;
-export const DEFAULT_TOAST_MS = 4000;
-/** XSO senders pass seconds and sometimes absurd values; keep a toast on screen 1–30 s. */
+export const DEFAULT_TOAST_MS = 14000;
+/** XSO senders pass seconds and sometimes absurd values; keep a toast on screen 1–60 s. */
 export const MIN_TOAST_MS = 1000;
-export const MAX_TOAST_MS = 30000;
+export const MAX_TOAST_MS = 60000;
 
 export type ToastTone = "info" | "warning" | "error";
 

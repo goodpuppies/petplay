@@ -1477,7 +1477,7 @@ function useLockedGrabOptions(
                 title: `${label} is locked`,
                 content: "Unlock it in the hover menu to move or resize.",
                 tone: "warning",
-                timeoutMs: 3000,
+                timeoutMs: 10000,
               });
             }
             if (state.last) {

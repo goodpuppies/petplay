@@ -17,8 +17,12 @@ export type HapticPulse = { durationS: number; frequency: number; amplitude: num
 export const HAPTIC_PULSES: Record<HapticKind, HapticPulse> = {
   hover: { durationS: 0.012, frequency: 180, amplitude: 0.15 },
   click: { durationS: 0.03, frequency: 160, amplitude: 0.5 },
-  notify: { durationS: 0.08, frequency: 140, amplitude: 0.65 },
+  notify: { durationS: 0.055, frequency: 180, amplitude: 0.6 },
 };
+
+/** Second, longer beat of the "da-daaa" notification haptic pattern. */
+const NOTIFY_SECOND_BEAT: HapticPulse = { durationS: 0.16, frequency: 135, amplitude: 0.8 };
+const NOTIFY_SECOND_DELAY_MS = 115;
 
 /** Sweeping a ray across a row of buttons should feel like texture, not a buzz. */
 export const HOVER_MIN_INTERVAL_MS = 50;
@@ -56,6 +60,14 @@ export function pulseHand(hand: HapticHand, kind: HapticKind, now = performance.
   }
   try {
     sink(hand, HAPTIC_PULSES[kind]);
+    if (kind === "notify") {
+      setTimeout(() => {
+        if (!getSetting("haptics") || sink == null) return;
+        try {
+          sink(hand, NOTIFY_SECOND_BEAT);
+        } catch { /* ignore */ }
+      }, NOTIFY_SECOND_DELAY_MS);
+    }
   } catch {
     hapticStats.dropped++;
     return false;
