@@ -12,6 +12,7 @@
 import { parseArgs } from "jsr:@std/cli/parse-args";
 import { PostalService } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";
+import { tailnetAddress } from "./classes/tailnet.ts";
 
 const args = parseArgs(Deno.args, {
   string: ["host", "media-port", "site-port", "topics", "relay"],
@@ -20,6 +21,7 @@ const args = parseArgs(Deno.args, {
   negatable: ["capture", "input", "site"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
+const host = args.host ?? await tailnetAddress() ?? "127.0.0.1";
 
 const postal = new PostalService();
 const iroh = irohCarrier({ relay: args.relay });
@@ -30,7 +32,7 @@ const { link } = await postal.PostMessage({
   target: rdp,
   type: "START",
   payload: {
-    host: args.host,
+    host,
     mediaPort: args["media-port"] ? Number(args["media-port"]) : undefined,
     site: args.site ? { port: args["site-port"] ? Number(args["site-port"]) : undefined } : false,
     capture: args.capture,

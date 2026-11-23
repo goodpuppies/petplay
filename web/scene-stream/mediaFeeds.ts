@@ -11,7 +11,7 @@ import {
   type Receiver,
   type ReceiverStats,
 } from "../../submodules/petplay_mediatransport/web/src/receiver.ts";
-import type { SceneView } from "./sceneView.ts";
+import type { FeedFrame, SceneView } from "./sceneView.ts";
 
 /** `host` is where the encoder serves; without it, the page's host (or `?media=HOST`). */
 export type FeedInfo = { port: number; fingerprint: string; host?: string };
@@ -87,7 +87,7 @@ export class MediaFeeds {
   }
 
   /** Upload due pictures; the previous pictures go to `replaced`, to close after drawing. */
-  present(now: number, replaced: VideoFrame[]): boolean {
+  present(now: number, replaced: FeedFrame[]): boolean {
     let updated = false;
     for (const [name, feed] of this.feeds) {
       const frame = feed.receiver?.takeDue(now);

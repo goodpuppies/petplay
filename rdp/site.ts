@@ -36,6 +36,7 @@ new PostMan(state, {
       }, async (request) => {
         state.requests++;
         const path = new URL(request.url).pathname;
+        if (path === "/favicon.ico") return new Response(null, { status: 204 });
         const name = path === "/" ? "index.html" : path.slice(1);
         if (name.split("/").some((part) => part === ".." || part.startsWith("."))) {
           return new Response("Not found", { status: 404 });

@@ -31,7 +31,12 @@ import {
 const UI_RENDER_ORDER_BASE = 1000;
 const OVERLAY_RENDER_ORDER = 1_000_000;
 
-/** Set when the three.js scene changed; the render loop clears it after drawing. */
+export type FeedFrame = VideoFrame | ImageBitmap;
+
+function isFeedFrame(image: unknown): image is FeedFrame {
+  return (typeof VideoFrame !== "undefined" && image instanceof VideoFrame) ||
+    (typeof ImageBitmap !== "undefined" && image instanceof ImageBitmap);
+}
 export const viewState = { dirty: true };
 
 type UiEntry = { object: THREE.Mesh; order: UiOrder };
@@ -308,12 +313,14 @@ export class SceneView {
   }
 
   /** Shows `frame` on the feed's surfaces; returns the picture it replaced, to close once drawn. */
-  setFeedFrame(feed: string, frame: VideoFrame): VideoFrame | null {
+  setFeedFrame(feed: string, frame: FeedFrame): FeedFrame | null {
     const texture = this.feedTexture(feed);
-    const previous = typeof VideoFrame !== "undefined" && texture.image instanceof VideoFrame ? texture.image : null;
+    const previous = isFeedFrame(texture.image) ? texture.image : null;
     // WebGL2 storage is immutable: a new picture size needs a new GPU texture (the placeholder
     // first, then any change of the feed's geometry). Materials keep the same Texture object.
-    const size = `${frame.displayWidth}x${frame.displayHeight}`;
+    const width = "displayWidth" in frame ? frame.displayWidth : frame.width;
+    const height = "displayHeight" in frame ? frame.displayHeight : frame.height;
+    const size = `${width}x${height}`;
     if (texture.userData.size !== size) {
       texture.userData.size = size;
       texture.dispose();
@@ -324,10 +331,10 @@ export class SceneView {
   }
 
   /** Back to black (the feed now comes from elsewhere); returns the picture it replaced. */
-  clearFeed(feed: string): VideoFrame | null {
+  clearFeed(feed: string): FeedFrame | null {
     const texture = this.feeds.get(feed);
     if (!texture) return null;
-    const previous = typeof VideoFrame !== "undefined" && texture.image instanceof VideoFrame ? texture.image : null;
+    const previous = isFeedFrame(texture.image) ? texture.image : null;
     const black = new OffscreenCanvas(2, 2);
     black.getContext("2d")!.fillRect(0, 0, 2, 2);
     texture.image = black;

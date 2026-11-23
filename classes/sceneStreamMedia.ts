@@ -20,6 +20,8 @@ export type MediaFeedInfo = {
   /** With `share`: the iroh share code, reachable across the internet (and the Windows receiver's
    * only way in). */
   code?: string;
+  /** Loopback-only WebRTC SDP offer endpoint on this worker (`http://127.0.0.1:<port>/offer`). */
+  webrtcOfferUrl?: string;
 };
 
 export type DesktopMediaOptions = {
@@ -90,6 +92,7 @@ export class DesktopMediaFeed {
     const drained = [drainLines(child.stderr, keep)];
     try {
       let code: string | null = null;
+      let webrtcOfferUrl: string | null = null;
       const fingerprint = await new Promise<string>((resolve, reject) => {
         let fingerprint: string | null = null;
         const timer = setTimeout(
@@ -99,6 +102,7 @@ export class DesktopMediaFeed {
         drained.push(drainLines(child.stdout, (line) => {
           keep(line);
           code ??= line.match(/^IROH_SHARE code=(\S+)/)?.[1] ?? null;
+          webrtcOfferUrl ??= line.match(/^WEBRTC_READY (\S+)/)?.[1] ?? null;
           fingerprint ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
           if (line.startsWith("MEDIA_READY") && fingerprint && (code || !options.share)) {
             clearTimeout(timer);
@@ -114,7 +118,12 @@ export class DesktopMediaFeed {
       });
       return new DesktopMediaFeed(
         socketPath,
-        { port: options.port, fingerprint, ...(code ? { code } : {}) },
+        {
+          port: options.port,
+          fingerprint,
+          ...(code ? { code } : {}),
+          ...(webrtcOfferUrl ? { webrtcOfferUrl } : {}),
+        },
         child,
         directory,
         log,
@@ -126,6 +135,20 @@ export class DesktopMediaFeed {
       if (created) await Deno.remove(directory, { recursive: true }).catch(() => {});
       throw error;
     }
+  }
+
+  /** Exchange a browser's WebRTC SDP offer for this worker's ICE-lite SDP answer. */
+  async acceptWebRtcOffer(offerSdp: string): Promise<string> {
+    const url = this.info.webrtcOfferUrl;
+    if (!url) throw new Error("petplay-media worker has no WebRTC signaling endpoint");
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/sdp" },
+      body: offerSdp,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status}): ${text}`);
+    return text;
   }
 
   /** Resolves when the worker exits. */

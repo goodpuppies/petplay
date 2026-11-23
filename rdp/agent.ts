@@ -21,20 +21,12 @@ import { parseArgs } from "jsr:@std/cli/parse-args";
 import { PostalService, resolveActorId } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";
 import { householdSecret, householdTopic } from "./classes/household.ts";
+import { tailnetAddress } from "./classes/tailnet.ts";
 import { wgcMonitors } from "./classes/wgcMediaFeed.ts";
 
 const args = parseArgs(Deno.args, {
   string: ["host", "media-port", "secret-file", "topics", "relay", "monitor"],
 });
-
-async function tailnetAddress(): Promise<string | null> {
-  try {
-    const { success, stdout } = await new Deno.Command("tailscale", { args: ["ip", "-4"] }).output();
-    return success ? new TextDecoder().decode(stdout).trim().split("\n")[0] || null : null;
-  } catch {
-    return null;
-  }
-}
 
 const secret = householdSecret(args["secret-file"]);
 if (!secret) {

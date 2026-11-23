@@ -83,11 +83,25 @@ export class WgcMediaFeed {
   readonly exited: Promise<Deno.CommandStatus>;
 
   private constructor(
-    readonly info: { port: number; fingerprint: string; code: string },
+    readonly info: { port: number; fingerprint: string; code: string; webrtcOfferUrl?: string },
     private readonly child: Deno.ChildProcess,
     readonly log: string[],
   ) {
     this.exited = child.status;
+  }
+
+  /** Exchange a browser's WebRTC SDP offer for this worker's ICE-lite SDP answer. */
+  async acceptWebRtcOffer(offerSdp: string): Promise<string> {
+    const url = this.info.webrtcOfferUrl;
+    if (!url) throw new Error("capture-wgc worker has no WebRTC signaling endpoint");
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/sdp" },
+      body: offerSdp,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status}): ${text}`);
+    return text;
   }
 
   static start(options: WgcFeedOptions): Promise<WgcMediaFeed> {
@@ -126,9 +140,12 @@ export class WgcMediaFeed {
     };
     const drained = [drain(child.stderr, keep)];
     try {
-      const info = await new Promise<{ port: number; fingerprint: string; code: string }>(
+      const info = await new Promise<
+        { port: number; fingerprint: string; code: string; webrtcOfferUrl?: string }
+      >(
         (resolve, reject) => {
           let fingerprint: string | null = null, code: string | null = null;
+          let webrtcOfferUrl: string | null = null;
           const timer = setTimeout(
             () => reject(new Error(`${args[0]} not ready: ${log.at(-1) ?? "no output"}`)),
             READY_TIMEOUT_MS,
@@ -136,10 +153,11 @@ export class WgcMediaFeed {
           drained.push(drain(child.stdout, (line) => {
             keep(line);
             code ??= line.match(/^IROH_SHARE code=(\S+)/)?.[1] ?? null;
+            webrtcOfferUrl ??= line.match(/^WEBRTC_READY (\S+)/)?.[1] ?? null;
             fingerprint ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
             if (line.startsWith(ready) && code && fingerprint) {
               clearTimeout(timer);
-              resolve({ port, fingerprint, code });
+              resolve({ port, fingerprint, code, ...(webrtcOfferUrl ? { webrtcOfferUrl } : {}) });
             }
           }));
           child.status.then(async (status) => {

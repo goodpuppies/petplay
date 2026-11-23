@@ -70,7 +70,14 @@ export type SourceRequest = {
  * Where receivers reach the encoder: its pinned WebTransport listener, and on Windows also an
  * iroh share `code`, which native receivers prefer (it passes firewalls).
  */
-export type FeedInfo = { host: string; port: number; fingerprint: string; code?: string };
+export type FeedInfo = {
+  host: string;
+  port: number;
+  fingerprint: string;
+  code?: string;
+  /** True when the encoder can also answer WebRTC H.264 SDP offers (`WEBRTC_OFFER`). */
+  webrtc?: boolean;
+};
 /** One monitor a Windows machine offers as its own feed. */
 export type ScreenInfo = {
   index: number;
@@ -250,7 +257,11 @@ async function apply(): Promise<void> {
     framePort: want.framePort,
     mediaSocket: want.mediaSocket,
     // As the overlay host logged it: progress, portal messages, the reason for an exit.
-    log: (line) => console.log(`[desktopSource] ${line}`),
+    // Suppress the per-second FPS ticker by default (set PETPLAY_CAPTURE_FPS_LOG=1 to see it).
+    log: (line) => {
+      if (Deno.env.get("PETPLAY_CAPTURE_FPS_LOG") !== "1" && line.includes("FPS:")) return;
+      console.log(`[desktopSource] ${line}`);
+    },
     onStarted: () => {
       if (helper !== started) return;
       state.captureStarted = true;
@@ -338,6 +349,7 @@ async function startEncoder(
       port: encoder.info.port,
       fingerprint: encoder.info.fingerprint,
       ...(encoder.info.code ? { code: encoder.info.code } : {}),
+      ...(encoder.info.webrtcOfferUrl ? { webrtc: true } : {}),
     },
   };
   running.set(monitor, started);
@@ -493,6 +505,13 @@ new PostMan(
         await stopAudio();
         return true;
       },
+      WEBRTC_OFFER: async (payload) => {
+        const p = payload as { sdp?: unknown; monitor?: number } | null;
+        if (typeof p?.sdp !== "string" || !p.sdp) throw new Error("WEBRTC_OFFER needs {sdp}");
+        const feed = running.get(monitorOf(p));
+        if (!feed) throw new Error("no running feed for WebRTC offer");
+        return { sdp: await feed.encoder.acceptWebRtcOffer(p.sdp) };
+      },
     }),
     /** Start the encoder feed; returns where receivers reach it. */
     START: refuseWhenGuarded(guard, (payload?: Partial<SourceRequest>) => startFeed(payload)),
@@ -500,6 +519,18 @@ new PostMan(
       guard,
       (payload?: { monitor?: number } | null): FeedInfo | null =>
         running.get(monitorOf(payload))?.info ?? null,
+    ),
+    /** Exchange a browser WebRTC SDP offer for the running encoder's ICE-lite SDP answer. */
+    WEBRTC_OFFER: refuseWhenGuarded(
+      guard,
+      async (payload: { sdp: string; monitor?: number }): Promise<{ sdp: string }> => {
+        if (typeof payload?.sdp !== "string" || !payload.sdp) {
+          throw new Error("WEBRTC_OFFER needs {sdp}");
+        }
+        const feed = running.get(monitorOf(payload));
+        if (!feed) throw new Error("no running feed for WebRTC offer");
+        return { sdp: await feed.encoder.acceptWebRtcOffer(payload.sdp) };
+      },
     ),
     /** The machine's sound (Windows): start it if needed, at `{host, port}` + 100 or CONFIGURE's. */
     AUDIO: refuseWhenGuarded(guard, (payload?: { host?: string; port?: number } | null) =>

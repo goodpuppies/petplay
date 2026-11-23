@@ -51,7 +51,7 @@ export type TabKeyEvent = Modifiers & {
 
 export type TabDomEvent = TabPointerEvent | TabWheelEvent | TabKeyEvent;
 
-export type FeedInfo = { host: string; port: number; fingerprint: string };
+export type FeedInfo = { host: string; port: number; fingerprint: string; webrtc?: boolean };
 
 export type ToUi =
   | { viewport: TabViewport }

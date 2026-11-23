@@ -29,9 +29,10 @@ import {
   SceneStore,
   StoreDivergence,
 } from "../../submodules/raythree/src/store/mod.ts";
-import { SceneView, viewState } from "../../web/scene-stream/sceneView.ts";
+import { type FeedFrame, SceneView, viewState } from "../../web/scene-stream/sceneView.ts";
 import { MediaFeeds } from "../../web/scene-stream/mediaFeeds.ts";
 import {
+  type FeedInfo,
   type TabDomEvent,
   type TabViewport,
   type ToTab,
@@ -39,12 +40,20 @@ import {
   UI_ACTOR_NAME,
   UI_PURPOSE,
 } from "../classes/tabProtocol.ts";
-import { sessionTopic } from "../classes/session.ts";
+import {
+  MEDIA_PURPOSE,
+  type PageWebRtcEvent,
+  WEBRTC_VIDEO_KIND,
+  webRtcVideoBrowserTransport,
+  type WebRtcVideoClientHandle,
+} from "../classes/webRtcVideoTransport.ts";
 
 type Attach = {
   canvas: OffscreenCanvas;
   port: MessagePort;
   viewport: TabViewport;
+  /** Public rendezvous topic for this session (see rdp/classes/session.ts). */
+  topic: string;
   /** The session secret from the link (see rdp/classes/session.ts). */
   secret: string;
   /** The page's query string: media receiver options (`buffer`, `software`). */
@@ -75,7 +84,88 @@ let page: MessagePort | null = null;
 let tab: TransportMessages | null = null;
 let viewport: TabViewport | null = null;
 let media: MediaFeeds | null = null;
+let forceWebRtc = false;
 let secret = "";
+type WebRtcFeed = { key: string; transport: Transport | null; handle: WebRtcVideoClientHandle | null };
+const webrtcFeeds = new Map<string, WebRtcFeed>();
+let latestFeeds: Record<string, FeedInfo> = {};
+
+const hasWebTransportVideo = () =>
+  typeof WebTransport !== "undefined" && typeof VideoDecoder !== "undefined";
+
+function useWebRtcMedia(info: FeedInfo): boolean {
+  if (!info.webrtc) return false;
+  return forceWebRtc || !hasWebTransportVideo();
+}
+
+function dropWebRtcFeed(name: string): void {
+  const existing = webrtcFeeds.get(name);
+  if (!existing) return;
+  webrtcFeeds.delete(name);
+  existing.transport?.close("feed changed");
+  view.clearFeed(name)?.close();
+}
+
+function updateFeeds(feeds: Record<string, FeedInfo>): void {
+  latestFeeds = feeds;
+  const webtransportFeeds: Record<string, FeedInfo> = {};
+  const wantedWebRtc = new Set<string>();
+  for (const [name, info] of Object.entries(feeds)) {
+    if (useWebRtcMedia(info)) {
+      wantedWebRtc.add(name);
+      const key = `${info.host}:${info.port}:${info.fingerprint}`;
+      if (webrtcFeeds.get(name)?.key === key) continue;
+      dropWebRtcFeed(name);
+      const entry: WebRtcFeed = { key, transport: null, handle: null };
+      webrtcFeeds.set(name, entry);
+      if (!state.ui) continue;
+      void Transport.open(state.ui, {
+        purpose: MEDIA_PURPOSE,
+        kinds: [WEBRTC_VIDEO_KIND],
+        params: { secret, feed: name },
+      }).then((transport) => {
+        if (webrtcFeeds.get(name) !== entry) {
+          transport.close("superseded");
+          return;
+        }
+        entry.transport = transport;
+        const handle = transport.connection as WebRtcVideoClientHandle;
+        entry.handle = handle;
+        handle.onSize = (width, height) => {
+          status("connected");
+          toUi({ feedSize: { feed: name, width, height } });
+        };
+        void transport.closed.then(() => {
+          if (webrtcFeeds.get(name) !== entry) return;
+          entry.transport = null;
+          entry.handle = null;
+          entry.key = "";
+          setTimeout(() => {
+            if (webrtcFeeds.get(name) === entry) updateFeeds(latestFeeds);
+          }, 2000);
+        });
+      }).catch((error) => {
+        console.warn(`webrtc media feed ${name}:`, error);
+        if (webrtcFeeds.get(name) !== entry) return;
+        entry.key = "";
+        setTimeout(() => {
+          if (webrtcFeeds.get(name) === entry) updateFeeds(latestFeeds);
+        }, 2000);
+      });
+    } else {
+      dropWebRtcFeed(name);
+      if (!hasWebTransportVideo()) {
+        status("video needs WebRTC (update this machine's agent) or HTTPS");
+        continue;
+      }
+      webtransportFeeds[name] = info;
+    }
+  }
+  for (const name of [...webrtcFeeds.keys()]) {
+    if (!wantedWebRtc.has(name)) dropWebRtcFeed(name);
+  }
+  media?.update(webtransportFeeds);
+}
 
 function status(text: string): void {
   state.status = text;
@@ -118,7 +208,7 @@ function onTabMessage(raw: unknown): void {
     camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
     viewState.dirty = true;
   } else if ("media" in message) {
-    media?.update(message.media.feeds);
+    updateFeeds(message.media.feeds);
   }
 }
 
@@ -159,8 +249,15 @@ async function connect(): Promise<void> {
 function frame(now: number): void {
   if (renderer) {
     view.update(camera);
-    const replaced: VideoFrame[] = [];
-    const video = media?.present(now, replaced) ?? false;
+    const replaced: FeedFrame[] = [];
+    let video = media?.present(now, replaced) ?? false;
+    for (const [name, entry] of webrtcFeeds) {
+      const bitmap = entry.handle?.takeFrame();
+      if (!bitmap) continue;
+      video = true;
+      const previous = view.setFeedFrame(name, bitmap);
+      if (previous) replaced.push(previous);
+    }
     if (viewState.dirty || video) {
       viewState.dirty = false;
       renderer.render(view.scene, camera);
@@ -178,23 +275,31 @@ function schedule(): void {
 }
 
 new PostMan(state, {
-  ATTACH: async ({ canvas, port, viewport: initial, secret: session, search }: Attach) => {
+  ATTACH: async ({ canvas, port, viewport: initial, topic, secret: session, search }: Attach) => {
     secret = session;
+    const searchParams = new URLSearchParams(search);
+    forceWebRtc = searchParams.has("webrtc");
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    media = new MediaFeeds(view, new URLSearchParams(search), (feed, width, height) => {
+    media = new MediaFeeds(view, searchParams, (feed, width, height) => {
       toUi({ feedSize: { feed, width, height } });
     });
     page = port;
+    const webrtcVideo = webRtcVideoBrowserTransport((cmd) => page?.postMessage(cmd));
     port.onmessage = (event) => {
-      const message = event.data as { viewport?: TabViewport; dom?: TabDomEvent };
+      const message = event.data as { viewport?: TabViewport; dom?: TabDomEvent } | PageWebRtcEvent;
+      if ("webrtc" in message) {
+        webrtcVideo.handlePageEvent(message);
+        return;
+      }
       if (message.viewport) resize(message.viewport);
       else if (message.dom) toUi({ dom: message.dom });
     };
     resize(initial);
     registerTransportKind(webSocketTransport());
     registerTransportKind(webTransportTransport());
-    PostMan.setTopic(await sessionTopic(secret));
+    registerTransportKind(webrtcVideo);
+    PostMan.setTopic(topic);
     status("looking for the desktop…");
     void connect();
     schedule();

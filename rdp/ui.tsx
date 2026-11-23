@@ -40,12 +40,15 @@ import {
   UI_PURPOSE,
 } from "./classes/tabProtocol.ts";
 import { DESKTOP_FEED, type DesktopInputSink, RdpApp } from "./app.tsx";
-import { sameSecret, sessionTopic } from "./classes/session.ts";
+import { newSessionId, sameSecret, sessionTopic } from "./classes/session.ts";
 import { householdProof } from "./classes/household.ts";
+import { MEDIA_PURPOSE, webRtcVideoServerTransport } from "./classes/webRtcVideoTransport.ts";
 import type { InputEvent } from "./desktopInput.ts";
 
 export type UiStart = {
-  /** The session secret; the topic is derived from it, and tabs must present it. */
+  /** Public rendezvous topic for this session; defaults to a fresh random `rdp-<id>`. */
+  topic?: string;
+  /** The session secret; tabs must present it when opening `rdp.ui`. */
   secret: string;
   /** Where the tab's WebSocket reaches this actor (a tailnet address); default loopback. */
   websocket?: { hostname?: string; port?: number; publicUrl?: string };
@@ -439,7 +442,7 @@ new PostMan(
       }
       config = payload;
       secret = payload.secret;
-      const topic = await sessionTopic(secret);
+      const topic = payload.topic ?? sessionTopic(newSessionId());
       registerTransportKind(webSocketTransport({
         hostname: payload.websocket?.hostname ?? "127.0.0.1",
         port: payload.websocket?.port,
@@ -449,7 +452,20 @@ new PostMan(
         reach: "network",
       }));
       if (payload.webtransport !== false) await listenWebTransport(payload.webtransport);
+      registerTransportKind(webRtcVideoServerTransport(async (params, offerSdp) => {
+        if (!sameSecret(params.secret, secret)) {
+          state.rejected++;
+          throw new Error("not part of this session");
+        }
+        const desktop = selected ? desktops.get(selected) : undefined;
+        if (!desktop) throw new Error("no desktop selected");
+        const { sdp } = await request<{ sdp: string }>(desktop.source, "WEBRTC_OFFER", {
+          sdp: offerSdp,
+        });
+        return sdp;
+      }));
       Transport.accept(UI_PURPOSE, (transport) => onTab(transport));
+      Transport.accept(MEDIA_PURPOSE, () => {});
       frameTimer = setInterval(frame, FRAME_MS);
       if (payload.household) PostMan.setTopic(payload.household.topic);
       await discover();

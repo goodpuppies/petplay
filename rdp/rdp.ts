@@ -16,7 +16,12 @@ import {
   PostMan,
   resolveActorId,
 } from "../submodules/stageforge/mod.ts";
-import { newSessionSecret, sessionTopic } from "./classes/session.ts";
+import {
+  formatSessionFragment,
+  newSessionId,
+  newSessionSecret,
+  sessionTopic,
+} from "./classes/session.ts";
 import { householdSecret, householdTopic } from "./classes/household.ts";
 
 export type RdpStart = {
@@ -31,6 +36,8 @@ export type RdpStart = {
   input?: boolean;
   /** Use these instead of creating them (tests). */
   actors?: { source?: ActorId; input?: ActorId };
+  /** A fixed session id instead of a random one (tests). */
+  id?: string;
   /** A fixed session secret instead of a random one (tests). */
   secret?: string;
   /** False: no household even if this machine has `.secret`. Also off when `actors` is given. */
@@ -51,8 +58,9 @@ new PostMan(state, {
   START: async (payload: RdpStart = {}) => {
     if (state.link) return { topic: state.topic, link: state.link };
     const host = payload.host ?? "127.0.0.1";
+    const id = payload.id ?? newSessionId();
     const secret = payload.secret ?? newSessionSecret();
-    const topic = await sessionTopic(secret);
+    const topic = sessionTopic(id);
     const actors: Record<string, ActorId> = {};
 
     let source = payload.actors?.source;
@@ -79,6 +87,7 @@ new PostMan(state, {
     }
     const ui = actors.ui = resolveActorId(await PostMan.create("./ui.tsx", import.meta.url));
     await call(ui, "START", {
+      topic,
       secret,
       websocket: { hostname: host },
       webtransport: { hostname: host },
@@ -94,7 +103,7 @@ new PostMan(state, {
     }
     state.topic = topic;
     state.actors = actors;
-    state.link = `${base}#${secret}`;
+    state.link = `${base}#${formatSessionFragment(id, secret)}`;
     return { topic, link: state.link, actors };
   },
   __HEALTH__: () => ({ ...state }),

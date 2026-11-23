@@ -1,22 +1,45 @@
 /**
- * An RDP session is one random secret, carried in the link's URL fragment (never sent to the
- * page's host). The topic actors meet on is derived from it, because the topic server is public
- * and relays topic names in the clear: anyone listening learns the hash, not the secret. A tab
- * proves it knows the secret when it opens the `rdp.ui` transport; the offer travels over the
- * iroh connection, which is end-to-end encrypted.
+ * An RDP session has two independent random tokens carried in the link's URL fragment
+ * (`#<id>.<secret>`, never sent to the page's host):
+ *
+ * - `id`: public rendezvous identifier (`rdp-<id>` on the topic server). Topic names are for
+ *   discovery/scoping only, never security.
+ * - `secret`: private auth credential presented when opening `rdp.ui` over the encrypted iroh
+ *   connection.
+ *
+ * Using two independent random tokens avoids `crypto.subtle` / SHA-256, so the browser page works
+ * on plain HTTP (e.g. direct Tailscale URLs without `tailscale serve`).
  */
 
-export function newSessionSecret(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(24));
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
+function randomToken(bytes: number): string {
+  const buf = crypto.getRandomValues(new Uint8Array(bytes));
+  return btoa(String.fromCharCode(...buf)).replace(/\+/g, "-").replace(/\//g, "_")
     .replace(/=+$/, "");
 }
 
-export async function sessionTopic(secret: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`rdp:${secret}`));
-  const hex = [...new Uint8Array(digest).slice(0, 16)]
-    .map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `rdp-${hex}`;
+export function newSessionId(): string {
+  return randomToken(12);
+}
+
+export function newSessionSecret(): string {
+  return randomToken(24);
+}
+
+export function sessionTopic(id: string): string {
+  return `rdp-${id}`;
+}
+
+export function formatSessionFragment(id: string, secret: string): string {
+  return `${id}.${secret}`;
+}
+
+export function parseSessionFragment(fragment: string): { id: string; secret: string } | null {
+  const dot = fragment.indexOf(".");
+  if (dot <= 0) return null;
+  const id = fragment.slice(0, dot);
+  const secret = fragment.slice(dot + 1);
+  if (id.length < 8 || secret.length < 16) return null;
+  return { id, secret };
 }
 
 /** Constant-time comparison, so a wrong guess learns nothing from timing. */
