@@ -17,7 +17,11 @@ import type { WebXRShadowFrame } from "./webxrhost.ts";
 import type { IntervalMetric } from "./intervalMetric.ts";
 import type { VrcCameraViewPose } from "./vrcCameraCalibration.ts";
 import type { VrcDepthDebugFrame } from "./vrchatDepth/debugView.ts";
-import { extractWebXRRaythreeUi, type WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";
+import {
+  createWebXRRaythreeUiCollector,
+  extractWebXRRaythreeUiFromCollected,
+  type WebXRRaythreeUiSnapshot,
+} from "./webxrRaythreeUi.ts";
 
 /** Optional per-section timings for `buildPayload` (Raylib overlay profiling). */
 export type WebXRRaythreeBuildProbes = {
@@ -69,7 +73,11 @@ export class WebXRRaythreeSceneBridge {
     const t0 = performance.now();
     scene.updateMatrixWorld(false);
     probes?.sceneMatrix.record(performance.now() - t0);
-    const eyeOpts = { skipSceneMatrixWorldUpdate: true } as const;
+    const uiCollector = createWebXRRaythreeUiCollector();
+    const eyeOpts = {
+      skipSceneMatrixWorldUpdate: true,
+      onVisitObject: uiCollector.visit,
+    } as const;
 
     const t1 = performance.now();
     const leftEye = this.extractor.extract(
@@ -88,7 +96,7 @@ export class WebXRRaythreeSceneBridge {
     probes?.rightEye.record(performance.now() - t2);
 
     const t3 = performance.now();
-    const ui = extractWebXRRaythreeUi(scene);
+    const ui = extractWebXRRaythreeUiFromCollected(uiCollector.collected);
     probes?.ui.record(performance.now() - t3);
 
     return {

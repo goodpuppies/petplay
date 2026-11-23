@@ -213,7 +213,46 @@ function hasPanelDataAttributes(
   return a.aData0 != null && a.aData1 != null && a.aData2 != null && a.aData3 != null;
 }
 
+export type CollectedWebXRRaythreeUi = {
+  roots: Set<RootContext>;
+  textObjects: Object3D[];
+  imageObjects: Object3D[];
+};
+
+export function createWebXRRaythreeUiCollector(): {
+  collected: CollectedWebXRRaythreeUi;
+  visit: (object: Object3D) => void;
+} {
+  const roots = new Set<RootContext>();
+  const textObjects: Object3D[] = [];
+  const imageObjects: Object3D[] = [];
+  return {
+    collected: { roots, textObjects, imageObjects },
+    visit(object: Object3D) {
+      if (object instanceof Component) {
+        roots.add(object.root.value);
+      }
+      const ud = object.userData as {
+        raythreeUiText?: unknown;
+        raythreeUiImage?: unknown;
+      } | undefined;
+      if (ud != null) {
+        if (ud.raythreeUiText != null) textObjects.push(object);
+        if (ud.raythreeUiImage != null) imageObjects.push(object);
+      }
+    },
+  };
+}
+
 export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnapshot {
+  const { collected, visit } = createWebXRRaythreeUiCollector();
+  scene.traverseVisible(visit);
+  return extractWebXRRaythreeUiFromCollected(collected);
+}
+
+export function extractWebXRRaythreeUiFromCollected(
+  collected: CollectedWebXRRaythreeUi,
+): WebXRRaythreeUiSnapshot {
   const snapshot: WebXRRaythreeUiSnapshot = {
     textRendering: getTextRenderingSettings(),
     panels: [],
@@ -234,24 +273,7 @@ export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnaps
     return index;
   };
 
-  // Single visible scene walk: collect uikit root contexts, texts, and images in one pass
-  // instead of traversing the entire scene twice.
-  const roots = new Set<RootContext>();
-  const textObjects: Object3D[] = [];
-  const imageObjects: Object3D[] = [];
-  scene.traverseVisible((object: Object3D) => {
-    if (object instanceof Component) {
-      roots.add(object.root.value);
-    }
-    const ud = object.userData as {
-      raythreeUiText?: unknown;
-      raythreeUiImage?: unknown;
-    } | undefined;
-    if (ud != null) {
-      if (ud.raythreeUiText != null) textObjects.push(object);
-      if (ud.raythreeUiImage != null) imageObjects.push(object);
-    }
-  });
+  const { roots, textObjects, imageObjects } = collected;
 
   for (const rootCtx of roots) {
     const rootIndex = rootIndexFor(rootCtx);
