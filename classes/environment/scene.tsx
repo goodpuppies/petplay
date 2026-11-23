@@ -196,6 +196,8 @@ type WebXRSceneProps = {
 
 /** VRC camera OSC debug markers; off unless `PETPLAY_VRC_CAMERA_DEBUG=1`. */
 const SHOW_VRC_CAMERA_DEBUG = Deno.env.get("PETPLAY_VRC_CAMERA_DEBUG") === "1";
+/** Tracks the last window focused via `FOCUSWINDOW` so clicks on a background window wait for it to raise first. */
+let lastFocusedWindowId: string | null = null;
 
 /** Visible while calibrating or recording; recording views filter this mesh before delivery. */
 function VrcCameraCalibrationBall() {
@@ -1544,9 +1546,11 @@ function DisplaySpatialNodeView({
   const remoteInputActor = household ? selectedFeed?.inputActor : undefined;
   const [remoteInput, setRemoteInput] = React.useState<
     (ReturnType<typeof createDesktopInputRouting> & {
-      focusWindow?: () => void;
+      focusWindowId?: string;
+      focusWindow?: () => Promise<void>;
     }) | null
   >(null);
+  const pendingFocusClickRef = React.useRef<Promise<void>>(Promise.resolve());
   React.useEffect(() => {
     setRemoteInput(null);
     if (!remoteInputActor || !household) return;
@@ -1569,10 +1573,10 @@ function DisplaySpatialNodeView({
       const sinks = createDesktopInputSinks(target.actor, null, target.proof, target.region);
       const routing = createDesktopInputRouting(sinks.mouse, sinks.keyboard);
       const focusWindow = target.focusSource && target.focusWindow
-        ? () => {
+        ? async () => {
           try {
-            if (target.focusProof) {
-              PostMan.PostMessage({
+            const msg = target.focusProof
+              ? {
                 target: target.focusSource!,
                 type: "GUARDED",
                 payload: {
@@ -1580,18 +1584,23 @@ function DisplaySpatialNodeView({
                   type: "FOCUSWINDOW",
                   payload: { window: target.focusWindow },
                 },
-              });
-            } else {
-              PostMan.PostMessage({
+              }
+              : {
                 target: target.focusSource!,
                 type: "FOCUSWINDOW",
                 payload: { window: target.focusWindow },
-              });
-            }
+              };
+            await Promise.race([
+              PostMan.PostMessage(msg, true),
+              new Promise((r) => setTimeout(r, 150)),
+            ]);
+            // Give KWin a frame to raise the window before the uinput click lands.
+            await new Promise((r) => setTimeout(r, 25));
+            lastFocusedWindowId = target.focusWindow ?? null;
           } catch { /* source shutting down */ }
         }
         : undefined;
-      setRemoteInput({ ...routing, focusWindow });
+      setRemoteInput({ ...routing, focusWindowId: target.focusWindow, focusWindow });
     }).catch(() => {});
     return () => {
       cancelled = true;
@@ -1608,16 +1617,31 @@ function DisplaySpatialNodeView({
     node.id,
   ]);
   const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
-    // Clicking a display gives the keyboard to the desktop it shows, and focuses a window feed.
-    if (event.kind === "button" && event.pressed) {
-      remoteInput?.focusWindow?.();
-      focusKeyboard(node.id, remoteInput?.onKey ?? null);
-    }
-    (remoteInput?.onMouse ?? onMouse)({
+    const mapped = {
       ...event,
       x: workspaceCrop.x + event.x * workspaceCrop.width,
       y: workspaceCrop.y + event.y * workspaceCrop.height,
-    });
+    };
+    const sendMouse = remoteInput?.onMouse ?? onMouse;
+    // Clicking a display gives the keyboard to the desktop it shows, and raises a background
+    // window BEFORE injecting the click so an overlapping window doesn't steal the click back.
+    if (event.kind === "button" && event.pressed) {
+      focusKeyboard(node.id, remoteInput?.onKey ?? null);
+      if (remoteInput?.focusWindow && remoteInput.focusWindowId) {
+        if (lastFocusedWindowId !== remoteInput.focusWindowId) {
+          const raise = remoteInput.focusWindow();
+          pendingFocusClickRef.current = raise.then(() => sendMouse(mapped));
+          return;
+        }
+      } else {
+        lastFocusedWindowId = null;
+      }
+    } else if (event.kind === "button" && !event.pressed) {
+      // Keep button-up ordered after any delayed focus-then-button-down.
+      pendingFocusClickRef.current = pendingFocusClickRef.current.then(() => sendMouse(mapped));
+      return;
+    }
+    sendMouse(mapped);
   }, [
     node.id,
     onMouse,
