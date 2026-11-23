@@ -9,6 +9,7 @@ const state = actorState({
   name: "mockDesktopSource",
   starts: 0,
   stops: 0,
+  focused: [] as string[],
 });
 
 new PostMan(state, {
@@ -34,8 +35,35 @@ new PostMan(state, {
       },
     ],
   }),
-  START: (payload: { monitor?: number } | null) => {
+  LISTWINDOWS: () => [
+    {
+      id: "win-discord",
+      title: "Discord",
+      app: "discord",
+      pid: 42,
+      x: 100,
+      y: 100,
+      width: 1200,
+      height: 800,
+      minimized: false,
+      active: true,
+      region: { x: 0.1, y: 0.1, width: 0.3, height: 0.5 },
+    },
+  ],
+  FOCUSWINDOW: (payload: { window?: string } | null) => {
+    if (payload?.window) state.focused = [...state.focused, payload.window];
+    return true;
+  },
+  START: (payload: { monitor?: number; window?: string } | null) => {
     state.starts++;
+    if (payload?.window) {
+      return {
+        host: "127.0.0.1",
+        port: 4470,
+        fingerprint: "mock-fp-win",
+        code: `mock-iroh-code-${payload.window}`,
+      };
+    }
     const idx = payload?.monitor ?? 0;
     return {
       host: "127.0.0.1",

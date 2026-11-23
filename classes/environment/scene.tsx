@@ -769,12 +769,28 @@ function WindowLayer({
     ];
     const vrcKnown = isVRCOriginKnown();
     const head = vrcKnown ? getHeadObject(renderer, camera as unknown as THREE.Camera) : null;
-    const byName = new Map<string, { input: boolean; worldPose?: SharedDisplayWorldPose }>();
+    const byKey = new Map<
+      string,
+      {
+        kind?: "monitor" | "window";
+        windowId?: string;
+        name: string;
+        input: boolean;
+        worldPose?: SharedDisplayWorldPose;
+      }
+    >();
+    const allLocalOutputs = [
+      ...localWorkspaceOutputs,
+      ...remoteOutputs.filter((o) => o.local === true),
+    ];
     for (const node of Object.values(graph.nodes)) {
       if (node.kind !== "display" || !node.shared) continue;
-      const output = localWorkspaceOutputs.find((o) => o.id === node.workspaceOutputId);
+      const output = allLocalOutputs.find((o) => o.id === node.workspaceOutputId);
       if (!output) continue;
-      const prev = byName.get(output.name);
+      const key = output.kind === "window" && output.windowId
+        ? `window:${output.windowId}`
+        : `monitor:${output.name}`;
+      const prev = byKey.get(key);
       let worldPose = prev?.worldPose;
       if (!worldPose && vrcKnown && head) {
         const local = node.originId === VRC_WORLD_ORIGIN_ID && node.parentId === null
@@ -789,24 +805,31 @@ function WindowLayer({
           };
         }
       }
-      byName.set(output.name, {
+      byKey.set(key, {
+        ...(output.kind ? { kind: output.kind } : {}),
+        ...(output.windowId ? { windowId: output.windowId } : {}),
+        name: output.name,
         input: (prev?.input ?? false) || !!node.remoteInput,
         ...(worldPose ? { worldPose } : {}),
       });
     }
     return JSON.stringify(
-      [...byName].sort(([a], [b]) => a.localeCompare(b)).map(([name, info]) => ({
-        name,
+      [...byKey].sort(([a], [b]) => a.localeCompare(b)).map(([, info]) => ({
+        ...(info.kind ? { kind: info.kind } : {}),
+        ...(info.windowId ? { windowId: info.windowId } : {}),
+        name: info.name,
         input: info.input,
         ...(info.worldPose ? { worldPose: info.worldPose } : {}),
       })),
     );
-  }, [graph, localWorkspaceOutputs, scene, camera, renderer]);
+  }, [graph, localWorkspaceOutputs, remoteOutputs, scene, camera, renderer]);
   React.useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // displayShare may not be up yet at launch: try until it takes the list.
     const parsed = JSON.parse(sharedScreens) as Array<{
+      kind?: "monitor" | "window";
+      windowId?: string;
       name: string;
       input: boolean;
       worldPose?: SharedDisplayWorldPose;
@@ -1494,9 +1517,9 @@ function DisplaySpatialNodeView({
   // Another household machine's desktop starts when a display shows it and stops after the
   // last one lets go (`petplay/householdDesktops.ts`).
   const household = outputConnected ? selectedFeed?.household : undefined;
-  // This machine's own screen (not a remote feed): it can be shared with others.
-  const localOutput = outputConnected && selectedFeed != null && !selectedFeed.household &&
-    !selectedFeed.overlayHostActor;
+  // This machine's own screen or local window: it can be shared with others.
+  const localOutput = outputConnected && selectedFeed != null &&
+    (selectedFeed.local === true || (!selectedFeed.household && !selectedFeed.overlayHostActor));
   React.useEffect(() => {
     if (!household) return;
     const payload = { desktop: household.desktop, display: node.id };
@@ -1508,10 +1531,12 @@ function DisplaySpatialNodeView({
     post("SHOW");
     return () => post("RELEASE");
   }, [household?.provider, household?.desktop, node.id]);
-  // Its mouse and keyboard go to that machine's desktopInput, with the household proof.
+  // Its mouse and keyboard go to that feed's desktopInput (remote with proof, or local window).
   const remoteInputActor = household ? selectedFeed?.inputActor : undefined;
   const [remoteInput, setRemoteInput] = React.useState<
-    ReturnType<typeof createDesktopInputRouting> | null
+    (ReturnType<typeof createDesktopInputRouting> & {
+      focusWindow?: () => void;
+    }) | null
   >(null);
   React.useEffect(() => {
     setRemoteInput(null);
@@ -1522,20 +1547,63 @@ function DisplaySpatialNodeView({
       type: "INPUTTARGET",
       payload: { desktop: household.desktop },
     }, true) as Promise<
-      { actor: string; proof: string; region?: { x: number; y: number; width: number; height: number } } | null
+      {
+        actor: string;
+        proof?: string;
+        region?: { x: number; y: number; width: number; height: number };
+        focusSource?: string;
+        focusWindow?: string;
+        focusProof?: string;
+      } | null
     >).then((target) => {
       if (cancelled || !target || target.actor !== remoteInputActor) return;
       const sinks = createDesktopInputSinks(target.actor, null, target.proof, target.region);
-      setRemoteInput(createDesktopInputRouting(sinks.mouse, sinks.keyboard));
+      const routing = createDesktopInputRouting(sinks.mouse, sinks.keyboard);
+      const focusWindow = target.focusSource && target.focusWindow
+        ? () => {
+          try {
+            if (target.focusProof) {
+              PostMan.PostMessage({
+                target: target.focusSource!,
+                type: "GUARDED",
+                payload: {
+                  proof: target.focusProof,
+                  type: "FOCUSWINDOW",
+                  payload: { window: target.focusWindow },
+                },
+              });
+            } else {
+              PostMan.PostMessage({
+                target: target.focusSource!,
+                type: "FOCUSWINDOW",
+                payload: { window: target.focusWindow },
+              });
+            }
+          } catch { /* source shutting down */ }
+        }
+        : undefined;
+      setRemoteInput({ ...routing, focusWindow });
     }).catch(() => {});
     return () => {
       cancelled = true;
       releaseKeyboard(node.id);
     };
-  }, [remoteInputActor, household?.provider, household?.desktop, node.id]);
+  }, [
+    remoteInputActor,
+    household?.provider,
+    household?.desktop,
+    selectedFeed?.logicalX,
+    selectedFeed?.logicalY,
+    selectedFeed?.logicalWidth,
+    selectedFeed?.logicalHeight,
+    node.id,
+  ]);
   const croppedMouseSink = React.useMemo<DisplayMouseSink>(() => (event) => {
-    // Clicking a display gives the keyboard to the desktop it shows.
-    if (event.kind === "button" && event.pressed) focusKeyboard(node.id, remoteInput?.onKey ?? null);
+    // Clicking a display gives the keyboard to the desktop it shows, and focuses a window feed.
+    if (event.kind === "button" && event.pressed) {
+      remoteInput?.focusWindow?.();
+      focusKeyboard(node.id, remoteInput?.onKey ?? null);
+    }
     (remoteInput?.onMouse ?? onMouse)({
       ...event,
       x: workspaceCrop.x + event.x * workspaceCrop.width,
@@ -1720,7 +1788,7 @@ function DisplaySpatialNodeView({
           actions={contextActions}
           settingsPanel={
             <DisplaySettingsPanel
-              feeds={workspaceOutputs.map((o) => ({ id: o.id, name: o.name }))}
+              feeds={workspaceOutputs.map((o) => ({ id: o.id, name: o.name, kind: o.kind }))}
               selectedFeedId={node.workspaceOutputId ?? null}
               onSelectFeed={(id) =>
                 setGraph((current) => {

@@ -16,7 +16,7 @@ import { GridOptionSection, GridSlider, GridToggle } from "./gridControls.tsx";
 import { COLOR, GAP, INNER_GAP, RADIUS, SHELL_SIZE, unitSpan } from "./tokens.ts";
 
 export type DisplaySettingsPanelProps = {
-  feeds: ReadonlyArray<{ id: string; name: string }>;
+  feeds: ReadonlyArray<{ id: string; name: string; kind?: "monitor" | "window" }>;
   selectedFeedId: string | null;
   onSelectFeed: (id: string) => void;
   anchorLabel: string;
@@ -74,6 +74,22 @@ export function DisplaySettingsPanel({
   pointerEventsType = "all",
   showGuides = false,
 }: DisplaySettingsPanelProps) {
+  const screenFeeds = feeds.filter((f) => f.kind !== "window");
+  const windowFeeds = feeds.filter((f) => f.kind === "window");
+  const selectedIsWindow = windowFeeds.some((f) => f.id === selectedFeedId);
+  const [feedTab, setFeedTab] = React.useState<"screens" | "windows">(
+    selectedIsWindow ? "windows" : "screens",
+  );
+  const [page, setPage] = React.useState(0);
+  const activeTab = windowFeeds.length === 0 ? "screens" : feedTab;
+  const tabFeeds = activeTab === "windows" ? windowFeeds : screenFeeds;
+  const pageSize = 3;
+  const pageCount = Math.max(1, Math.ceil(tabFeeds.length / pageSize));
+  const clampedPage = Math.min(page, pageCount - 1);
+  const visibleFeeds = tabFeeds.length <= 4
+    ? tabFeeds
+    : tabFeeds.slice(clampedPage * pageSize, (clampedPage + 1) * pageSize);
+
   const rows = showSharing ? 5 : 4;
   const panelHeight = unitSpan(rows) + GAP * 2;
   return (
@@ -89,15 +105,144 @@ export function DisplaySettingsPanel({
       pointerEventsType={pointerEventsType}
       showGuides={showGuides}
     >
-      {/* Row 0: Feed */}
+      {/* Row 0: Feed (Screens / Windows tabs + pagination when > 4 items) */}
       <Cell col={0} row={0} colSpan={4} rowSpan={1} surface="tile">
-        <GridOptionSection
-          label="Feed"
-          value={selectedFeedId}
-          onChange={onSelectFeed}
-          showGuides={showGuides}
-          options={feeds.map((f) => ({ value: f.id, label: f.name }))}
-        />
+        {windowFeeds.length === 0 && tabFeeds.length <= 4
+          ? (
+            <GridOptionSection
+              label="Feed"
+              value={selectedFeedId}
+              onChange={onSelectFeed}
+              showGuides={showGuides}
+              options={tabFeeds.map((f) => ({ value: f.id, label: f.name }))}
+            />
+          )
+          : (
+            <Grid cols={1} rows={2} gap={INNER_GAP} padding={INNER_GAP} showGuides={showGuides}>
+              <Cell col={0} row={0}>
+                <Grid
+                  cols={windowFeeds.length > 0 ? 4 : 1}
+                  rows={1}
+                  gap={INNER_GAP}
+                  padding={0}
+                  showGuides={showGuides}
+                >
+                  <Cell
+                    col={0}
+                    row={0}
+                    colSpan={windowFeeds.length > 0 ? 2 : 1}
+                    flexDirection="row"
+                    justifyContent="flex-start"
+                    paddingX={12}
+                  >
+                    <Text color={COLOR.inkDim} fontSize={18}>
+                      {tabFeeds.length > 4
+                        ? `Feed (${clampedPage + 1}/${pageCount})`
+                        : "Feed"}
+                    </Text>
+                  </Cell>
+                  {windowFeeds.length > 0
+                    ? (
+                      <>
+                        <Cell
+                          col={2}
+                          row={0}
+                          shape="round"
+                          surface={activeTab === "screens" ? "accent" : "outline"}
+                          onClick={() => {
+                            setFeedTab("screens");
+                            setPage(0);
+                          }}
+                        >
+                          <Text
+                            color={activeTab === "screens" ? COLOR.onAccent : COLOR.ink}
+                            fontSize={14}
+                          >
+                            Screens
+                          </Text>
+                        </Cell>
+                        <Cell
+                          col={3}
+                          row={0}
+                          shape="round"
+                          surface={activeTab === "windows" ? "accent" : "outline"}
+                          onClick={() => {
+                            setFeedTab("windows");
+                            setPage(0);
+                          }}
+                        >
+                          <Text
+                            color={activeTab === "windows" ? COLOR.onAccent : COLOR.ink}
+                            fontSize={14}
+                          >
+                            Windows
+                          </Text>
+                        </Cell>
+                      </>
+                    )
+                    : null}
+                </Grid>
+              </Cell>
+              <Cell col={0} row={1}>
+                <Grid
+                  cols={tabFeeds.length > 4
+                    ? visibleFeeds.length + 2
+                    : Math.max(1, visibleFeeds.length)}
+                  rows={1}
+                  gap={INNER_GAP}
+                  padding={0}
+                  showGuides={showGuides}
+                >
+                  {tabFeeds.length > 4
+                    ? (
+                      <Cell
+                        col={0}
+                        row={0}
+                        shape="round"
+                        surface="outline"
+                        onClick={() => setPage((p) => (p - 1 + pageCount) % pageCount)}
+                      >
+                        <Text color={COLOR.ink} fontSize={16}>‹</Text>
+                      </Cell>
+                    )
+                    : null}
+                  {visibleFeeds.map((f, idx) => {
+                    const selected = f.id === selectedFeedId;
+                    return (
+                      <Cell
+                        key={f.id}
+                        col={tabFeeds.length > 4 ? idx + 1 : idx}
+                        row={0}
+                        shape="round"
+                        surface={selected ? "accent" : "outline"}
+                        onClick={() => onSelectFeed(f.id)}
+                      >
+                        <Text
+                          color={selected ? COLOR.onAccent : COLOR.ink}
+                          fontSize={visibleFeeds.length >= 3 ? 14 : 16}
+                        >
+                          {f.name}
+                        </Text>
+                      </Cell>
+                    );
+                  })}
+                  {tabFeeds.length > 4
+                    ? (
+                      <Cell
+                        col={visibleFeeds.length + 1}
+                        row={0}
+                        shape="round"
+                        surface="outline"
+                        onClick={() => setPage((p) => (p + 1) % pageCount)}
+                      >
+                        <Text color={COLOR.ink} fontSize={16}>›</Text>
+                      </Cell>
+                    )
+                    : null}
+                </Grid>
+              </Cell>
+            </Grid>
+          )}
       </Cell>
 
       {/* Row 1: Anchored to */}

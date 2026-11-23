@@ -241,6 +241,52 @@ Deno.test({
       const events = await aliceCmd<unknown[]>("INPUTEVENTS");
       assertEquals(events.length, 1);
 
+      // 6b. Single-window sharing: Alice shares ONLY the Discord window (with input), no monitors.
+      await aliceCmd("SETSHARED", {
+        screens: [{ kind: "window", windowId: "win-discord", name: "Discord", input: true }],
+      });
+      const winOutputs = await eventually(
+        () => call<WorkspaceOutput[]>(bobDesktops, "LIST"),
+        (list) => list.length === 1 && list[0].kind === "window" && list[0].windowId === "win-discord",
+        "Bob sees only Alice's shared Discord window",
+      );
+      assertEquals(winOutputs[0].name, "Alice · Discord");
+      const winTarget = await call<{
+        actor: ActorId;
+        proof: string;
+        region?: { x: number; y: number; width: number; height: number };
+        focusSource?: ActorId;
+        focusWindow?: string;
+        focusProof?: string;
+      } | null>(bobDesktops, "INPUTTARGET", { desktop: "Alice:win:win-discord" });
+      assertEquals(winTarget !== null, true);
+      assertEquals(winTarget!.focusWindow, "win-discord");
+      // Inside window region (x=0.2, y=0.2) -> accepted; outside (x=0.8, y=0.8) -> refused.
+      assertEquals(
+        await callRemote<boolean>(winTarget!.actor, "GUARDED", {
+          proof: winTarget!.proof,
+          type: "INPUT",
+          payload: { t: "pointer", x: 0.2, y: 0.2 },
+        }),
+        true,
+      );
+      assertEquals(
+        await callRemote<boolean>(winTarget!.actor, "GUARDED", {
+          proof: winTarget!.proof,
+          type: "INPUT",
+          payload: { t: "pointer", x: 0.8, y: 0.8 },
+        }),
+        false,
+      );
+      assertEquals(
+        await callRemote<boolean>(winTarget!.focusSource!, "GUARDED", {
+          proof: winTarget!.focusProof!,
+          type: "FOCUSWINDOW",
+          payload: { window: winTarget!.focusWindow },
+        }),
+        true,
+      );
+
       // 7. Alice untrusts Bob -> token revoked immediately on Alice's displayShare!
       await aliceCmd("UNTRUST", { userId: BOB_ID });
       await assertRejects(

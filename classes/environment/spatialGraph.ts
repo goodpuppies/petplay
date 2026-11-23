@@ -289,9 +289,10 @@ export function initializeWorkspaceLayoutOutputs(
 ): SpatialGraph {
   if (restoredLayout) return reconcileWorkspaceOutputs(current, outputs);
 
+  const defaultOutputs = outputs.filter((output) => output.kind !== "window");
   let graph = ensureDefaultSpatialContent(current);
   let displays = displayNodesByOrdinal(graph);
-  while (displays.length < outputs.length) {
+  while (displays.length < defaultOutputs.length) {
     const parent = displays.at(-1);
     if (parent == null) break;
     const expanded = spawnHingedDisplay(graph, parent.id);
@@ -299,7 +300,7 @@ export function initializeWorkspaceLayoutOutputs(
     graph = expanded;
     displays = displayNodesByOrdinal(graph);
   }
-  return assignWorkspaceOutputs(graph, outputs);
+  return assignWorkspaceOutputs(graph, defaultOutputs);
 }
 
 export function reconcileWorkspaceOutputs(

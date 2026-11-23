@@ -60,7 +60,9 @@ export async function discoverRemoteDisplayFeeds(): Promise<WorkspaceOutput[]> {
     ),
   );
   const household = await Promise.all(
-    local.filter((a) => a.actorId.startsWith("householdDesktops@")).map((actor) =>
+    local.filter((a) =>
+      a.actorId.startsWith("householdDesktops@") || a.actorId.startsWith("localWindows@")
+    ).map((actor) =>
       request<WorkspaceOutput[]>(actor.actorId, "LIST").catch(() => [])
     ),
   );
@@ -86,7 +88,13 @@ export function resolveDisplayFeedProvider(
  * False when there is none (no share key on this machine).
  */
 export async function setSharedScreens(
-  screens: Array<{ name: string; input: boolean; worldPose?: SharedDisplayWorldPose }>,
+  screens: Array<{
+    kind?: "monitor" | "window";
+    windowId?: string;
+    name: string;
+    input: boolean;
+    worldPose?: SharedDisplayWorldPose;
+  }>,
 ): Promise<boolean> {
   const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
   const share = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith("displayShare@"));

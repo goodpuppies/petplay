@@ -24,7 +24,7 @@
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
 import { petplayMediaPath } from "../classes/petplayMediaPath.ts";
 import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
-import { householdProof, householdSecret, householdTopic } from "../rdp/classes/household.ts";
+import { HouseholdClient, householdSecret, householdTopic } from "../rdp/classes/household.ts";
 import type { DesktopDescription, FeedInfo, ScreenInfo } from "../rdp/desktopSource.ts";
 import type { WorkspaceOutput } from "../classes/environment/workspaceDisplays.ts";
 import type { SharedDisplayWorldPose } from "../classes/vrcOriginTransform.ts";
@@ -46,14 +46,18 @@ const FIRST_FRAME_POLL_MS = 250;
 const FIRST_FRAME_WAIT_MS = 20_000;
 
 type Desktop = {
-  /** `machine`, or `machine:index` for one of a Windows machine's monitors. */
+  /** `machine`, `machine:index` for a monitor, or `machine:win:id` for a shared window. */
   key: string;
   name: string;
+  kind: "monitor" | "window";
   source: ActorId;
   machine: string;
-  /** The monitor (`START {monitor}`); undefined: the machine's one feed. */
+  /** The monitor (`START {monitor}`); undefined: whole workspace or a window. */
   monitor?: number;
+  /** The window (`START {window}`) when `kind === "window"`. */
+  windowId?: string;
   region: ScreenInfo["region"] | null;
+  crop: { x: number; y: number; width: number; height: number };
   input: ActorId | null;
   /** The sharer lets viewers drive it. */
   inputAllowed: boolean;
@@ -103,7 +107,7 @@ const state = actorState({
   lastError: null as string | null,
 });
 
-let secret: string | null = null;
+let householdClient: HouseholdClient | null = null;
 const desktops = new Map<string, Desktop>();
 const sounds = new Map<string, Sound>();
 /** Trusted peer displayShare sources added by `vrcPeers` (`sourceActorId -> {proof, label}`). */
@@ -134,8 +138,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
 async function proofFor(target: ActorId): Promise<string> {
   const peer = peerSources.get(String(target));
   if (peer) return peer.proof;
-  if (!secret) throw new Error(`no proof for ${target}`);
-  return await householdProof(secret, target);
+  if (!householdClient?.active) throw new Error(`no proof for ${target}`);
+  return await householdClient.proof(String(target));
 }
 
 async function request<T>(
@@ -144,12 +148,27 @@ async function request<T>(
   payload: unknown = null,
   ms = REQUEST_MS,
 ): Promise<T> {
+  const peer = peerSources.get(String(target));
+  if (peer) {
+    return await withTimeout(
+      PostMan.PostMessage({
+        target,
+        type: "GUARDED",
+        payload: { proof: peer.proof, type, payload },
+      }, true) as Promise<T>,
+      ms,
+      `${type} on ${target}`,
+    );
+  }
+  if (!householdClient?.active) throw new Error(`no proof for ${target}`);
   return await withTimeout(
-    PostMan.PostMessage({
-      target,
-      type: "GUARDED",
-      payload: { proof: await proofFor(target), type, payload },
-    }, true) as Promise<T>,
+    householdClient.request<T>(
+      (msg, wait) => PostMan.PostMessage(msg as Parameters<typeof PostMan.PostMessage>[0], wait),
+      String(target),
+      type,
+      payload,
+      true,
+    ),
     ms,
     `${type} on ${target}`,
   );
@@ -336,11 +355,13 @@ function apply(id: ActorId, description: DesktopDescription): void {
     stopSound(previousSound);
     sounds.delete(machine);
   }
-  // No `screens`: one desktop, the whole workspace. Empty: nothing shared.
+  // No `screens`: one desktop, the whole workspace. Empty: no monitors shared (may still share windows).
   const screens: Array<ScreenInfo | null> = description.screens ?? [null];
-  const keys = new Set(
-    screens.map((screen) => screen ? `${machine}:${screen.index}` : machine),
-  );
+  const windows = description.windows ?? [];
+  const keys = new Set([
+    ...screens.map((screen) => screen ? `${machine}:${screen.index}` : machine),
+    ...windows.map((win) => `${machine}:win:${win.id}`),
+  ]);
   for (const [key, d] of desktops) if (d.source === id && !keys.has(key)) forget(key);
   for (const screen of screens) {
     const key = screen ? `${machine}:${screen.index}` : machine;
@@ -350,16 +371,19 @@ function apply(id: ActorId, description: DesktopDescription): void {
     if (existing) {
       existing.inputAllowed = inputAllowed;
       existing.worldPose = worldPose;
+      if (screen?.region) existing.region = screen.region;
       continue;
     }
     desktops.set(key, {
       key,
       // `DISPLAY2` is Windows' own number for the monitor, as its settings show it.
       name: screen ? `${machine}${screen.name.match(/(\d+)$/)?.[1] ?? screen.index + 1}` : machine,
+      kind: "monitor",
       source: id,
       machine,
       ...(screen ? { monitor: screen.index } : {}),
       region: screen?.region ?? null,
+      crop: { x: 0, y: 0, width: 1, height: 1 },
       input: description.input as ActorId | null,
       inputAllowed,
       worldPose,
@@ -375,8 +399,48 @@ function apply(id: ActorId, description: DesktopDescription): void {
       error: null,
     });
   }
+  for (const win of windows) {
+    const key = `${machine}:win:${win.id}`;
+    const inputAllowed = win.input !== false;
+    const worldPose = win.worldPose ?? null;
+    const rawTitle = (win.title || win.app || win.id).trim();
+    const shortTitle = rawTitle.length > 20 ? `${rawTitle.slice(0, 19)}…` : rawTitle;
+    const existing = desktops.get(key);
+    if (existing) {
+      existing.name = `${machine} · ${shortTitle}`;
+      existing.inputAllowed = inputAllowed;
+      existing.worldPose = worldPose;
+      existing.region = win.region ?? existing.region;
+      if (win.width > 0 && existing.frames === 0) existing.width = win.width;
+      if (win.height > 0 && existing.frames === 0) existing.height = win.height;
+      continue;
+    }
+    desktops.set(key, {
+      key,
+      name: `${machine} · ${shortTitle}`,
+      kind: "window",
+      source: id,
+      machine,
+      windowId: win.id,
+      region: win.region ?? null,
+      crop: { x: 0, y: 0, width: 1, height: 1 },
+      input: description.input as ActorId | null,
+      inputAllowed,
+      worldPose,
+      holders: holders.get(key) ?? new Set<string>(),
+      overlay: null,
+      feed: null,
+      width: win.width ?? 0,
+      height: win.height ?? 0,
+      frames: 0,
+      starting: false,
+      retryAt: 0,
+      releaseAt: null,
+      error: null,
+    });
+  }
   const sound = sounds.get(machine);
-  if (description.audio && screens.length > 0) {
+  if (description.audio && (screens.length > 0 || windows.length > 0)) {
     if (!sound) {
       sounds.set(machine, {
         machine,
@@ -408,10 +472,15 @@ async function keep(desktop: Desktop): Promise<void> {
   if (desktop.starting || Date.now() < desktop.retryAt) return;
   desktop.starting = true;
   try {
-    const which = desktop.monitor === undefined ? null : { monitor: desktop.monitor };
+    const which = desktop.windowId
+      ? { window: desktop.windowId }
+      : desktop.monitor === undefined
+      ? null
+      : { monitor: desktop.monitor };
     let feed = await request<FeedInfo | null>(desktop.source, "FEED", which);
     // Starting may wait for that machine's user to share the screen.
     feed ??= await request<FeedInfo>(desktop.source, "START", which);
+    desktop.crop = feed.crop ?? { x: 0, y: 0, width: 1, height: 1 };
     if (desktop.overlay) {
       const health = await withTimeout(
         PostMan.PostMessage({ target: desktop.overlay, type: "__HEALTH__", payload: null }, true) as Promise<
@@ -517,12 +586,14 @@ function outputs(): WorkspaceOutput[] {
     return {
       id: `household:${d.key}`,
       name: d.name,
+      kind: d.kind,
+      ...(d.windowId ? { windowId: d.windowId } : {}),
       priority: -1,
       logicalX: 0,
       logicalY: 0,
       logicalWidth: sized ? d.width : 1920,
       logicalHeight: sized ? d.height : 1080,
-      crop: { x: 0, y: 0, width: 1, height: 1 },
+      crop: d.crop,
       household: { desktop: d.key, provider: state.id },
       ...(d.worldPose ? { worldPose: d.worldPose } : {}),
       ...(running ? { overlayHostActor: d.overlay! } : {}),
@@ -543,8 +614,9 @@ new PostMan(
   state,
   {
     __INIT__: async () => {
-      secret = householdSecret();
+      const secret = householdSecret();
       if (!secret) return;
+      householdClient = new HouseholdClient(secret);
       state.topic = await householdTopic(secret);
       PostMan.setTopic(state.topic);
       ensurePolling();
@@ -610,11 +682,18 @@ new PostMan(
       const desktop = desktops.get(payload?.desktop);
       if (!desktop?.input || !desktop.inputAllowed) return null;
       const peer = peerSources.get(String(desktop.source));
-      if (!peer && !secret) return null;
+      if (!peer && !householdClient?.active) return null;
+      const proof = peer ? peer.proof : await householdClient!.proof(String(desktop.input));
+      const focusProof = desktop.windowId
+        ? (peer ? peer.proof : await householdClient!.proof(String(desktop.source)))
+        : undefined;
       return {
         actor: desktop.input,
-        proof: peer ? peer.proof : await householdProof(secret!, desktop.input),
+        proof,
         ...(desktop.region ? { region: desktop.region } : {}),
+        ...(desktop.windowId
+          ? { focusSource: desktop.source, focusWindow: desktop.windowId, focusProof }
+          : {}),
       };
     },
     __SHUTDOWN__: async () => {

@@ -116,6 +116,18 @@ export type ScreenInfo = {
   /** Offered by a sharer: pose of this display in right-handed VRChat world space. */
   worldPose?: SharedDisplayWorldPose;
 };
+export type SharedWindowInfo = {
+  id: string;
+  title: string;
+  app: string;
+  width: number;
+  height: number;
+  region?: { x: number; y: number; width: number; height: number };
+  /** Offered by a sharer (`petplay/displayShare.ts`): whether viewers may drive it. */
+  input?: boolean;
+  /** Offered by a sharer: pose of this display in right-handed VRChat world space. */
+  worldPose?: SharedDisplayWorldPose;
+};
 export type DesktopDescription = {
   machine: string;
   kind?: "desktop" | "vrchat";
@@ -126,6 +138,8 @@ export type DesktopDescription = {
    * sharer, only the shared ones; empty: nothing is shared.
    */
   screens?: ScreenInfo[];
+  /** Individual windows shared by this machine (`petplay/displayShare.ts`). */
+  windows?: SharedWindowInfo[];
   /** A sharer's whole workspace (no `screens`): whether viewers may drive it. */
   wholeInput?: boolean;
   /** A sharer's whole workspace (no `screens`): display pose in right-handed VRChat world space. */
@@ -1017,6 +1031,46 @@ new PostMan(
           return outputFeeds.get(payload!.monitor as number)?.info ?? null;
         }
         return running.get(monitorOf(payload))?.info ?? null;
+      },
+    ),
+    /** Local window raw RGBA frame sink (Linux KDE `stream_window` via `screen-streamer`). */
+    ADDWINDOWFRAMESINK: refuseWhenGuarded(
+      guard,
+      async (payload: { window: string; port: number; fps?: number }) => {
+        if (Deno.build.os !== "linux") {
+          throw new Error("ADDWINDOWFRAMESINK is currently supported on Linux KDE Wayland");
+        }
+        if (typeof payload?.window !== "string" || !payload.window || !Number.isInteger(payload.port)) {
+          throw new Error("ADDWINDOWFRAMESINK needs {window, port}");
+        }
+        const streamer = await ensureScreenStreamer();
+        await PostMan.PostMessage({
+          target: streamer,
+          type: "START_CAPTURE",
+          payload: {
+            id: `win-sink:${payload.window}`,
+            target: { kind: "window", window_id: payload.window },
+            framePort: payload.port,
+            fps: clampCaptureFps(payload.fps ?? DEFAULT_CAPTURE_FPS),
+          },
+        }, true);
+        return true;
+      },
+    ),
+    REMOVEWINDOWFRAMESINK: refuseWhenGuarded(
+      guard,
+      async (payload: { window: string }) => {
+        if (Deno.build.os !== "linux" || typeof payload?.window !== "string" || !payload.window) {
+          return false;
+        }
+        const streamer = await ensureScreenStreamer().catch(() => null);
+        if (!streamer) return false;
+        await PostMan.PostMessage({
+          target: streamer,
+          type: "STOP_CAPTURE",
+          payload: { id: `win-sink:${payload.window}` },
+        }, true).catch(() => {});
+        return true;
       },
     ),
     /** List capturable windows on this machine (KDE Plasma Wayland or Windows). */

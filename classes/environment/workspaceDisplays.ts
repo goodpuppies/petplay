@@ -25,6 +25,12 @@ export type WorkspaceOutput = {
   household?: { desktop: string; provider: string };
   /** Sharer's pose for this display in right-handed VRChat world space, when known. */
   worldPose?: SharedDisplayWorldPose;
+  /** Monitor (default) or an individual capturable window. */
+  kind?: "monitor" | "window";
+  /** Window identifier (KWin UUID on KDE, HWND hex on Windows) when `kind === "window"`. */
+  windowId?: string;
+  /** True when backed by a local source (e.g. a local window) that may be shared with others. */
+  local?: boolean;
   id: string;
   name: string;
   priority: number;

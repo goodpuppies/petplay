@@ -964,6 +964,13 @@ async function createSupervisedScene() {
   }
   // Other household machines' and trusted VRChat peers' desktops, as display outputs.
   const householdDesktops = await PostMan.create("./householdDesktops.ts", import.meta.url);
+  // Local capturable windows as on-demand VR display outputs (single-process overlay host).
+  const localWindows = await PostMan.create("./localWindows.ts", import.meta.url);
+  PostMan.PostMessage({
+    target: localWindows,
+    type: "SETUP",
+    payload: { source: actors.desktopSource, input: actors.desktopInput },
+  });
   // This machine's displays for others (household `.secret` if present, and trusted VRChat peers):
   // the ones a display's Share action picks, or all with `--share-all-displays`.
   const share = await PostMan.create("./displayShare.ts", import.meta.url);

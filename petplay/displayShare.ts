@@ -27,12 +27,24 @@ import {
   householdSecret,
   householdTopic,
 } from "../rdp/classes/household.ts";
-import type { DesktopDescription, ScreenInfo, SourceRequest } from "../rdp/desktopSource.ts";
+import type {
+  DesktopDescription,
+  ScreenInfo,
+  SharedWindowInfo,
+  SourceRequest,
+  WindowInfo,
+} from "../rdp/desktopSource.ts";
 import type { InputEvent } from "../rdp/classes/input/inputEvent.ts";
 import type { SharedDisplayWorldPose } from "../classes/vrcOriginTransform.ts";
 
-/** A shared screen, by name (Windows: `DISPLAY2`; Linux: ignored, the workspace). */
-export type SharedScreen = { name: string; input: boolean; worldPose?: SharedDisplayWorldPose };
+/** A shared screen or window (monitor by name, or window by `kind: "window"` + `windowId`). */
+export type SharedScreen = {
+  kind?: "monitor" | "window";
+  windowId?: string;
+  name: string;
+  input: boolean;
+  worldPose?: SharedDisplayWorldPose;
+};
 
 /** The encoders' local listeners (loopback only); viewers use the share codes. */
 const MEDIA_PORT = 4460;
@@ -92,18 +104,35 @@ function call<T>(target: string, type: string, payload: unknown = null): Promise
   ]).finally(() => clearTimeout(handle));
 }
 
-/** The local source's screens (Windows), cached for input checks. */
+/** The local source's screens and windows, cached for input checks. */
 let screens: ScreenInfo[] | null = null;
+let cachedWindows: WindowInfo[] = [];
+
+function sharedMonitors(): SharedScreen[] {
+  return state.shared.filter((s) => s.kind !== "window");
+}
+
+function sharedWindows(): SharedScreen[] {
+  return state.shared.filter((s) =>
+    s.kind === "window" && typeof s.windowId === "string" && s.windowId.length > 0
+  );
+}
 
 function sharedAs(name: string): SharedScreen | null {
   if (state.all) return { name, input: true };
-  return state.shared.find((s) => s.name === name) ?? null;
+  return sharedMonitors().find((s) => s.name === name) ?? null;
+}
+
+function sharedAsWindow(windowId: string): SharedScreen | null {
+  if (state.all) return { kind: "window", windowId, name: windowId, input: true };
+  return sharedWindows().find((s) => s.windowId === windowId) ?? null;
 }
 
 /** What is shared, as the viewer sees it. */
 async function describe(): Promise<DesktopDescription> {
   const described = await call<DesktopDescription>(source(), "DESCRIBE");
   screens = described.screens ?? null;
+  const monitors = sharedMonitors();
   const offered = described.screens
     ? described.screens.flatMap((screen) => {
       const shared = sharedAs(screen.name);
@@ -115,21 +144,50 @@ async function describe(): Promise<DesktopDescription> {
         }]
         : [];
     })
-    // Linux: one workspace, shared when any display is; no screens means nothing shared.
-    : state.all || state.shared.length > 0
+    // Whole-workspace fallback when desktopSource doesn't expose per-monitor screens.
+    : state.all || monitors.length > 0
     ? undefined
     : [];
+
+  const winShares = sharedWindows();
+  let offeredWindows: SharedWindowInfo[] = [];
+  if (winShares.length > 0) {
+    try {
+      const listed = await call<WindowInfo[]>(source(), "LISTWINDOWS");
+      cachedWindows = Array.isArray(listed) ? listed : [];
+    } catch {
+      // Keep last known window geometry if LISTWINDOWS transiently fails.
+    }
+    offeredWindows = winShares.flatMap((shared) => {
+      const win = cachedWindows.find((w) => w.id === shared.windowId);
+      if (!win) return [];
+      return [{
+        id: win.id,
+        title: win.title,
+        app: win.app,
+        width: win.width,
+        height: win.height,
+        ...(win.region ? { region: win.region } : {}),
+        input: shared.input,
+        ...(shared.worldPose ? { worldPose: shared.worldPose } : {}),
+      }];
+    });
+  } else {
+    cachedWindows = [];
+  }
+
   const wholeWorldPose = offered === undefined
-    ? state.shared.find((s) => s.worldPose != null)?.worldPose
+    ? monitors.find((s) => s.worldPose != null)?.worldPose
     : undefined;
   return {
     ...described,
     // Input comes here, with the proof, and goes on to the local desktopInput.
     input: state.id,
     ...(offered ? { screens: offered } : {}),
+    ...(offeredWindows.length > 0 ? { windows: offeredWindows } : {}),
     ...(offered === undefined
       ? {
-        wholeInput: state.all || state.shared.some((s) => s.input),
+        wholeInput: state.all || monitors.some((s) => s.input),
         ...(wholeWorldPose ? { wholeWorldPose } : {}),
       }
       : {}),
@@ -137,27 +195,40 @@ async function describe(): Promise<DesktopDescription> {
 }
 
 function allowedMonitor(monitor: unknown): boolean {
-  if (!screens) return state.all || state.shared.length > 0;
+  if (!screens) return state.all || sharedMonitors().length > 0;
   const screen = screens.find((s) => s.index === monitor);
   return screen ? sharedAs(screen.name) !== null : false;
 }
 
-/** Whether an input event lands on a screen that may be driven. */
+function allowedWindow(windowId: unknown): boolean {
+  if (typeof windowId !== "string" || !windowId) return false;
+  return sharedAsWindow(windowId) !== null;
+}
+
+/** Whether an input event lands on a screen or window that may be driven. */
 function inputAllowed(event: InputEvent): boolean {
   const anyInput = state.all || state.shared.some((s) => s.input);
   if (!anyInput) return false;
-  if (!screens) return true;
   if (!("x" in event) || event.x === undefined || event.y === undefined) return true;
   const { x, y } = event as { x: number; y: number };
-  return screens.some((s) =>
-    sharedAs(s.name)?.input === true &&
-    x >= s.region.x && x <= s.region.x + s.region.width &&
-    y >= s.region.y && y <= s.region.y + s.region.height
+  const inMonitor = screens
+    ? screens.some((s) =>
+      sharedAs(s.name)?.input === true &&
+      x >= s.region.x && x <= s.region.x + s.region.width &&
+      y >= s.region.y && y <= s.region.y + s.region.height
+    )
+    : (state.all || sharedMonitors().some((s) => s.input));
+  if (inMonitor) return true;
+  return cachedWindows.some((w) =>
+    w.region != null &&
+    sharedAsWindow(w.id)?.input === true &&
+    x >= w.region.x && x <= w.region.x + w.region.width &&
+    y >= w.region.y && y <= w.region.y + w.region.height
   );
 }
 
 /** Stop what is no longer shared. */
-async function settle(): Promise<void> {
+async function settle(removedWindowIds: string[] = []): Promise<void> {
   if (!state.source) return;
   if (!state.all && state.shared.length === 0) {
     await call(state.source, "STOP").catch(() => {});
@@ -167,6 +238,11 @@ async function settle(): Promise<void> {
   for (const screen of screens ?? []) {
     if (!sharedAs(screen.name)) {
       await call(state.source, "STOP", { monitor: screen.index }).catch(() => {});
+    }
+  }
+  for (const windowId of removedWindowIds) {
+    if (!sharedAsWindow(windowId)) {
+      await call(state.source, "STOP", { window: windowId }).catch(() => {});
     }
   }
 }
@@ -180,21 +256,40 @@ function source(): string {
 const guardedHandlers: Record<string, (payload: unknown) => unknown> = {
   DESCRIBE: () => describe(),
   START: (payload) => {
-    const monitor = (payload as { monitor?: number } | null)?.monitor;
+    const req = payload as Partial<SourceRequest> | null;
+    if (typeof req?.window === "string" && req.window) {
+      if (!allowedWindow(req.window)) throw new Error("that window is not shared");
+      return call(source(), "START", {
+        ...req,
+        host: "127.0.0.1",
+        port: MEDIA_PORT,
+        share: true,
+      });
+    }
+    const monitor = req?.monitor;
     if (!allowedMonitor(monitor ?? screens?.find((s) => s.primary)?.index ?? 0)) {
       throw new Error("that display is not shared");
     }
     return call(source(), "START", {
-      ...(payload as Partial<SourceRequest> | null),
+      ...req,
       host: "127.0.0.1",
       port: MEDIA_PORT,
       share: true,
     });
   },
-  FEED: (payload) =>
-    allowedMonitor((payload as { monitor?: number } | null)?.monitor ?? 0)
-      ? call(source(), "FEED", payload)
-      : null,
+  FEED: (payload) => {
+    const req = payload as { monitor?: number; window?: string } | null;
+    if (typeof req?.window === "string" && req.window) {
+      return allowedWindow(req.window) ? call(source(), "FEED", payload) : null;
+    }
+    return allowedMonitor(req?.monitor ?? 0) ? call(source(), "FEED", payload) : null;
+  },
+  FOCUSWINDOW: (payload) => {
+    const windowId = (payload as { window?: unknown } | null)?.window;
+    if (typeof windowId !== "string" || !windowId) return false;
+    if (sharedAsWindow(windowId)?.input !== true) return false;
+    return call(source(), "FOCUSWINDOW", { window: windowId });
+  },
   STOP: (payload) => call(source(), "STOP", payload),
   AUDIO: () =>
     state.all || state.shared.length > 0
@@ -274,21 +369,30 @@ new PostMan(
       if (next) PostMan.setTopic(next);
       return true;
     },
-    /** Share these screens (the scene's shared displays). */
+    /** Share these screens and/or windows (the scene's shared displays). */
     SETSHARED: async (payload: { screens: SharedScreen[] }) => {
       const next = (payload?.screens ?? []).filter((s) => typeof s?.name === "string")
         .map((s) => ({
+          ...(s.kind ? { kind: s.kind } : {}),
+          ...(s.windowId ? { windowId: s.windowId } : {}),
           name: s.name,
           input: s.input === true,
           ...(s.worldPose ? { worldPose: s.worldPose } : {}),
         }));
-      const prevSet = JSON.stringify(state.shared.map((s) => ({ name: s.name, input: s.input })));
-      const nextSet = JSON.stringify(next.map((s) => ({ name: s.name, input: s.input })));
+      const prevWindowIds = sharedWindows().map((w) => w.windowId!);
+      const keyOf = (s: SharedScreen) => ({
+        kind: s.kind ?? "monitor",
+        windowId: s.windowId ?? null,
+        name: s.name,
+        input: s.input,
+      });
+      const prevSet = JSON.stringify(state.shared.map(keyOf));
+      const nextSet = JSON.stringify(next.map(keyOf));
       if (JSON.stringify(next) === JSON.stringify(state.shared)) return true;
       state.shared = next;
       if (prevSet !== nextSet) {
         console.log(`[displayShare] sharing ${next.map((s) => s.name).join(", ") || "nothing"}`);
-        await settle();
+        await settle(prevWindowIds);
       }
       return true;
     },
