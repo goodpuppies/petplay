@@ -196,8 +196,8 @@ type WebXRSceneProps = {
 
 /** VRC camera OSC debug markers; off unless `PETPLAY_VRC_CAMERA_DEBUG=1`. */
 const SHOW_VRC_CAMERA_DEBUG = Deno.env.get("PETPLAY_VRC_CAMERA_DEBUG") === "1";
-/** Tracks the last window focused via `FOCUSWINDOW` so clicks on a background window wait for it to raise first. */
-let lastFocusedWindowId: string | null = null;
+/** Tracks the last window focused via `FOCUSWINDOW` and when, so clicks raise background windows first. */
+let lastFocusedWindow: { id: string; at: number } | null = null;
 
 /** Visible while calibrating or recording; recording views filter this mesh before delivery. */
 function VrcCameraCalibrationBall() {
@@ -1596,7 +1596,9 @@ function DisplaySpatialNodeView({
             ]);
             // Give KWin a frame to raise the window before the uinput click lands.
             await new Promise((r) => setTimeout(r, 25));
-            lastFocusedWindowId = target.focusWindow ?? null;
+            lastFocusedWindow = target.focusWindow
+              ? { id: target.focusWindow, at: Date.now() }
+              : null;
           } catch { /* source shutting down */ }
         }
         : undefined;
@@ -1628,13 +1630,16 @@ function DisplaySpatialNodeView({
     if (event.kind === "button" && event.pressed) {
       focusKeyboard(node.id, remoteInput?.onKey ?? null);
       if (remoteInput?.focusWindow && remoteInput.focusWindowId) {
-        if (lastFocusedWindowId !== remoteInput.focusWindowId) {
+        const recentlyFocused = lastFocusedWindow?.id === remoteInput.focusWindowId &&
+          Date.now() - lastFocusedWindow.at < 800;
+        if (!recentlyFocused) {
           const raise = remoteInput.focusWindow();
           pendingFocusClickRef.current = raise.then(() => sendMouse(mapped));
           return;
         }
+        lastFocusedWindow = { id: remoteInput.focusWindowId, at: Date.now() };
       } else {
-        lastFocusedWindowId = null;
+        lastFocusedWindow = null;
       }
     } else if (event.kind === "button" && !event.pressed) {
       // Keep button-up ordered after any delayed focus-then-button-down.
