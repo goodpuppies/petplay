@@ -129,20 +129,21 @@ new PostMan(
       return { topic: payload.topic };
     },
     /** Host: authenticate a peer liaison, share service contacts, and return the directory. */
-    HELLO: async (payload: { secret: string; peer: ActorId }) => {
+    HELLO: async (payload: { secret: string; peer?: ActorId }) => {
       if (state.role !== "host") throw new Error("liaison is not in host role");
       if (!sameSecret(payload?.secret, secret)) {
         state.rejected++;
         throw new Error("not part of this session");
       }
-      if (typeof payload.peer !== "string" || !payload.peer) {
-        throw new Error("HELLO needs {peer}");
+      const peer = payload.peer ?? PostMan.sender;
+      if (typeof peer !== "string" || !peer) {
+        throw new Error("HELLO needs sender or {peer}");
       }
-      peers.add(payload.peer);
+      peers.add(peer);
       state.peers = peers.size;
       const ids = serviceIds(services);
       if (ids.length > 0) {
-        await PostMan.PostMessage({ target: payload.peer, type: "ADDCONTACT", payload: ids }, true);
+        await PostMan.PostMessage({ target: peer, type: "ADDCONTACT", payload: ids }, true);
       }
       return { services };
     },
