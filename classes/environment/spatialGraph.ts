@@ -571,10 +571,9 @@ export function spawnHingedDisplay(
     ? ["right", "left", "top", "bottom"]
     : [preferredSide];
   const slot = sideOrder
+    .filter((side) => !isEdgeDirectlyHinged(graph, parentId, side))
     .map((side) => graph.hitboxes[`${parentId}-${side}-slot`])
-    .find((candidate) =>
-      candidate?.accepts.includes("display") && !isAttachmentSlotOccupied(graph, candidate.id)
-    );
+    .find((candidate) => candidate?.accepts.includes("display"));
   if (slot == null) return current;
 
   const ordinal = graph.nextDisplayOrdinal++;
@@ -985,9 +984,15 @@ export function hasAvailableDisplayAttachmentSlot(
   graph: SpatialGraph,
   displayId: SpatialNodeId,
 ): boolean {
-  return displayAttachmentSlots(graph, displayId).some((slot) =>
-    slot.accepts.includes("display") && !isAttachmentSlotOccupied(graph, slot.id)
-  );
+  return displayAttachmentSlots(graph, displayId).some((slot) => {
+    const side = slot.id.match(/-(left|right|top|bottom)-slot$/)?.[1] as
+      | SpatialAttachmentSide
+      | undefined;
+    return slot.accepts.includes("display") &&
+      (side != null
+        ? !isEdgeDirectlyHinged(graph, displayId, side)
+        : !isAttachmentSlotOccupied(graph, slot.id));
+  });
 }
 
 /** True while a node hangs from the display's bottom slot (the keyboard, by default). */
