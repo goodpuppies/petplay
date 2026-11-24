@@ -32,12 +32,105 @@ const mods = (e: KeyboardEvent | MouseEvent) => ({
   metaKey: e.metaKey,
 });
 
+async function fetchSessionFromSite(): Promise<{ id: string; secret: string } | null> {
+  const sessionUrl = new URL("./session", location.href).href;
+  const tryPost = async (password: string) => {
+    const res = await fetch(sessionUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const data = await res.json() as { id?: unknown; secret?: unknown };
+      if (typeof data.id === "string" && typeof data.secret === "string") {
+        return { id: data.id, secret: data.secret };
+      }
+    }
+    return null;
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(sessionUrl, { cache: "no-store" });
+  } catch {
+    return null;
+  }
+  if (res.ok) {
+    const data = await res.json() as { id?: unknown; secret?: unknown };
+    if (typeof data.id === "string" && typeof data.secret === "string") {
+      return { id: data.id, secret: data.secret };
+    }
+    return null;
+  }
+  if (res.status !== 401) return null;
+
+  // Password-protected site: try saved password for this tab first, otherwise show prompt.
+  const saved = sessionStorage.getItem("petplay_rdp_password");
+  if (saved) {
+    const creds = await tryPost(saved);
+    if (creds) return creds;
+    sessionStorage.removeItem("petplay_rdp_password");
+  }
+
+  return await new Promise<{ id: string; secret: string }>((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;" +
+      "background:#0f1218;z-index:9999;font-family:system-ui,sans-serif;color:#f1f5f9;";
+    const form = document.createElement("form");
+    form.style.cssText =
+      "display:flex;flex-direction:column;gap:12px;padding:24px;border-radius:12px;" +
+      "background:#181c24;border:1px solid #2f3747;min-width:280px;";
+    const title = document.createElement("div");
+    title.textContent = "PetPlay RDP";
+    title.style.cssText = "font-size:16px;font-weight:600;";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.placeholder = "Password";
+    input.autocomplete = "current-password";
+    input.style.cssText =
+      "padding:8px 10px;border-radius:6px;border:1px solid #334155;" +
+      "background:#0f172a;color:#f8fafc;font-size:14px;outline:none;";
+    const err = document.createElement("div");
+    err.style.cssText = "color:#f87171;font-size:12px;min-height:16px;";
+    const btn = document.createElement("button");
+    btn.type = "submit";
+    btn.textContent = "Connect";
+    btn.style.cssText =
+      "padding:8px 12px;border-radius:6px;border:none;background:#3b82f6;" +
+      "color:#fff;font-size:14px;font-weight:500;cursor:pointer;";
+    form.append(title, input, err, btn);
+    overlay.append(form);
+    document.body.append(overlay);
+    input.focus();
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      btn.disabled = true;
+      const pw = input.value;
+      const creds = await tryPost(pw);
+      btn.disabled = false;
+      if (creds) {
+        sessionStorage.setItem("petplay_rdp_password", pw);
+        overlay.remove();
+        resolve(creds);
+      } else {
+        err.textContent = "Wrong password";
+        input.select();
+      }
+    });
+  });
+}
+
 async function main(): Promise<void> {
-  if (!parsed) {
+  const session = parsed ?? await fetchSessionFromSite();
+  if (!session) {
     show("Open this page with the session link (…/#<id>.<secret>).");
     return;
   }
-  const { id, secret } = parsed;
+  const { id, secret } = session;
   const topic = sessionTopic(id);
   show("starting…");
   // Loaded at runtime, not bundled: wasm-bindgen's module fetches its .wasm next to itself.

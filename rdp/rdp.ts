@@ -30,7 +30,7 @@ export type RdpStart = {
   /** Encoder (WebTransport) port; default 4460. */
   mediaPort?: number;
   /** Serve the page here; default an ephemeral port on `host`. False: host it elsewhere. */
-  site?: { port?: number } | false;
+  site?: { port?: number; password?: string } | false;
   /** Without capture or input (testing, or a view-only session). */
   capture?: boolean;
   input?: boolean;
@@ -180,12 +180,17 @@ new PostMan(state, {
     let base = "";
     if (payload.site !== false) {
       const site = actors.site = resolveActorId(await PostMan.create("./site.ts", import.meta.url));
-      base = await call<string>(site, "SERVE", { hostname: host, port: payload.site?.port });
+      base = await call<string>(site, "SERVE", {
+        hostname: host,
+        port: payload.site?.port,
+        session: { id, secret },
+        password: payload.site?.password,
+      });
     }
     state.topic = topic;
     state.actors = actors;
     state.link = `${base}#${formatSessionFragment(id, secret)}`;
-    return { topic, link: state.link, actors };
+    return { topic, link: state.link, url: base || null, actors };
   },
   __HEALTH__: () => ({ ...state }),
 } as const);

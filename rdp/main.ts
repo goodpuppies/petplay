@@ -16,26 +16,41 @@ import { irohCarrier } from "../classes/irohCarrier.ts";
 import { tailnetAddress } from "./classes/tailnet.ts";
 
 const args = parseArgs(Deno.args, {
-  string: ["host", "media-port", "site-port", "topics", "relay", "vrchat-socket", "vrchat-layout"],
+  string: [
+    "host",
+    "media-port",
+    "site-port",
+    "password",
+    "topics",
+    "relay",
+    "vrchat-socket",
+    "vrchat-layout",
+  ],
   boolean: ["capture", "input", "site", "compositor", "vrchat", "watch"],
   default: { capture: true, input: true, site: true, compositor: false, vrchat: false, watch: false },
   negatable: ["capture", "input", "site"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
 const host = args.host ?? await tailnetAddress() ?? "127.0.0.1";
+const sitePassword = args.password ?? Deno.env.get("PETPLAY_RDP_PASSWORD") ?? undefined;
 
 const postal = new PostalService();
 const iroh = irohCarrier({ relay: args.relay });
 postal.registerRemoteCarrier(iroh);
 postal.initSignalingClient(topics);
 const rdp = await postal.add("./rdp.ts", import.meta.url);
-const { link, actors } = await postal.PostMessage({
+const { link, url, actors } = await postal.PostMessage({
   target: rdp,
   type: "START",
   payload: {
     host,
     mediaPort: args["media-port"] ? Number(args["media-port"]) : undefined,
-    site: args.site ? { port: args["site-port"] ? Number(args["site-port"]) : undefined } : false,
+    site: args.site
+      ? {
+        port: args["site-port"] ? Number(args["site-port"]) : undefined,
+        password: sitePassword,
+      }
+      : false,
     capture: args.capture,
     input: args.input,
     mode: args.compositor ? "compositor" : "classic",
@@ -46,14 +61,18 @@ const { link, actors } = await postal.PostMessage({
       }
       : false,
   },
-}, true) as { link: string; actors: Record<string, ActorId> };
+}, true) as { link: string; url: string | null; actors: Record<string, ActorId> };
 
 // Options the page needs to find the same topic server and relay.
 const query = new URLSearchParams();
 if (args.topics) query.set("topics", args.topics);
 if (args.relay) query.set("relay", args.relay);
-const [base, secret] = link.split("#");
-console.log(`\nOpen: ${base}${query.size ? `?${query}` : ""}#${secret}\n`);
+if (url) {
+  console.log(`\nOpen: ${url}${query.size ? `?${query}` : ""}${sitePassword ? " (password protected)" : ""}\n`);
+} else {
+  const [base, secret] = link.split("#");
+  console.log(`\nOpen: ${base}${query.size ? `?${query}` : ""}#${secret}\n`);
+}
 
 if (args.watch && actors.ui) {
   const uiActor = actors.ui;
