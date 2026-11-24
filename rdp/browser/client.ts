@@ -94,6 +94,15 @@ let secret = "";
 type WebRtcFeed = { key: string; transport: Transport | null; handle: WebRtcVideoClientHandle | null };
 const webrtcFeeds = new Map<string, WebRtcFeed>();
 let latestFeeds: Record<string, FeedInfo> = {};
+(globalThis as Record<string, unknown>).__rdpTabDebug = {
+  replica,
+  view,
+  webrtcFeeds,
+  getMedia: () => media,
+  getFeeds: () => latestFeeds,
+  getViewport: () => viewport,
+  getRenderer: () => renderer,
+};
 
 const hasWebTransportVideo = () =>
   typeof WebTransport !== "undefined" && typeof VideoDecoder !== "undefined";

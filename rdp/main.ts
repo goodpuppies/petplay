@@ -20,15 +20,16 @@ const args = parseArgs(Deno.args, {
     "host",
     "media-port",
     "site-port",
+    "repl-port",
     "password",
     "topics",
     "relay",
     "vrchat-socket",
     "vrchat-layout",
   ],
-  boolean: ["capture", "input", "site", "compositor", "vrchat", "watch"],
+  boolean: ["capture", "input", "site", "compositor", "vrchat", "watch", "repl"],
   default: { capture: true, input: true, site: true, compositor: false, vrchat: false, watch: false },
-  negatable: ["capture", "input", "site"],
+  negatable: ["capture", "input", "site", "repl"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
 const host = args.host ?? await tailnetAddress() ?? "127.0.0.1";
@@ -72,6 +73,23 @@ if (url) {
 } else {
   const [base, secret] = link.split("#");
   console.log(`\nOpen: ${base}${query.size ? `?${query}` : ""}#${secret}\n`);
+}
+
+const enableRepl = args.repl ?? (args.watch || Boolean(args["repl-port"]));
+if (enableRepl) {
+  const replPort = args["repl-port"] ?? Deno.env.get("PETPLAY_RDP_REPL_PORT") ?? "3988";
+  Deno.env.set("PETPLAY_AGENT_REPL_PORT", replPort);
+  try {
+    const repl = await postal.add("../petplay/agentRepl.ts", import.meta.url);
+    await postal.PostMessage({
+      target: repl,
+      type: "REGISTER_ACTORS",
+      payload: { rdp, ...actors },
+    }, true);
+    console.log(`[rdp] agent REPL listening on http://127.0.0.1:${replPort}`);
+  } catch (error) {
+    console.warn(`[rdp] agent REPL unavailable on port ${replPort}:`, error);
+  }
 }
 
 if (args.watch && actors.ui) {

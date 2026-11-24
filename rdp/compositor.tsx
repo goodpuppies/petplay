@@ -76,6 +76,7 @@ type WallpaperEntry = {
 
 type TabSession = {
   id: string;
+  peer: string;
   tab: TransportMessages;
   feed: SceneFeed;
   lastCamera: string;
@@ -101,6 +102,7 @@ const state = actorState({
   name: UI_ACTOR_NAME,
   topic: null as string | null,
   viewers: 0,
+  tabPeers: [] as string[],
   viewport: null as { width: number; height: number; dpr: number } | null,
   frames: 0,
   domEvents: 0,
@@ -147,6 +149,7 @@ function broadcastMedia(): void {
 
 function syncState(): void {
   state.viewers = tabs.size;
+  state.tabPeers = [...tabs.values()].map((t) => t.peer);
   state.windowCount = windows.length;
   state.wallpaper = wallpaper?.label ?? null;
 }
@@ -514,7 +517,13 @@ async function onTab(transport: Transport): Promise<void> {
   }
   const id = `tab-${nextTabSeq++}`;
   const tab = messages(transport);
-  const session: TabSession = { id, tab, feed: new SceneFeed(), lastCamera: "" };
+  const session: TabSession = {
+    id,
+    peer: String(transport.info.peer),
+    tab,
+    feed: new SceneFeed(),
+    lastCamera: "",
+  };
   tabs.set(id, session);
   syncState();
 

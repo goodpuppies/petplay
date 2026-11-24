@@ -190,7 +190,6 @@ export function FloatingWindow({
           borderWidth={focused ? 2 : 1}
           borderColor={focused ? "#60a5fa" : "#2f3747"}
           borderRadius={8}
-          onClick={(event) => event.stopPropagation()}
         >
           {/* Draggable titlebar */}
           <Container
@@ -216,8 +215,7 @@ export function FloatingWindow({
                 origY: win.y,
               };
             }}
-            onClick={(event) => event.stopPropagation()}
-        onPointerMove={(event) => {
+            onPointerMove={(event) => {
               if (!dragRef.current) return;
               event.stopPropagation();
               const native = event.nativeEvent as unknown as { offsetX: number; offsetY: number };
@@ -393,8 +391,7 @@ export function FloatingWindow({
               origH: win.height,
             };
           }}
-          onClick={(event) => event.stopPropagation()}
-        onPointerMove={(event) => {
+          onPointerMove={(event) => {
             if (!resizeRef.current) return;
             event.stopPropagation();
             const native = event.nativeEvent as unknown as { offsetX: number; offsetY: number };
