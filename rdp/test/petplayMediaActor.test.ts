@@ -58,6 +58,46 @@ Deno.test({
         sockGone = true;
       }
       assertEquals(sockGone, true);
+
+      // The same petplayMedia@* native actor also hosts GPU WindowAtlas feeds.
+      const atlasPort = 46000 + Math.floor(Math.random() * 10000);
+      const atlasInfo = await postal.PostMessage({
+        target: mediaActorId,
+        type: "ATLAS_START",
+        payload: {
+          id: "test-atlas",
+          host: "127.0.0.1",
+          port: atlasPort,
+          width: 1280,
+          height: 720,
+          fps: 30,
+        },
+      }, true) as { id: string; host: string; port: number; fingerprint: string; webrtc?: boolean };
+      assertEquals(atlasInfo.id, "test-atlas");
+      assertEquals(atlasInfo.port, atlasPort);
+      assertExists(atlasInfo.fingerprint);
+      assertEquals(atlasInfo.webrtc, true);
+
+      const withAtlas = await postal.PostMessage({
+        target: mediaActorId,
+        type: "LIST_FEEDS",
+        payload: null,
+      }, true) as Array<{ id: string; kind: string }>;
+      assertEquals(withAtlas.length, 1);
+      assertEquals(withAtlas[0]!.id, "test-atlas");
+      assertEquals(withAtlas[0]!.kind, "atlas");
+
+      await postal.PostMessage({
+        target: mediaActorId,
+        type: "STOP_FEED",
+        payload: { id: "test-atlas" },
+      }, true);
+      const empty = await postal.PostMessage({
+        target: mediaActorId,
+        type: "LIST_FEEDS",
+        payload: null,
+      }, true) as unknown[];
+      assertEquals(empty.length, 0);
     } finally {
       await postal.shutdownAll({ bestEffort: true });
       await Deno.remove(sock).catch(() => {});

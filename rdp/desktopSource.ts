@@ -237,6 +237,7 @@ async function ensureAtlas(host: string, basePort: number, fps?: number): Promis
     host,
     port: basePort + ATLAS_PORT_OFFSET,
     fps: fps ?? 30,
+    subscriber: state.id,
   }).then((started) => {
     atlas = started;
     started.onLayout = (layout) => notifyAtlasLayout(layout);
@@ -630,6 +631,8 @@ async function startEncoder(
       // A household feed also gets a share code: the Windows receiver takes nothing else, and
       // it reaches past NATs and firewalls.
       share: request.share || guard.active,
+      actorFeedId: `desktop-${monitor}`,
+      subscriber: state.id,
     });
   const started: Running = {
     encoder,
@@ -639,7 +642,9 @@ async function startEncoder(
       port: encoder.info.port,
       fingerprint: encoder.info.fingerprint,
       ...(encoder.info.code ? { code: encoder.info.code } : {}),
-      ...(encoder.info.webrtcOfferUrl ? { webrtc: true } : {}),
+      ...(("webrtc" in encoder.info && encoder.info.webrtc) || encoder.info.webrtcOfferUrl
+        ? { webrtc: true }
+        : {}),
     },
   };
   running.set(monitor, started);
@@ -731,6 +736,8 @@ async function startLinuxOutputFeed(
       fps,
       bitrate: payload?.bitrate ?? feedDefaults?.bitrate,
       share: payload?.share || guard.active,
+      actorFeedId: `output-${monitor}`,
+      subscriber: state.id,
     });
     const streamer = await ensureScreenStreamer();
     await PostMan.PostMessage({
@@ -749,7 +756,9 @@ async function startLinuxOutputFeed(
       port: encoder.info.port,
       fingerprint: encoder.info.fingerprint,
       ...(encoder.info.code ? { code: encoder.info.code } : {}),
-      ...(encoder.info.webrtcOfferUrl ? { webrtc: true } : {}),
+      ...(("webrtc" in encoder.info && encoder.info.webrtc) || encoder.info.webrtcOfferUrl
+        ? { webrtc: true }
+        : {}),
     };
     outputFeeds.set(monitor, { name: screen.name, encoder, info });
     return info;
@@ -1172,6 +1181,30 @@ new PostMan(
       await stopFeed(Number.isInteger(payload?.monitor) ? payload!.monitor : undefined);
       return true;
     }),
+    /** Pushed by `petplayMedia@*` when the GPU window atlas recomputes slot crops. */
+    ATLAS_LAYOUT: (payload: { id?: string; layout?: AtlasLayoutEvent }) => {
+      if (payload?.layout && atlas) {
+        atlas.handleLayout(payload.layout);
+      }
+      return true;
+    },
+    /** Pushed by `petplayMedia@*` if a hosted socket feed exits unexpectedly. */
+    FEED_ENDED: (payload: { id?: string }) => {
+      const id = payload?.id;
+      if (!id) return true;
+      if (id.startsWith("desktop-")) {
+        const mon = Number(id.slice("desktop-".length));
+        const feed = running.get(mon);
+        if (feed && feed.encoder instanceof DesktopMediaFeed) {
+          feed.encoder.notifyActorEnded();
+        }
+      } else if (id.startsWith("output-")) {
+        const mon = Number(id.slice("output-".length));
+        const of = outputFeeds.get(mon);
+        if (of) of.encoder.notifyActorEnded();
+      }
+      return true;
+    },
     __SHUTDOWN__: async () => {
       shuttingDown = true;
       frameSink = null;

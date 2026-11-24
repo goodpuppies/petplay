@@ -10,6 +10,8 @@
  * helper restarting (fps change, portal hiccup) only reconnects; if the worker itself exits, the
  * stream starts another on the same socket path (`directory`), which the helper finds again.
  */
+import { type ActorId, PostMan } from "../submodules/stageforge/mod.ts";
+import { ensurePetplayMedia } from "../rdp/classes/petplayMediaActor.ts";
 import { petplayMediaCommand, petplayMediaPath } from "./petplayMediaPath.ts";
 
 export type MediaFeedInfo = {
@@ -20,7 +22,9 @@ export type MediaFeedInfo = {
   /** With `share`: the iroh share code, reachable across the internet (and the Windows receiver's
    * only way in). */
   code?: string;
-  /** Loopback-only WebRTC SDP offer endpoint on this worker (`http://127.0.0.1:<port>/offer`). */
+  /** True when the feed can answer WebRTC H.264 SDP offers (`acceptWebRtcOffer`). */
+  webrtc?: boolean;
+  /** Loopback-only WebRTC SDP offer endpoint on standalone workers (`http://127.0.0.1:<port>/offer`). */
   webrtcOfferUrl?: string;
 };
 
@@ -34,17 +38,32 @@ export type DesktopMediaOptions = {
   directory?: string;
   /** Also announce an iroh share code (`--iroh-share`), for receivers off the LAN or tailnet. */
   share?: boolean;
+  /**
+   * When set (inside a StageForge actor), host this feed in the shared `petplayMedia@*` native
+   * actor (`START_SOCKET_FEED`) under this id instead of spawning a standalone child process.
+   */
+  actorFeedId?: string;
+  /** Optional StageForge subscriber actor id for `FEED_ENDED` notifications in actor mode. */
+  subscriber?: string;
 };
 
 const READY_TIMEOUT_MS = 10_000;
 /** A share code waits for a relay connection and a direct address, up to 15 s by itself. */
 const SHARE_READY_TIMEOUT_MS = 25_000;
 
+type ActorBackend = {
+  actorId: ActorId;
+  feedId: string;
+  exited: Promise<Deno.CommandStatus>;
+  resolveExited: (status: Deno.CommandStatus) => void;
+};
+
 export class DesktopMediaFeed {
   private constructor(
     readonly socketPath: string,
     readonly info: MediaFeedInfo,
-    private readonly child: Deno.ChildProcess,
+    private readonly child: Deno.ChildProcess | null,
+    private readonly actor: ActorBackend | null,
     private readonly directory: string,
     readonly log: string[],
   ) {}
@@ -63,6 +82,56 @@ export class DesktopMediaFeed {
     const socketPath = `${directory}/frames.sock`;
     // A worker that died leaves its socket behind, and a new one refuses an existing path.
     await Deno.remove(socketPath).catch(() => {});
+
+    if (options.actorFeedId) {
+      try {
+        const actorId = await ensurePetplayMedia();
+        const res = await PostMan.PostMessage({
+          target: actorId,
+          type: "START_SOCKET_FEED",
+          payload: {
+            id: options.actorFeedId,
+            socketPath,
+            host: options.host,
+            port: options.port,
+            layout: "mono",
+            fps: options.fps ?? 30,
+            maxFps: options.fps ?? 30,
+            bitrate: options.bitrate ?? 8_000_000,
+            persist: true,
+            share: Boolean(options.share),
+            ...(options.subscriber ? { subscriber: options.subscriber } : {}),
+          },
+        }, true) as {
+          id: string;
+          socketPath: string;
+          port: number;
+          fingerprint: string;
+          code?: string;
+          webrtc?: boolean;
+        };
+        let resolveExited!: (status: Deno.CommandStatus) => void;
+        const exited = new Promise<Deno.CommandStatus>((resolve) => {
+          resolveExited = resolve;
+        });
+        return new DesktopMediaFeed(
+          res.socketPath,
+          {
+            port: res.port,
+            fingerprint: res.fingerprint,
+            ...(res.code ? { code: res.code } : {}),
+            ...(res.webrtc ? { webrtc: true } : {}),
+          },
+          null,
+          { actorId, feedId: res.id, exited, resolveExited },
+          directory,
+          [],
+        );
+      } catch (error) {
+        if (created) await Deno.remove(directory, { recursive: true }).catch(() => {});
+        throw error;
+      }
+    }
     const binary = petplayMediaPath();
     const child = petplayMediaCommand([
       socketPath,
@@ -125,9 +194,10 @@ export class DesktopMediaFeed {
           port: options.port,
           fingerprint,
           ...(code ? { code } : {}),
-          ...(webrtcOfferUrl ? { webrtcOfferUrl } : {}),
+          ...(webrtcOfferUrl ? { webrtc: true, webrtcOfferUrl } : {}),
         },
         child,
+        null,
         directory,
         log,
       );
@@ -142,6 +212,14 @@ export class DesktopMediaFeed {
 
   /** Exchange a browser's WebRTC SDP offer for this worker's ICE-lite SDP answer. */
   async acceptWebRtcOffer(offerSdp: string): Promise<string> {
+    if (this.actor) {
+      const res = await PostMan.PostMessage({
+        target: this.actor.actorId,
+        type: "WEBRTC_OFFER",
+        payload: { id: this.actor.feedId, sdp: offerSdp },
+      }, true) as { sdp: string };
+      return res.sdp;
+    }
     const url = this.info.webrtcOfferUrl;
     if (!url) throw new Error("petplay-media worker has no WebRTC signaling endpoint");
     const response = await fetch(url, {
@@ -154,18 +232,34 @@ export class DesktopMediaFeed {
     return text;
   }
 
+  /** Called by the owning actor when `petplayMedia@*` pushes `FEED_ENDED` for this feed. */
+  notifyActorEnded(): void {
+    this.actor?.resolveExited({ success: false, code: 1, signal: null });
+  }
+
   /** Resolves when the worker exits. */
   get exited(): Promise<Deno.CommandStatus> {
-    return this.child.status;
+    if (this.actor) return this.actor.exited;
+    return this.child!.status;
   }
 
   async stop(): Promise<void> {
+    if (this.actor) {
+      await PostMan.PostMessage({
+        target: this.actor.actorId,
+        type: "STOP_FEED",
+        payload: { id: this.actor.feedId },
+      }, true).catch(() => {});
+      this.actor.resolveExited({ success: true, code: 0, signal: null });
+      await Deno.remove(this.directory, { recursive: true }).catch(() => {});
+      return;
+    }
     try {
-      this.child.kill("SIGTERM");
+      this.child!.kill("SIGTERM");
     } catch { /* already gone */ }
-    await Promise.race([this.child.status, new Promise((r) => setTimeout(r, 2000))]);
+    await Promise.race([this.child!.status, new Promise((r) => setTimeout(r, 2000))]);
     try {
-      this.child.kill("SIGKILL");
+      this.child!.kill("SIGKILL");
     } catch { /* exited */ }
     await Deno.remove(this.directory, { recursive: true }).catch(() => {});
   }
