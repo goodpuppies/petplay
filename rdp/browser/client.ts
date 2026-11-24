@@ -13,7 +13,7 @@
  *   feed's picture size back, like a video element's `loadedmetadata`;
  * - forwards the page's viewport and DOM events.
  */
-import * as THREE from "npm:three@0.186.1";
+import * as THREE from "npm:three@0.187.0";
 import {
   actorState,
   messages,

@@ -5,7 +5,7 @@
  * the scene stream viewer (`viewer.ts`) and the RDP tab client (`rdp/browser/client.ts`). Works in a
  * page or a worker (textures decode through `createImageBitmap`).
  */
-import * as THREE from "npm:three@0.186.1";
+import * as THREE from "npm:three@0.187.0";
 import {
   type GeometryData,
   type LightData,

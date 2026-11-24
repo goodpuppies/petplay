@@ -46,7 +46,7 @@
       "gl-matrix": ["./node_modules/gl-matrix/index.d.ts"],
       "webxr-layers-polyfill": ["./node_modules/webxr-layers-polyfill"],
       // Inline npm: specifiers that reach the real package behind an alias above
-      "npm:three@0.186.1": ["./node_modules/@types/three/build/three.module.d.ts"],
+      "npm:three@0.187.0": ["./node_modules/@types/three/build/three.module.d.ts"],
       "npm:@react-three/fiber@10.0.0-alpha.5": ["./node_modules/@react-three/fiber/dist/index.d.ts"],
       "npm:@react-three/fiber@10.0.0-alpha.5/webgpu": ["./node_modules/@react-three/fiber/dist/webgpu/index.d.ts"],
       "npm:@number0/iroh": ["./node_modules/@number0/iroh/index.d.ts"]

@@ -42,6 +42,17 @@ All of these come in through the `submodules/threewebxrwebgpudeno` workspace mem
   the perf pass).
   Server RSS went from about 344 to 313 MB.
 
+- 2026-11-24: three → 0.187.0 (`@types/three` 0.187.0). No new type errors (only the vendored
+  ones, unchanged), 460/462 tests (the two failures predate it), raythree extraction tests pass.
+  Deps now live in `package.json`; the browser bundles pin `npm:three@0.187.0`.
+  uikit v1.0.78 was tried and backed out: upstream split `panel-material.ts`,
+  `instanced-panel*.ts` and `interaction-panel-mesh.ts` into `panel/material/*`,
+  `panel/instance/*` and `panel/interaction/*`, which `local-uikit` (our WebGPU/raylib layer,
+  about 200 lines of changes on the old panel files) imports directly; property values can now
+  be numeric strings; and it needs `zod` and generated `src/flex/schema.ts` (run
+  `scripts/flex-generate-setter.ts`; `setup-submodules.ts` does). Porting `local-uikit` onto the
+  new modules is its own task, verified in VR.
+
 ## Done when
 
 Everything is on current versions, the forks are rebased with their diff documented, and the

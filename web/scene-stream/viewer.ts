@@ -16,7 +16,7 @@
  * (`petplay_mediatransport/web/src/receiver.ts`, the stream page's code) over WebTransport and
  * uploaded once per new picture into a texture all surfaces of that feed share.
  */
-import * as THREE from "npm:three@0.186.1";
+import * as THREE from "npm:three@0.187.0";
 import {
   decodeDelta,
   type RowId,

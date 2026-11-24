@@ -10,7 +10,7 @@
   "nodeModulesDir": "manual",
   // A single npm three for the app and every npm consumer (r3f peer, gainmap-js, iwer devui);
   // keep in step with the `three` imports below.
-  "overrides": { "three": "0.186.1" },
+  "overrides": { "three": "0.187.0" },
   // Dependencies live in package.json. These are only aliases package.json cannot express.
   "imports": {
     // Your byte_type fork (C struct layout), shared by the native bindings submodules.
@@ -24,10 +24,10 @@
     "@react-three/fiber": "./classes/r3fWebgpuCompat.ts",
     "@react-three/fiber/webgpu": "./classes/r3fWebgpuCompat.ts",
     // Local code (and the vendored xr/uikit sources) get three's WebGPU build for bare "three";
-    // keep in step with package.json. Plain three is npm:three@0.186.1.
-    "three": "npm:three@0.186.1/webgpu",
+    // keep in step with package.json. Plain three is npm:three@0.187.0.
+    "three": "npm:three@0.187.0/webgpu",
     // Without this, the entry above also maps three/* under /webgpu (three/webgpu/webgpu).
-    "three/": "npm:/three@0.186.1/"
+    "three/": "npm:/three@0.187.0/"
   },
 
   "tasks": {

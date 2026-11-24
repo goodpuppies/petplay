@@ -4,7 +4,7 @@
  * applies raythree `SceneStore` deltas to a local replica, acks each tick, and renders via
  * `SceneView` onto the transferred `OffscreenCanvas` (same rendering pipeline as `rdp/browser/client.ts`).
  */
-import * as THREE from "npm:three@0.186.1";
+import * as THREE from "npm:three@0.187.0";
 import {
   decodeDelta,
   SceneStore,

@@ -20,23 +20,23 @@
     "npm:@number0/iroh@0.35.0": "0.35.0",
     "npm:@pmndrs/handle@^6.6.29": "6.6.29_@types+react@19.2.14_react@19.2.5",
     "npm:@preact/signals-core@1.14.1": "1.14.1",
-    "npm:@react-three/fiber@10.0.0-alpha.5": "10.0.0-alpha.5_react@19.2.5_react-dom@19.2.5_three@0.186.1_@types+react@19.2.14",
+    "npm:@react-three/fiber@10.0.0-alpha.5": "10.0.0-alpha.5_react@19.2.5_react-dom@19.2.5_three@0.187.0",
     "npm:@types/node@26.6.6": "26.6.6",
     "npm:@types/pngjs@6.0.5": "6.0.5",
     "npm:@types/react@19.2.14": "19.2.14",
-    "npm:@types/three@0.186.0": "0.186.0",
+    "npm:@types/three@0.187.0": "0.187.0",
     "npm:@zappar/msdf-generator@1.2.4": "1.2.4",
     "npm:acorn@8.19.0": "8.19.0",
     "npm:gl-matrix@3.4.4": "3.4.4",
-    "npm:meshline@3.3.1": "3.3.1_three@0.186.1",
+    "npm:meshline@3.3.1": "3.3.1_three@0.187.0",
     "npm:playwright@1.55.0": "1.55.0",
     "npm:pngjs@7.0.0": "7.0.0",
     "npm:quad-indices@2.0.1": "2.0.1",
     "npm:react-dom@19.2.5": "19.2.5_react@19.2.5",
     "npm:react@19.2.5": "19.2.5",
     "npm:suspend-react@0.1.3": "0.1.3_react@19.2.5",
-    "npm:three-msdf-text-utils@1.5.0": "1.5.0_three@0.186.1",
-    "npm:three@0.186.1": "0.186.1",
+    "npm:three-msdf-text-utils@1.5.0": "1.5.0_three@0.187.0",
+    "npm:three@0.187.0": "0.187.0",
     "npm:tsrs@7.1.0-beta.tsrs5": "7.1.0-beta.tsrs5",
     "npm:tunnel-rat@0.1.2": "0.1.2_@types+react@19.2.14_react@19.2.5",
     "npm:webxr-layers-polyfill@1.1.0": "1.1.0",
@@ -107,14 +107,14 @@
         "react",
         "react-dom",
         "styled-components",
-        "three"
+        "three@0.186.1"
       ]
     },
     "@iwer/sem@0.2.5_iwer@2.5.0": {
       "integrity": "sha512-vMCfpu/7Qqc+hkBiGD9pxjeObgrhXOrL0KX94CA3yzJaU0dq0y49HXZT6fC+6X/jOmjaM3hjyE1m2h7ZmLzzyA==",
       "dependencies": [
         "iwer",
-        "three",
+        "three@0.186.1",
         "ts-proto"
       ]
     },
@@ -392,11 +392,11 @@
       ],
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__testing/1.0.21.tgz"
     },
-    "@monogrid/gainmap-js@3.4.0_three@0.186.1": {
+    "@monogrid/gainmap-js@3.4.0_three@0.187.0": {
       "integrity": "sha512-2Z0FATFHaoYJ8b+Y4y4Hgfn3FRFwuU5zRrk+9dFWp4uGAdHGqVEdP7HP+gLA3X469KXHmfupJaUbKo1b/aDKIg==",
       "dependencies": [
         "promise-worker-transferable",
-        "three"
+        "three@0.187.0"
       ]
     },
     "@moq/net@0.4.7_@zod+mini@4.6.7_zod@4.6.7_@types+react@19.2.14_react@19.2.5": {
@@ -534,7 +534,7 @@
     "@preact/signals-core@1.14.1": {
       "integrity": "sha512-vxPpfXqrwUe9lpjqfYNjAF/0RF/eFGeLgdJzdmIIZjpOnTmGmAB4BjWone562mJGMRP4frU6iZ6ei3PDsu52Ng=="
     },
-    "@react-three/fiber@10.0.0-alpha.5_react@19.2.5_react-dom@19.2.5_three@0.186.1_@types+react@19.2.14": {
+    "@react-three/fiber@10.0.0-alpha.5_react@19.2.5_react-dom@19.2.5_three@0.187.0": {
       "integrity": "sha512-NDnHUmaKkHh2IPXl0aUjXgiWhfgvUMbe045IRpXYP0f39FmdWAA+7iG0Kxt4bnb5dbTXTg9fvm+tMfPslM8Lmg==",
       "dependencies": [
         "@babel/runtime",
@@ -547,7 +547,7 @@
         "react-use-measure",
         "scheduler",
         "suspend-react",
-        "three",
+        "three@0.187.0",
         "use-sync-external-store",
         "zustand@5.0.15_@types+react@19.2.14_react@19.2.5_use-sync-external-store@1.6.0"
       ],
@@ -625,8 +625,8 @@
     "@types/stats.js@0.17.4": {
       "integrity": "sha512-jIBvWWShCvlBqBNIZt0KAshWpvSjhkwkEu4ZUcASoAvhmrgAUI2t1dXrjSL4xXVLB4FznPrIsX3nKXFl/Dt4vA=="
     },
-    "@types/three@0.186.0": {
-      "integrity": "sha512-mxYSBpDC+D0pLfSP6sW4WZTcT+nrtmZcimMqnVmy36Hte3XpeYSrvgg4TRdaM1GemGog1AWzI5qL2VoIfMXbJQ==",
+    "@types/three@0.187.0": {
+      "integrity": "sha512-v+vKNarUtk4n2QRZ4+CN5ygMM0ARUjXjIQl0R/unMUfmStFeVqGbgqarbrpoGTXRZoulSH16ePrVJVxPJEbMUA==",
       "dependencies": [
         "@dimforge/rapier3d-compat",
         "@tweenjs/tween.js",
@@ -742,10 +742,10 @@
       ],
       "bin": true
     },
-    "meshline@3.3.1_three@0.186.1": {
+    "meshline@3.3.1_three@0.187.0": {
       "integrity": "sha512-/TQj+JdZkeSUOl5Mk2J7eLcYTLiQm2IDzmlSvYm7ov15anEcDJ92GHqqazxTSreeNgfnYu24kiEvvv0WlbCdFQ==",
       "dependencies": [
-        "three"
+        "three@0.187.0"
       ]
     },
     "meshoptimizer@1.1.1": {
@@ -842,17 +842,20 @@
         "react"
       ]
     },
-    "three-msdf-text-utils@1.5.0_three@0.186.1": {
+    "three-msdf-text-utils@1.5.0_three@0.187.0": {
       "integrity": "sha512-U04FaSYcRCrHL72nL4o3E95zy1ldSrXh+LhzB0VPXFvA6AOJfhDscYaC/xYvW2m7jkpihGPNAtkoo7tnN7GUZw==",
       "dependencies": [
         "comlink",
         "quad-indices",
-        "three",
+        "three@0.187.0",
         "word-wrapper"
       ]
     },
     "three@0.186.1": {
       "integrity": "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA=="
+    },
+    "three@0.187.0": {
+      "integrity": "sha512-Qiu7R+Cmh8CstZsY1uJOSWnVlfo7ZtNLV7mF8Jltk3LB3AtDu9cRZlcnRKkAk8Y4z6KKw35z7Y7Urd7jWY8etA=="
     },
     "ts-poet@6.12.0": {
       "integrity": "sha512-xo+iRNMWqyvXpFTaOAvLPA5QAWO6TZrSUs5s4Odaya3epqofBu/fMLHEWl8jPmjhA0s9sgj9sNvF1BmaQlmQkA==",
@@ -1078,7 +1081,7 @@
     "dependencies": [
       "npm:@preact/signals-core@1.14.1",
       "npm:gl-matrix@3.4.4",
-      "npm:three@0.186.1",
+      "npm:three@0.187.0",
       "npm:webxr-layers-polyfill@1.1.0",
       "npm:yoga-layout@3.2.1"
     ],
@@ -1104,7 +1107,7 @@
         "npm:@types/node@26.6.6",
         "npm:@types/pngjs@6.0.5",
         "npm:@types/react@19.2.14",
-        "npm:@types/three@0.186.0",
+        "npm:@types/three@0.187.0",
         "npm:@zappar/msdf-generator@1.2.4",
         "npm:acorn@8.19.0",
         "npm:gl-matrix@3.4.4",
@@ -1116,7 +1119,7 @@
         "npm:react@19.2.5",
         "npm:suspend-react@0.1.3",
         "npm:three-msdf-text-utils@1.5.0",
-        "npm:three@0.186.1",
+        "npm:three@0.187.0",
         "npm:tsrs@7.1.0-beta.tsrs5",
         "npm:tunnel-rat@0.1.2",
         "npm:webxr-layers-polyfill@1.1.0",
@@ -1125,7 +1128,7 @@
         "npm:zustand@4.5.7"
       ],
       "overrides": {
-        "three": "0.186.1"
+        "three": "0.187.0"
       }
     },
     "links": {
