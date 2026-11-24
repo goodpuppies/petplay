@@ -90,6 +90,12 @@ export type CompositorSnapshot = {
 };
 
 const FRAME_MS = 16;
+/**
+ * Host window pixels per compositor CSS pixel. At `2`, apps inside windows run at 2× the
+ * compositor's CSS dimensions (behaving like 50% browser zoom) while compositor chrome
+ * (titlebars, taskbar, menus) stays at 100% scale.
+ */
+const WINDOW_CONTENT_SCALE = 2;
 
 const state = actorState({
   name: UI_ACTOR_NAME,
@@ -201,11 +207,12 @@ function moveWindow(id: string, x: number, y: number, width: number, height: num
 async function resizeHostWindow(id: string, width: number, height: number): Promise<void> {
   const win = windows.find((w) => w.id === id);
   if (!win?.windowId || !config?.mediaMux) return;
+  const contentH = Math.max(120, height - WINDOW_TITLEBAR_HEIGHT);
   const updated = await call<WindowInfo | null>(config.mediaMux, "RESIZE", {
     source: win.source,
     window: win.windowId,
-    width,
-    height: Math.max(120, height - WINDOW_TITLEBAR_HEIGHT),
+    width: Math.round(width * WINDOW_CONTENT_SCALE),
+    height: Math.round(contentH * WINDOW_CONTENT_SCALE),
   }).catch(() => null);
   if (updated) {
     win.region = updated.region;
@@ -282,10 +289,16 @@ async function openWindow(req: {
 
   const vp = state.viewport ?? { width: 1280, height: 720 };
   const cascade = (windows.length % 8) * 32;
-  const defaultW = Math.min(Math.round(vp.width * 0.58), Math.max(480, req.window?.width ?? 760));
+  const hostW = req.window?.width != null
+    ? Math.round(req.window.width / WINDOW_CONTENT_SCALE)
+    : 760;
+  const hostH = req.window?.height != null
+    ? Math.round(req.window.height / WINDOW_CONTENT_SCALE)
+    : 480;
+  const defaultW = Math.min(Math.round(vp.width * 0.72), Math.max(400, hostW));
   const defaultH = Math.min(
-    Math.round((vp.height - 60) * 0.72),
-    Math.max(320, (req.window?.height ?? 480) + 32),
+    Math.round((vp.height - 60) * 0.8),
+    Math.max(280, hostH + WINDOW_TITLEBAR_HEIGHT),
   );
   const id = `w${nextWindowSeq++}`;
   const entry: WindowEntry = {
