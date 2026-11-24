@@ -29,6 +29,8 @@ export type DesktopMediaOptions = {
   /** Where browsers reach the worker: loopback, or this machine's tailnet address. */
   host: string;
   port: number;
+  /** Frame layout ("mono" or "side-by-side"); default "mono". */
+  layout?: "mono" | "side-by-side";
   fps?: number;
   bitrate?: number;
   /** Optional explicit socket path; omitted lets `petplayMedia@*` allocate and clean up its own. */
@@ -65,7 +67,7 @@ export class DesktopMediaFeed {
         ...(options.socketPath ? { socketPath: options.socketPath } : {}),
         host: options.host,
         port: options.port,
-        layout: "mono",
+        layout: options.layout ?? "mono",
         fps: options.fps ?? 30,
         maxFps: options.fps ?? 30,
         bitrate: options.bitrate ?? 8_000_000,

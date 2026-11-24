@@ -1,20 +1,13 @@
 /**
  * vrchatSource: exposes `petplay_ovrdriver` -> `petplayMedia@*` as a standard `MediaSource` actor.
  *
- * Opens a `dmabuf-seqpacket` StageForge `Transport` to `petplayMedia@*`, which binds the Linux
- * `SOCK_SEQPACKET` DMA-BUF socket at `PP_MEDIA_SOCKET` and starts the MoQ + WebRTC publisher.
- * Closing the transport (`STOP` / `__SHUTDOWN__`) stops the feed and unlinks the socket.
+ * Delegates all `dmabuf-seqpacket` transport & encoder lifecycle to `DesktopMediaFeed`, while
+ * exposing the `MediaSource` contract (`DESCRIBE`, `START`, `STOP`, `FEED`, `WEBRTC_OFFER`,
+ * `SUBSCRIBE_END`, `SETHOUSEHOLD`, `GUARDED`) for `mediaMux` and `compositor`.
  */
-import { type ActorId, actorState, PostMan, Transport } from "../submodules/stageforge/mod.ts";
-import {
-  closeDmabufSeqpacketTransport,
-  DMABUF_SEQPACKET_KIND,
-  type DmabufSeqpacketEndpoint,
-  ensureDmabufSeqpacketClient,
-  MEDIA_FRAMES_PURPOSE,
-} from "./classes/dmabufSeqpacketTransport.ts";
+import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { DesktopMediaFeed } from "../classes/sceneStreamMedia.ts";
 import { guardedDispatch, HouseholdGuard, refuseWhenGuarded } from "./classes/household.ts";
-import { ensurePetplayMedia } from "./classes/petplayMediaActor.ts";
 import type { DesktopDescription, FeedInfo } from "./desktopSource.ts";
 
 export type VrchatSourceConfig = {
@@ -30,8 +23,6 @@ export type VrchatSourceConfig = {
   share?: boolean;
 };
 
-const FEED_ID = "vrchat";
-
 const state = actorState({
   name: "vrchatSource",
   running: false,
@@ -43,13 +34,7 @@ const state = actorState({
 const guard = new HouseholdGuard();
 const endSubscribers = new Set<string>();
 let defaults: VrchatSourceConfig | null = null;
-let active: {
-  mediaActor: ActorId;
-  feedId: string;
-  transport: Transport;
-  info: FeedInfo;
-  socketPath: string;
-} | null = null;
+let active: { media: DesktopMediaFeed; info: FeedInfo } | null = null;
 let starting: Promise<FeedInfo> | null = null;
 
 function defaultSocketPath(): string {
@@ -92,49 +77,32 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
 
   starting = (async () => {
     try {
-      ensureDmabufSeqpacketClient();
-      const mediaActor = await ensurePetplayMedia();
-      const socketPath = cfg.socketPath!;
-      const transport = await Transport.open(mediaActor, {
-        purpose: MEDIA_FRAMES_PURPOSE,
-        kinds: [DMABUF_SEQPACKET_KIND],
-        params: {
-          feedId: FEED_ID,
-          socketPath,
-          host: cfg.host,
-          port: cfg.port,
-          layout: cfg.layout ?? "mono",
-          fps: cfg.fps ?? 60,
-          maxFps: cfg.fps ?? 60,
-          bitrate: cfg.bitrate ?? 12_000_000,
-          persist: true,
-          share: Boolean(cfg.share),
-        },
+      const media = await DesktopMediaFeed.start({
+        host: cfg.host,
+        port: cfg.port,
+        socketPath: cfg.socketPath,
+        layout: cfg.layout ?? "mono",
+        fps: cfg.fps ?? 60,
+        bitrate: cfg.bitrate ?? 12_000_000,
+        share: Boolean(cfg.share),
+        actorFeedId: "vrchat",
       });
-      const endpoint = transport.connection as DmabufSeqpacketEndpoint;
-
       const info: FeedInfo = {
-        host: endpoint.host ?? cfg.host,
-        port: endpoint.port ?? cfg.port,
-        fingerprint: endpoint.fingerprint ?? "",
-        ...(endpoint.code ? { code: endpoint.code } : {}),
-        ...(endpoint.webrtc ? { webrtc: true } : {}),
+        host: cfg.host,
+        port: media.info.port,
+        fingerprint: media.info.fingerprint,
+        ...(media.info.code ? { code: media.info.code } : {}),
+        ...(media.info.webrtc ? { webrtc: true } : {}),
         ...(cfg.layout === "side-by-side" ? { crop: { x: 0, y: 0, width: 0.5, height: 1 } } : {}),
       };
-      const entry = {
-        mediaActor,
-        feedId: endpoint.feedId ?? FEED_ID,
-        transport,
-        info,
-        socketPath: endpoint.socketPath,
-      };
+      const entry = { media, info };
       active = entry;
       state.running = true;
-      state.socketPath = endpoint.socketPath;
+      state.socketPath = media.socketPath;
       state.feed = info;
       state.lastError = null;
 
-      void transport.closed.then(() => {
+      void media.exited.then(() => {
         if (active !== entry) return;
         active = null;
         state.running = false;
@@ -158,18 +126,12 @@ async function stopFeed(): Promise<void> {
   active = null;
   state.running = false;
   state.feed = null;
-  if (!current) return;
-  await closeDmabufSeqpacketTransport(current.transport, "stopped");
+  await current?.media.stop();
 }
 
 async function acceptWebRtcOffer(offerSdp: string): Promise<{ sdp: string }> {
-  const current = active;
-  if (!current) throw new Error("vrchatSource has no running WebRTC encoder");
-  return await PostMan.PostMessage({
-    target: current.mediaActor,
-    type: "WEBRTC_OFFER",
-    payload: { id: current.feedId, sdp: offerSdp },
-  }, true) as { sdp: string };
+  if (!active) throw new Error("vrchatSource has no running WebRTC encoder");
+  return { sdp: await active.media.acceptWebRtcOffer(offerSdp) };
 }
 
 function describe(): DesktopDescription {
