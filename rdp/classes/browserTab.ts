@@ -4,8 +4,10 @@
  * - `innerWidth`, `innerHeight` and `devicePixelRatio` are the remote tab's, and change with
  *   it (a `resize` event is dispatched on the global, as a page would see).
  * - The canvas is an `EventTarget` with a page canvas's size, bounding rect and pointer capture.
- *   r3f's own DOM event system is connected to it, so a pointer or wheel event dispatched here is
- *   raycast and handled exactly as in a browser: uikit's `onClick`, hover, pointer capture.
+ *   Pointer and wheel events dispatched on it go through `@pmndrs/pointer-events`
+ *   (`forwardHtmlEvents`), the event system uikit is built for, as `<PointerEvents />` does in
+ *   a page; r3f's own is off (`noEvents`). An event reaches only the frontmost object under the
+ *   pointer and bubbles to its parents; handlers are the usual r3f props (`onPointerDown`, …).
  * - Key events are dispatched on the global (`addEventListener("keydown", …)` works).
  * - The camera is orthographic in CSS pixels, so a root container sized to the viewport with
  *   `pixelSize={1}` fills the tab (see {@link TabBody}).
@@ -14,13 +16,8 @@
  * Rendering is not done here; the scene is extracted and drawn by the tab (raythree IR).
  */
 import React from "react";
-import {
-  advance,
-  createRoot,
-  events,
-  type RootState,
-  useThree,
-} from "@react-three/fiber/webgpu";
+import { advance, createRoot, type RootState, useThree } from "@react-three/fiber/webgpu";
+import { forwardHtmlEvents } from "@pmndrs/pointer-events";
 import * as THREE from "three";
 import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import type { TabDomEvent, TabViewport } from "./tabProtocol.ts";
@@ -44,6 +41,18 @@ function installGlobals(viewport: TabViewport): void {
     removeEventListener() {},
   };
   g.HTMLElement ??= class {};
+  // pointer-events reads coordinates only from MouseEvents.
+  if (!g.MouseEvent) {
+    class MouseEvent extends Event {
+      constructor(type: string, init: Record<string, unknown> = {}) {
+        super(type, { cancelable: true, ...init });
+        Object.assign(this, init);
+      }
+    }
+    g.MouseEvent = MouseEvent;
+    g.PointerEvent ??= class PointerEvent extends MouseEvent {};
+    g.WheelEvent ??= class WheelEvent extends MouseEvent {};
+  }
   g.ResizeObserver ??= class {
     observe() {}
     unobserve() {}
@@ -156,7 +165,8 @@ export async function createBrowserTab(initial: TabViewport): Promise<BrowserTab
     root.configure({
       // deno-lint-ignore no-explicit-any
       renderer: async () => tabRenderer(canvas) as any,
-      events,
+      // Events go through @pmndrs/pointer-events instead (see Capture).
+      events: () => ({ enabled: false, priority: 0 }),
       orthographic: true,
       frameloop: "never",
       size: { width: viewport.width, height: viewport.height, top: 0, left: 0 },
@@ -169,8 +179,19 @@ export async function createBrowserTab(initial: TabViewport): Promise<BrowserTab
   let scene: THREE.Scene | null = null;
   let camera: THREE.Camera | null = null;
   function Capture() {
-    scene = useThree((s: RootState) => s.scene) as unknown as THREE.Scene;
+    const currentScene = useThree((s: RootState) => s.scene) as unknown as THREE.Scene;
+    scene = currentScene;
     camera = useThree((s: RootState) => s.camera) as unknown as THREE.Camera;
+    React.useEffect(() => {
+      // Unbatched: our frame loop is driven by hand, so emit as events arrive.
+      const forward = forwardHtmlEvents(
+        canvas as unknown as HTMLElement,
+        () => camera as THREE.OrthographicCamera,
+        currentScene,
+        { batchEvents: false },
+      );
+      return () => forward.destroy();
+    }, [currentScene]);
     return null;
   }
 
@@ -196,13 +217,19 @@ export async function createBrowserTab(initial: TabViewport): Promise<BrowserTab
       g.dispatchEvent(new Event("resize"));
     },
     dispatch(event) {
-      const { type, ...fields } = event;
-      const dom = new Event(type, { cancelable: true });
-      Object.assign(dom, fields, "offsetX" in event
-        ? { clientX: event.offsetX, clientY: event.offsetY }
-        : {});
-      if (type === "keydown" || type === "keyup") g.dispatchEvent(dom);
-      else canvas.dispatchEvent(dom);
+      if (event.type === "keydown" || event.type === "keyup") {
+        const { type, ...fields } = event;
+        g.dispatchEvent(Object.assign(new Event(type, { cancelable: true }), fields));
+        return;
+      }
+      const { type, ...fields } = event as Extract<TabDomEvent, { offsetX: number }>;
+      const Kind = (type === "wheel" ? g.WheelEvent : g.PointerEvent) as new (
+        type: string,
+        init: Record<string, unknown>,
+      ) => Event;
+      canvas.dispatchEvent(
+        new Kind(type, { ...fields, clientX: fields.offsetX, clientY: fields.offsetY }),
+      );
     },
     frame(now = performance.now()) {
       advance(now);

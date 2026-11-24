@@ -423,6 +423,12 @@ function maybeAutoWallpaper(): void {
 
 function render(): void {
   if (!browserTab) return;
+  // For the agent REPL (`EVALJS`): the tab, windows and focus, live.
+  (globalThis as Record<string, unknown>).__compositorDebug = {
+    tab: () => browserTab,
+    windows: () => windows,
+    focusedId: () => focusedId,
+  };
   const wpFeed = wallpaper ? feeds[wallpaper.feedId] : undefined;
   browserTab.render(
     <>
