@@ -61,7 +61,7 @@ export function WallpaperFeed(
           backgroundColor="#10131a"
           alignItems="center"
           justifyContent="center"
-          onClick={() => onBackgroundClick?.()}
+          onPointerDown={() => onBackgroundClick?.()}
         >
           <Text fontSize={14} color="#4e586b">
             {label ?? "PetPlay Compositor — open Apps in the taskbar below"}
