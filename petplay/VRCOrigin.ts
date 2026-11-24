@@ -14,6 +14,9 @@ import {
 } from "../classes/vrcOriginCodec.ts";
 import {
   type Matrix34Tuple,
+  rotateYawRH,
+  unityWorldPointToStanding,
+  unityWorldPositionToRightHanded,
   type VrcOriginMotion,
   VrcOriginRoomLock,
   type VrcOriginRoomLockMode,
@@ -335,12 +338,20 @@ async function pollOriginOnce(): Promise<boolean> {
     Math.hypot(v[0], v[1], v[2]),
   ]);
   if (hmdTrace.length > HMD_TRACE_MAX) hmdTrace.splice(0, 10_000);
+  // Locomotion: the root's velocity in the room (via the raw yaw) against the HMD's, horizontally.
+  // Physical motion moves both; VRChat locomotion only moves the root.
+  const rootRoomVelocity = rotateYawRH(
+    unityWorldPositionToRightHanded(prediction.velocity),
+    raw.transform.yawRad,
+  );
+  const locomotionSpeed = Math.hypot(rootRoomVelocity[0] - v[0], rootRoomVelocity[2] - v[2]);
   const solved = roomLock.update(
     raw.transform,
     worldPose,
     [hmdMatrix[0][3], hmdMatrix[1][3], hmdMatrix[2][3]],
     Math.hypot(v[0], v[1], v[2]),
     performance.now(),
+    locomotionSpeed,
   );
   if (state.lockMode === "locked" && solved.mode === "moving") state.lockBreakCount++;
   const modeChanged = state.lockMode !== solved.mode;
@@ -361,7 +372,9 @@ async function pollOriginOnce(): Promise<boolean> {
       // Playspace yaw is HMD yaw + avatar yaw (`VrcOriginSolver`): it turns with the avatar.
       yawRate: prediction.yawRate,
       scale: solved.transform.scale,
-      pivot: [hmdMatrix[0][3], 0, hmdMatrix[2][3]],
+      // Where this transform puts the root (the floor under the HMD, or partway there while the
+      // lock blends out).
+      pivot: unityWorldPointToStanding(solved.transform, worldPose.position),
       rootRH: [x, y, -z],
       rootVelocityRH: [vx, vy, -vz],
     };

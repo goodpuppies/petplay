@@ -397,3 +397,40 @@ Deno.test("root predictor display: jittery arrivals of a constant walk show as a
     assertAlmostEquals(shown[i] - shown[i - 1], 0.011, 0.0045, `frame ${i}`);
   }
 });
+
+Deno.test("room lock: breaking the lock blends from the held transform instead of snapping", () => {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  const hmd: Vec3 = [0, 1.6, 0];
+  let t = 0;
+  let res = lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), hmd, 0, 0, t);
+  for (; t <= 400; t += 16) res = lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), hmd, 0, 0, t);
+  const held = [...res.transform.translation];
+  // Locomotion starts: the root is 0.5 m off at once (as if VRChat jumped ahead).
+  const raw = solver.update(makeWorldPose([0, 0, 0.5], 0), makeHmdMatrix(hmd, 0));
+  res = lock.update(raw.transform, makeWorldPose([0, 0, 0.5], 0), hmd, 0, t, 1.0);
+  assertEquals(res.mode, "moving");
+  assert(
+    Math.hypot(...res.transform.translation.map((v, k) => v - held[k])) < 0.01,
+    "the first moving output is still at the held transform",
+  );
+  for (const end = t + 500; t <= end; t += 16) {
+    res = lock.update(raw.transform, makeWorldPose([0, 0, 0.5], 0), hmd, 0, t, 1.0);
+  }
+  assertVec3AlmostEquals(res.transform.translation, raw.transform.translation, 1e-9);
+});
+
+Deno.test("root predictor: a skipped update slows the prediction instead of stopping it dead", () => {
+  const predictor = new VrcRootPredictor();
+  for (let i = 0; i <= 10; i++) {
+    predictor.add({ t: i * 40, pose: makeWorldPose([0.04 * i, 0, 0], 0) });
+  }
+  // 150 ms of silence mid-walk: still moving, slower, and never backwards.
+  let prev = predictor.predict(400).pose.position[0];
+  for (let t = 411; t <= 550; t += 11) {
+    const x = predictor.predict(t).pose.position[0];
+    assert(x > prev, `still advancing at ${t}`);
+    prev = x;
+  }
+  assert(predictor.predict(550).velocity[0] > 0.1);
+});

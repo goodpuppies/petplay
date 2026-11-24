@@ -309,6 +309,16 @@ export interface VrcOriginRoomLockOptions {
   settleYawRad?: number;
   /** While moving: how long (ms) raw must stay settled before the lock is taken again. */
   settleMs?: number;
+  /** Locomotion speed (m/s: root against HMD) that breaks the lock before any error builds up. */
+  locomotionBreakSpeed?: number;
+  /** While moving: locomotion faster than this (m/s) is never "settled". */
+  settleMaxLocomotionSpeed?: number;
+  /** How long (ms) the output takes to blend from the held transform when the lock breaks. */
+  blendMs?: number;
+  /** A yaw change (rad) this large at the break is a snap turn: no blend. */
+  jumpYawRad?: number;
+  /** A root error (m) this large at the break is a teleport: no blend. */
+  jumpDistanceMeters?: number;
 }
 
 export interface VrcOriginRoomLockResult {
@@ -346,7 +356,15 @@ export class VrcOriginRoomLock {
   private readonly settleDistance: number;
   private readonly settleYaw: number;
   private readonly settleMs: number;
+  private readonly locomotionBreakSpeed: number;
+  private readonly settleMaxLocomotionSpeed: number;
+  private readonly blendMs: number;
+  private readonly jumpYaw: number;
+  private readonly jumpDistance: number;
 
+  /** The held transform the output is blending away from, since `blendStart`. */
+  private blendFrom: VrcWorldToStandingTransform | null = null;
+  private blendStart = 0;
   private mode: VrcOriginRoomLockMode = "moving";
   private held: VrcWorldToStandingTransform | null = null;
   private lastOutput: VrcWorldToStandingTransform | null = null;
@@ -363,6 +381,11 @@ export class VrcOriginRoomLock {
     this.settleDistance = options.settleDistanceMeters ?? 0.04;
     this.settleYaw = options.settleYawRad ?? (0.5 * Math.PI) / 180;
     this.settleMs = options.settleMs ?? 300;
+    this.locomotionBreakSpeed = options.locomotionBreakSpeed ?? 0.3;
+    this.settleMaxLocomotionSpeed = options.settleMaxLocomotionSpeed ?? 0.08;
+    this.blendMs = options.blendMs ?? 400;
+    this.jumpYaw = options.jumpYawRad ?? (10 * Math.PI) / 180;
+    this.jumpDistance = options.jumpDistanceMeters ?? 1.0;
   }
 
   reset(): void {
@@ -371,6 +394,7 @@ export class VrcOriginRoomLock {
     this.lastOutput = null;
     this.sustainedSince = null;
     this.settleAnchor = null;
+    this.blendFrom = null;
   }
 
   getMode(): VrcOriginRoomLockMode {
@@ -383,6 +407,8 @@ export class VrcOriginRoomLock {
    * @param hmdPos the HMD position in Standing
    * @param hmdSpeed the HMD's linear speed (m/s)
    * @param nowMs a monotonic clock
+   * @param locomotionSpeed how fast the avatar root moves in the room relative to the HMD (m/s):
+   *   VRChat locomotion, which physical motion does not produce
    */
   update(
     raw: VrcWorldToStandingTransform,
@@ -390,12 +416,14 @@ export class VrcOriginRoomLock {
     hmdPos: Vec3,
     hmdSpeed: number,
     nowMs: number,
+    locomotionSpeed = 0,
   ): VrcOriginRoomLockResult {
     let errorMeters = 0;
     if (this.mode === "locked" && this.held) {
       errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
       const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));
-      let breakLock = errorMeters > this.breakDistance || yawErr > this.breakYaw;
+      let breakLock = errorMeters > this.breakDistance || yawErr > this.breakYaw ||
+        locomotionSpeed > this.locomotionBreakSpeed;
       if (
         !breakLock && errorMeters > this.sustainedBreakDistance && hmdSpeed < this.stillHeadSpeed
       ) {
@@ -406,13 +434,18 @@ export class VrcOriginRoomLock {
       }
       if (breakLock) {
         this.mode = "moving";
+        // Starting to walk eases in; a snap turn or teleport moves the VRChat world at once, and
+        // content goes with it.
+        const jump = yawErr > this.jumpYaw || errorMeters > this.jumpDistance;
+        this.blendFrom = jump ? null : cloneTransform(this.held);
+        this.blendStart = nowMs;
         this.sustainedSince = null;
         this.settleAnchor = cloneTransform(raw);
         this.settleAnchorAt = nowMs;
       }
     } else {
       if (
-        !this.settleAnchor ||
+        !this.settleAnchor || locomotionSpeed > this.settleMaxLocomotionSpeed ||
         translationDistance(raw, this.settleAnchor) > this.settleDistance ||
         Math.abs(angleDiffRad(raw.yawRad, this.settleAnchor.yawRad)) > this.settleYaw
       ) {
@@ -421,11 +454,17 @@ export class VrcOriginRoomLock {
       } else if (nowMs - this.settleAnchorAt >= this.settleMs) {
         this.mode = "locked";
         this.held = cloneTransform(raw);
+        this.blendFrom = null;
         this.sustainedSince = null;
       }
     }
 
-    const output = this.mode === "locked" && this.held ? this.held : raw;
+    let output = this.mode === "locked" && this.held ? this.held : raw;
+    if (this.mode === "moving" && this.blendFrom) {
+      const u = (nowMs - this.blendStart) / this.blendMs;
+      if (u >= 1) this.blendFrom = null;
+      else output = blendAroundRoot(this.blendFrom, raw, worldPose, u * u * (3 - 2 * u));
+    }
     const changed = !this.lastOutput || translationDistance(output, this.lastOutput) > 1e-6 ||
       Math.abs(angleDiffRad(output.yawRad, this.lastOutput.yawRad)) > 1e-7 ||
       Math.abs(output.scale - this.lastOutput.scale) > 1e-7;
@@ -453,6 +492,32 @@ function translationDistance(
     a.translation[1] - b.translation[1],
     a.translation[2] - b.translation[2],
   );
+}
+
+/**
+ * `from` → `to` at `u` (0..1), turning about the avatar root rather than the world origin: yaw
+ * and the root's Standing position are interpolated, so distant content doesn't swing.
+ */
+function blendAroundRoot(
+  from: VrcWorldToStandingTransform,
+  to: VrcWorldToStandingTransform,
+  worldPose: VrcOriginWorldPose,
+  u: number,
+): VrcWorldToStandingTransform {
+  const a = unityWorldPointToStanding(from, worldPose.position);
+  const b = unityWorldPointToStanding(to, worldPose.position);
+  const yawRad = normalizeAngleRad(from.yawRad + angleDiffRad(to.yawRad, from.yawRad) * u);
+  const scale = from.scale + (to.scale - from.scale) * u;
+  const r = rotateYawRH(unityWorldPositionToRightHanded(worldPose.position), yawRad);
+  return {
+    yawRad,
+    scale,
+    translation: [
+      a[0] + (b[0] - a[0]) * u - scale * r[0],
+      a[1] + (b[1] - a[1]) * u - scale * r[1],
+      a[2] + (b[2] - a[2]) * u - scale * r[2],
+    ],
+  };
 }
 
 /** Distance between where `transform` puts the avatar root and the floor under the HMD. */
@@ -484,9 +549,14 @@ export interface VrcRootPredictorOptions {
   smoothingMs?: number;
   /** Full-velocity extrapolation past a channel's newest sample (ms). */
   extrapolateMs?: number;
-  /** After `extrapolateMs`, the prediction holds this long (ms): VRChat skips updates mid-walk. */
-  holdMs?: number;
-  /** After holding, the prediction fades back to the newest sample over this (ms): a stop. */
+  /**
+   * After `extrapolateMs`, velocity decays with this time constant (ms) rather than stopping dead:
+   * VRChat skips updates for up to ~200 ms mid-walk.
+   */
+  decayMs?: number;
+  /** Silence (ms past the newest sample) after which the estimate fades back to it: a stop. */
+  stopAfterMs?: number;
+  /** How long (ms) that fade takes. */
   fadeMs?: number;
   /** A position this far (m) from the prediction is a teleport: that channel starts over. */
   resetDistanceMeters?: number;
@@ -500,6 +570,13 @@ export interface VrcRootPrediction {
   velocity: Vec3;
   /** Avatar yaw rate (Unity yaw, rad/s). */
   yawRate: number;
+}
+
+interface ChannelTiming {
+  extrapolateMs: number;
+  decayMs: number;
+  stopAfterMs: number;
+  fadeMs: number;
 }
 
 /**
@@ -564,23 +641,29 @@ class KalmanChannel {
   }
 
   /**
-   * The estimate at `t`: extrapolated up to `extrapolateMs` past the newest measurement, held for
-   * `holdMs`, then faded over `fadeMs` to the newest raw measurement (a stop: VRChat goes silent).
+   * The estimate at `t`: extrapolated at full velocity up to `extrapolateMs` past the newest
+   * measurement, then with the velocity decaying over `decayMs`; after `stopAfterMs` of silence it
+   * fades over `fadeMs` to the newest raw measurement (a stop: VRChat goes silent).
    */
-  at(
-    t: number,
-    extrapolateMs: number,
-    holdMs: number,
-    fadeMs: number,
-  ): { values: number[]; moving: boolean } {
-    const dt = t - this.updatedAt;
-    const s = Math.min(Math.max(dt, 0), extrapolateMs) / 1000;
-    const values = this.state.map(([x, v]) => x + v * s);
-    if (dt > extrapolateMs + holdMs && this.newestRaw) {
-      const u = Math.min(1, (dt - extrapolateMs - holdMs) / fadeMs);
-      for (let k = 0; k < this.dims; k++) values[k] += (this.newestRaw[k] - values[k]) * u;
+  at(t: number, timing: ChannelTiming): { values: number[]; velocity: number[] } {
+    const dt = Math.max(0, t - this.updatedAt);
+    const { extrapolateMs, decayMs, stopAfterMs, fadeMs } = timing;
+    let travelMs = Math.min(dt, extrapolateMs);
+    let speedScale = 1;
+    if (dt > extrapolateMs) {
+      speedScale = Math.exp(-(dt - extrapolateMs) / decayMs);
+      travelMs += decayMs * (1 - speedScale);
     }
-    return { values, moving: dt <= extrapolateMs };
+    const values = this.state.map(([x, v]) => x + (v * travelMs) / 1000);
+    const velocity = this.state.map(([, v]) => v * speedScale);
+    if (dt > stopAfterMs && this.newestRaw) {
+      const u = Math.min(1, (dt - stopAfterMs) / fadeMs);
+      for (let k = 0; k < this.dims; k++) {
+        values[k] += (this.newestRaw[k] - values[k]) * u;
+        velocity[k] *= 1 - u;
+      }
+    }
+    return { values, velocity };
   }
 }
 
@@ -594,9 +677,9 @@ class KalmanChannel {
  * root stops changing. So:
  * - Position and yaw are separate channels, each a constant-velocity Kalman filter fed only when
  *   its value changes (a yaw-only burst says nothing about position).
- * - Each extrapolates `extrapolateMs` past its newest measurement, holds `holdMs` (a skipped
- *   update), then fades to the newest measurement (a stop), so a stop settles where VRChat put
- *   the root instead of drifting on.
+ * - Each extrapolates `extrapolateMs` past its newest measurement, then lets the velocity decay
+ *   over `decayMs` (a skipped update: slowing beats stopping dead), and after `stopAfterMs` of
+ *   silence fades to the newest measurement (a stop), so it settles where VRChat put the root.
  * - A measurement far off the prediction (teleport, snap turn) restarts its channel, and the shown
  *   pose jumps with it rather than smearing.
  * - Every measurement still corrects the estimate a little, which on its own shows as a step at
@@ -605,9 +688,7 @@ class KalmanChannel {
  *   this cut frame-to-frame jitter ~3× against the line fit it replaced.
  */
 export class VrcRootPredictor {
-  private readonly extrapolateMs: number;
-  private readonly holdMs: number;
-  private readonly fadeMs: number;
+  private readonly timing: ChannelTiming;
   private readonly resetDistance: number;
   private readonly resetYaw: number;
   private readonly smoothingMs: number;
@@ -632,9 +713,12 @@ export class VrcRootPredictor {
       options.yawMeasurementVariance ?? 3e-5,
     );
     this.smoothingMs = options.smoothingMs ?? 80;
-    this.extrapolateMs = options.extrapolateMs ?? 70;
-    this.holdMs = options.holdMs ?? 130;
-    this.fadeMs = options.fadeMs ?? 150;
+    this.timing = {
+      extrapolateMs: options.extrapolateMs ?? 60,
+      decayMs: options.decayMs ?? 120,
+      stopAfterMs: options.stopAfterMs ?? 250,
+      fadeMs: options.fadeMs ?? 200,
+    };
     this.resetDistance = options.resetDistanceMeters ?? 1.0;
     this.resetYaw = options.resetYawRad ?? (20 * Math.PI) / 180;
   }
@@ -660,7 +744,7 @@ export class VrcRootPredictor {
 
     if (positionChanged && (!this.position.started || t > this.position.updatedAt)) {
       if (this.position.started) {
-        const predicted = this.position.at(t, this.extrapolateMs, this.holdMs, this.fadeMs).values;
+        const predicted = this.position.at(t, this.timing).values;
         if (Math.hypot(...pose.position.map((v, k) => v - predicted[k])) > this.resetDistance) {
           this.position.reset();
           this.shown = null;
@@ -671,7 +755,7 @@ export class VrcRootPredictor {
     if (yawChanged && (!this.yaw.started || t > this.yaw.updatedAt)) {
       let yaw = pose.yawRad;
       if (this.yaw.started) {
-        const predicted = this.yaw.at(t, this.extrapolateMs, this.holdMs, this.fadeMs).values[0];
+        const predicted = this.yaw.at(t, this.timing).values[0];
         yaw = predicted + angleDiffRad(yaw, predicted);
         if (Math.abs(yaw - predicted) > this.resetYaw) {
           this.yaw.reset();
@@ -691,16 +775,16 @@ export class VrcRootPredictor {
         yawRate: 0,
       };
     }
-    const p = this.position.at(tMs, this.extrapolateMs, this.holdMs, this.fadeMs);
-    const y = this.yaw.at(tMs, this.extrapolateMs, this.holdMs, this.fadeMs);
+    const p = this.position.at(tMs, this.timing);
+    const y = this.yaw.at(tMs, this.timing);
     return {
       pose: {
         source: this.source,
         position: p.values as Vec3,
         yawRad: normalizeAngleRad(y.values[0]),
       },
-      velocity: p.moving ? this.position.velocity() as Vec3 : [0, 0, 0],
-      yawRate: y.moving ? this.yaw.velocity()[0] : 0,
+      velocity: p.velocity as Vec3,
+      yawRate: y.velocity[0],
     };
   }
 
@@ -711,7 +795,7 @@ export class VrcRootPredictor {
   display(tMs: number): VrcRootPrediction {
     const target = this.predict(tMs);
     const unwrappedYaw = this.yaw.started
-      ? this.yaw.at(tMs, this.extrapolateMs, this.holdMs, this.fadeMs).values[0]
+      ? this.yaw.at(tMs, this.timing).values[0]
       : target.pose.yawRad;
     const goal = [...target.pose.position, unwrappedYaw];
     const rates = [...target.velocity, target.yawRate];
