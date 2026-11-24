@@ -1,19 +1,19 @@
 /**
- * vrchatSource: exposes `petplay_ovrdriver` -> `petplay-media` as a standard `MediaSource` actor.
+ * vrchatSource: exposes `petplay_ovrdriver` -> `petplayMedia@*` as a standard `MediaSource` actor.
  *
  * Implements the same actor contract as `desktopSource` (`DESCRIBE`, `START`, `STOP`, `FEED`,
  * `WEBRTC_OFFER`, `SUBSCRIBE_END`, `SETHOUSEHOLD`, `GUARDED`), so `mediaMux` and `compositor`
  * can treat VRChat (or any SteamVR app running through `petplay_ovrdriver`) identically to a
  * desktop or window feed — for example, as a live wallpaper behind floating windows.
  *
- * `petplay_ovrdriver`'s Vulkan capture layer (`media_export.zig`) connects to the Unix seqpacket
- * socket at `PP_MEDIA_SOCKET` (default `/run/user/<uid>/petplay_ovrdriver/media.sock`). This actor
- * runs `petplay-media --persist` on that socket so SteamVR/VRChat can attach or restart anytime.
+ * Control RPCs (`START_SOCKET_FEED`, `WEBRTC_OFFER`, `STOP_FEED`) go to the shared
+ * `petplayMedia@*` StageForge native actor (`NativeStdioProxy`), while GPU frames travel
+ * directly from `petplay_ovrdriver` (`media_export.zig`) to `petplay-media` over the Linux
+ * `SOCK_SEQPACKET` DMA-BUF socket at `PP_MEDIA_SOCKET`.
  */
-import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
-import { dirname } from "@std/path";
-import { petplayMediaCommand, petplayMediaPath } from "../classes/petplayMediaPath.ts";
+import { type ActorId, actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { guardedDispatch, HouseholdGuard, refuseWhenGuarded } from "./classes/household.ts";
+import { ensurePetplayMedia } from "./classes/petplayMediaActor.ts";
 import type { DesktopDescription, FeedInfo } from "./desktopSource.ts";
 
 export type VrchatSourceConfig = {
@@ -29,8 +29,17 @@ export type VrchatSourceConfig = {
   share?: boolean;
 };
 
-const READY_TIMEOUT_MS = 10_000;
-const SHARE_READY_TIMEOUT_MS = 25_000;
+type SocketFeedResponse = {
+  id: string;
+  socketPath: string;
+  host: string;
+  port: number;
+  fingerprint: string;
+  code?: string;
+  webrtc?: boolean;
+};
+
+const FEED_ID = "vrchat";
 
 const state = actorState({
   name: "vrchatSource",
@@ -44,9 +53,9 @@ const guard = new HouseholdGuard();
 const endSubscribers = new Set<string>();
 let defaults: VrchatSourceConfig | null = null;
 let active: {
-  child: Deno.ChildProcess;
+  mediaActor: ActorId;
+  feedId: string;
   info: FeedInfo;
-  webrtcOfferUrl: string | null;
   socketPath: string;
 } | null = null;
 let starting: Promise<FeedInfo> | null = null;
@@ -66,27 +75,6 @@ function notifyEnded(): void {
       endSubscribers.delete(target);
     }
   }
-}
-
-async function drainLines(
-  stream: ReadableStream<Uint8Array>,
-  onLine: (line: string) => void,
-): Promise<void> {
-  let buffered = "";
-  try {
-    for await (
-      const chunk of stream.pipeThrough(
-        new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>,
-      )
-    ) {
-      buffered += chunk;
-      let nl: number;
-      while ((nl = buffered.indexOf("\n")) >= 0) {
-        onLine(buffered.slice(0, nl));
-        buffered = buffered.slice(nl + 1);
-      }
-    }
-  } catch { /* closed */ }
 }
 
 function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedInfo> {
@@ -111,93 +99,43 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
   defaults ??= cfg;
 
   starting = (async () => {
-    const socketPath = cfg.socketPath!;
-    await Deno.mkdir(dirname(socketPath), { recursive: true }).catch(() => {});
-    await Deno.remove(socketPath).catch(() => {});
-
-    const child = petplayMediaCommand([
-      socketPath,
-      "-",
-      `${cfg.host}:${cfg.port}`,
-      "--layout",
-      cfg.layout ?? "mono",
-      "--fps",
-      String(cfg.fps ?? 60),
-      "--bitrate",
-      String(cfg.bitrate ?? 12_000_000),
-      "--persist",
-      "--max-fps",
-      String(cfg.fps ?? 60),
-      ...(cfg.share ? ["--iroh-share"] : []),
-    ], {
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
-
-    const log: string[] = [];
-    const keep = (line: string) => {
-      log.push(line);
-      if (log.length > 100) log.shift();
-    };
-    const drained = [drainLines(child.stderr, keep)];
-
     try {
-      let code: string | null = null;
-      let webrtcOfferUrl: string | null = null;
-      const fingerprint = await new Promise<string>((resolve, reject) => {
-        let fp: string | null = null;
-        const timer = setTimeout(
-          () =>
-            reject(new Error(`vrchatSource petplay-media not ready: ${log.at(-1) ?? "no output"}`)),
-          cfg.share ? SHARE_READY_TIMEOUT_MS : READY_TIMEOUT_MS,
-        );
-        drained.push(drainLines(child.stdout, (line) => {
-          keep(line);
-          code ??= line.match(/^IROH_SHARE code=(\S+)/)?.[1] ?? null;
-          webrtcOfferUrl ??= line.match(/^WEBRTC_READY (\S+)/)?.[1] ?? null;
-          fp ??= line.match(/^MOQ_READY .*fingerprint=([0-9a-f]+)/)?.[1] ?? null;
-          if (line.startsWith("MEDIA_READY") && fp && (code || !cfg.share)) {
-            clearTimeout(timer);
-            resolve(fp);
-          }
-        }));
-        child.status.then(async (status) => {
-          clearTimeout(timer);
-          await Promise.race([Promise.allSettled(drained), new Promise((r) => setTimeout(r, 500))]);
-          reject(
-            new Error(`vrchatSource petplay-media exited (${status.code}): ${log.at(-1) ?? ""}`),
-          );
-        });
-      });
+      const mediaActor = await ensurePetplayMedia();
+      const socketPath = cfg.socketPath!;
+      const res = await PostMan.PostMessage({
+        target: mediaActor,
+        type: "START_SOCKET_FEED",
+        payload: {
+          id: FEED_ID,
+          socketPath,
+          host: cfg.host,
+          port: cfg.port,
+          layout: cfg.layout ?? "mono",
+          fps: cfg.fps ?? 60,
+          maxFps: cfg.fps ?? 60,
+          bitrate: cfg.bitrate ?? 12_000_000,
+          persist: true,
+          share: Boolean(cfg.share),
+          subscriber: state.id,
+        },
+      }, true) as SocketFeedResponse;
 
       const info: FeedInfo = {
-        host: cfg.host,
-        port: cfg.port,
-        fingerprint,
-        ...(code ? { code } : {}),
-        ...(webrtcOfferUrl ? { webrtc: true } : {}),
+        host: res.host,
+        port: res.port,
+        fingerprint: res.fingerprint,
+        ...(res.code ? { code: res.code } : {}),
+        ...(res.webrtc ? { webrtc: true } : {}),
         ...(cfg.layout === "side-by-side" ? { crop: { x: 0, y: 0, width: 0.5, height: 1 } } : {}),
       };
-      const entry = { child, info, webrtcOfferUrl, socketPath };
-      active = entry;
+      active = { mediaActor, feedId: res.id, info, socketPath: res.socketPath };
       state.running = true;
-      state.socketPath = socketPath;
+      state.socketPath = res.socketPath;
       state.feed = info;
       state.lastError = null;
-
-      void child.status.then(() => {
-        if (active !== entry) return;
-        active = null;
-        state.running = false;
-        state.feed = null;
-        notifyEnded();
-      });
       return info;
     } catch (error) {
       state.lastError = String(error);
-      try {
-        child.kill("SIGTERM");
-      } catch { /* gone */ }
       throw error;
     }
   })().finally(() => {
@@ -213,26 +151,21 @@ async function stopFeed(): Promise<void> {
   state.running = false;
   state.feed = null;
   if (!current) return;
-  try {
-    current.child.kill("SIGTERM");
-  } catch { /* gone */ }
-  await Promise.race([current.child.status, new Promise((r) => setTimeout(r, 2000))]);
-  try {
-    current.child.kill("SIGKILL");
-  } catch { /* gone */ }
+  await PostMan.PostMessage({
+    target: current.mediaActor,
+    type: "STOP_FEED",
+    payload: { id: current.feedId },
+  }, true).catch(() => {});
 }
 
 async function acceptWebRtcOffer(offerSdp: string): Promise<{ sdp: string }> {
-  const url = active?.webrtcOfferUrl;
-  if (!url) throw new Error("vrchatSource has no running WebRTC encoder");
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/sdp" },
-    body: offerSdp,
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status}): ${text}`);
-  return { sdp: text };
+  const current = active;
+  if (!current) throw new Error("vrchatSource has no running WebRTC encoder");
+  return await PostMan.PostMessage({
+    target: current.mediaActor,
+    type: "WEBRTC_OFFER",
+    payload: { id: current.feedId, sdp: offerSdp },
+  }, true) as { sdp: string };
 }
 
 function describe(): DesktopDescription {
@@ -278,6 +211,15 @@ new PostMan(
       if (typeof actor === "string" && actor) endSubscribers.add(actor);
       return true;
     }),
+    FEED_ENDED: (payload: { id?: string }) => {
+      if (active && (!payload?.id || payload.id === active.feedId)) {
+        active = null;
+        state.running = false;
+        state.feed = null;
+        notifyEnded();
+      }
+      return true;
+    },
     GUARDED: guardedDispatch(guard, {
       DESCRIBE: describe,
       START: (p) => startFeed(p as Partial<VrchatSourceConfig> | undefined),
