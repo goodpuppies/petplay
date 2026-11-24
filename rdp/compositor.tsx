@@ -784,6 +784,8 @@ new PostMan(
       focusedId,
       viewers: tabs.size,
     }),
+    // Patched components only run on the next render.
+    __HOTPATCHED__: () => render(),
     __SHUTDOWN__: () => stop(),
   } as const,
 );

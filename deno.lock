@@ -4,6 +4,7 @@
     "jsr:@std/cli@*": "1.0.32",
     "npm:@iwer/devui@1.1.2": "1.1.2_iwer@2.5.0_@types+react@19.2.14",
     "npm:@iwer/sem@0.2.5": "0.2.5_iwer@2.5.0",
+    "npm:@jsr/deno__emit@0.46.0": "0.46.0",
     "npm:@jsr/gfx__dwm@0.3.9": "0.3.9",
     "npm:@jsr/jwetzell__osc@1.7.0": "1.7.0",
     "npm:@jsr/milly__namedpipe@1.1.0": "1.1.0",
@@ -25,6 +26,7 @@
     "npm:@types/react@19.2.14": "19.2.14",
     "npm:@types/three@0.186.0": "0.186.0",
     "npm:@zappar/msdf-generator@1.2.4": "1.2.4",
+    "npm:acorn@8.19.0": "8.19.0",
     "npm:gl-matrix@3.4.4": "3.4.4",
     "npm:meshline@3.3.1": "3.3.1_three@0.186.1",
     "npm:playwright@1.55.0": "1.55.0",
@@ -116,6 +118,29 @@
         "ts-proto"
       ]
     },
+    "@jsr/deno__cache-dir@0.13.2": {
+      "integrity": "sha512-3cLfb2tITsGWJxTrSsVQiYXiNuGRwjOFlOTcmO2sc2VUnCKrP4jrKlXENsuDqWRr/69dr2jmsA/ZODrFux0gtw==",
+      "dependencies": [
+        "@jsr/deno__graph",
+        "@jsr/std__fmt@0.223.0",
+        "@jsr/std__fs@0.223.0",
+        "@jsr/std__io",
+        "@jsr/std__path@0.223.0"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/deno__cache-dir/0.13.2.tgz"
+    },
+    "@jsr/deno__emit@0.46.0": {
+      "integrity": "sha512-q0amONDzqGuGyYGMfNxJ+3OqjYFmofubUb2wAqDWkJn6X1z/8DiqHhz7jMQT1BkY7WpjgBZyXWJJJ4xEKHTb1A==",
+      "dependencies": [
+        "@jsr/deno__cache-dir",
+        "@jsr/std__path@0.223.0"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/deno__emit/0.46.0.tgz"
+    },
+    "@jsr/deno__graph@0.73.1": {
+      "integrity": "sha512-8MrXym1aHkOttvGSKZGAjayW3hV5b2PADfE5Q7MGAMMA7lClBXC73ZiQNlbmhzyebZAb0UDd6sUXoKEJLDCYtg==",
+      "tarball": "https://npm.jsr.io/~/11/@jsr/deno__graph/0.73.1.tgz"
+    },
     "@jsr/denosaurs__byte-type@0.4.1": {
       "integrity": "sha512-+ZdkLjZ2nOAL2QPBuf368855uSrHnhM2R2lJZ5n5pfD5Gi8qmd0EjAWq8RXyNMwyorZEuk52P8rMhvJf3XeVKg==",
       "tarball": "https://npm.jsr.io/~/11/@jsr/denosaurs__byte-type/0.4.1.tgz"
@@ -201,6 +226,13 @@
       ],
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__assert/0.217.0.tgz"
     },
+    "@jsr/std__assert@0.223.0": {
+      "integrity": "sha512-qcx+Oe/fdwQu3+XXTFXN6j7bLlEbgHDXvqokSCdJknqOz8bOdzMT5TW1bJbKhInUx2M8Kiz80HLm8VuMaOx6Xw==",
+      "dependencies": [
+        "@jsr/std__fmt@0.223.0"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/std__assert/0.223.0.tgz"
+    },
     "@jsr/std__assert@1.0.19": {
       "integrity": "sha512-pEj6RPkGbqlgRmyKwATp4cUs6+ijxtdrv3bq8v1d2I2CEcMEyPaO8cVKro61wGRDH4cNg8Zx6haztvK/9m7gkA==",
       "dependencies": [
@@ -214,6 +246,10 @@
         "@jsr/std__data-structures"
       ],
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__async/1.5.1.tgz"
+    },
+    "@jsr/std__bytes@0.223.0": {
+      "integrity": "sha512-6bhkazZZPE8iYa3unUKEd0Nk4o0k9pWe4VAjyQVqgx+hbMjLCWQHhdNCW9ySbWUbqBVuI/V+FdWGzxdfAk/HjQ==",
+      "tarball": "https://npm.jsr.io/~/11/@jsr/std__bytes/0.223.0.tgz"
     },
     "@jsr/std__cli@1.0.32": {
       "integrity": "sha512-piaFso6urosCHGLkmy49pXXBJrW8zf1FlXXF4Zj0R2FGQdOGeoDDIfBejMzh+5W/GfJy3kbZGKqP8V2XHzZobQ==",
@@ -246,6 +282,10 @@
       "integrity": "sha512-AM33Cr/V3St3Cj5O4QQe4aMKGyzL9eYz+mOC58BmqxgeZwFbvSC06DzM2DS3ixcsAnwH2kYMXHpCBax0sT9q8Q==",
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__fmt/0.217.0.tgz"
     },
+    "@jsr/std__fmt@0.223.0": {
+      "integrity": "sha512-iuviJIMnAxlrQaDhe6vuYVyENvN8I1YUfjv8if7SeCc1sE+K820Jaqe6J2K+UivIkXnh0Qh3Wh/PBIvdK9sI5g==",
+      "tarball": "https://npm.jsr.io/~/11/@jsr/std__fmt/0.223.0.tgz"
+    },
     "@jsr/std__fmt@1.0.10": {
       "integrity": "sha512-Q2N8XDNkh/c1IKTi+sO4Vm64M5m4W0o47qTURmMX0vgHm9AJ6jL7jEQ2kw0M1T2rBZiwAY78eUbYzFyOYWaCqQ==",
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__fmt/1.0.10.tgz"
@@ -266,6 +306,14 @@
       ],
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__fs/0.217.0.tgz"
     },
+    "@jsr/std__fs@0.223.0": {
+      "integrity": "sha512-YBguetZEKTJZidCmxqwE6R/24XvGBg0Yj3hXelgd4AomSVxW4x8WKA3G4sBLfjd2I+N2QzitssGfbIOnw713MA==",
+      "dependencies": [
+        "@jsr/std__assert@0.223.0",
+        "@jsr/std__path@0.223.0"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/std__fs/0.223.0.tgz"
+    },
     "@jsr/std__fs@1.0.24": {
       "integrity": "sha512-UunW2Rg++9sA74NJnYMGTsMVQgoFRAwPP02wRRohL0PQBNorbyxHiyCMRaxYQCtLepTLkC4nUyMtcwrGKqTR6g==",
       "dependencies": [
@@ -285,6 +333,14 @@
       "integrity": "sha512-JT8b/t40WcR9q0GDwRZUooY7aXeXnFal8iidE/5TckdAFtvpVAsaJ71/Xgf1SfoChs41s6CZkuCYM8toaNgdvA==",
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__internal/1.0.14.tgz"
     },
+    "@jsr/std__io@0.223.0": {
+      "integrity": "sha512-VUPpfHeLvhooQFyujLSj6/KDCqgF+joBpb6eO9dg+JJWvy5wHj1Nl2EMRQe6Pl8nNVUwjt+ZraydkGTdlDS1jw==",
+      "dependencies": [
+        "@jsr/std__assert@0.223.0",
+        "@jsr/std__bytes"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/std__io/0.223.0.tgz"
+    },
     "@jsr/std__path@0.214.0": {
       "integrity": "sha512-raU9dv7P/5FiT9ClmqnjUoAiD113n0ahTK6/nZp8jzRITRmKTP1BdPsnZ0200c3qeBlZxi/CNCGo5B5oWJZiYA==",
       "dependencies": [
@@ -298,6 +354,13 @@
         "@jsr/std__assert@0.217.0"
       ],
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__path/0.217.0.tgz"
+    },
+    "@jsr/std__path@0.223.0": {
+      "integrity": "sha512-zeAxeBWFMmvlJdvBOzgIGmuqV6vLsZHt+2SWkIF00mMr2k96emGaq0Nw4KRnqkB4syawgc3OAo4EAbWJBu7Yvw==",
+      "dependencies": [
+        "@jsr/std__assert@0.223.0"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/std__path/0.223.0.tgz"
     },
     "@jsr/std__path@1.0.6": {
       "integrity": "sha512-A8WmQshHm5W5jN1OO24qH0VHWVv6vvmUzJiODKvvIUW1jNGVf04b86b9XWMoZPwlMEHq1mGgxWN9AuXY0CY2yg==",
@@ -587,6 +650,10 @@
       "dependencies": [
         "zod"
       ]
+    },
+    "acorn@8.19.0": {
+      "integrity": "sha512-oJlA3XiRm7Cyk6qFD2Jn8ak9B7jSy0qy00ADO3+8dpT0LSjFihQYv4C02LFCSYJV3Q37xYwwRy5m+IpIiUzqWw==",
+      "bin": true
     },
     "an-array@1.0.0": {
       "integrity": "sha512-M175GYI7RmsYu24Ok383yZQa3eveDfNnmhTe3OQ3bm70bEovz2gWenH+ST/n32M8lrwLWk74hcPds5CDRPe2wg=="
@@ -1019,6 +1086,7 @@
       "dependencies": [
         "npm:@iwer/devui@1.1.2",
         "npm:@iwer/sem@0.2.5",
+        "npm:@jsr/deno__emit@0.46.0",
         "npm:@jsr/gfx__dwm@0.3.9",
         "npm:@jsr/jwetzell__osc@1.7.0",
         "npm:@jsr/milly__namedpipe@1.1.0",
@@ -1038,6 +1106,7 @@
         "npm:@types/react@19.2.14",
         "npm:@types/three@0.186.0",
         "npm:@zappar/msdf-generator@1.2.4",
+        "npm:acorn@8.19.0",
         "npm:gl-matrix@3.4.4",
         "npm:meshline@3.3.1",
         "npm:playwright@1.55.0",
