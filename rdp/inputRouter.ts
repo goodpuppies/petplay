@@ -41,7 +41,18 @@ const state = actorState({
   events: 0,
   activeTarget: null as string | null,
   lastError: null as string | null,
+  /** The last routed frames (newest last), for live inspection. */
+  recent: [] as Array<{
+    event: InputEvent;
+    mapped: InputEvent;
+    region?: InputRegion;
+    windowSize?: { width: number; height: number };
+    feedSize?: { width: number; height: number };
+  }>,
 });
+
+/** How long a press waits for its window to be raised before it is injected anyway. */
+const FOCUS_WAIT_MS = 250;
 
 let household = new HouseholdClient(null);
 const localPorts = new Map<ActorId, TransportMessages>();
@@ -123,25 +134,49 @@ async function route(frame: RoutedInput): Promise<void> {
   activeTarget = { actor: frame.inputActor, local: frame.local, guarded };
   state.activeTarget = frame.inputActor;
 
+  // Raise the window before the press lands: input goes to whatever is on top of the host
+  // desktop at that spot, and a window shown here may be covered there.
   if (frame.event.t === "button" && frame.event.down && frame.focus) {
     const focusGuarded = frame.focus.guarded ?? household.active;
-    void household.request(
-      post,
-      frame.focus.source,
-      "FOCUSWINDOW",
-      { window: frame.focus.window },
-      focusGuarded,
-    ).catch(() => {});
+    await Promise.race([
+      household.request(
+        post,
+        frame.focus.source,
+        "FOCUSWINDOW",
+        { window: frame.focus.window },
+        focusGuarded,
+      ).catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, FOCUS_WAIT_MS)),
+    ]);
   }
 
   const mapped = mapWindowPointer(frame);
   state.events++;
+  state.recent.push({
+    event: frame.event,
+    mapped,
+    region: frame.region,
+    windowSize: frame.windowSize,
+    feedSize: frame.feedSize,
+  });
+  if (state.recent.length > 20) state.recent.shift();
   if (frame.local) {
     const port = await getLocalPort(frame.inputActor, guarded);
     if (port && !port.isClosed) port.send(mapped);
   } else {
     void household.request(post, frame.inputActor, "INPUT", mapped, guarded).catch(() => {});
   }
+}
+
+/** Frames are routed one at a time, in arrival order: a press waits for focus, and nothing
+ * after it may overtake it. */
+let routing: Promise<void> = Promise.resolve();
+function enqueue(frame: RoutedInput): Promise<void> {
+  const next = routing.then(() => route(frame)).catch((error) => {
+    state.lastError = `route: ${error}`;
+  });
+  routing = next;
+  return next;
 }
 
 async function stop(): Promise<void> {
@@ -157,7 +192,7 @@ new PostMan(
       Transport.accept("rdp.input", (transport) => {
         const channel = messages(transport);
         channel.onmessage = (raw) => {
-          void route(raw as RoutedInput);
+          void enqueue(raw as RoutedInput);
         };
         channel.onclose = () => {
           void releaseAll();
@@ -171,7 +206,7 @@ new PostMan(
       return true;
     },
     ROUTE: async (frame: RoutedInput) => {
-      await route(frame);
+      await enqueue(frame);
       return true;
     },
     RELEASEALL: () => releaseAll(),

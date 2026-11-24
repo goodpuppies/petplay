@@ -221,6 +221,7 @@ async function resizeHostWindow(id: string, width: number, height: number): Prom
     win.region = updated.region;
     win.windowSize = { width: updated.width, height: updated.height };
   }
+  scheduleGeometryRefresh();
 }
 
 function setMinimized(id: string, minimized?: boolean): void {
@@ -399,6 +400,15 @@ async function refreshLauncher(): Promise<void> {
     }
   }
   render();
+}
+
+let geometryTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleGeometryRefresh(): void {
+  if (geometryTimer) clearTimeout(geometryTimer);
+  geometryTimer = setTimeout(() => {
+    geometryTimer = null;
+    void refreshLauncher();
+  }, 300);
 }
 
 function maybeAutoWallpaper(): void {
@@ -598,6 +608,7 @@ async function listenWebTransport(
 function stop(): void {
   if (certTimer) clearTimeout(certTimer);
   if (frameTimer) clearInterval(frameTimer);
+  if (geometryTimer) clearTimeout(geometryTimer);
   certTimer = frameTimer = null;
   for (const session of tabs.values()) session.tab.close("compositor stopped");
   tabs.clear();
@@ -696,14 +707,24 @@ new PostMan(
       const layouts = payload?.layouts;
       if (!layouts) return true;
       let changed = false;
+      let resized = false;
       for (const win of windows) {
         const slot = layouts[win.feedId];
         if (!slot) continue;
         if (slot.crop) win.crop = slot.crop;
-        if (slot.srcSize) win.srcSize = slot.srcSize;
+        if (
+          slot.srcSize &&
+          (slot.srcSize.width !== win.srcSize?.width || slot.srcSize.height !== win.srcSize?.height)
+        ) {
+          win.srcSize = slot.srcSize;
+          resized = true;
+        }
         changed = true;
       }
       if (changed) render();
+      // The content changed size: re-read where the window now is, since the geometry read
+      // right after RESIZE can predate the client committing it (Wayland).
+      if (resized) scheduleGeometryRefresh();
       return true;
     },
     FEED_ENDED: (payload: { feedId: string }) => {
