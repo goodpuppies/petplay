@@ -13,7 +13,8 @@
 - Do not put time limits or automatic expiry on experiments unless the user explicitly asks.
   Leave experimental sessions running until asked to stop; retain explicit stop and cleanup paths.
 - Assume the developer is in VR using a live PetPlay while you work, usually launched by SteamVR
-  with `--watch-webxr` so every save hot-reloads the `webxr` actor. Keep it running: crashes
+  with `--watch-webxr` so every save that type-checks is hot-patched into the running actors
+  (stageforge `HotReload`; structural changes reload `webxr`). Keep it running: crashes
   happen during development, but avoid causing them. Apply each change in one step (all files of
   a cross-file edit in one write; importers first, removed exports last) so a reload never sees a
   half-done edit. If it does go down, read `logs/petplay-<start time>.log` for why and restart it

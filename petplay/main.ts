@@ -9,7 +9,6 @@ import { multiplyMatrix } from "../classes/matrixutils.ts";
 import { MainStdinHandler } from "../classes/mainStdinHandler.ts";
 import { OverlayRenderMode } from "./webxr.ts";
 import type { api as openVrApi } from "./OpenVR.ts";
-import { startWebXrAutoReload } from "../classes/webxrAutoReload.ts";
 import { requestProcessExit } from "../classes/processExitRequest.ts";
 import { getSetting, loadSettings } from "../classes/settings.ts";
 import { OPENVR_REATTACH_ARG } from "../classes/steamVrProcess.ts";
@@ -51,11 +50,6 @@ function getDesktopControlEnabled(): boolean {
  */
 function getAgentReplEnabled(): boolean {
   return Deno.args.includes("--agent-repl");
-}
-
-/** Dev loop: reload the `webxr` actor whenever a file it loads changes. */
-function getWatchWebXrEnabled(): boolean {
-  return isEnabledArg("--watch-webxr");
 }
 
 function getScreenCaptureFps(): number {
@@ -230,37 +224,6 @@ async function main() {
   const endTime = performance.now();
   const timeElapsed = Math.round(endTime - startTime);
   LogChannel.log("default", `scene created in ${timeElapsed} ms`);
-  if (getWatchWebXrEnabled()) await watchWebXr();
-}
-
-async function watchWebXr() {
-  await startWebXrAutoReload({
-    entry: new URL("./webxr.ts", import.meta.url).pathname,
-    getTarget: () => clientActors.webxr,
-    reload: async (actorId) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          PostMan.PostMessage({ target: System, type: "RELOAD", payload: { actorId } }, true),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("timed out after 60s")), 60_000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-    },
-    toast: (title, content, tone) => {
-      const target = clientActors.webxr;
-      if (target == null) return;
-      PostMan.PostMessage({
-        target,
-        type: "TOAST",
-        payload: { title, content, source: "webxr-autoreload", tone, timeoutMs: 4000 },
-      });
-    },
-    log: (message) => console.log(message),
-  });
 }
 
 /**
@@ -755,7 +718,9 @@ async function startVrcDepth(options: { grid?: number } | null) {
 async function stopVrcDepth() {
   const id = clientActors.vrchatDepth;
   if (id == null) return { running: false };
-  await PostMan.PostMessage({ target: id, type: "STOPVRCDEPTH", payload: null }, true).catch(() => {});
+  await PostMan.PostMessage({ target: id, type: "STOPVRCDEPTH", payload: null }, true).catch(
+    () => {},
+  );
   await stopActor(id);
   await waitForActorsStopped([id]);
   clientActors.vrchatDepth = null;
@@ -766,11 +731,18 @@ async function stopVrcDepth() {
 async function getVrcDepthStatus() {
   const id = clientActors.vrchatDepth;
   const sync = clientActors.webxr
-    ? await PostMan.PostMessage({ target: clientActors.webxr, type: "GETVRCDEPTHSYNC", payload: null }, true)
+    ? await PostMan.PostMessage({
+      target: clientActors.webxr,
+      type: "GETVRCDEPTHSYNC",
+      payload: null,
+    }, true)
       .catch(() => null)
     : null;
   if (id == null) return { running: false, intake: null, sync };
-  const intake = await PostMan.PostMessage({ target: id, type: "GETVRCDEPTHSTATUS", payload: null }, true)
+  const intake = await PostMan.PostMessage(
+    { target: id, type: "GETVRCDEPTHSTATUS", payload: null },
+    true,
+  )
     .catch((error) => ({ error: messageOf(error) }));
   return { running: true, intake, sync };
 }
@@ -782,7 +754,11 @@ async function getVrcCameraViewStatus() {
     return { running: false, actorId: null, details: null };
   }
   try {
-    const health = await callActor<{ details?: { width?: number; height?: number } }>(id, "HEALTH", OPENVR_HEALTH_TIMEOUT_MS);
+    const health = await callActor<{ details?: { width?: number; height?: number } }>(
+      id,
+      "HEALTH",
+      OPENVR_HEALTH_TIMEOUT_MS,
+    );
     publishVrcCameraLayer(true, health?.details);
     return { running: true, actorId: id, details: health?.details ?? null };
   } catch {
@@ -792,10 +768,13 @@ async function getVrcCameraViewStatus() {
 }
 
 function publishVrcCameraLayer(running: boolean, size?: { width?: number; height?: number }): void {
-  if (clientActors.webxr) PostMan.PostMessage({
-    target: clientActors.webxr, type: "VRCCAMERAVIEWSTATUS",
-    payload: { running, width: size?.width ?? null, height: size?.height ?? null },
-  });
+  if (clientActors.webxr) {
+    PostMan.PostMessage({
+      target: clientActors.webxr,
+      type: "VRCCAMERAVIEWSTATUS",
+      payload: { running, width: size?.width ?? null, height: size?.height ?? null },
+    });
+  }
 }
 
 async function getDecoupledDesktopViewStatus() {

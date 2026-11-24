@@ -285,6 +285,8 @@ export async function startPetplayServer(
     payload: null,
   });
 
+  if (isWatchEnabled()) await enableHotReload(postalservice);
+
   if (options.interactive) {
     while (true) {
       // A launch without a terminal has stdin at its end: stop reading rather than
@@ -300,5 +302,53 @@ export async function startPetplayServer(
       });
       await wait(10);
     }
+  }
+}
+
+/** Dev loop (`--watch-webxr`): hot reload every actor, see {@link enableHotReload}. */
+function isWatchEnabled(): boolean {
+  const raw = Deno.args.find((a) => a === "--watch-webxr" || a.startsWith("--watch-webxr="));
+  if (raw == null) return false;
+  const value = raw.split("=", 2)[1]?.trim().toLowerCase();
+  return !(value === "0" || value === "false" || value === "off" || value === "no");
+}
+
+/**
+ * Patches saved code into the running actors and this process (stageforge `HotReload`): module
+ * state, sockets and OpenVR handles survive. Changes a patch cannot carry (imports, exports,
+ * top-level code, `__INIT__`) reload the actor instead when it defines `__SNAPSHOT__` (`webxr`
+ * does), and are logged as needing a restart otherwise. Nothing applies unless `deno task check`
+ * passes. Each outcome also shows as a headset toast.
+ */
+async function enableHotReload(postalservice: PostalService): Promise<void> {
+  const toast = (line: string) => {
+    const webxr = [...postalservice.localActors()].find(([, actor]) =>
+      actor.workerUrl?.endsWith("/petplay/webxr.ts")
+    )?.[0];
+    if (webxr == null || line.startsWith("[hot] watching")) return;
+    const content = line.replace(/^\[hot\] /, "").split("\n")[0]!;
+    const ok = /: (patched|reloaded) /.test(content);
+    postalservice.PostMessage({
+      target: webxr,
+      type: "TOAST",
+      payload: {
+        title: ok ? "Hot reload" : "Not hot reloaded",
+        content,
+        source: "hot-reload",
+        tone: ok ? "info" : "warning",
+        timeoutMs: ok ? 4000 : 8000,
+      },
+    });
+  };
+  try {
+    await postalservice.enableHotReload({
+      check: [Deno.execPath(), "task", "check"],
+      log: (line) => {
+        console.log(line);
+        toast(line);
+      },
+    });
+  } catch (error) {
+    console.warn("[hot] hot reload unavailable:", error);
   }
 }

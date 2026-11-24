@@ -41,9 +41,12 @@ const { url } = await postal.PostMessage({
     port: Number(args.port),
     scene: args.scene,
     dir: distDir,
-    watch: args.watch,
   },
 }, true) as { url: string };
+
+// Saved code patches into the running actors, or reloads them (stageforge HotReload), once the
+// project type-checks.
+if (args.watch) await postal.enableHotReload({ check: [Deno.execPath(), "task", "check"] });
 
 console.log(`\nPetPlay UI preview: ${url}${args.watch ? " (hot reload on)" : ""}\n`);
 

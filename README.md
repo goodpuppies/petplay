@@ -205,10 +205,12 @@ launch arguments** (so `--novr`, `--webxr-raythree-debug=1`, locale overrides an
 then brings back whichever desktop surface was running. `--no-detach` skips the VR detach. Actor-level
 `POST /reload` remains the cheaper option when only an actor's code changed.
 
-`--watch-webxr` does that reload for you: the server watches every local file the `webxr` actor
-loads (its `deno info` graph) and reloads the actor about 300 ms after a save. A save that does not
-parse, or imports a file that does not exist, is not reloaded. The old actor keeps running, and a
-headset toast names the file, because a worker that fails to load would leave no `webxr` at all.
+`--watch-webxr` does that for you, for every actor and not only `webxr` (stageforge `HotReload`).
+Each save that passes `deno task check` is emitted as Deno would and patched into every running
+isolate that loaded the file, so module state, sockets and OpenVR handles survive and nothing
+restarts. A change a patch cannot carry (imports, exports, other top-level code, `__INIT__`) reloads
+the actor instead when it defines `__SNAPSHOT__` (`webxr` does) and is logged as needing a restart
+otherwise. A headset toast reports each outcome.
 A SteamVR-launched server only gets the flag if it was registered with it
 (`deno task steamvr:register -- --watch-webxr`).
 

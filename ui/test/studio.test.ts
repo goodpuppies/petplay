@@ -5,7 +5,11 @@
  */
 import { assert, assertEquals } from "@std/assert";
 import { type ActorId, PostalService } from "../../submodules/stageforge/mod.ts";
-import { decodeDelta, SceneStore, type TextRunData } from "../../submodules/raythree/src/store/mod.ts";
+import {
+  decodeDelta,
+  SceneStore,
+  type TextRunData,
+} from "../../submodules/raythree/src/store/mod.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -57,7 +61,7 @@ Deno.test({
       const started = await postal.PostMessage({
         target: preview,
         type: "START",
-        payload: { hostname: "127.0.0.1", port: 0, watch: false },
+        payload: { hostname: "127.0.0.1", port: 0 },
       }, true) as { url: string; actors: { studio: ActorId } };
       const { url } = started;
       studio = started.actors.studio;
@@ -153,7 +157,10 @@ Deno.test({
       );
       assert(toastTexts.includes("+ ERROR"));
 
-      const health = await postal.PostMessage({ target: studio, type: "__HEALTH__", payload: null }, true) as {
+      const health = await postal.PostMessage(
+        { target: studio, type: "__HEALTH__", payload: null },
+        true,
+      ) as {
         tabConnected: boolean;
         scene: string;
         lastError: string | null;
