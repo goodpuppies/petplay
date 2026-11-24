@@ -1,10 +1,10 @@
-export * from "npm:@react-three/fiber@10.0.0-alpha.5/webgpu";
+export * from "npm:@react-three/fiber@10.0.0-alpha.6/webgpu";
 
-import { getScheduler, useStore } from "npm:@react-three/fiber@10.0.0-alpha.5/webgpu";
+import { getScheduler, useStore } from "npm:@react-three/fiber@10.0.0-alpha.6/webgpu";
 import type {
   FrameNextState,
   UseFrameNextOptions,
-} from "npm:@react-three/fiber@10.0.0-alpha.5/webgpu";
+} from "npm:@react-three/fiber@10.0.0-alpha.6/webgpu";
 import React from "react";
 import { currentXRFrame } from "./xrFrameBridge.ts";
 
@@ -46,95 +46,10 @@ const callbackOptionsKey = (options?: UseFrameNextOptions | number): string =>
     })
     : "";
 
-type SchedulerJob = {
-  id: string;
-  enabled: boolean;
-  fps?: number;
-  drop?: boolean;
-  lastRun?: number;
-  lastRunElapsed?: number;
-  callback: (state: unknown, delta: number) => void;
-};
-type SchedulerRoot = {
-  needsRebuild: boolean;
-  sortedJobs: SchedulerJob[];
-  lastTickTime: number | null;
-  accumulatedTime: number;
-  getState?: () => Record<string, unknown>;
-};
-type SchedulerInternals = {
-  phaseGraph: unknown;
-  loopState: { frameCount: number };
-  computeRootDelta(root: SchedulerRoot, timestamp: number, driverDelta: number): number;
-  triggerError(error: Error): void;
-  tickRoot(root: SchedulerRoot, timestamp: number, driverDelta: number): void;
-};
-
-/** `@pmndrs/scheduler` 0.2.0's private `shouldRun`, unchanged. */
-function shouldRunJob(job: SchedulerJob, now: number): boolean {
-  if (!job.enabled) return false;
-  if (!job.fps) return true;
-  const minInterval = 1e3 / job.fps;
-  const lastRun = job.lastRun ?? 0;
-  const elapsed = now - lastRun;
-  if (elapsed < minInterval - 1) return false;
-  if (job.drop) {
-    job.lastRun = now;
-  } else {
-    const steps = Math.floor(elapsed / minInterval);
-    job.lastRun = lastRun + steps * minInterval;
-    if (job.lastRun < now - minInterval) job.lastRun = now;
-  }
-  return true;
-}
-
-/**
- * `Scheduler#tickRoot` from `@pmndrs/scheduler` 0.2.0 with one change. A job that ran last tick
- * gets the shared frame state only if `accumulatedTime - lastRunElapsed === delta`, and in floating
- * point that is almost never exact, so every job (743 in a full scene) got its own spread of the
- * ~50-key store state every frame: about 30 MB/s of garbage, which is what made the webxr worker's
- * old space fill and stall the simulation for up to a second per full GC. Deltas now match within
- * a microsecond; fps-limited jobs, whose delta really differs, still get their own copy.
- */
-function patchSchedulerTickRoot(): void {
-  const scheduler = getScheduler() as unknown as SchedulerInternals;
-  const proto = Object.getPrototypeOf(scheduler) as SchedulerInternals & {
-    __petplayTickRoot?: true;
-  };
-  if (proto.__petplayTickRoot) return;
-  proto.__petplayTickRoot = true;
-  const original = proto.tickRoot;
-  proto.tickRoot = function (this: SchedulerInternals, root, timestamp, driverDelta) {
-    // Re-sorting jobs needs the library's private `rebuildSortedJobs`: that frame runs unpatched.
-    if (root.needsRebuild) return original.call(this, root, timestamp, driverDelta);
-    const delta = this.computeRootDelta(root, timestamp, driverDelta);
-    root.lastTickTime = timestamp;
-    root.accumulatedTime += delta;
-    const frameState = {
-      ...(root.getState?.() ?? {}),
-      time: timestamp,
-      delta,
-      elapsed: root.accumulatedTime,
-      frame: this.loopState.frameCount,
-    };
-    for (const job of root.sortedJobs) {
-      if (!shouldRunJob(job, timestamp)) continue;
-      const jobDelta = job.lastRunElapsed === undefined
-        ? delta
-        : root.accumulatedTime - job.lastRunElapsed;
-      job.lastRunElapsed = root.accumulatedTime;
-      const sameDelta = Math.abs(jobDelta - delta) < 1e-6;
-      const jobState = sameDelta ? frameState : { ...frameState, delta: jobDelta };
-      try {
-        job.callback(jobState, sameDelta ? delta : jobDelta);
-      } catch (error) {
-        console.error(`[Scheduler] Error in job "${job.id}":`, error);
-        this.triggerError(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-  };
-}
-patchSchedulerTickRoot();
+// `@pmndrs/scheduler` 0.2.0 handed every job its own spread of the ~50-key store state each
+// frame (a float-exact delta check almost never matched), about 30 MB/s of garbage that stalled
+// the webxr worker in full GCs; PetPlay patched `Scheduler#tickRoot` for it. 0.3.0 (r3f
+// 10.0.0-alpha.6) shares one frame state among all jobs without an fps limit, so the patch is gone.
 
 /**
  * R3F-compatible `useFrame` that registers directly with the scheduler.

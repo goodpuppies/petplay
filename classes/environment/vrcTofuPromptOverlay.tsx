@@ -89,7 +89,7 @@ export function VrcTofuPromptOverlay(
 
   const group = useRef<THREE.Group>(null);
   const camera = useThree((state) => state.camera);
-  const renderer = useThree((state) => state.gl);
+  const renderer = useThree((state) => state.renderer);
   const scratch = useRef({
     headPos: new THREE.Vector3(),
     headQuat: new THREE.Quaternion(),

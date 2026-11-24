@@ -15,7 +15,7 @@ export function TextDistanceProbe({ distance }: { distance: TextProbeDistance })
     const group = root.current;
     if (!group) return;
     // The renderer is three's WebGPURenderer; r3f's types call it WebGLRenderer.
-    const xr = (state.gl as unknown as {
+    const xr = (state.renderer as unknown as {
       xr: { isPresenting: boolean; getCamera(): THREE.Camera };
     }).xr;
     const head = xr.isPresenting ? xr.getCamera() : state.camera;

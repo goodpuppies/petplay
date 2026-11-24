@@ -13,7 +13,7 @@
     "@moq/net": "0.4.7",
     "@number0/iroh": "0.35.0",
     "@preact/signals-core": "1.14.1",
-    "@react-three/fiber": "10.0.0-alpha.5",
+    "@react-three/fiber": "10.0.0-alpha.6",
     "@sdl3/sdl3-deno": "npm:@jsr/sdl3__sdl3-deno@2.1.0",
     "@std/assert": "npm:@jsr/std__assert@1.0.19",
     "@std/async": "npm:@jsr/std__async@1.5.1",

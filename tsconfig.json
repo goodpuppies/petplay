@@ -47,12 +47,16 @@
       "webxr-layers-polyfill": ["./node_modules/webxr-layers-polyfill"],
       // Inline npm: specifiers that reach the real package behind an alias above
       "npm:three@0.187.0": ["./node_modules/@types/three/build/three.module.d.ts"],
-      "npm:@react-three/fiber@10.0.0-alpha.5": ["./node_modules/@react-three/fiber/dist/index.d.ts"],
-      "npm:@react-three/fiber@10.0.0-alpha.5/webgpu": ["./node_modules/@react-three/fiber/dist/webgpu/index.d.ts"],
+      "npm:@react-three/fiber@10.0.0-alpha.6": ["./node_modules/@react-three/fiber/dist/index.d.ts"],
+      "npm:@react-three/fiber@10.0.0-alpha.6/webgpu": ["./node_modules/@react-three/fiber/dist/webgpu/index.d.ts"],
       "npm:@number0/iroh": ["./node_modules/@number0/iroh/index.d.ts"]
     }
   },
-  "files": ["./types/pointer-events-first.d.ts", "./dist/types/deno.d.ts"],
+  "files": [
+    "./types/pointer-events-first.d.ts",
+    "./types/r3f-webgpu-renderer.d.ts",
+    "./dist/types/deno.d.ts"
+  ],
   "include": [
     "classes/**/*",
     "petplay/**/*",

@@ -520,7 +520,7 @@ function LaserHandleMenu({ hand }: { hand: LaserHand }) {
     freshWorldMatrix(parent, scratch.parent);
     scratch.position.setFromMatrixPosition(scratch.parent);
     scratch.position.y -= LASER_MENU_DROP;
-    const head = getHeadObject(state.gl, state.camera);
+    const head = getHeadObject(state.renderer, state.camera);
     head.updateWorldMatrix(true, false);
     scratch.head.setFromMatrixPosition(head.matrixWorld);
     // +Z, the side uikit draws on, toward the head, with world up kept upright.

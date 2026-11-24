@@ -36,7 +36,7 @@ export function SettingsWindowOverlay() {
   const open = useSettingsWindowOpen();
   const groupRef = useRef<THREE.Group>(null);
   const camera = useThree((state) => state.camera);
-  const renderer = useThree((state) => state.gl);
+  const renderer = useThree((state) => state.renderer);
 
   // Place cleanly in front of the user's gaze each time the window is opened.
   useEffect(() => {

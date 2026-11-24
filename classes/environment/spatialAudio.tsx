@@ -116,7 +116,7 @@ const nativeAudio = new ThreeRaylibSpatialAudio();
 /** Native Web-Audio-compatible context for Three/Drei positional sources. */
 export function SpatialAudioProvider({ children }: { children: React.ReactNode }) {
   const camera = useThree((state) => state.camera);
-  const renderer = useThree((state) => state.gl);
+  const renderer = useThree((state) => state.renderer);
   const scene = useThree((state) => state.scene);
 
   React.useEffect(() => {

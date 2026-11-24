@@ -211,7 +211,7 @@ const _dismissUp = new THREE.Vector3(0, 1, 0);
 function DismissIndicator() {
   const groupRef = useRef<THREE.Group>(null);
   const camera = useThree((state) => state.camera);
-  const renderer = useThree((state) => state.gl);
+  const renderer = useThree((state) => state.renderer);
 
   useFrame(() => {
     const node = groupRef.current;

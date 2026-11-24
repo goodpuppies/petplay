@@ -154,7 +154,7 @@ export function ToastOverlay() {
   const toasts = useVisibleToasts();
   const group = useRef<THREE.Group>(null);
   const camera = useThree((state) => state.camera);
-  const renderer = useThree((state) => state.gl);
+  const renderer = useThree((state) => state.renderer);
   const scratch = useRef({
     position: new THREE.Vector3(),
     quaternion: new THREE.Quaternion(),

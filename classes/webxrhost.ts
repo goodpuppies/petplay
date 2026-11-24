@@ -50,7 +50,7 @@ import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.t
 import {
   getScheduler,
   useFrame as useR3FFrame,
-} from "npm:@react-three/fiber@10.0.0-alpha.5/webgpu";
+} from "npm:@react-three/fiber@10.0.0-alpha.6/webgpu";
 // @ts-ignore no types for vendored JS build output
 import * as iwerModule from "../submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/build/iwer.module.js";
 

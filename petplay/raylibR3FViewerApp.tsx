@@ -267,7 +267,7 @@ export function SceneCameraAim(
 export function OrbitHandlesView(
   { controlsStore }: { controlsStore: RaylibR3FViewerControlsStore; logPrefix: string },
 ) {
-  const canvas = useThree((state) => state.gl.domElement);
+  const canvas = useThree((state) => state.renderer.domElement);
   const scene = useThree((state) => state.scene);
   const getState = useThree((state) => state.get);
   const navigation = React.useMemo(

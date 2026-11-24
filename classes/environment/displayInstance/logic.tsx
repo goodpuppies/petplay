@@ -191,7 +191,7 @@ export function DisplayInstance(
     const obj = handleRef.current;
     let hidden = false;
     if (autoHide && obj != null) {
-      const head = getHeadObject(state.gl, state.camera as THREE.Camera);
+      const head = getHeadObject(state.renderer, state.camera as THREE.Camera);
       head.updateWorldMatrix(true, false);
       obj.updateWorldMatrix(true, false);
       // Both look down -Z: the head where it looks, the window away from its viewer.

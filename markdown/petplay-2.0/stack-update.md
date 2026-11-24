@@ -52,6 +52,16 @@ All of these come in through the `submodules/threewebxrwebgpudeno` workspace mem
   be numeric strings; and it needs `zod` and generated `src/flex/schema.ts` (run
   `scripts/flex-generate-setter.ts`; `setup-submodules.ts` does). Porting `local-uikit` onto the
   new modules is its own task, verified in VR.
+- 2026-11-24: xr fork rebased on upstream main and reduced to upstream-PR-shaped commits (webgpu
+  session feature, controller key fix, hinge axis fix, HandleStore extensibility, r3f v10 frame
+  priorities, hit-test speed-up). PetPlay's grab behaviour moved to
+  `classes/environment/petplayHandleStore.tsx`.
+- 2026-11-24: r3f → 10.0.0-alpha.6. Its scheduler is now `@pmndrs/scheduler` 0.3.0, which shares
+  one frame state among jobs, so `r3fWebgpuCompat.ts` no longer patches `tickRoot` (the old patch
+  read a removed internal and stopped every frame job, uikit layout included). `state.gl` is
+  deprecated in favour of `state.renderer` and is typed by a registered renderer:
+  `types/r3f-webgpu-renderer.d.ts` registers `webgpu` (its version pin moves with the others).
+  460/462 tests, same two pre-existing failures.
 
 ## Done when
 
