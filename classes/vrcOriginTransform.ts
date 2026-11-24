@@ -632,7 +632,11 @@ class KalmanChannel {
     return this.state.map(([, v]) => v);
   }
 
-  measure(t: number, values: number[]): void {
+  /**
+   * A measurement at `t`. `fresh[k] === false` means dim `k` didn't update in it (VRChat can
+   * freeze one axis's contacts for ~200 ms while another keeps moving): that dim only advances.
+   */
+  measure(t: number, values: number[], fresh?: boolean[], timingSigmaMs = 0): void {
     this.newestRaw = [...values];
     if (!this.state.length) {
       this.state = values.map((x) => [x, 0]);
@@ -651,7 +655,14 @@ class KalmanChannel {
       a += 2 * dt * b + dt * dt * d + (q * dt ** 3) / 3;
       b += dt * d + (q * dt * dt) / 2;
       d += q * dt;
-      const sInv = 1 / (a + this.r);
+      if (fresh && !fresh[k]) {
+        this.state[k] = [x, v];
+        this.cov[k] = [a, b, d];
+        continue;
+      }
+      // Arrival-time noise shows as position noise in proportion to speed.
+      const timingNoise = (v * timingSigmaMs) / 1000;
+      const sInv = 1 / (a + this.r + timingNoise * timingNoise);
       const ka = a * sInv, kb = b * sInv;
       const y = values[k] - x;
       x += ka * y;
@@ -735,6 +746,8 @@ export interface VrcLocomotionInput {
   headYawRate: number;
 }
 
+/** Spread of OSC arrival times around when VRChat sampled (ms), measured 2026-11-24. */
+const ARRIVAL_SIGMA_MS = 12;
 const STICK_DEADZONE = 0.15;
 const STICK_CHANGE = 0.1;
 
@@ -904,25 +917,33 @@ export class VrcRootPredictor {
     const { pose, t } = sample;
     this.source = pose.source;
     const prev = this.lastPose;
-    const positionChanged = !prev || pose.position.some((v, k) => v !== prev.position[k]);
+    // Per axis: VRChat sometimes freezes one axis's contacts while another keeps moving, and an
+    // unchanged axis in a moving sample is stale, not a measurement.
+    const freshAxes = pose.position.map((v, k) => !prev || v !== prev.position[k]);
+    const positionChanged = freshAxes.some((fresh) => fresh);
     const yawChanged = !prev || pose.yawRad !== prev.yawRad;
     this.lastPose = pose;
 
     if (positionChanged && (!this.position.started || t > this.position.updatedAt)) {
       if (this.position.started) {
         const predicted = this.position.at(t, this.timing, this.move.active).values;
-        const miss = Math.hypot(...pose.position.map((v, k) => v - predicted[k]));
+        const miss = Math.hypot(
+          ...pose.position.map((v, k) => freshAxes[k] ? v - predicted[k] : 0),
+        );
         if (miss > this.resetDistance) {
           this.position.reset();
           this.shown = null;
-        } else if (miss > 0.06 && this.move.active) {
+        } else if (
+          this.move.active &&
+          miss > 0.06 + (3 * ARRIVAL_SIGMA_MS / 1000) * Math.hypot(...this.position.velocity())
+        ) {
           // The motion changed in a way the stick didn't show (direction follows a hand, a
           // slope, a wall): be responsive again.
           this.move.changedAt = t;
           this.position.q = this.q.changingPosition;
         }
       }
-      this.position.measure(t, [...pose.position]);
+      this.position.measure(t, [...pose.position], freshAxes, ARRIVAL_SIGMA_MS);
       // Just after a release VRChat is standing still; late samples must not restart motion.
       if (this.move.releasedWithin(t, 500)) this.position.measureVelocity([0, 0, 0], 1e-4);
     }

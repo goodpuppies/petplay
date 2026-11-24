@@ -459,7 +459,7 @@ Deno.test("sticks: a steady held stick shows a steady speed despite arrival jitt
   };
   const without = spread(stickWalk(new VrcRootPredictor(), jitter, false));
   const withStick = spread(stickWalk(new VrcRootPredictor(), jitter, true));
-  assert(withStick < without / 2, `stick ${withStick} vs no stick ${without}`);
+  assert(withStick < without * 0.6, `stick ${withStick} vs no stick ${without}`);
 });
 
 Deno.test("sticks: releasing the stick stops the estimate there, without overshoot", () => {

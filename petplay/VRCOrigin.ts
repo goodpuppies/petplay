@@ -65,6 +65,9 @@ type SticksPayload = {
   blocked: { left: boolean; right: boolean };
 };
 let latestSticks: SticksPayload | null = null;
+/** Received stick states, for locomotion analysis (`GETSTICKTRACE`). */
+const stickTrace: SticksPayload[] = [];
+const STICK_TRACE_MAX = 30_000;
 /** Older stick state than this (ms) counts as unknown. */
 const STICKS_STALE_MS = 300;
 let lastHeadYawRate = 0;
@@ -150,6 +153,12 @@ new PostMan(
      */
     STICKS: (payload: SticksPayload) => {
       latestSticks = payload;
+      stickTrace.push(payload);
+      if (stickTrace.length > STICK_TRACE_MAX) stickTrace.splice(0, 5_000);
+    },
+    GETSTICKTRACE: (payload: { sinceMs?: number } | null) => {
+      const since = payload?.sinceMs ?? 0;
+      return stickTrace.filter((entry) => entry.t > since);
     },
     GETHMDTRACE: (payload: { sinceMs?: number } | null) => {
       const since = payload?.sinceMs ?? 0;
