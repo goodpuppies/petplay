@@ -12,7 +12,7 @@
  */
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import { dirname } from "@std/path";
-import { petplayMediaPath } from "../classes/petplayMediaPath.ts";
+import { petplayMediaCommand, petplayMediaPath } from "../classes/petplayMediaPath.ts";
 import { guardedDispatch, HouseholdGuard, refuseWhenGuarded } from "./classes/household.ts";
 import type { DesktopDescription, FeedInfo } from "./desktopSource.ts";
 
@@ -115,22 +115,21 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
     await Deno.mkdir(dirname(socketPath), { recursive: true }).catch(() => {});
     await Deno.remove(socketPath).catch(() => {});
 
-    const child = new Deno.Command(petplayMediaPath(), {
-      args: [
-        socketPath,
-        "-",
-        `${cfg.host}:${cfg.port}`,
-        "--layout",
-        cfg.layout ?? "mono",
-        "--fps",
-        String(cfg.fps ?? 60),
-        "--bitrate",
-        String(cfg.bitrate ?? 12_000_000),
-        "--persist",
-        "--max-fps",
-        String(cfg.fps ?? 60),
-        ...(cfg.share ? ["--iroh-share"] : []),
-      ],
+    const child = petplayMediaCommand([
+      socketPath,
+      "-",
+      `${cfg.host}:${cfg.port}`,
+      "--layout",
+      cfg.layout ?? "mono",
+      "--fps",
+      String(cfg.fps ?? 60),
+      "--bitrate",
+      String(cfg.bitrate ?? 12_000_000),
+      "--persist",
+      "--max-fps",
+      String(cfg.fps ?? 60),
+      ...(cfg.share ? ["--iroh-share"] : []),
+    ], {
       stdout: "piped",
       stderr: "piped",
     }).spawn();
@@ -148,7 +147,8 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
       const fingerprint = await new Promise<string>((resolve, reject) => {
         let fp: string | null = null;
         const timer = setTimeout(
-          () => reject(new Error(`vrchatSource petplay-media not ready: ${log.at(-1) ?? "no output"}`)),
+          () =>
+            reject(new Error(`vrchatSource petplay-media not ready: ${log.at(-1) ?? "no output"}`)),
           cfg.share ? SHARE_READY_TIMEOUT_MS : READY_TIMEOUT_MS,
         );
         drained.push(drainLines(child.stdout, (line) => {
@@ -164,7 +164,9 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
         child.status.then(async (status) => {
           clearTimeout(timer);
           await Promise.race([Promise.allSettled(drained), new Promise((r) => setTimeout(r, 500))]);
-          reject(new Error(`vrchatSource petplay-media exited (${status.code}): ${log.at(-1) ?? ""}`));
+          reject(
+            new Error(`vrchatSource petplay-media exited (${status.code}): ${log.at(-1) ?? ""}`),
+          );
         });
       });
 
@@ -174,9 +176,7 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
         fingerprint,
         ...(code ? { code } : {}),
         ...(webrtcOfferUrl ? { webrtc: true } : {}),
-        ...(cfg.layout === "side-by-side"
-          ? { crop: { x: 0, y: 0, width: 0.5, height: 1 } }
-          : {}),
+        ...(cfg.layout === "side-by-side" ? { crop: { x: 0, y: 0, width: 0.5, height: 1 } } : {}),
       };
       const entry = { child, info, webrtcOfferUrl, socketPath };
       active = entry;

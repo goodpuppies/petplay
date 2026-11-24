@@ -10,7 +10,7 @@
  * `WgcMediaFeed.audio` is the machine's sound the same way: `petplay-media capture-audio`, every
  * app's audio but VRChat's and PetPlay's, Opus over its own broadcast.
  */
-import { petplayMediaPath } from "../../classes/petplayMediaPath.ts";
+import { petplayMediaCommand, petplayMediaPath } from "../../classes/petplayMediaPath.ts";
 
 export type WgcMonitor = {
   index: number;
@@ -105,16 +105,20 @@ export class WgcMediaFeed {
   }
 
   static start(options: WgcFeedOptions): Promise<WgcMediaFeed> {
-    return WgcMediaFeed.spawn([
-      "capture-wgc",
-      String(options.monitor),
-      `${options.host}:${options.port}`,
-      "--iroh-share",
-      "--fps",
-      String(options.fps ?? 30),
-      "--bitrate",
-      String(options.bitrate ?? 8_000_000),
-    ], "MEDIA_SOURCE", options.port);
+    return WgcMediaFeed.spawn(
+      [
+        "capture-wgc",
+        String(options.monitor),
+        `${options.host}:${options.port}`,
+        "--iroh-share",
+        "--fps",
+        String(options.fps ?? 30),
+        "--bitrate",
+        String(options.bitrate ?? 8_000_000),
+      ],
+      "MEDIA_SOURCE",
+      options.port,
+    );
   }
 
   /** This machine's audio, but VRChat's and PetPlay's. */
@@ -127,9 +131,8 @@ export class WgcMediaFeed {
   }
 
   private static async spawn(args: string[], ready: string, port: number): Promise<WgcMediaFeed> {
-    const child = new Deno.Command(mediaBinary(), {
-      args,
-      stdin: "null",
+    const child = petplayMediaCommand(args, {
+      binary: mediaBinary(),
       stdout: "piped",
       stderr: "piped",
     }).spawn();
@@ -162,7 +165,10 @@ export class WgcMediaFeed {
           }));
           child.status.then(async (status) => {
             clearTimeout(timer);
-            await Promise.race([Promise.allSettled(drained), new Promise((r) => setTimeout(r, 1000))]);
+            await Promise.race([
+              Promise.allSettled(drained),
+              new Promise((r) => setTimeout(r, 1000)),
+            ]);
             reject(new Error(`${args[0]} exited (${status.code}): ${log.at(-1) ?? ""}`));
           });
         },

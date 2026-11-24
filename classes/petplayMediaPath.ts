@@ -26,7 +26,9 @@ function sourceCheckoutCandidates(forLink: boolean): string[] {
   const exe = Deno.build.os === "windows" ? ".exe" : "";
   const rels = [
     petplayMediaRelativePath(nativeBuildTarget()),
-    ...(forLink ? [`submodules/petplay_mediatransport/target/link/release/petplay-media${exe}`] : []),
+    ...(forLink
+      ? [`submodules/petplay_mediatransport/target/link/release/petplay-media${exe}`]
+      : []),
     `submodules/petplay_mediatransport/target/release/petplay-media${exe}`,
   ];
   const paths: string[] = [];
@@ -91,4 +93,25 @@ export function hasPetplayMediaBinary(options?: { forLink?: boolean }): boolean 
   } catch {
     return false;
   }
+}
+
+/**
+ * A `Deno.Command` for `petplay-media` that dies with this process. The child's stdin is a
+ * pipe this process never writes or closes; with `PETPLAY_MEDIA_EXIT_WITH_PARENT` set the
+ * worker exits on its EOF, which the kernel delivers however this process ends (Ctrl-C mid
+ * teardown, crash, SIGKILL). Without it an orphaned encoder keeps its UDP port, and the next
+ * start fails with "Address already in use". Not for modes that read stdin (`atlas`,
+ * `capture-audio --stdin`, `receive --stdio`).
+ */
+export function petplayMediaCommand(
+  args: string[],
+  options: Omit<Deno.CommandOptions, "args" | "stdin"> & { binary?: string } = {},
+): Deno.Command {
+  const { binary, env, ...rest } = options;
+  return new Deno.Command(binary ?? petplayMediaPath(), {
+    ...rest,
+    args,
+    env: { ...env, PETPLAY_MEDIA_EXIT_WITH_PARENT: "1" },
+    stdin: "piped",
+  });
 }

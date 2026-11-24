@@ -7,7 +7,7 @@ import { type GpuMediaFrame, GpuMediaSocket } from "../classes/gpuMediaSocket.ts
 import { EglMediaTexture } from "../classes/eglMediaTexture.ts";
 import { RemoteDisplayBinding, type RemoteDisplaySync } from "../classes/remoteDisplayBinding.ts";
 import { runWindowsMedia } from "./remoteMediaWindows.ts";
-import { petplayMediaPath } from "../classes/petplayMediaPath.ts";
+import { petplayMediaCommand, petplayMediaPath } from "../classes/petplayMediaPath.ts";
 export type RemoteMediaRequest = {
   /** A desktopSource's feed (`FEED`): its WebTransport listener, pinned to the certificate. */
   feed?: { host: string; port: number; fingerprint: string };
@@ -119,17 +119,16 @@ async function run(request: RemoteMediaRequest, width: number, distance: number)
     });
     const socket = `${directory}/frames.sock`;
     const binary = petplayMediaPath();
-    native = new Deno.Command(binary, {
-      args: [
-        "receive",
-        ...(request.feed
-          ? [`https://${request.feed.host}:${request.feed.port}/`, request.feed.fingerprint]
-          : request.code
-          ? [request.code]
-          : [request.url!, request.address!]),
-        socket,
-      ],
-      stdin: "null",
+    native = petplayMediaCommand([
+      "receive",
+      ...(request.feed
+        ? [`https://${request.feed.host}:${request.feed.port}/`, request.feed.fingerprint]
+        : request.code
+        ? [request.code]
+        : [request.url!, request.address!]),
+      socket,
+    ], {
+      binary,
       stdout: "inherit",
       stderr: "inherit",
     }).spawn();

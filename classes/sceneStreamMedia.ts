@@ -10,7 +10,7 @@
  * helper restarting (fps change, portal hiccup) only reconnects; if the worker itself exits, the
  * stream starts another on the same socket path (`directory`), which the helper finds again.
  */
-import { petplayMediaPath } from "./petplayMediaPath.ts";
+import { petplayMediaCommand, petplayMediaPath } from "./petplayMediaPath.ts";
 
 export type MediaFeedInfo = {
   port: number;
@@ -64,23 +64,23 @@ export class DesktopMediaFeed {
     // A worker that died leaves its socket behind, and a new one refuses an existing path.
     await Deno.remove(socketPath).catch(() => {});
     const binary = petplayMediaPath();
-    const child = new Deno.Command(binary, {
-      args: [
-        socketPath,
-        "-",
-        `${options.host}:${options.port}`,
-        "--layout",
-        "mono",
-        "--fps",
-        String(options.fps ?? 30),
-        "--bitrate",
-        String(options.bitrate ?? 8_000_000),
-        "--persist",
-        // Whatever the producer sends, the GPU encodes at most the feed's rate.
-        "--max-fps",
-        String(options.fps ?? 30),
-        ...(options.share ? ["--iroh-share"] : []),
-      ],
+    const child = petplayMediaCommand([
+      socketPath,
+      "-",
+      `${options.host}:${options.port}`,
+      "--layout",
+      "mono",
+      "--fps",
+      String(options.fps ?? 30),
+      "--bitrate",
+      String(options.bitrate ?? 8_000_000),
+      "--persist",
+      // Whatever the producer sends, the GPU encodes at most the feed's rate.
+      "--max-fps",
+      String(options.fps ?? 30),
+      ...(options.share ? ["--iroh-share"] : []),
+    ], {
+      binary,
       stdout: "piped",
       stderr: "piped",
     }).spawn();
@@ -112,7 +112,10 @@ export class DesktopMediaFeed {
         child.status.then(async (status) => {
           clearTimeout(timer);
           // The reason is its last words; read them before reporting.
-          await Promise.race([Promise.allSettled(drained), new Promise((r) => setTimeout(r, 1000))]);
+          await Promise.race([
+            Promise.allSettled(drained),
+            new Promise((r) => setTimeout(r, 1000)),
+          ]);
           reject(Error(`petplay-media exited (${status.code}): ${log.at(-1) ?? ""}`));
         });
       });
@@ -168,10 +171,17 @@ export class DesktopMediaFeed {
   }
 }
 
-async function drainLines(stream: ReadableStream<Uint8Array>, onLine: (line: string) => void): Promise<void> {
+async function drainLines(
+  stream: ReadableStream<Uint8Array>,
+  onLine: (line: string) => void,
+): Promise<void> {
   let buffered = "";
   try {
-    for await (const chunk of stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>)) {
+    for await (
+      const chunk of stream.pipeThrough(
+        new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>,
+      )
+    ) {
       buffered += chunk;
       let newline;
       while ((newline = buffered.indexOf("\n")) >= 0) {

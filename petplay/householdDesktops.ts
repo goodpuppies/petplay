@@ -22,7 +22,7 @@
  * Needs stageforge networking (`--stageforge-networking`); without it the list stays empty.
  */
 import { actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
-import { petplayMediaPath } from "../classes/petplayMediaPath.ts";
+import { petplayMediaCommand, petplayMediaPath } from "../classes/petplayMediaPath.ts";
 import type { ActorId } from "../submodules/stageforge/src/lib/types.ts";
 import { HouseholdClient, householdSecret, householdTopic } from "../rdp/classes/household.ts";
 import type { DesktopDescription, FeedInfo, ScreenInfo } from "../rdp/desktopSource.ts";
@@ -103,7 +103,9 @@ const state = actorState({
     frames: number;
     error: string | null;
   }>,
-  sounds: [] as Array<{ machine: string; playing: boolean; error: string | null; last: string | null }>,
+  sounds: [] as Array<
+    { machine: string; playing: boolean; error: string | null; last: string | null }
+  >,
   lastError: null as string | null,
 });
 
@@ -221,9 +223,8 @@ async function keepSound(sound: Sound): Promise<void> {
     const args = feed.code
       ? ["receive-audio", feed.code]
       : ["receive-audio", `https://${feed.host}:${feed.port}/`, feed.fingerprint];
-    const player = new Deno.Command(mediaBinary(), {
-      args,
-      stdin: "null",
+    const player = petplayMediaCommand(args, {
+      binary: mediaBinary(),
       stdout: "piped",
       stderr: "piped",
     }).spawn();
@@ -271,7 +272,11 @@ async function stopOverlay(desktop: Desktop): Promise<void> {
   desktop.overlay = null;
   desktop.frames = 0;
   if (!overlay) return;
-  await withTimeout(PostMan.PostMessage({ target: overlay, type: "STOPMEDIA", payload: null }, true), 10_000, "STOPMEDIA")
+  await withTimeout(
+    PostMan.PostMessage({ target: overlay, type: "STOPMEDIA", payload: null }, true),
+    10_000,
+    "STOPMEDIA",
+  )
     .catch(() => {});
   await PostMan.shutdown(overlay).catch((error) =>
     console.error(`[householdDesktops] overlay shutdown: ${error}`)
@@ -485,8 +490,18 @@ async function keep(desktop: Desktop): Promise<void> {
     desktop.crop = feed.crop ?? { x: 0, y: 0, width: 1, height: 1 };
     if (desktop.overlay) {
       const health = await withTimeout(
-        PostMan.PostMessage({ target: desktop.overlay, type: "__HEALTH__", payload: null }, true) as Promise<
-          { running: boolean; starting: boolean; frames: number; width: number; height: number; lastError: string | null }
+        PostMan.PostMessage(
+          { target: desktop.overlay, type: "__HEALTH__", payload: null },
+          true,
+        ) as Promise<
+          {
+            running: boolean;
+            starting: boolean;
+            frames: number;
+            width: number;
+            height: number;
+            lastError: string | null;
+          }
         >,
         5000,
         "overlay health",
