@@ -57,6 +57,10 @@ export class SceneView {
   private readonly quadGeometry = new THREE.PlaneGeometry(1, 1);
   /** One texture per media feed, shared by every surface showing it. */
   private readonly feeds = new Map<string, THREE.Texture>();
+  /** Shared per-feed readiness flag (`0` while waiting for first frame, `1` once live). */
+  private readonly feedReady = new Map<string, { value: number }>();
+  /** Shared clock (seconds) driving the waiting-for-feed indicator shader. */
+  private readonly loadingTime = { value: 0 };
 
   constructor(private readonly store: SceneStore) {
     this.scene.background = new THREE.Color(0x15171c);
@@ -120,6 +124,15 @@ export class SceneView {
     }
     this.scene.updateMatrixWorld(true);
     this.sortUi(camera);
+    for (const mesh of this.videoSurfaces.values()) {
+      if (!isShown(mesh)) continue;
+      const mat = mesh.material as THREE.ShaderMaterial | undefined;
+      if (mat?.uniforms?.uHasFrame?.value < 0.5) {
+        this.loadingTime.value = performance.now() * 0.001;
+        viewState.dirty = true;
+        break;
+      }
+    }
   }
 
   // Rows arrive in dependency order (assets before items) within each transaction.
@@ -295,7 +308,16 @@ export class SceneView {
     this.lights.set(row.id, object);
   }
 
-  /** The texture surfaces of `feed` sample; black until its first picture. */
+  private feedReadyUniform(feed: string): { value: number } {
+    let uniform = this.feedReady.get(feed);
+    if (!uniform) {
+      uniform = { value: 0 };
+      this.feedReady.set(feed, uniform);
+    }
+    return uniform;
+  }
+
+  /** The texture surfaces of `feed` sample; placeholder until its first picture. */
   feedTexture(feed: string): THREE.Texture {
     let texture = this.feeds.get(feed);
     if (!texture) {
@@ -328,10 +350,11 @@ export class SceneView {
     }
     texture.image = frame;
     texture.needsUpdate = true;
+    this.feedReadyUniform(feed).value = 1;
     return previous;
   }
 
-  /** Back to black (the feed now comes from elsewhere); returns the picture it replaced. */
+  /** Back to waiting state (the feed now comes from elsewhere); returns the picture it replaced. */
   clearFeed(feed: string): FeedFrame | null {
     const texture = this.feeds.get(feed);
     if (!texture) return null;
@@ -342,6 +365,8 @@ export class SceneView {
     texture.userData.size = "2x2";
     texture.dispose();
     texture.needsUpdate = true;
+    this.feedReadyUniform(feed).value = 0;
+    viewState.dirty = true;
     return previous;
   }
 
@@ -396,7 +421,15 @@ export class SceneView {
         const d = data as VideoSurfaceData;
         const geometry = this.geometries.get(d.geometry);
         if (!geometry) return null;
-        const mesh = new THREE.Mesh(geometry, videoMaterial(this.feedTexture(d.feed), d));
+        const mesh = new THREE.Mesh(
+          geometry,
+          videoMaterial(
+            this.feedTexture(d.feed),
+            this.feedReadyUniform(d.feed),
+            this.loadingTime,
+            d,
+          ),
+        );
         this.videoSurfaces.set(id, mesh);
         return mesh;
       }
@@ -638,12 +671,19 @@ function uiQuadMaterial(d: UiQuadData, image: THREE.Texture | null): THREE.Shade
 }
 
 /** A video surface: the feed's picture through the item's crop (normalized, y down), unlit. */
-function videoMaterial(feed: THREE.Texture, d: VideoSurfaceData): THREE.ShaderMaterial {
+function videoMaterial(
+  feed: THREE.Texture,
+  hasFrame: { value: number },
+  loadingTime: { value: number },
+  d: VideoSurfaceData,
+): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       uFeed: { value: feed },
       uCrop: { value: new THREE.Vector4(d.crop.x, d.crop.y, d.crop.width, d.crop.height) },
       uOpacity: { value: d.opacity },
+      uHasFrame: hasFrame,
+      uTime: loadingTime,
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -652,14 +692,41 @@ function videoMaterial(feed: THREE.Texture, d: VideoSurfaceData): THREE.ShaderMa
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }`,
     // The picture is sRGB and so is the output: no conversion either way.
+    // Before the first frame arrives (uHasFrame == 0), draw a pixel-aspect-corrected spinner
+    // over a subtle shimmer per the raythree VideoSurfaceData renderer contract.
     fragmentShader: /* glsl */ `
       uniform sampler2D uFeed;
       uniform vec4 uCrop;
       uniform float uOpacity;
+      uniform float uHasFrame;
+      uniform float uTime;
       varying vec2 vUv;
       void main() {
-        vec2 uv = vec2(uCrop.x + vUv.x * uCrop.z, uCrop.y + (1.0 - vUv.y) * uCrop.w);
-        gl_FragColor = vec4(texture2D(uFeed, uv).rgb, uOpacity);
+        if (uHasFrame > 0.5) {
+          vec2 uv = vec2(uCrop.x + vUv.x * uCrop.z, uCrop.y + (1.0 - vUv.y) * uCrop.w);
+          gl_FragColor = vec4(texture2D(uFeed, uv).rgb, uOpacity);
+          return;
+        }
+        vec2 uvPerPx = vec2(
+          length(vec2(dFdx(vUv.x), dFdy(vUv.x))),
+          length(vec2(dFdx(vUv.y), dFdy(vUv.y)))
+        );
+        vec2 safeUvPerPx = max(uvPerPx, vec2(1e-5));
+        vec2 surfacePx = 1.0 / safeUvPerPx;
+        vec2 p = (vUv - 0.5) / safeUvPerPx;
+        float r = clamp(min(surfacePx.x, surfacePx.y) * 0.08, 12.0, 26.0);
+        float thickness = max(2.2, r * 0.14);
+        float dist = abs(length(p) - r) - thickness * 0.5;
+        float ringMask = 1.0 - smoothstep(-0.75, 0.75, dist);
+        float angle = atan(p.y, p.x);
+        float head = mod(angle - uTime * 3.4, 6.2831853);
+        float arc = smoothstep(0.0, 0.35, head) * (1.0 - smoothstep(2.0, 2.35, head));
+        float wave = 0.5 + 0.5 * sin((vUv.x * 2.5 - vUv.y * 1.5 - uTime * 1.1) * 3.1415926);
+        vec3 bg = mix(vec3(0.06, 0.08, 0.12), vec3(0.09, 0.12, 0.18), wave * 0.6);
+        vec3 trackCol = vec3(0.16, 0.21, 0.30);
+        vec3 arcCol = vec3(0.38, 0.65, 0.98);
+        vec3 col = mix(bg, mix(trackCol, arcCol, arc), ringMask);
+        gl_FragColor = vec4(col, uOpacity);
       }`,
     // Always in the transparent pass so Three.js honors `renderOrder` relative to `uiQuad`/`textRun`
     // (otherwise all opaque video surfaces draw before all transparent uikit panels, hiding video

@@ -77,6 +77,7 @@ export type VideoSurfaceMarker = {
   geometry: THREE.BufferGeometry;
   crop: { x: number; y: number; width: number; height: number };
   opacity: number;
+  waitingLabel?: string;
 };
 
 /** MSDF atlases by font id, as the raylib renderer and `msdf-text.tsx` know them. */
@@ -297,6 +298,7 @@ export class PetplaySceneStoreWriter {
         geometry,
         crop: { ...marker.crop },
         opacity: marker.opacity,
+        ...(marker.waitingLabel ? { waitingLabel: marker.waitingLabel } : {}),
       };
       this.store.write("items", id, {
         header: { kind: "videoSurface", node: WORLD_NODE },
