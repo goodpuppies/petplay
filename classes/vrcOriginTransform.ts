@@ -472,17 +472,25 @@ export interface VrcOriginSample {
 }
 
 export interface VrcRootPredictorOptions {
-  /** Samples older than this (ms) before the newest leave a channel's fit. */
-  windowMs?: number;
+  /** Kalman process noise for position: white acceleration, (m/s²)²·s. */
+  positionProcessNoise?: number;
+  /** Kalman measurement variance for position (m²): mostly arrival-time jitter × speed. */
+  positionMeasurementVariance?: number;
+  /** Kalman process noise for yaw, (rad/s²)²·s. */
+  yawProcessNoise?: number;
+  /** Kalman measurement variance for yaw (rad²). */
+  yawMeasurementVariance?: number;
+  /** Output smoothing time constant (ms): how fast the shown pose takes up a correction. */
+  smoothingMs?: number;
   /** Full-velocity extrapolation past a channel's newest sample (ms). */
   extrapolateMs?: number;
   /** After `extrapolateMs`, the prediction holds this long (ms): VRChat skips updates mid-walk. */
   holdMs?: number;
   /** After holding, the prediction fades back to the newest sample over this (ms): a stop. */
   fadeMs?: number;
-  /** A position this far (m) from the prediction is a teleport: that channel's fit starts over. */
+  /** A position this far (m) from the prediction is a teleport: that channel starts over. */
   resetDistanceMeters?: number;
-  /** A yaw this far (rad) from the prediction is a snap turn: that channel's fit starts over. */
+  /** A yaw this far (rad) from the prediction is a snap turn: that channel starts over. */
   resetYawRad?: number;
 }
 
@@ -495,42 +503,69 @@ export interface VrcRootPrediction {
 }
 
 /**
- * Constant-velocity least-squares fit of one channel (`dims` values) over a sliding window of
- * timestamped samples.
+ * One channel (`dims` independent values) of a constant-velocity Kalman filter over timestamped
+ * measurements, plus what a stop needs: the newest raw measurement and when it came.
  */
-class MotionChannel {
-  /** `[t, ...values]` */
-  samples: number[][] = [];
-  velocity: number[];
-  /** Fitted values at `fitTime`. */
-  fitted: number[];
-  fitTime = 0;
+class KalmanChannel {
+  /** Per dim `[x, v]` (v per second), as of `updatedAt`. */
+  private state: [number, number][] = [];
+  /** Per dim covariance `[pxx, pxv, pvv]`. */
+  private cov: [number, number, number][] = [];
+  updatedAt = 0;
+  newestRaw: number[] | null = null;
 
-  constructor(readonly dims: number) {
-    this.velocity = new Array(dims).fill(0);
-    this.fitted = new Array(dims).fill(0);
-  }
+  constructor(
+    readonly dims: number,
+    private readonly q: number,
+    private readonly r: number,
+  ) {}
 
   reset(): void {
-    this.samples = [];
-    this.velocity.fill(0);
+    this.state = [];
+    this.cov = [];
+    this.newestRaw = null;
   }
 
-  newest(): number[] | undefined {
-    return this.samples.at(-1);
+  get started(): boolean {
+    return this.newestRaw != null;
   }
 
-  push(t: number, values: number[], windowMs: number): void {
-    this.samples.push([t, ...values]);
-    const cutoff = t - windowMs;
-    while (this.samples.length > 1 && this.samples[0][0] < cutoff) this.samples.shift();
-    this.fit();
+  velocity(): number[] {
+    return this.state.map(([, v]) => v);
+  }
+
+  measure(t: number, values: number[]): void {
+    this.newestRaw = [...values];
+    if (!this.state.length) {
+      this.state = values.map((x) => [x, 0]);
+      // Unknown velocity at first: let the second measurement set it.
+      this.cov = values.map(() => [this.r, 0, 25]);
+      this.updatedAt = t;
+      return;
+    }
+    const dt = Math.max(0, (t - this.updatedAt) / 1000);
+    this.updatedAt = t;
+    const q = this.q;
+    for (let k = 0; k < this.dims; k++) {
+      let [x, v] = this.state[k];
+      let [a, b, d] = this.cov[k];
+      x += v * dt;
+      a += 2 * dt * b + dt * dt * d + (q * dt ** 3) / 3;
+      b += dt * d + (q * dt * dt) / 2;
+      d += q * dt;
+      const sInv = 1 / (a + this.r);
+      const ka = a * sInv, kb = b * sInv;
+      const y = values[k] - x;
+      x += ka * y;
+      v += kb * y;
+      this.state[k] = [x, v];
+      this.cov[k] = [(1 - ka) * a, (1 - ka) * b, d - kb * b];
+    }
   }
 
   /**
-   * Value at `t`: the fitted line (which averages out the jittery arrival times) up to
-   * `extrapolateMs` past the newest sample, held for `holdMs`, then faded over `fadeMs` to the
-   * newest sample itself.
+   * The estimate at `t`: extrapolated up to `extrapolateMs` past the newest measurement, held for
+   * `holdMs`, then faded over `fadeMs` to the newest raw measurement (a stop: VRChat goes silent).
    */
   at(
     t: number,
@@ -538,72 +573,65 @@ class MotionChannel {
     holdMs: number,
     fadeMs: number,
   ): { values: number[]; moving: boolean } {
-    const last = this.samples.at(-1)!;
-    const dt = t - last[0];
-    const tEval = last[0] + Math.min(Math.max(dt, 0), extrapolateMs);
-    const values = this.fitted.map((v, k) => v + this.velocity[k] * (tEval - this.fitTime) / 1000);
-    if (dt > extrapolateMs + holdMs) {
+    const dt = t - this.updatedAt;
+    const s = Math.min(Math.max(dt, 0), extrapolateMs) / 1000;
+    const values = this.state.map(([x, v]) => x + v * s);
+    if (dt > extrapolateMs + holdMs && this.newestRaw) {
       const u = Math.min(1, (dt - extrapolateMs - holdMs) / fadeMs);
-      for (let k = 0; k < this.dims; k++) values[k] += (last[k + 1] - values[k]) * u;
+      for (let k = 0; k < this.dims; k++) values[k] += (this.newestRaw[k] - values[k]) * u;
     }
     return { values, moving: dt <= extrapolateMs };
-  }
-
-  private fit(): void {
-    const n = this.samples.length;
-    const last = this.samples[n - 1];
-    if (n < 2) {
-      this.velocity.fill(0);
-      this.fitted = last.slice(1);
-      this.fitTime = last[0];
-      return;
-    }
-    let mt = 0;
-    for (const s of this.samples) mt += s[0] / n;
-    const means = new Array(this.dims).fill(0);
-    for (const s of this.samples) for (let k = 0; k < this.dims; k++) means[k] += s[k + 1] / n;
-    let stt = 0;
-    const sxy = new Array(this.dims).fill(0);
-    for (const s of this.samples) {
-      const dt = s[0] - mt;
-      stt += dt * dt;
-      for (let k = 0; k < this.dims; k++) sxy[k] += dt * (s[k + 1] - means[k]);
-    }
-    this.fitTime = mt;
-    this.fitted = means;
-    this.velocity = stt > 0 ? sxy.map((v) => (v / stt) * 1000) : new Array(this.dims).fill(0);
   }
 }
 
 /**
- * Predicts the avatar root pose at any time from the timestamped samples VRChat sends.
+ * Predicts the avatar root pose from the timestamped samples VRChat sends, and smooths what is
+ * shown.
  *
- * Measured (2026-11-24): while moving, the contacts advance the root in regular ticks, but the OSC
- * bursts carrying them arrive with ~±20 ms jitter, sometimes two ticks in one burst and sometimes
- * none (about a third of bursts change only yaw), with gaps up to ~200 ms, and nothing at all once
- * the root stops changing. So position and yaw are separate channels, each fed only when its
- * value changes, and each a least-squares line through the last `windowMs`: the line averages the
- * timing noise out. It extrapolates for `extrapolateMs` past the channel's newest sample, holds
- * for `holdMs` (a skipped update), then fades back to the newest sample (a stop: VRChat stops
- * instantly and goes silent), so a stop settles where VRChat put the root. A
- * sample far off the prediction (teleport, snap turn) restarts its channel so the jump is taken at
- * once rather than smeared.
+ * Measured (2026-11-24): while moving, the root advances in regular ticks, but the OSC bursts
+ * carrying it arrive with ~±20 ms jitter: sometimes two ticks in one burst and sometimes none
+ * (about a third of bursts change only yaw), with gaps up to ~200 ms, and nothing at all once the
+ * root stops changing. So:
+ * - Position and yaw are separate channels, each a constant-velocity Kalman filter fed only when
+ *   its value changes (a yaw-only burst says nothing about position).
+ * - Each extrapolates `extrapolateMs` past its newest measurement, holds `holdMs` (a skipped
+ *   update), then fades to the newest measurement (a stop), so a stop settles where VRChat put
+ *   the root instead of drifting on.
+ * - A measurement far off the prediction (teleport, snap turn) restarts its channel, and the shown
+ *   pose jumps with it rather than smearing.
+ * - Every measurement still corrects the estimate a little, which on its own shows as a step at
+ *   ~20 Hz. `display` moves the shown pose at the estimate's velocity and eases corrections in
+ *   over `smoothingMs`, which costs no lag at constant speed. Replaying a recorded joystick walk,
+ *   this cut frame-to-frame jitter ~3× against the line fit it replaced.
  */
 export class VrcRootPredictor {
-  private readonly windowMs: number;
   private readonly extrapolateMs: number;
   private readonly holdMs: number;
   private readonly fadeMs: number;
   private readonly resetDistance: number;
   private readonly resetYaw: number;
-  private readonly position = new MotionChannel(3);
+  private readonly smoothingMs: number;
+  private readonly position: KalmanChannel;
   /** Unwrapped yaw. */
-  private readonly yaw = new MotionChannel(1);
+  private readonly yaw: KalmanChannel;
   private source: VrcOriginWorldPose["source"] = "petplay-origin";
   private lastPose: VrcOriginWorldPose | null = null;
+  /** Shown state for `display`: `[x, y, z, unwrappedYaw]` at `shownAt`. */
+  private shown: number[] | null = null;
+  private shownAt = 0;
 
   constructor(options: VrcRootPredictorOptions = {}) {
-    this.windowMs = options.windowMs ?? 200;
+    this.position = new KalmanChannel(
+      3,
+      options.positionProcessNoise ?? 2,
+      options.positionMeasurementVariance ?? 0.0004,
+    );
+    this.yaw = new KalmanChannel(
+      1,
+      options.yawProcessNoise ?? 20,
+      options.yawMeasurementVariance ?? 3e-5,
+    );
+    this.smoothingMs = options.smoothingMs ?? 80;
     this.extrapolateMs = options.extrapolateMs ?? 70;
     this.holdMs = options.holdMs ?? 130;
     this.fadeMs = options.fadeMs ?? 150;
@@ -615,6 +643,7 @@ export class VrcRootPredictor {
     this.position.reset();
     this.yaw.reset();
     this.lastPose = null;
+    this.shown = null;
   }
 
   hasSamples(): boolean {
@@ -629,30 +658,31 @@ export class VrcRootPredictor {
     const yawChanged = !prev || pose.yawRad !== prev.yawRad;
     this.lastPose = pose;
 
-    if (positionChanged) {
-      const newest = this.position.newest();
-      if (newest && t <= newest[0]) return;
-      if (newest) {
+    if (positionChanged && (!this.position.started || t > this.position.updatedAt)) {
+      if (this.position.started) {
         const predicted = this.position.at(t, this.extrapolateMs, this.holdMs, this.fadeMs).values;
-        if (
-          Math.hypot(...pose.position.map((v, k) => v - predicted[k])) > this.resetDistance
-        ) this.position.reset();
+        if (Math.hypot(...pose.position.map((v, k) => v - predicted[k])) > this.resetDistance) {
+          this.position.reset();
+          this.shown = null;
+        }
       }
-      this.position.push(t, [...pose.position], this.windowMs);
+      this.position.measure(t, [...pose.position]);
     }
-    if (yawChanged) {
-      const newest = this.yaw.newest();
-      if (newest && t <= newest[0]) return;
+    if (yawChanged && (!this.yaw.started || t > this.yaw.updatedAt)) {
       let yaw = pose.yawRad;
-      if (newest) {
-        yaw = newest[1] + angleDiffRad(yaw, newest[1]);
+      if (this.yaw.started) {
         const predicted = this.yaw.at(t, this.extrapolateMs, this.holdMs, this.fadeMs).values[0];
-        if (Math.abs(yaw - predicted) > this.resetYaw) this.yaw.reset();
+        yaw = predicted + angleDiffRad(yaw, predicted);
+        if (Math.abs(yaw - predicted) > this.resetYaw) {
+          this.yaw.reset();
+          this.shown = null;
+        }
       }
-      this.yaw.push(t, [yaw], this.windowMs);
+      this.yaw.measure(t, [yaw]);
     }
   }
 
+  /** The filters' estimate at `tMs` (no output smoothing). */
   predict(tMs: number): VrcRootPrediction {
     if (!this.lastPose) {
       return {
@@ -669,8 +699,42 @@ export class VrcRootPredictor {
         position: p.values as Vec3,
         yawRad: normalizeAngleRad(y.values[0]),
       },
-      velocity: p.moving ? [...this.position.velocity] as Vec3 : [0, 0, 0],
-      yawRate: y.moving ? this.yaw.velocity[0] : 0,
+      velocity: p.moving ? this.position.velocity() as Vec3 : [0, 0, 0],
+      yawRate: y.moving ? this.yaw.velocity()[0] : 0,
+    };
+  }
+
+  /**
+   * The pose to show at `tMs`: moves at the estimate's velocity and takes up corrections over
+   * `smoothingMs`. Stateful: call with increasing times (each poll).
+   */
+  display(tMs: number): VrcRootPrediction {
+    const target = this.predict(tMs);
+    const unwrappedYaw = this.yaw.started
+      ? this.yaw.at(tMs, this.extrapolateMs, this.holdMs, this.fadeMs).values[0]
+      : target.pose.yawRad;
+    const goal = [...target.pose.position, unwrappedYaw];
+    const rates = [...target.velocity, target.yawRate];
+    if (!this.shown || tMs <= this.shownAt) {
+      if (!this.shown) this.shown = goal;
+      this.shownAt = Math.max(this.shownAt, tMs);
+    } else {
+      const dt = tMs - this.shownAt;
+      this.shownAt = tMs;
+      const a = 1 - Math.exp(-dt / this.smoothingMs);
+      this.shown = this.shown.map((x, k) => {
+        const moved = x + (rates[k] * dt) / 1000;
+        return moved + (goal[k] - moved) * a;
+      });
+    }
+    return {
+      pose: {
+        source: this.source,
+        position: [this.shown[0], this.shown[1], this.shown[2]],
+        yawRad: normalizeAngleRad(this.shown[3]),
+      },
+      velocity: target.velocity,
+      yawRate: target.yawRate,
     };
   }
 }

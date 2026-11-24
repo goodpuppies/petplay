@@ -377,3 +377,23 @@ Deno.test("motion model at its own time equals the solver's transform, and follo
     1e-9,
   );
 });
+
+Deno.test("root predictor display: jittery arrivals of a constant walk show as a smooth path", () => {
+  const predictor = new VrcRootPredictor();
+  const jitter = [0, 14, -11, 18, -6, 9, -17, 3, 12, -9, 6, -14, 16, -3, 8, -12, 10, -5, 15, -8];
+  const samples = jitter.map((j, i) => ({ t: 1000 + i * 40 + j, x: 0.04 * i })); // 1 m/s
+  let k = 0;
+  const shown: number[] = [];
+  for (let t = 1000; t < 1000 + 19 * 40; t += 11) {
+    while (k < samples.length && samples[k].t <= t) {
+      predictor.add({ t: samples[k].t, pose: makeWorldPose([samples[k].x, 0, 0], 0) });
+      k++;
+    }
+    if (k) shown.push(predictor.display(t).pose.position[0]);
+  }
+  // After settling in, the shown speed stays near 1 m/s (11 mm a frame): ±18 ms arrival jitter on
+  // 40 ms spacing still leaves some, but no frame stands still or doubles up.
+  for (let i = 30; i < shown.length; i++) {
+    assertAlmostEquals(shown[i] - shown[i - 1], 0.011, 0.0045, `frame ${i}`);
+  }
+});

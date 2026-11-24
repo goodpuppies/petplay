@@ -312,7 +312,7 @@ async function pollOriginOnce(): Promise<boolean> {
     predictor.add({ t: performance.timeOrigin + performance.now() - 1000, pose: seed });
   }
   const now = performance.timeOrigin + performance.now();
-  const prediction = predictor.predict(now);
+  const prediction = predictor.display(now);
   const worldPose = prediction.pose;
 
   const hmdPose = await withTimeout(PostMan.PostMessage({
