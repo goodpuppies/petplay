@@ -86,7 +86,10 @@ if (url) {
   console.log(`\nOpen: ${base}${query.size ? `?${query}` : ""}#${secret}\n`);
 }
 
-const enableRepl = args.repl ?? (args.watch || Boolean(args["repl-port"]));
+// parseArgs gives unset booleans `false`, so look at what was actually passed: --repl and
+// --repl-port turn it on, --watch does unless --no-repl.
+const enableRepl = Deno.args.includes("--repl") || Boolean(args["repl-port"]) ||
+  (args.watch && !Deno.args.includes("--no-repl"));
 if (enableRepl) {
   const replPort = args["repl-port"] ?? Deno.env.get("PETPLAY_RDP_REPL_PORT") ?? "3988";
   Deno.env.set("PETPLAY_AGENT_REPL_PORT", replPort);
