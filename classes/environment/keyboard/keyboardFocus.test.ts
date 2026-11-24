@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { focusedKeyboard, focusKeyboard, releaseKeyboard } from "./keyboardFocus.ts";
 import type { KeyboardSink } from "./types.ts";
 

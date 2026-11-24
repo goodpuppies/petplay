@@ -2,7 +2,7 @@
  * Needs `petplay-media` built with `--features iroh` (PETPLAY_LINK_BINARY, else the release
  * build). Runs loopback-only (`local`), so no relay or network is involved.
  */
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import type { Carrier } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "./irohCarrier.ts";
 import { hasPetplayMediaBinary } from "./petplayMediaPath.ts";

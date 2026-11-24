@@ -3,7 +3,7 @@
  * transport, receives the app as scene deltas, and its DOM events drive the desktop through the
  * real desktopInput (on a stand-in helper, so nothing reaches the real desktop).
  */
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 

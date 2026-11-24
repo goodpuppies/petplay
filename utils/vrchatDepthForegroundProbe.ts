@@ -5,7 +5,7 @@ import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { getRaylibLibraryPath } from "../classes/nativeLibraryPaths.ts";
 import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";
 import { RaythreeExtractor } from "../submodules/raythree/src/extract.ts";
-import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertEquals } from "@std/assert";
 import {
   decodeImage,
   DEFAULT_DEPTH_FAR,

@@ -1,5 +1,5 @@
 import { PostMan } from "../submodules/stageforge/mod.ts";
-import { dirname, extname, join } from "jsr:@std/path";
+import { dirname, extname, join } from "@std/path";
 import { tempDir } from "./appPaths.ts";
 
 export function wait(ms: number): Promise<void> {

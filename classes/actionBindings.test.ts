@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
 import { applyGrabThreshold } from "./directOpenVrInputSource.ts";
 

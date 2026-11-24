@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert@^1.0.0";
+import { assertEquals, assertRejects } from "@std/assert";
 import { DirectCameraControl } from "./directCameraControl.ts";
 
 Deno.test("direct camera OSC sends six float32 values and releases Flying on the same endpoint", async () => {

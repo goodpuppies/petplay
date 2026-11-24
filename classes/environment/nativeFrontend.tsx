@@ -1,5 +1,5 @@
 import React from "react";
-import { useXRInputSourceStateContext } from "@pmndrs/xr";
+import { useXRInputSourceStateContext } from "@react-three/xr";
 import { useSetting } from "../settings.ts";
 import { PetplayDefaultXRController } from "./petplayXrController.tsx";
 import {

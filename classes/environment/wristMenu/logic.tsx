@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, ThreeToJSXElements } from "@react-three/fiber/webgpu";
-import { useXRInputSourceStateContext, XRSpace } from "@pmndrs/xr";
+import { useXRInputSourceStateContext, XRSpace } from "@react-three/xr";
 import type {
   AllowedPointerEventsType,
   PointerEvent as PenPointerEvent,

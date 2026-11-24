@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import { unprojectDepth } from "./sync.ts";
 import { type VoxelFrame, VoxelMap } from "./voxelMap.ts";
 

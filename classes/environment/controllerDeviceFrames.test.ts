@@ -1,5 +1,5 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
-import { FakeTime } from "jsr:@std/testing@^1.0.0/time";
+import { assertEquals } from "@std/assert";
+import { FakeTime } from "@std/testing/time";
 import {
   requestFollowRelease,
   setFollowReleaseSender,

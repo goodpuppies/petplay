@@ -21,8 +21,12 @@
   everything it started, `setsid` included):
   `systemd-run --user --unit=petplay-steamvr --collect --setenv=STEAMVR_APPKEY=petplay.overlay ~/.local/share/petplay/steamvr/launch-petplay.sh`
   (its launch log is `~/.local/state/petplay/steamvr-launch.log`).
-- Type-check with `deno task check`: it filters out the vendor submodules' unrelated errors that
-  raw `deno check` reports (`deno task check:all` for the unfiltered graph).
+- Type-check with `deno task check`: tsrs (TypeScript 7 in Rust) against `tsconfig.json`, about a
+  second, filtering errors located in vendored submodules (`deno task check:deno` runs Deno's own
+  checker, unfiltered). `rdp --watch` hot reload only reloads code that passes it.
+- Dependencies live in `package.json` (jsr packages as `npm:@jsr/…`, see `.npmrc`); run
+  `deno install` after changing it (`--min-dep-age=0` for releases under a day old). `deno.json`
+  keeps only aliases package.json cannot express; mirror any change there in `tsconfig.json` "paths".
 
 ## Git
 

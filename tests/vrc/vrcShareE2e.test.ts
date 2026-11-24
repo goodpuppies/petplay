@@ -16,7 +16,7 @@
  *   8. Bob leaves the VRChat room (`OnLeftRoom`) -> Bob's `householdDesktops` clears Alice's
  *      screens immediately.
  */
-import { assertEquals, assertRejects } from "jsr:@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { PostalService, resolveActorId } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";

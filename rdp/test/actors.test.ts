@@ -3,7 +3,7 @@
  * is injected into the real desktop and no portal opens. desktopSource uses the real encoder
  * (petplay-media; PETPLAY_MEDIA_BINARY) on a loopback port.
  */
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 import { FrameReceiver } from "../../classes/ScreenCapturer/frameReceiver.ts";

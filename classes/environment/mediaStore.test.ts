@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { nowPlayingLabel, parsePlayerctlLine } from "./mediaStore.ts";
 
 Deno.test("parsePlayerctlLine reads player, status, artist and title", () => {

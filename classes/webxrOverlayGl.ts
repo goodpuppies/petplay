@@ -1,4 +1,4 @@
-import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
+import * as gl from "../submodules/gluten/api/gl4.6.ts";
 import { createWindow, DwmWindow, getProcAddress } from "@gfx/dwm";
 import { cstr } from "./cString.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";

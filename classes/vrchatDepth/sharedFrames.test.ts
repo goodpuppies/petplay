@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertEquals } from "@std/assert";
 import { SharedDepthFrames } from "./sharedFrames.ts";
 import type { RawDepthFrame } from "./windowDecoder.ts";
 import type { DepthFrameHeader } from "./format.ts";

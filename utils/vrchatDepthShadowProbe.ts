@@ -1,7 +1,7 @@
 /** Hidden GL window, exact back-buffer comparison: lit object casts onto a supplied depth plane. */
 import * as THREE from "three";
 import { PNG } from "pngjs";
-import { assert } from "jsr:@std/assert@^1.0.0";
+import { assert } from "@std/assert";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { getRaylibLibraryPath } from "../classes/nativeLibraryPaths.ts";
 import { WebXRRaythreeRaylibRenderer } from "../classes/webxrRaythreeRaylibRenderer.ts";

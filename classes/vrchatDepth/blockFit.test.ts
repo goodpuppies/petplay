@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { deriveLayout } from "./format.ts";
 import { cellPxFor, fitBlock, probeFit, windowScale } from "./blockFit.ts";
 import { MODE_LAYOUT } from "./blockCalibration.ts";

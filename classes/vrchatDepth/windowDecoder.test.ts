@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertEquals } from "@std/assert";
 import { type DepthFrameHeader, deriveLayout, drawCells, encodeCells } from "./format.ts";
 import { depthFrameToWire, WindowDepthDecoder } from "./windowDecoder.ts";
 import { debugFrameFromRaw } from "./debugView.ts";

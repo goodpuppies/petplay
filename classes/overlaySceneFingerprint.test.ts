@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { fingerprintScene } from "./overlaySceneFingerprint.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 

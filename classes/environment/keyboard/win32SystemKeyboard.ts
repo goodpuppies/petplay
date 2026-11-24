@@ -13,10 +13,10 @@ function sizeofInputForSendInput(): number {
   return arch === "x86" ? 28 : 40;
 }
 
-type Win32Km = typeof import("@win32/km");
+type Win32Km = typeof import("../../win32KeyboardMouse.ts");
 
 const win32Km: Promise<Win32Km | null> = Deno.build.os === "windows"
-  ? import("@win32/km")
+  ? import("../../win32KeyboardMouse.ts")
   : Promise.resolve(null);
 
 /**

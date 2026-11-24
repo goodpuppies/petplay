@@ -1,4 +1,4 @@
-import { assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertAlmostEquals, assertEquals } from "@std/assert";
 import { unityPoseToRightHanded, type VrcWorldCameraPose } from "../vrcCameraCalibration.ts";
 import { cameraPoseFromWorld, stepFlyCamera } from "./flyCamera.ts";
 

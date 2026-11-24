@@ -6,7 +6,7 @@ import * as THREE from "three/webgpu";
 import "./browserStoragePolyfill.ts";
 import { advance, createRoot } from "@react-three/fiber/webgpu";
 import { currentXRFrame } from "./xrFrameBridge.ts";
-import { createXRStore, XR, XROrigin } from "@pmndrs/xr";
+import { createXRStore, XR, XROrigin } from "@react-three/xr";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";

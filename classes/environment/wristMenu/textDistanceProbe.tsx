@@ -14,7 +14,10 @@ export function TextDistanceProbe({ distance }: { distance: TextProbeDistance })
   useFrame((state) => {
     const group = root.current;
     if (!group) return;
-    const xr = state.gl.xr;
+    // The renderer is three's WebGPURenderer; r3f's types call it WebGLRenderer.
+    const xr = (state.gl as unknown as {
+      xr: { isPresenting: boolean; getCamera(): THREE.Camera };
+    }).xr;
     const head = xr.isPresenting ? xr.getCamera() : state.camera;
     head.updateWorldMatrix(true, false);
     group.matrix.copy(group.parent?.matrixWorld ?? new THREE.Matrix4()).invert()

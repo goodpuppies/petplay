@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import {
   loadOrCreateIdentity,

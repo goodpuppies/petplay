@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { sendX11Wheel, type X11WheelConnection } from "./linuxX11Scroll.ts";
 
 Deno.test("X11 wheel fallback sends complete discrete clicks with matching direction", () => {

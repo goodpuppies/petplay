@@ -1,4 +1,4 @@
-import { assert } from "jsr:@std/assert@^1.0.0";
+import { assert } from "@std/assert";
 import { measureMsdfText } from "../../../submodules/threewebxrwebgpudeno/msdf-text.tsx";
 
 // Song titles, window titles and desktop notifications reach the UI verbatim. A line that opens

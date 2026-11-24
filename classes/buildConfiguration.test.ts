@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { parseBuildConfiguration } from "./buildConfiguration.ts";
 Deno.test("build variants select explicit production/development conditions and distinct default artifacts", () => {
   const prod = parseBuildConfiguration([]), dev = parseBuildConfiguration(["--mode=development"]);

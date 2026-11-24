@@ -7,38 +7,29 @@
     "jsxImportSource": "react",
     "lib": ["deno.window", "deno.unstable", "dom", "dom.iterable"]
   },
-  "nodeModulesDir": "auto",
+  "nodeModulesDir": "manual",
   // A single npm three for the app and every npm consumer (r3f peer, gainmap-js, iwer devui);
   // keep in step with the `three` imports below.
   "overrides": { "three": "0.186.1" },
+  // Dependencies live in package.json. These are only aliases package.json cannot express.
   "imports": {
-    "@moq/net": "npm:@moq/net@0.4.7",
-    "@gfx/dwm": "jsr:@gfx/dwm@^0.3.9",
-    "@milly/namedpipe": "jsr:@milly/namedpipe@^1.1.0",
-    "@mommysgoodpuppy/logchannel": "jsr:@mommysgoodpuppy/logchannel@^0.1.0",
-    "@denosaurs/byte-type": "https://raw.githubusercontent.com/mommysgoodpuppy/byte_type_C/main/mod.ts",
-    "@std/path": "jsr:@std/path@^1.1.4",
-    //pmdrs
-    "@pmndrs/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",
+    // Your byte_type fork (C struct layout), shared by the native bindings submodules.
+    "@denosaurs/byte-type": "./submodules/byte_type_C/mod.ts",
+    // pmndrs xr / handle / pointer-events, built from the vendored sources.
+    "@react-three/xr": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts",
     "@pmndrs/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts",
     "@pmndrs/pointer-events": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/index.ts",
-    //r3f
+    "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
+    // r3f goes through the WebGPU compat shim; the shim itself imports npm:@react-three/fiber.
     "@react-three/fiber": "./classes/r3fWebgpuCompat.ts",
     "@react-three/fiber/webgpu": "./classes/r3fWebgpuCompat.ts",
-    "@react-three/handle": "./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts",
-    "pngjs": "npm:pngjs@^7.0.0",
-    "react": "npm:react@^19.2.5",
-    "@types/react": "npm:@types/react@^19.2.14",
-    "react-dom": "npm:react-dom@^19.2.5",
-    //three.js
+    // Local code (and the vendored xr/uikit sources) get three's WebGPU build for bare "three";
+    // keep in step with package.json. Plain three is npm:three@0.186.1.
     "three": "npm:three@0.186.1/webgpu",
-    "three/webgpu": "npm:three@0.186.1/webgpu",
-    "three/addons/": "npm:/three@0.186.1/examples/jsm/",
-    "three/tsl": "npm:three@0.186.1/tsl",
-    "https://cdn.jsdelivr.net/gh/mrdoob/three.js@dev/": "npm:/three@0.186.1/",
-    "@types/three": "npm:@types/three@^0.186.0",
-    "@win32/km": "https://raw.githubusercontent.com/DjDeveloperr/deno_win32/refs/heads/main/api/UI/Input/KeyboardAndMouse.ts"
+    // Without this, the entry above also maps three/* under /webgpu (three/webgpu/webgpu).
+    "three/": "npm:/three@0.186.1/"
   },
+
   "tasks": {
     "preconf": "deno run -A utils/preconf.ts",
     "nulldriver:true": "deno run -A utils/null-driver-toggle.ts true",
@@ -57,7 +48,7 @@
     "cefbuild": "cd submodules/cefpuppy && deno run -A build.ts -ExampleName cefsimple -Profile release",
     "iwerbuild": "cd submodules/threewebxrwebgpudeno/submodules/iwer && npm run build",
     "check": "deno run -A utils/type-check.ts",
-    "check:all": "deno check --allow-import",
+    "check:deno": "deno check --allow-import",
     "ui": "deno run -A petplay/uiViewer.tsx ",
     "ui:build": "deno run -A ui/build.ts",
     "ui:web": "deno run -A --no-check ui/main.ts",
@@ -159,7 +150,15 @@
     "submodules/threewebxrwebgpudeno/submodules/"
   ],
   "scopes": {
+    // The vendored uikit/iwer checkouts carry their own node_modules (pnpm); Node-style lookup
+    // would hand their sources a second copy of these (two signals runtimes break uikit layout).
+    // Pin them to PetPlay's. tsconfig.json mirrors this in "paths".
     "./submodules/threewebxrwebgpudeno/": {
+      "@preact/signals-core": "npm:@preact/signals-core@1.14.1",
+      "yoga-layout": "npm:yoga-layout@3.2.1",
+      "yoga-layout/": "npm:/yoga-layout@3.2.1/",
+      "gl-matrix": "npm:gl-matrix@3.4.4",
+      "webxr-layers-polyfill": "npm:webxr-layers-polyfill@1.1.0",
       "iwer": "./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/index.ts",
       "iwer/": "./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/",
       "iwer/lib/device/XRDevice": "./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/device/XRDevice.ts"

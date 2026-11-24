@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import {
   CUSTOM_OBJECT_SYNC_PARAMS,
   decodeLegacyCustomObjectSyncPose,

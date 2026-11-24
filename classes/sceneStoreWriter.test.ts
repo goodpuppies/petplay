@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import * as THREE from "three";
 import type { ExtractionResult } from "../submodules/raythree/src/lib.ts";
 import type { VideoSurfaceData } from "../submodules/raythree/src/store/mod.ts";

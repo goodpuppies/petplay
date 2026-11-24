@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { readFrameBytes } from "./frameReader.ts";
 
 function bytes(chunks: number[][]) {

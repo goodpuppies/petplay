@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { computeCellRect, computeGridMetrics } from "./grid.tsx";
 import {
   type BatteryDeviceItem,

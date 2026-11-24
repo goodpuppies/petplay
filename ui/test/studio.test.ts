@@ -3,7 +3,7 @@
  * boots `ui/studio.tsx` via `PostalService`, connects a WebSocket tab client, verifies raythree
  * `SceneStore` deltas + camera arrive for the default Wrist Menu scene, and switches scenes.
  */
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { type ActorId, PostalService } from "../../submodules/stageforge/mod.ts";
 import { decodeDelta, SceneStore, type TextRunData } from "../../submodules/raythree/src/store/mod.ts";
 

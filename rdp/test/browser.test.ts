@@ -9,8 +9,8 @@
  * target/tools, and Playwright's Chromium (PETPLAY_CHROMIUM or ~/.cache/ms-playwright).
  * Run with --unstable-net. Leaves a screenshot of the page in $RDP_SCREENSHOT if set.
  */
-import { assert, assertEquals } from "jsr:@std/assert";
-import { chromium } from "npm:playwright@1.55.0";
+import { assert, assertEquals } from "@std/assert";
+import { chromium } from "playwright";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 import { irohCarrier } from "../../classes/irohCarrier.ts";

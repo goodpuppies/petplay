@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { GameInputBlocking, OVERLAY_INPUT_PRIORITY } from "./gameInputBlocking.ts";
 
 function fixture() {

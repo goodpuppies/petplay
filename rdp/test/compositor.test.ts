@@ -1,4 +1,4 @@
-import { assertEquals, assertExists } from "jsr:@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { createActorId, PostalService } from "../../submodules/stageforge/mod.ts";
 import { mapWindowPointer } from "../inputRouter.ts";
 import type { CompositorSnapshot } from "../compositor.tsx";

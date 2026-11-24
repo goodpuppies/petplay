@@ -6,7 +6,7 @@
  * window, one OpenVR overlay handle per display). Frames arrive from `screen-streamer` via
  * `desktopSource`'s `ADDWINDOWFRAMESINK` over local TCP (`FrameReceiver`).
  */
-import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
+import * as gl from "../submodules/gluten/api/gl4.6.ts";
 import { createWindow, type DwmWindow, getProcAddress } from "@gfx/dwm";
 import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";

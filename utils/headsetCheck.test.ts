@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { answerFromStick, type CheckStep, runSteps } from "./headsetCheck.ts";
 
 Deno.test("answerFromStick: up yes, down no, left skip, middle nothing", () => {

@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import { angleBetweenDeg, AUTO_HIDE_FADE_S, nextAutoHidden, stepAutoHideFade } from "./autoHide.ts";
 
 Deno.test("angle between directions ignores their length", () => {

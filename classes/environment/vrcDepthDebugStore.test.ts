@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertEquals } from "@std/assert";
 import { vrcDepthDebugStore as store } from "./vrcDepthDebugStore.ts";
 
 Deno.test("clearing and replacing a scan advances its revision; hiding live depth keeps the scan", () => {

@@ -5,7 +5,7 @@
  * Needs: `link-web/build.sh` (pkg-deno), petplay-media with `--features iroh`
  * (PETPLAY_LINK_BINARY), and iroh-relay =1.4.1 in target/tools (PETPLAY_IROH_RELAY_BINARY).
  */
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import type { Carrier } from "../../submodules/stageforge/mod.ts";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";

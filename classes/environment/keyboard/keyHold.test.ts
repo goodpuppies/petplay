@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { KeyHold, type KeyPhase } from "./keyHold.ts";
 import { createLinuxKeyboardSink } from "./linuxSystemKeyboard.ts";
 import { dispatchWindowsKeyboardEvent } from "./win32SystemKeyboard.ts";

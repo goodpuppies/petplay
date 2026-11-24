@@ -1,0 +1,68 @@
+{
+  // Type checking with tsrs (deno task check). Deno runs the code; this mirrors how Deno
+  // resolves it: package.json for dependencies, deno.json "imports"/"scopes" for the aliases
+  // below. Keep the two in step. dist/types/deno.d.ts is `deno types`, written by the check task.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "paths": {
+      // deno.json "imports"
+      "@denosaurs/byte-type": ["./submodules/byte_type_C/mod.ts"],
+      "@react-three/xr": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/xr/src/index.ts"],
+      "@pmndrs/handle": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/handle/src/index.ts"],
+      "@pmndrs/pointer-events": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/index.ts"],
+      "@pmndrs/pointer-events/*": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/*"],
+      "@react-three/handle": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/react/handle/src/index.ts"],
+      "@react-three/fiber": ["./classes/r3fWebgpuCompat.ts"],
+      "@react-three/fiber/webgpu": ["./classes/r3fWebgpuCompat.ts"],
+      "three": ["./node_modules/@types/three/build/three.webgpu.d.ts"],
+      // submodules/threewebxrwebgpudeno/deno.json "imports"
+      "@pmndrs/msdfonts": ["./submodules/threewebxrwebgpudeno/submodules/uikit/packages/msdfonts/src/index.ts"],
+      "@pmndrs/uikit": ["./submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/index.ts"],
+      "@pmndrs/uikit-pub-sub": ["./submodules/threewebxrwebgpudeno/submodules/uikit/packages/pub-sub/src/index.ts"],
+      "@react-three/uikit": ["./submodules/threewebxrwebgpudeno/submodules/uikit/packages/react/src/index.tsx"],
+      "@pmndrs/xr": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/src/index.ts"],
+      "@pmndrs/xr/*": ["./submodules/threewebxrwebgpudeno/submodules/xr/packages/xr/src/*"],
+      "iwer": ["./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/index.ts"],
+      "iwer/*": ["./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/*"],
+      "meshline": ["./node_modules/meshline/dist/index.d.ts"],
+      // deno.json "scopes": PetPlay's copies, not the vendored checkouts' own node_modules
+      "@preact/signals-core": ["./node_modules/@preact/signals-core"],
+      "yoga-layout": ["./node_modules/yoga-layout/dist/src/index.d.ts"],
+      "yoga-layout/load": ["./node_modules/yoga-layout/dist/src/load.d.ts"],
+      "gl-matrix": ["./node_modules/gl-matrix/index.d.ts"],
+      "webxr-layers-polyfill": ["./node_modules/webxr-layers-polyfill"],
+      // Inline npm: specifiers that reach the real package behind an alias above
+      "npm:three@0.186.1": ["./node_modules/@types/three/build/three.module.d.ts"],
+      "npm:@react-three/fiber@10.0.0-alpha.5": ["./node_modules/@react-three/fiber/dist/index.d.ts"],
+      "npm:@react-three/fiber@10.0.0-alpha.5/webgpu": ["./node_modules/@react-three/fiber/dist/webgpu/index.d.ts"],
+      "npm:@number0/iroh": ["./node_modules/@number0/iroh/index.d.ts"]
+    }
+  },
+  "files": ["./types/pointer-events-first.d.ts", "./dist/types/deno.d.ts"],
+  "include": [
+    "classes/**/*",
+    "petplay/**/*",
+    "rdp/**/*",
+    "web/**/*",
+    "ui/**/*",
+    "utils/**/*",
+    "tests/**/*",
+    "*.ts",
+    "*.tsx"
+  ],
+  "exclude": ["node_modules", "dist", "tmp", "_scratch", "research", "submodules"]
+}

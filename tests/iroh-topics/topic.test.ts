@@ -3,7 +3,7 @@
  * over iroh (loopback, no relay server). Needs `petplay-media` with `--features iroh`
  * (PETPLAY_LINK_BINARY).
  */
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 import { irohCarrier } from "../../classes/irohCarrier.ts";

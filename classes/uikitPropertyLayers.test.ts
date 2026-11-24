@@ -1,5 +1,5 @@
-import { assertEquals } from "jsr:@std/assert";
-import { Signal } from "npm:@preact/signals-core@^1.12.1";
+import { assertEquals } from "@std/assert";
+import { Signal } from "@preact/signals-core";
 import { PropertiesImplementation } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/pub-sub/src/index.ts";
 
 type Values = { color: string | undefined; size: number | undefined };

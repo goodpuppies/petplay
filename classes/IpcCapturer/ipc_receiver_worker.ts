@@ -1,5 +1,5 @@
 // classes/IpcCapturer/ipc_receiver_worker.ts
-import { listen, type NamedPipeListener, type NamedPipeConn } from "jsr:@milly/namedpipe@^1.1"; // Only listen needed now
+import { listen, type NamedPipeListener, type NamedPipeConn } from "@milly/namedpipe"; // Only listen needed now
 
 // --- Frame Pipe variables (Server role) ---
 let framePipeListener: NamedPipeListener | null = null; // Will be renamed later

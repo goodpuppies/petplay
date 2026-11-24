@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import type { Vec3, VrcOriginWorldPose } from "./vrcOriginCodec.ts";
 import {
   angleDiffRad,

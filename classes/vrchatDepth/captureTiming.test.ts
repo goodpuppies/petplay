@@ -1,4 +1,4 @@
-import { assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertAlmostEquals, assertEquals } from "@std/assert";
 import { CaptureTiming } from "./captureTiming.ts";
 
 const line = (n: number, pts = "1794071297.675792") =>

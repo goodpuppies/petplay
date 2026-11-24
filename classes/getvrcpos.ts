@@ -1,5 +1,5 @@
 /// <reference lib="deno.unstable" />
-import { Message } from "https://deno.land/x/osc@v0.1.0/mod.ts";
+import { messageFromBuffer } from "@jwetzell/osc";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 
 type Callback = (address: string, value: number) => void;
@@ -28,13 +28,11 @@ export class OscSubscriber {
 
 
     for await (const [buffer, _addr] of conn) {
-      const msg = await Message.fromBuffer(buffer);
-      const msgWithAddress = msg as { addr: string; args: number[] };
-
-      if (addressSet.has(msgWithAddress.addr)) {
-        const newValue = msgWithAddress.args[0];
-        await this.notifySubscribers(msgWithAddress.addr, newValue);
-      }
+      const [msg] = messageFromBuffer(buffer);
+      if (!msg || !addressSet.has(msg.address)) continue;
+      const first = msg.args[0];
+      const value = first && !Array.isArray(first) ? first.value : undefined;
+      if (typeof value === "number") this.notifySubscribers(msg.address, value);
     }
 
     conn.close();

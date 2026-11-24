@@ -9,7 +9,7 @@ import {
   readControllerStateSab,
   writeControllerStateSab,
 } from "../classes/controllerStateSab.ts";
-import { dirname, join, extname } from "jsr:@std/path";
+import { dirname, join, extname } from "@std/path";
 
 /**
  * SAB is filled on a **drift-correcting ~1ms timer**; cannot await a cross-actor `sample` in

@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { ScreenCapturer } from "./scclass.ts";
 
 Deno.test("a dropped frame socket stops a live helper so its owner can restart it", async () => {

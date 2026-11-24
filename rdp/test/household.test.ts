@@ -9,7 +9,7 @@
  * encoder and the iroh link (`cargo build --release --features iroh`), and iroh-relay
  * (target/tools).
  */
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 import { irohCarrier } from "../../classes/irohCarrier.ts";

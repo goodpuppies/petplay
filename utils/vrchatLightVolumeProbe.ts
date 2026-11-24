@@ -1,6 +1,6 @@
 /** Exact offscreen renderer check: spatial lighting changes across one PetPlay mesh. */
 import * as THREE from "three";
-import { assert } from "jsr:@std/assert@^1.0.0";
+import { assert } from "@std/assert";
 import { PNG } from "pngjs";
 import raylib from "../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { getRaylibLibraryPath } from "../classes/nativeLibraryPaths.ts";

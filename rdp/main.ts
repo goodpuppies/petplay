@@ -9,7 +9,7 @@
  * Needs `deno task rdp:build` (the page) and `petplay-media` built with `--features iroh`
  * (PETPLAY_LINK_BINARY, or the release build).
  */
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { parseArgs } from "@std/cli/parse-args";
 import { fromFileUrl } from "@std/path";
 import { type ActorId, PostalService } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";

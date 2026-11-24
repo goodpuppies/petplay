@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { createDesktopInputRouting } from "./desktopKeyboardRouting.ts";
 import { KeyRepeat } from "./keyRepeat.ts";
 import { KeyHold } from "./keyHold.ts";

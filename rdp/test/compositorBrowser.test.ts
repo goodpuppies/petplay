@@ -6,8 +6,8 @@
  *   `FloatingWindow` + `Taskbar`, and sends a click + key inside a floating window through
  *   `inputRouter` -> `desktopInput` (mapped through the window's `region`).
  */
-import { assert, assertEquals } from "jsr:@std/assert";
-import { chromium } from "npm:playwright@1.55.0";
+import { assert, assertEquals } from "@std/assert";
+import { chromium } from "playwright";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";
 import { irohCarrier } from "../../classes/irohCarrier.ts";

@@ -4,6 +4,11 @@ import { depthFrameToWire, type RawDepthFrame, WindowDepthDecoder } from "./wind
 import { SharedDepthFrames } from "./sharedFrames.ts";
 import { ColorClassifier } from "./colorCalibration.ts";
 
+/** This runs as a worker: its postMessage takes a transfer list (DOM's global types it as a window). */
+const scope = globalThis as unknown as {
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+};
+
 export type CaptureWorkerConfig = {
   buffer: SharedArrayBuffer;
   capacity: number;
@@ -44,7 +49,7 @@ globalThis.onmessage = (
     // 3D calibration's shader table, off the render thread (`gpuDepthSource.ts`).
     const { id, samples, levels } = event.data.buildTable;
     const table = new ColorClassifier(samples, levels).shaderTable(64, 8);
-    globalThis.postMessage(
+    scope.postMessage(
       { table: { id, data: table.data, width: table.width, height: table.height, size: 64, tiles: 8 } },
       [table.data.buffer],
     );
@@ -59,7 +64,7 @@ globalThis.onmessage = (
     pending = null;
     if (heartbeat) clearInterval(heartbeat);
     void stream?.stop().finally(() => {
-      globalThis.postMessage({ stopped: true });
+      scope.postMessage({ stopped: true });
       globalThis.close();
     });
     return;
@@ -102,11 +107,11 @@ globalThis.onmessage = (
         if (typeof reply === "object" && typeof reply.colors === "boolean" && reply.colors !== colors) {
           colors = reply.colors;
           // The render thread's GPU source skips its colour readback while nobody uses colours.
-          globalThis.postMessage({ wants: { colors } });
+          scope.postMessage({ wants: { colors } });
         }
       }
     } catch (error) {
-      globalThis.postMessage({
+      scope.postMessage({
         error: String(error),
         fatal: String(error).includes("capture lease lost"),
       });
@@ -124,7 +129,7 @@ globalThis.onmessage = (
     if (!raw) return;
     raw.decodedAt = Date.now();
     const notice = shared.write(raw, ++sequence);
-    if (notice) globalThis.postMessage({ frame: notice });
+    if (notice) scope.postMessage({ frame: notice });
     pending = raw;
     void forwardLatest();
   }, { captureTiming: true });
@@ -143,7 +148,7 @@ globalThis.onmessage = (
         }
         : (externalStatus as { metrics?: unknown } | null)?.metrics ?? null,
     }).catch((error) =>
-      globalThis.postMessage({
+      scope.postMessage({
         error: String(error),
         fatal: String(error).includes("capture lease lost"),
       })

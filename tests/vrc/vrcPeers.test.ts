@@ -7,7 +7,7 @@
  *   5. Mallory joins the same instance claiming Bob's `usr_...` with a different key -> Alice flags
  *      Mallory as `key_mismatch`.
  */
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { PostalService } from "../../submodules/stageforge/mod.ts";
 import type { ActorId } from "../../submodules/stageforge/src/lib/types.ts";

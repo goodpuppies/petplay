@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import {

@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { DEPTH_LOG16, encodeBytesBase64, encodeDepthLog16, payloadDepth } from "./wire.ts";
 
 Deno.test("log16 depth survives the wire within 0.011 % and keeps 'none' as 0", () => {

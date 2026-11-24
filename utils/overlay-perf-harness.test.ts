@@ -1,4 +1,4 @@
-import { assertEquals, assertStrictEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { installSyntheticInput, type WebXrHostLike } from "./overlay-perf-harness.ts";
 
 Deno.test("synthetic hands override live IVRInput and restore the original bridge", () => {

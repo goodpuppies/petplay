@@ -1,4 +1,4 @@
-import { assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertAlmostEquals, assertEquals } from "@std/assert";
 import { debugFrameFromRaw, debugFrameFromSource, VrcDepthDebugView } from "./debugView.ts";
 import { encodeBytesBase64, encodeFloat32Base64, type VrcDepthFramePayload } from "./wire.ts";
 

@@ -15,7 +15,7 @@ import {
   useXRInputSourceStateContext,
   XRControllerModel,
   XRSpace,
-} from "@pmndrs/xr";
+} from "@react-three/xr";
 import { useFrame } from "@react-three/fiber/webgpu";
 import React, {
   forwardRef,

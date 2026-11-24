@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { layoutSlotLabel } from "./ui.tsx";
 
 Deno.test("slot label: display count, then the time today or the date before", () => {

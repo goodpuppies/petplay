@@ -1,4 +1,4 @@
-import { assertAlmostEquals } from "jsr:@std/assert@^1.0.0";
+import { assertAlmostEquals } from "@std/assert";
 import * as THREE from "three";
 import { foregroundCamera } from "./foreground.ts";
 import { debugFrameFromRaw } from "./debugView.ts";

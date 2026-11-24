@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { truncateText, wrapText } from "./wrapText.ts";
 
 // One unit per character keeps the expected breaks readable.

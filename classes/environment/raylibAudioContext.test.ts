@@ -1,5 +1,5 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
-import { stub } from "jsr:@std/testing@^1.0.0/mock";
+import { assertEquals } from "@std/assert";
+import { stub } from "@std/testing/mock";
 import raylib from "../../submodules/raylib_ts_bindings_deno/raylib_bindings.ts";
 import { RaylibAudioBackend, RaylibAudioContext } from "./raylibAudioContext.ts";
 

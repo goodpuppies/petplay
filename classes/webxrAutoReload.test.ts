@@ -11,7 +11,7 @@ Deno.test("the module graph keeps local files and reports every module that fail
     modules: [
       { specifier: "file:///repo/petplay/webxr.ts" },
       { specifier: "file:///repo/classes/scene.tsx", error: "SyntaxError: Expected ','" },
-      { specifier: "npm:/react@19.2.5" },
+      { specifier: "react" },
       { specifier: "https://example.test/mod.ts", error: "Module not found" },
     ],
   });

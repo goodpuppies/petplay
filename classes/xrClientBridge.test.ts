@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals, assertThrows } from "jsr:@std/assert@^1";
+import { assert, assertAlmostEquals, assertEquals, assertThrows } from "@std/assert";
 import * as THREE from "three";
 import {
   parseXrMessage,

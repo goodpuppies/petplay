@@ -324,9 +324,9 @@ export async function runRaylibR3FViewerApp(
   console.log(`${p} Window config:`, { width, height, title });
   installSyntheticDomEventPolyfills();
 
-  let win32Shutdown: typeof import("@win32/km") | null = null;
+  let win32Shutdown: typeof import("../classes/win32KeyboardMouse.ts") | null = null;
   if (Deno.build.os === "windows") {
-    win32Shutdown = await import("@win32/km");
+    win32Shutdown = await import("../classes/win32KeyboardMouse.ts");
     for (const sig of (["SIGINT", "SIGTERM"] as const)) {
       try {
         Deno.addSignalListener(sig, () => {

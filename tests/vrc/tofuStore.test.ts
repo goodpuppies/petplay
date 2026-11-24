@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { createVrcTofuStore } from "../../classes/environment/vrcTofuStore.ts";
 
 Deno.test("vrcTofuStore filters to in-instance pending/mismatch peers and remembers session dismissals", () => {

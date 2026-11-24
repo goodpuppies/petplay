@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals, assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertAlmostEquals, assertEquals } from "@std/assert";
 import * as THREE from "three";
 import { updateDepthSurface, updateOccluderSurface } from "./surface.ts";
 import { unprojectDepth } from "./sync.ts";

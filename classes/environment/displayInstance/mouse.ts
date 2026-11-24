@@ -124,10 +124,10 @@ export function getDisplayMouseDiagnostics() {
   return { ...diagnostics };
 }
 
-type Win32Km = typeof import("@win32/km");
+type Win32Km = typeof import("../../win32KeyboardMouse.ts");
 
 const win32Km: Promise<Win32Km | null> = Deno.build.os === "windows"
-  ? import("@win32/km")
+  ? import("../../win32KeyboardMouse.ts")
   : Promise.resolve(null);
 
 type User32 = Deno.DynamicLibrary<{

@@ -1,123 +1,106 @@
 #!/usr/bin/env -S deno run -A
-
 /**
- * Type check runner that filters out errors from specific paths (vendor-heavy submodules).
+ * Type check PetPlay with tsrs (the Rust port of TypeScript 7) against tsconfig.json.
  *
- * Prefer this over raw `deno check` in this repo: `deno task check`
- * Full unfiltered graph: `deno task check:all`
+ *   deno task check          tsrs, filtered (this script)
+ *   deno task check:deno     Deno's own `deno check`, unfiltered, for comparison
+ *
+ * Deno's runtime declarations come from `deno types`, regenerated into dist/types/ whenever the
+ * Deno version changes, so the globals always match the runtime that runs the code.
+ *
+ * Errors are filtered by where they are (their primary location), never by what they mention:
+ * vendored third-party sources are expected to carry errors, but an error in our code that
+ * involves a vendored type must still show.
  */
+import { fromFileUrl } from "@std/path";
 
-const IGNORE_PATHS = [
-  "/submodules/threewebxrwebgpudeno/submodules/",
-  "/submodules/threewebxrwebgpudeno/local-uikit/",
-  "/research/",
+const root = fromFileUrl(new URL("../", import.meta.url));
+
+/** Third-party code compiled from source; errors there are expected. */
+const IGNORED_LOCATIONS = [
+  "node_modules/",
+  "dist/",
+  "research/",
+  "submodules/threewebxrwebgpudeno/submodules/",
+  "submodules/threewebxrwebgpudeno/local-uikit/",
+  "submodules/threewebxrwebgpudeno/vendor/",
+  "submodules/gluten/",
+  "submodules/byte_type_C/",
 ];
 
-const IGNORE_DIAGNOSTICS: Array<(block: string) => boolean> = [
-  (block) =>
-    block.includes("utils/preconf/setter.ts") &&
-    block.includes('Import "yoga-layout/load" not a dependency'),
-  (block) =>
-    block.includes("utils/preconf/setter.ts") &&
-    block.includes("Cannot find module") &&
-    block.includes("utils/context.js"),
-  (block) =>
-    block.includes("asset:///node/fs.d.cts") &&
-    block.includes("export function watch") &&
-    block.includes("The last overload is declared here"),
+/** Known, deliberate exceptions in our own code. */
+const IGNORED_DIAGNOSTICS: Array<(d: Diagnostic) => boolean> = [
+  // `/// <reference lib="deno.worker" />` etc.: deno.d.ts already declares them globally.
+  (d) => d.code === "TS2726" && d.message.includes("'deno."),
+  // Generated preconf setter imports a module that only exists in its build context.
+  (d) => d.file === "utils/preconf/setter.ts" && d.code === "TS2307",
 ];
 
-async function runTypeCheck(): Promise<void> {
-  console.log("Running deno check --allow-import...\n");
+type Diagnostic = { file: string; line: number; col: number; code: string; message: string };
 
-  const command = new Deno.Command("deno", {
-    args: ["check", "--allow-import"],
-    stdout: "piped",
-    stderr: "piped",
-  });
-
-  const { code, stdout, stderr } = await command.output();
-  const output = new TextDecoder().decode(stdout);
-  const errors = new TextDecoder().decode(stderr);
-
-  // Deno check outputs both "Check" lines and errors to stderr
-  const fullOutput = errors;
-
-  if (code === 0 && !fullOutput.trim()) {
-    console.log("✅ No type errors found!");
-    return;
-  }
-
-  const { filteredOutput, totalErrors, filteredErrors } = filterDiagnostics(fullOutput);
-  const remainingErrors = totalErrors - filteredErrors;
-
-  // Import/CLI failures may have no TS diagnostic blocks. They are still failed checks.
-  if (code !== 0 && totalErrors === 0) {
-    console.error(errors || output || `deno check exited with code ${code}`);
-    Deno.exit(1);
-  }
-
-  if (!filteredOutput.trim()) {
-    console.log(`✅ No type errors found (after filtering ignored paths)`);
-    console.log(`(Filtered out ${filteredErrors} error${filteredErrors !== 1 ? 's' : ''})`);
-    return;
-  }
-
-  console.log(filteredOutput);
-  console.log(`\nShowing ${remainingErrors} error${remainingErrors !== 1 ? 's' : ''} (${filteredErrors} filtered out)`);
-  Deno.exit(1);
+async function denoTypes(): Promise<void> {
+  const dir = `${root}dist/types`;
+  const marker = `${dir}/deno.version`;
+  const version = Deno.version.deno;
+  try {
+    if ((await Deno.readTextFile(marker)).trim() === version) return;
+  } catch { /* first run */ }
+  const out = await new Deno.Command(Deno.execPath(), { args: ["types"], stdout: "piped" }).output();
+  if (!out.success) throw new Error("deno types failed");
+  // tsc has no deno.* libs; everything they name is in this one file already.
+  const text = new TextDecoder().decode(out.stdout)
+    .replace(/^\/\/\/ <reference lib="deno\.[^"]+" \/>$/gm, "");
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(`${dir}/deno.d.ts`, text);
+  await Deno.writeTextFile(marker, version);
 }
 
-function shouldIgnoreBlock(block: string): boolean {
-  return IGNORE_PATHS.some((prefix) => block.includes(prefix)) ||
-    IGNORE_DIAGNOSTICS.some((shouldIgnore) => shouldIgnore(block));
-}
-
-function filterDiagnostics(output: string): { filteredOutput: string; totalErrors: number; filteredErrors: number } {
-  // Extract total error count from "Found X errors." line
-  const foundMatch = output.match(/Found (\d+) errors?\./);
-  const totalErrors = foundMatch ? parseInt(foundMatch[1], 10) : 0;
-
-  // Split output by lines containing TS\d+ [ERROR]:
-  const lines = output.split("\n");
-  const blocks: string[] = [];
-  let currentBlock = "";
-
-  for (const line of lines) {
-    if (/TS\d+/.test(line) && line.includes("[ERROR]:")) {
-      // Start of new error block
-      if (currentBlock) {
-        blocks.push(currentBlock.trim());
-      }
-      currentBlock = line;
-    } else if (currentBlock) {
-      // Continuation of current error block
-      currentBlock += "\n" + line;
+function parse(output: string): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const line of output.split("\n")) {
+    const m = line.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/);
+    if (m) {
+      diagnostics.push({
+        file: m[1].replace(/\\/g, "/").replace(/^\.\//, ""),
+        line: Number(m[2]),
+        col: Number(m[3]),
+        code: m[4],
+        message: m[5],
+      });
+    } else if (diagnostics.length && /^\s/.test(line) && line.trim()) {
+      diagnostics[diagnostics.length - 1].message += `\n${line}`;
     }
   }
+  return diagnostics;
+}
 
-  // Don't forget the last block
-  if (currentBlock) {
-    blocks.push(currentBlock.trim());
-  }
-
-  const filteredBlocks = blocks.filter((block) => {
-    return !shouldIgnoreBlock(block);
-  });
-
-  const remainingErrors = filteredBlocks.length;
-  const filteredErrors = totalErrors - remainingErrors;
-
-  if (filteredBlocks.length === 0) {
-    return { filteredOutput: "", totalErrors, filteredErrors };
-  }
-
-  // Join blocks with single blank line separator
-  const result = filteredBlocks.join("\n\n");
-
-  return { filteredOutput: result, totalErrors, filteredErrors };
+export async function typeCheck(): Promise<{ shown: Diagnostic[]; filtered: number; raw: string }> {
+  await denoTypes();
+  const out = await new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", `${root}node_modules/tsrs/bin/tsrs`, "-p", `${root}tsconfig.json`, "--pretty", "false"],
+    cwd: root,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const raw = new TextDecoder().decode(out.stdout) + new TextDecoder().decode(out.stderr);
+  const all = parse(raw);
+  if (!out.success && all.length === 0) throw new Error(raw.trim() || `tsrs exited with ${out.code}`);
+  const shown = all.filter((d) =>
+    !IGNORED_LOCATIONS.some((prefix) => d.file.startsWith(prefix)) &&
+    !IGNORED_DIAGNOSTICS.some((ignore) => ignore(d))
+  );
+  return { shown, filtered: all.length - shown.length, raw };
 }
 
 if (import.meta.main) {
-  await runTypeCheck();
+  const started = performance.now();
+  const { shown, filtered } = await typeCheck();
+  const seconds = ((performance.now() - started) / 1000).toFixed(1);
+  for (const d of shown) console.log(`${d.file}:${d.line}:${d.col} ${d.code} ${d.message}\n`);
+  if (shown.length === 0) {
+    console.log(`✅ No type errors (${filtered} in vendored code filtered, ${seconds}s)`);
+  } else {
+    console.log(`${shown.length} error(s) (${filtered} in vendored code filtered, ${seconds}s)`);
+    Deno.exit(1);
+  }
 }

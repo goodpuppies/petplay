@@ -42,3 +42,9 @@
 	path = submodules/petplay_mediatransport
 	url = https://github.com/goodpuppies/petplay_mediatransport.git
 	branch = main
+[submodule "submodules/gluten"]
+	path = submodules/gluten
+	url = https://github.com/deno-windowing/gluten
+[submodule "submodules/byte_type_C"]
+	path = submodules/byte_type_C
+	url = https://github.com/mommysgoodpuppy/byte_type_C

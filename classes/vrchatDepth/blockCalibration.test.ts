@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@^1.0.0";
+import { assertEquals } from "@std/assert";
 import { BlockCalibration } from "./blockCalibration.ts";
 
 /** Feeds one tick a second with per-second increments. */

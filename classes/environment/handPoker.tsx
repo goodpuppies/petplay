@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from "react";
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements, useFrame } from "@react-three/fiber/webgpu";
-import { useTouchPointer, useXRInputSourceStateContext, XRSpace } from "@pmndrs/xr";
+import { useTouchPointer, useXRInputSourceStateContext, XRSpace } from "@react-three/xr";
 import { GrabBox } from "./grabbox.tsx";
 import { useToolEditMode } from "./toolEditMode.ts";
 
@@ -104,10 +104,10 @@ export function HandPoker() {
         nextPressAllowedAtRef.current = now + POKER_REARM_MS;
         originalUpRef.current?.({ timeStamp: now, button: 0 });
       }
-      pointer.setEnabled(false);
+      pointer.setEnabled(false, { timeStamp: now });
       return;
     }
-    pointer.setEnabled(true);
+    pointer.setEnabled(true, { timeStamp: now });
     if (!pressedRef.current) {
       return;
     }

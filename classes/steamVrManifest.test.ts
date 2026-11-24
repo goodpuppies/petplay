@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertFalse } from "jsr:@std/assert@^1";
+import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   appConfigListsManifest,
   appConfigWithManifest,

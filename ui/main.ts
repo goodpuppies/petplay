@@ -7,7 +7,7 @@
  *
  *   deno task ui:web [--host=127.0.0.1] [--port=3995] [--scene=wrist] [--no-watch] [--no-build]
  */
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { parseArgs } from "@std/cli/parse-args";
 import { fromFileUrl } from "@std/path";
 import { PostalService } from "../submodules/stageforge/mod.ts";
 import { buildUiBundle } from "./build.ts";

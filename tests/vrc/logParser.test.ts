@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { VrcLogParser, VrcLogWatcher } from "../../classes/vrc/logParser.ts";
 

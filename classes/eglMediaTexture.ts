@@ -1,4 +1,4 @@
-import * as gl from "https://deno.land/x/gluten@0.1.9/api/gl4.6.ts";
+import * as gl from "../submodules/gluten/api/gl4.6.ts";
 import type { GpuMediaFrame } from "./gpuMediaSocket.ts";
 /** Own an EGL GL context in the receiver's dedicated process.
  * Import RGB DMA-BUFs and copy on GPU into presentation-owned storage before ACKing reuse.

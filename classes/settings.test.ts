@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert@^1.0.0";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   defaultSettings,
   getSetting,

@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { pidsMatching } from "./util.ts";
 Deno.test("workload discovery finds the worker but excludes shell command text and its own ancestors", async () => {
   const token = `petplay-discovery-${crypto.randomUUID()}`;

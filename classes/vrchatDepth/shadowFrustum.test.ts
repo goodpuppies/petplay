@@ -1,4 +1,4 @@
-import { assert, assertAlmostEquals } from "jsr:@std/assert@^1.0.0";
+import { assert, assertAlmostEquals } from "@std/assert";
 import * as THREE from "three";
 import { shadowFrustum } from "./shadowFrustum.ts";
 import { LIGHTING } from "./format.ts";

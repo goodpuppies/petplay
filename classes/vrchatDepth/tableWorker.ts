@@ -4,6 +4,11 @@
  */
 import { ColorClassifier } from "./colorCalibration.ts";
 
+/** This runs as a worker: its postMessage takes a transfer list (DOM's global types it as a window). */
+const scope = globalThis as unknown as {
+  postMessage(message: unknown, transfer?: Transferable[]): void;
+};
+
 export type TableRequest = { id: number; samples: Uint8Array; levels: number };
 export type TableReply = {
   id: number;
@@ -25,5 +30,5 @@ globalThis.onmessage = (event: MessageEvent<TableRequest>) => {
     size: 64,
     tiles: 8,
   };
-  globalThis.postMessage(reply, [table.data.buffer]);
+  scope.postMessage(reply, [table.data.buffer]);
 };

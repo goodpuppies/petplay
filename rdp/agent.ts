@@ -17,7 +17,7 @@
  * with the helpers next to it (PETPLAY_MEDIA_BINARY, PETPLAY_LINK_BINARY,
  * PETPLAY_SCREEN_STREAMER).
  */
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { parseArgs } from "@std/cli/parse-args";
 import { PostalService, resolveActorId } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../classes/irohCarrier.ts";
 import { householdSecret, householdTopic } from "./classes/household.ts";

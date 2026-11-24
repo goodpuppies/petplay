@@ -1,4 +1,4 @@
-import { debounce } from "jsr:@std/async"
+import { debounce } from "@std/async"
 
 interface WatcherArgs {
   watchPaths: string[];

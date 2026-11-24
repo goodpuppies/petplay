@@ -1,4 +1,4 @@
-import { assertAlmostEquals } from "jsr:@std/assert@^1.0.0";
+import { assertAlmostEquals } from "@std/assert";
 import { applyWorldToTracking, rotateVec } from "./sync.ts";
 import { headCameraPose, trackingToWorld } from "./headCamera.ts";
 import type { Quat } from "../vrcCameraCalibration.ts";
