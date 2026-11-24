@@ -246,13 +246,18 @@ async function connect(): Promise<void> {
       state.ui = ui;
       status("connecting to the desktop…");
       try {
-        const transport = await Transport.open(ui, {
-          purpose: UI_PURPOSE,
-          // WebTransport works from an https page anywhere; a WebSocket only from http or a
-          // page on the same host.
-          kinds: ["webtransport", "websocket"],
-          params: { secret },
-        });
+        const transport = await Promise.race([
+          Transport.open(ui, {
+            purpose: UI_PURPOSE,
+            // WebTransport works from an https page anywhere; a WebSocket only from http or a
+            // page on the same host.
+            kinds: ["webtransport", "websocket"],
+            params: { secret },
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("connect timed out")), 5_000)
+          ),
+        ]);
         tab = messages(transport);
         state.connected = true;
         status("connected");

@@ -150,7 +150,7 @@ async function exit(): Promise<void> {
   exiting = true;
   for (const id of [...PostalService.actors.keys()].reverse()) {
     await Promise.race([
-      postal.PostMessage({ target: id, type: "SHUTDOWN", payload: null }, true).catch(() => {}),
+      postal.PostMessage({ target: id, type: "__SHUTDOWN__", payload: null }, true).catch(() => {}),
       new Promise((resolve) => setTimeout(resolve, 3000)),
     ]);
   }
