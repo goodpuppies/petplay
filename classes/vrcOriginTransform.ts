@@ -409,6 +409,7 @@ export class VrcOriginRoomLock {
    * @param nowMs a monotonic clock
    * @param locomotionSpeed how fast the avatar root moves in the room relative to the HMD (m/s):
    *   VRChat locomotion, which physical motion does not produce
+   * @param stickMoving a move or turn stick is held: VRChat is moving now, before samples show it
    */
   update(
     raw: VrcWorldToStandingTransform,
@@ -417,13 +418,14 @@ export class VrcOriginRoomLock {
     hmdSpeed: number,
     nowMs: number,
     locomotionSpeed = 0,
+    stickMoving = false,
   ): VrcOriginRoomLockResult {
     let errorMeters = 0;
     if (this.mode === "locked" && this.held) {
       errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
       const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));
       let breakLock = errorMeters > this.breakDistance || yawErr > this.breakYaw ||
-        locomotionSpeed > this.locomotionBreakSpeed;
+        locomotionSpeed > this.locomotionBreakSpeed || stickMoving;
       if (
         !breakLock && errorMeters > this.sustainedBreakDistance && hmdSpeed < this.stillHeadSpeed
       ) {
@@ -445,7 +447,7 @@ export class VrcOriginRoomLock {
       }
     } else {
       if (
-        !this.settleAnchor || locomotionSpeed > this.settleMaxLocomotionSpeed ||
+        !this.settleAnchor || stickMoving || locomotionSpeed > this.settleMaxLocomotionSpeed ||
         translationDistance(raw, this.settleAnchor) > this.settleDistance ||
         Math.abs(angleDiffRad(raw.yawRad, this.settleAnchor.yawRad)) > this.settleYaw
       ) {
@@ -549,6 +551,18 @@ export interface VrcRootPredictorOptions {
   smoothingMs?: number;
   /** Full-velocity extrapolation past a channel's newest sample (ms). */
   extrapolateMs?: number;
+  /** The same while the stick says VRChat is still moving (ms). */
+  heldExtrapolateMs?: number;
+  /** Position process noise while the stick is held steady (speed can't change). */
+  steadyPositionProcessNoise?: number;
+  /** Yaw process noise while the turn stick is held steady. */
+  steadyYawProcessNoise?: number;
+  /** Position process noise for a while after the stick (or the head's yaw) changes. */
+  changingPositionProcessNoise?: number;
+  /** Yaw process noise for a while after the turn stick changes. */
+  changingYawProcessNoise?: number;
+  /** How long (ms) after a stick change the filter stays responsive. */
+  stickChangeMs?: number;
   /**
    * After `extrapolateMs`, velocity decays with this time constant (ms) rather than stopping dead:
    * VRChat skips updates for up to ~200 ms mid-walk.
@@ -574,6 +588,8 @@ export interface VrcRootPrediction {
 
 interface ChannelTiming {
   extrapolateMs: number;
+  /** Full-velocity extrapolation while the stick is held. */
+  heldMs: number;
   decayMs: number;
   stopAfterMs: number;
   fadeMs: number;
@@ -591,11 +607,16 @@ class KalmanChannel {
   updatedAt = 0;
   newestRaw: number[] | null = null;
 
+  /** Process noise; the predictor lowers it while the stick says speed is steady. */
+  q: number;
+
   constructor(
     readonly dims: number,
-    private readonly q: number,
+    q: number,
     private readonly r: number,
-  ) {}
+  ) {
+    this.q = q;
+  }
 
   reset(): void {
     this.state = [];
@@ -641,13 +662,48 @@ class KalmanChannel {
   }
 
   /**
-   * The estimate at `t`: extrapolated at full velocity up to `extrapolateMs` past the newest
-   * measurement, then with the velocity decaying over `decayMs`; after `stopAfterMs` of silence it
-   * fades over `fadeMs` to the newest raw measurement (a stop: VRChat goes silent).
+   * The stick was released at `t`: VRChat stopped there. Advance to `t` at the current velocity,
+   * then hold still (later measurements still correct the position).
    */
-  at(t: number, timing: ChannelTiming): { values: number[]; velocity: number[] } {
+  stop(t: number): void {
+    if (!this.state.length || t <= this.updatedAt) {
+      for (const s of this.state) s[1] = 0;
+      return;
+    }
+    const dt = (t - this.updatedAt) / 1000;
+    this.state = this.state.map(([x, v]) => [x + v * dt, 0]);
+    this.cov = this.cov.map(([a]) => [a, 0, 0.01]);
+    this.updatedAt = t;
+  }
+
+  /** Pull the velocity toward `values` (per second) with variance `r`, without moving in time. */
+  measureVelocity(values: number[], r: number): void {
+    for (let k = 0; k < this.state.length; k++) {
+      const [x, v] = this.state[k];
+      const [a, b, d] = this.cov[k];
+      const sInv = 1 / (d + r);
+      const kx = b * sInv, kv = d * sInv;
+      const y = values[k] - v;
+      this.state[k] = [x + kx * y, v + kv * y];
+      this.cov[k] = [a - kx * b, (1 - kv) * b, (1 - kv) * d];
+    }
+  }
+
+  /**
+   * The estimate at `t`: extrapolated at full velocity up to `extrapolateMs` past the newest
+   * measurement (or `heldMs` while the stick says VRChat is still moving), then with the velocity
+   * decaying over `decayMs`; after `stopAfterMs` of silence it fades over `fadeMs` to the newest
+   * raw measurement (a stop: VRChat goes silent).
+   */
+  at(
+    t: number,
+    timing: ChannelTiming,
+    held = false,
+  ): { values: number[]; velocity: number[] } {
     const dt = Math.max(0, t - this.updatedAt);
-    const { extrapolateMs, decayMs, stopAfterMs, fadeMs } = timing;
+    const { decayMs, fadeMs } = timing;
+    const extrapolateMs = held ? timing.heldMs : timing.extrapolateMs;
+    const stopAfterMs = held ? timing.heldMs + timing.stopAfterMs : timing.stopAfterMs;
     let travelMs = Math.min(dt, extrapolateMs);
     let speedScale = 1;
     if (dt > extrapolateMs) {
@@ -664,6 +720,63 @@ class KalmanChannel {
       }
     }
     return { values, velocity };
+  }
+}
+
+/** Controller state relevant to VRChat locomotion (`VrcRootPredictor.setInput`). */
+export interface VrcLocomotionInput {
+  /** Epoch ms. */
+  t: number;
+  /** Move stick `[x, y]` (VRChat default: left stick); zero while PetPlay UI holds it. */
+  move: [number, number];
+  /** Turn stick x (VRChat default: right stick); zero while PetPlay UI holds it. */
+  turn: number;
+  /** HMD yaw rate (rad/s, magnitude): VRChat walks where the head looks. */
+  headYawRate: number;
+}
+
+const STICK_DEADZONE = 0.15;
+const STICK_CHANGE = 0.1;
+
+/** Active/steady/released tracking for one stick. */
+class StickTracker {
+  active = false;
+  changedAt = -Infinity;
+  private releasedAt = -Infinity;
+  private reference: [number, number] = [0, 0];
+
+  clear(): void {
+    this.active = false;
+    this.changedAt = -Infinity;
+    this.releasedAt = -Infinity;
+  }
+
+  releasedWithin(t: number, ms: number): boolean {
+    return !this.active && t - this.releasedAt <= ms;
+  }
+
+  /** `extraChange`: something else (head turning) changes the motion too. */
+  update(
+    t: number,
+    value: [number, number],
+    extraChange: boolean,
+  ): "pressed" | "released" | null {
+    const active = Math.hypot(value[0], value[1]) > STICK_DEADZONE;
+    let event: "pressed" | "released" | null = null;
+    if (active !== this.active) {
+      event = active ? "pressed" : "released";
+      if (!active) this.releasedAt = t;
+      this.active = active;
+      this.changedAt = t;
+      this.reference = [...value];
+    } else if (
+      Math.hypot(value[0] - this.reference[0], value[1] - this.reference[1]) > STICK_CHANGE ||
+      (active && extraChange)
+    ) {
+      this.changedAt = t;
+      this.reference = [...value];
+    }
+    return event;
   }
 }
 
@@ -700,6 +813,17 @@ export class VrcRootPredictor {
   /** Shown state for `display`: `[x, y, z, unwrappedYaw]` at `shownAt`. */
   private shown: number[] | null = null;
   private shownAt = 0;
+  private readonly q: {
+    position: number;
+    yaw: number;
+    steadyPosition: number;
+    steadyYaw: number;
+    changingPosition: number;
+    changingYaw: number;
+  };
+  private readonly stickChangeMs: number;
+  private readonly move = new StickTracker();
+  private readonly turn = new StickTracker();
 
   constructor(options: VrcRootPredictorOptions = {}) {
     this.position = new KalmanChannel(
@@ -713,8 +837,18 @@ export class VrcRootPredictor {
       options.yawMeasurementVariance ?? 3e-5,
     );
     this.smoothingMs = options.smoothingMs ?? 80;
+    this.q = {
+      position: options.positionProcessNoise ?? 2,
+      yaw: options.yawProcessNoise ?? 20,
+      steadyPosition: options.steadyPositionProcessNoise ?? 0.05,
+      steadyYaw: options.steadyYawProcessNoise ?? 0.5,
+      changingPosition: options.changingPositionProcessNoise ?? 8,
+      changingYaw: options.changingYawProcessNoise ?? 40,
+    };
+    this.stickChangeMs = options.stickChangeMs ?? 300;
     this.timing = {
       extrapolateMs: options.extrapolateMs ?? 60,
+      heldMs: options.heldExtrapolateMs ?? 400,
       decayMs: options.decayMs ?? 120,
       stopAfterMs: options.stopAfterMs ?? 250,
       fadeMs: options.fadeMs ?? 200,
@@ -734,6 +868,38 @@ export class VrcRootPredictor {
     return this.lastPose != null;
   }
 
+  /**
+   * What the controllers say about VRChat locomotion, each poll; `null` when unknown (then the
+   * filters run on OSC samples alone).
+   *
+   * VRChat moves the instant the stick moves and stops the instant it is released, and the OSC
+   * samples only show it ~50 ms later with ±20 ms arrival noise. So: a release stops the estimate
+   * right there (no overshoot); while the stick is held, skipped samples never slow it; and while
+   * the stick (and, for walking, the head's yaw: VRChat walks where the head looks) holds steady,
+   * speed cannot change, so the filter trusts its velocity and ignores arrival noise. For
+   * `stickChangeMs` after a change it is responsive again.
+   */
+  setInput(input: VrcLocomotionInput | null): void {
+    if (!input) {
+      this.move.clear();
+      this.turn.clear();
+      this.position.q = this.q.position;
+      this.yaw.q = this.q.yaw;
+      return;
+    }
+    const moveEvent = this.move.update(input.t, input.move, input.headYawRate > 0.5);
+    const turnEvent = this.turn.update(input.t, [input.turn, 0], false);
+    if (moveEvent === "released") this.position.stop(input.t);
+    if (turnEvent === "released") this.yaw.stop(input.t);
+    const steady = (stick: StickTracker) => input.t - stick.changedAt >= this.stickChangeMs;
+    this.position.q = this.move.active
+      ? (steady(this.move) ? this.q.steadyPosition : this.q.changingPosition)
+      : this.q.position;
+    this.yaw.q = this.turn.active
+      ? (steady(this.turn) ? this.q.steadyYaw : this.q.changingYaw)
+      : this.q.yaw;
+  }
+
   add(sample: VrcOriginSample): void {
     const { pose, t } = sample;
     this.source = pose.source;
@@ -744,18 +910,26 @@ export class VrcRootPredictor {
 
     if (positionChanged && (!this.position.started || t > this.position.updatedAt)) {
       if (this.position.started) {
-        const predicted = this.position.at(t, this.timing).values;
-        if (Math.hypot(...pose.position.map((v, k) => v - predicted[k])) > this.resetDistance) {
+        const predicted = this.position.at(t, this.timing, this.move.active).values;
+        const miss = Math.hypot(...pose.position.map((v, k) => v - predicted[k]));
+        if (miss > this.resetDistance) {
           this.position.reset();
           this.shown = null;
+        } else if (miss > 0.06 && this.move.active) {
+          // The motion changed in a way the stick didn't show (direction follows a hand, a
+          // slope, a wall): be responsive again.
+          this.move.changedAt = t;
+          this.position.q = this.q.changingPosition;
         }
       }
       this.position.measure(t, [...pose.position]);
+      // Just after a release VRChat is standing still; late samples must not restart motion.
+      if (this.move.releasedWithin(t, 500)) this.position.measureVelocity([0, 0, 0], 1e-4);
     }
     if (yawChanged && (!this.yaw.started || t > this.yaw.updatedAt)) {
       let yaw = pose.yawRad;
       if (this.yaw.started) {
-        const predicted = this.yaw.at(t, this.timing).values[0];
+        const predicted = this.yaw.at(t, this.timing, this.turn.active).values[0];
         yaw = predicted + angleDiffRad(yaw, predicted);
         if (Math.abs(yaw - predicted) > this.resetYaw) {
           this.yaw.reset();
@@ -763,6 +937,7 @@ export class VrcRootPredictor {
         }
       }
       this.yaw.measure(t, [yaw]);
+      if (this.turn.releasedWithin(t, 500)) this.yaw.measureVelocity([0], 1e-4);
     }
   }
 
@@ -775,8 +950,8 @@ export class VrcRootPredictor {
         yawRate: 0,
       };
     }
-    const p = this.position.at(tMs, this.timing);
-    const y = this.yaw.at(tMs, this.timing);
+    const p = this.position.at(tMs, this.timing, this.move.active);
+    const y = this.yaw.at(tMs, this.timing, this.turn.active);
     return {
       pose: {
         source: this.source,
@@ -795,7 +970,7 @@ export class VrcRootPredictor {
   display(tMs: number): VrcRootPrediction {
     const target = this.predict(tMs);
     const unwrappedYaw = this.yaw.started
-      ? this.yaw.at(tMs, this.timing).values[0]
+      ? this.yaw.at(tMs, this.timing, this.turn.active).values[0]
       : target.pose.yawRad;
     const goal = [...target.pose.position, unwrappedYaw];
     const rates = [...target.velocity, target.yawRate];

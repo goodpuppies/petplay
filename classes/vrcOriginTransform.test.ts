@@ -434,3 +434,61 @@ Deno.test("root predictor: a skipped update slows the prediction instead of stop
   }
   assert(predictor.predict(550).velocity[0] > 0.1);
 });
+
+/** A constant 1 m/s walk along +X with the given arrival jitter, the stick held throughout. */
+function stickWalk(predictor: VrcRootPredictor, jitter: number[], stick: boolean) {
+  const samples = jitter.map((j, i) => ({ t: 1000 + i * 40 + j, x: 0.04 * i }));
+  let k = 0;
+  const shown: number[] = [];
+  for (let t = 1000; t < 1000 + (jitter.length - 1) * 40; t += 11) {
+    if (stick) predictor.setInput({ t, move: [0, 1], turn: 0, headYawRate: 0 });
+    while (k < samples.length && samples[k].t <= t) {
+      predictor.add({ t: samples[k].t, pose: makeWorldPose([samples[k].x, 0, 0], 0) });
+      k++;
+    }
+    if (k) shown.push(predictor.display(t).pose.position[0]);
+  }
+  return shown;
+}
+
+Deno.test("sticks: a steady held stick shows a steady speed despite arrival jitter", () => {
+  const jitter = [0, 14, -11, 18, -6, 9, -17, 3, 12, -9, 6, -14, 16, -3, 8, -12, 10, -5, 15, -8];
+  const spread = (shown: number[]) => {
+    const steps = shown.slice(40).map((x, i) => x - shown[39 + i]);
+    return Math.max(...steps) - Math.min(...steps);
+  };
+  const without = spread(stickWalk(new VrcRootPredictor(), jitter, false));
+  const withStick = spread(stickWalk(new VrcRootPredictor(), jitter, true));
+  assert(withStick < without / 2, `stick ${withStick} vs no stick ${without}`);
+});
+
+Deno.test("sticks: releasing the stick stops the estimate there, without overshoot", () => {
+  const predictor = new VrcRootPredictor();
+  for (let i = 0; i <= 10; i++) {
+    predictor.setInput({ t: i * 40, move: [0, 1], turn: 0, headYawRate: 0 });
+    predictor.add({ t: i * 40, pose: makeWorldPose([0.04 * i, 0, 0], 0) });
+  }
+  predictor.setInput({ t: 405, move: [0, 0], turn: 0, headYawRate: 0 });
+  // VRChat stopped at ~0.40 m; a late sample confirms it.
+  predictor.add({ t: 440, pose: makeWorldPose([0.402, 0, 0], 0) });
+  for (let t = 410; t <= 700; t += 10) {
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0 });
+    assert(predictor.predict(t).pose.position[0] < 0.42, `no overshoot at ${t}`);
+  }
+});
+
+Deno.test("room lock: a held stick breaks the lock at once and keeps it open", () => {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  let t = 0;
+  let res = lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), [0, 1.6, 0], 0, 0, t);
+  for (; t <= 400; t += 16) {
+    res = lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), [0, 1.6, 0], 0, 0, t);
+  }
+  assertEquals(res.mode, "locked");
+  const raw = solver.update(makeWorldPose([0, 0, 0], 0), makeHmdMatrix([0, 1.6, 0], 0));
+  for (const end = t + 600; t <= end; t += 16) {
+    res = lock.update(raw.transform, makeWorldPose([0, 0, 0], 0), [0, 1.6, 0], 0, t, 0, true);
+    assertEquals(res.mode, "moving");
+  }
+});

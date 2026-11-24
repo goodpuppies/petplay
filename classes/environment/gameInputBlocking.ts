@@ -102,6 +102,11 @@ export class GameInputBlocking {
     return this.blocked[hand] ? OVERLAY_INPUT_PRIORITY : 0;
   }
 
+  /** Whether PetPlay UI holds this hand's controls (the game does not see them). */
+  isBlocked(hand: Hand): boolean {
+    return this.blocked[hand];
+  }
+
   /** The hand's laser hit on PetPlay UI that has no SteamVR overlay of its own, or `null`. */
   focusTarget(hand: Hand): FocusTarget | null {
     return this.hasTarget[hand] ? this.targets[hand] : null;

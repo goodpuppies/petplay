@@ -94,6 +94,7 @@ import {
   setVRCOriginFromHmdMatrix34,
   setVRCOriginRefresh,
 } from "../classes/webxrShadowScene.ts";
+import { gameInputBlocking } from "../classes/environment/gameInputBlocking.ts";
 import {
   evaluateVrcOriginMotion,
   transformToHmdMatrix34,
@@ -515,6 +516,40 @@ function applyVrcOrigin(): void {
   setVRCOriginFromHmdMatrix34(matrix);
 }
 playspaceFrame.onStandingChange(applyVrcOrigin);
+
+/** The origin actor (from its `ORIGINUPDATE`): it filters VRChat locomotion with the sticks. */
+let vrcOriginActor: string | null = null;
+let lastSticksKey = "";
+let lastSticksSentAt = 0;
+/**
+ * Sends the sticks to the origin actor: VRChat moves the moment they move, ~50 ms before its OSC
+ * samples show it. Read from PetPlay's own IVRInput actions, which SteamVR gives an overlay
+ * alongside the game without taking focus.
+ */
+function pushSticksToVrcOrigin(): void {
+  const host = state.host;
+  if (!vrcOriginActor || !host) return;
+  const controllers = host.getDirectOpenVrInputSource().getSnapshot().controllers;
+  const left = controllers.left?.joystick ?? [0, 0];
+  const right = controllers.right?.joystick ?? [0, 0];
+  const payload = {
+    t: performance.timeOrigin + performance.now(),
+    left: [left[0], left[1]] as [number, number],
+    right: [right[0], right[1]] as [number, number],
+    blocked: {
+      left: gameInputBlocking.isBlocked("left"),
+      right: gameInputBlocking.isBlocked("right"),
+    },
+  };
+  const key = [...payload.left, ...payload.right].map((x) => Math.round(x * 50)).join() +
+    `${payload.blocked.left}${payload.blocked.right}`;
+  if (key === lastSticksKey && payload.t - lastSticksSentAt < 100) return;
+  lastSticksKey = key;
+  lastSticksSentAt = payload.t;
+  PostMan.PostMessage({ target: vrcOriginActor as ActorId, type: "STICKS", payload });
+}
+setInterval(pushSticksToVrcOrigin, 15);
+
 setVRCOriginRefresh(() => {
   if (vrcOriginMotion) applyVrcOrigin();
 });
@@ -889,8 +924,11 @@ new PostMan(
         });
       }
     },
-    ORIGINUPDATE: (payload: (OpenVR.HmdMatrix34 & { motion?: VrcOriginMotion | null }) | null) => {
+    ORIGINUPDATE: (
+      payload: (OpenVR.HmdMatrix34 & { motion?: VrcOriginMotion | null; from?: string }) | null,
+    ) => {
       if (!payload) return;
+      if (payload.from) vrcOriginActor = payload.from;
       standingVrcOrigin = payload.m as Matrix34Tuple;
       vrcOriginMotion = payload.motion ?? null;
       applyVrcOrigin();

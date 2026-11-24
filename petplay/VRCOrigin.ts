@@ -58,6 +58,17 @@ const HMD_TRACE_MAX = 60_000;
 let solver = new VrcOriginSolver();
 let roomLock = new VrcOriginRoomLock();
 let predictor = new VrcRootPredictor();
+type SticksPayload = {
+  t: number;
+  left: [number, number];
+  right: [number, number];
+  blocked: { left: boolean; right: boolean };
+};
+let latestSticks: SticksPayload | null = null;
+/** Older stick state than this (ms) counts as unknown. */
+const STICKS_STALE_MS = 300;
+let lastHeadYawRate = 0;
+
 /** Arrival time of the newest sample taken from the camera actor's `GETORIGINSAMPLES`. */
 let newestSampleAt = 0;
 let loopGeneration = 0;
@@ -117,6 +128,9 @@ new PostMan(
         lockMode: state.lockMode,
         lockErrorMeters: state.lockErrorMeters,
         lockBreakCount: state.lockBreakCount,
+        sticks: latestSticks
+          ? { ...latestSticks, ageMs: performance.timeOrigin + performance.now() - latestSticks.t }
+          : null,
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -129,6 +143,13 @@ new PostMan(
     },
     ADDADDRESS: (payload: ActorId) => {
       state.addressBook.add(payload);
+    },
+    /**
+     * Controller sticks from webxr (`pushSticksToVrcOrigin`), ~every 15 ms while they change and
+     * every 100 ms otherwise. A hand PetPlay UI holds reads as centred: VRChat doesn't see it.
+     */
+    STICKS: (payload: SticksPayload) => {
+      latestSticks = payload;
     },
     GETHMDTRACE: (payload: { sinceMs?: number } | null) => {
       const since = payload?.sinceMs ?? 0;
@@ -315,6 +336,22 @@ async function pollOriginOnce(): Promise<boolean> {
     predictor.add({ t: performance.timeOrigin + performance.now() - 1000, pose: seed });
   }
   const now = performance.timeOrigin + performance.now();
+  // VRChat defaults: left stick moves, right stick turns.
+  const sticks = latestSticks && now - latestSticks.t < STICKS_STALE_MS ? latestSticks : null;
+  predictor.setInput(
+    sticks
+      ? {
+        t: now,
+        move: sticks.blocked.left ? [0, 0] : sticks.left,
+        turn: sticks.blocked.right ? 0 : sticks.right[0],
+        headYawRate: lastHeadYawRate,
+      }
+      : null,
+  );
+  const stickMoving = sticks != null && (
+    (!sticks.blocked.left && Math.hypot(sticks.left[0], sticks.left[1]) > 0.15) ||
+    (!sticks.blocked.right && Math.abs(sticks.right[0]) > 0.15)
+  );
   const prediction = predictor.display(now);
   const worldPose = prediction.pose;
 
@@ -329,6 +366,7 @@ async function pollOriginOnce(): Promise<boolean> {
 
   const raw = solver.update(worldPose, hmdMatrix);
   const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
+  lastHeadYawRate = Math.abs(hmdPose.vAngularVelocity?.v?.[1] ?? 0);
   hmdTrace.push([
     performance.timeOrigin + performance.now(),
     hmdMatrix[0][3],
@@ -352,6 +390,7 @@ async function pollOriginOnce(): Promise<boolean> {
     Math.hypot(v[0], v[1], v[2]),
     performance.now(),
     locomotionSpeed,
+    stickMoving,
   );
   if (state.lockMode === "locked" && solved.mode === "moving") state.lockBreakCount++;
   const modeChanged = state.lockMode !== solved.mode;
@@ -379,9 +418,10 @@ async function pollOriginOnce(): Promise<boolean> {
       rootVelocityRH: [vx, vy, -vz],
     };
   }
-  const nextOrigin: OpenVR.HmdMatrix34 & { motion: VrcOriginMotion | null } = {
+  const nextOrigin: OpenVR.HmdMatrix34 & { motion: VrcOriginMotion | null; from: string } = {
     m: solved.matrix,
     motion,
+    from: state.id,
   };
   if (state.showMarker && state.overlayHandle) {
     setTransform(markerMatrixFromOrigin(solved.matrix));
