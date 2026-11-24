@@ -149,6 +149,35 @@ Deno.test("mediaMux + inputRouter + compositor: wallpaper, windows, FEED_ENDED, 
     assertEquals(afterReload.windows.length, 1);
     assertEquals(afterReload.windows[0]!.x, 120);
     assertEquals(afterReload.wallpaper?.label, "homepc · VRChat");
+
+    // TOGGLE_VR_BACKGROUND turns VR wallpaper off, then back on.
+    const toggledOff = await postal.PostMessage({
+      target: comp,
+      type: "TOGGLE_VR_BACKGROUND",
+      payload: null,
+    }, true);
+    assertEquals(toggledOff, null);
+
+    const toggledOn = await postal.PostMessage({
+      target: comp,
+      type: "TOGGLE_VR_BACKGROUND",
+      payload: null,
+    }, true) as { label: string } | null;
+    assertEquals(toggledOn?.label, "homepc · VRChat");
+
+    // Window can also be set as wallpaper.
+    await postal.PostMessage({
+      target: comp,
+      type: "SET_WALLPAPER",
+      payload: { source: srcDesktop, target: { kind: "window", window: windows[0]!.id }, label: windows[0]!.title },
+    }, true);
+    const withWinBg = await postal.PostMessage({
+      target: comp,
+      type: "GET_STATE",
+      payload: null,
+    }, true) as { wallpaper: { label: string; windowId?: string } | null };
+    assertEquals(withWinBg.wallpaper?.windowId, windows[0]!.id);
+    assertEquals(withWinBg.wallpaper?.label, windows[0]!.title);
   } finally {
     await postal.shutdownAll({ bestEffort: true });
   }

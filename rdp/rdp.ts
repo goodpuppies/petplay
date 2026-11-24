@@ -45,7 +45,12 @@ export type RdpStart = {
   /** "classic" (default single-desktop UI) or "compositor" (multi-machine WM + wallpaper). */
   mode?: "classic" | "compositor";
   /** Optional VRChat `petplay_ovrdriver` media socket path for `vrchatSource` in compositor mode. */
-  vrchat?: { socketPath?: string; port?: number; layout?: "mono" | "side-by-side" } | boolean;
+  vrchat?: {
+    socketPath?: string;
+    port?: number;
+    layout?: "mono" | "side-by-side";
+    autoWallpaper?: boolean;
+  } | boolean;
 };
 
 const state = actorState({
@@ -104,8 +109,10 @@ new PostMan(state, {
           guarded: Boolean(household && actors.source),
         });
       }
+      let autoVrchatWallpaper = true;
       if (payload.vrchat) {
         const vrcCfg = typeof payload.vrchat === "object" ? payload.vrchat : {};
+        autoVrchatWallpaper = vrcCfg.autoWallpaper ?? true;
         const vrchat = actors.vrchat = resolveActorId(
           await PostMan.create("./vrchatSource.ts", import.meta.url),
         );
@@ -143,6 +150,7 @@ new PostMan(state, {
         secret,
         mediaMux,
         inputRouter,
+        autoVrchatWallpaper,
         websocket: { hostname: host },
         webtransport: { hostname: host },
       });

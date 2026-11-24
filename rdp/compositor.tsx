@@ -53,6 +53,8 @@ export type CompositorStart = {
   secret: string;
   mediaMux: ActorId;
   inputRouter: ActorId;
+  /** Auto-select a `vrchat` source as wallpaper on startup; default true. */
+  autoVrchatWallpaper?: boolean;
   websocket?: { hostname?: string; port?: number; publicUrl?: string };
   webtransport?: { hostname?: string; port?: number; publicHost?: string } | false;
 };
@@ -71,6 +73,11 @@ type WallpaperEntry = {
   source: ActorId;
   target: FeedTarget;
   feedId: string;
+  /** Shared stream key in `ToTab.media.feeds` (equals `feedId` unless backed by an atlas). */
+  streamId?: string;
+  windowId?: string;
+  crop?: FeedInfo["crop"];
+  srcSize?: { width: number; height: number };
   label: string;
 };
 
@@ -333,8 +340,31 @@ async function openWindow(req: {
   return { id, feedId };
 }
 
+const VR_WINDOW_RE = /vrchat|vr\s*view|steamvr|vrmonitor/i;
+
+function isVrWindow(win: Pick<WindowInfo, "title" | "app">): boolean {
+  return VR_WINDOW_RE.test(win.title) || VR_WINDOW_RE.test(win.app);
+}
+
+function isVrWallpaper(wp: WallpaperEntry | null): boolean {
+  if (!wp) return false;
+  if (wp.target.kind === "vrchat") return true;
+  return VR_WINDOW_RE.test(wp.label);
+}
+
+function hasOvrDriverSocket(): boolean {
+  if (Deno.env.get("PP_MEDIA_SOCKET")) return true;
+  try {
+    const runtime = Deno.env.get("XDG_RUNTIME_DIR") ?? `/run/user/${Deno.uid()}`;
+    Deno.statSync(`${runtime}/petplay_ovrdriver`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function setWallpaper(
-  req: { source: ActorId; target?: FeedTarget } | null,
+  req: { source: ActorId; target?: FeedTarget; label?: string } | null,
 ): Promise<true> {
   if (!config?.mediaMux) return true;
   const prev = wallpaper;
@@ -353,19 +383,60 @@ async function setWallpaper(
   const { feedId, info } = await call<{ feedId: string; info: FeedInfo }>(
     config.mediaMux,
     "ACQUIRE",
-    { source: req.source, target, feedId: "wallpaper" },
+    { source: req.source, target, feedId: target.kind === "window" ? undefined : "wallpaper" },
   );
-  feeds = { ...feeds, [feedId]: info };
+  const streamKey = info.streamId ?? feedId;
+  feeds = { ...feeds, [streamKey]: info };
+  const winInfo = target.kind === "window"
+    ? windowsBySource[req.source]?.find((w) => w.id === target.window)
+    : undefined;
   wallpaper = {
     source: req.source,
     target,
     feedId,
-    label: src?.machine ?? "Wallpaper",
+    streamId: info.streamId,
+    windowId: target.kind === "window" ? target.window : undefined,
+    crop: info.crop,
+    srcSize: info.srcSize,
+    label: req.label ?? winInfo?.title ?? src?.machine ?? "Wallpaper",
   };
   broadcastMedia();
   syncState();
   render();
   return true;
+}
+
+async function toggleVrBackground(): Promise<void> {
+  if (isVrWallpaper(wallpaper)) {
+    await setWallpaper(null);
+    return;
+  }
+  await refreshLauncher();
+  const vrcSource = sources.find((s) => s.kind === "vrchat");
+  if (vrcSource && hasOvrDriverSocket()) {
+    await setWallpaper({ source: vrcSource.actor, target: { kind: "vrchat" } });
+    return;
+  }
+  for (const src of sources) {
+    if (src.kind !== "desktop") continue;
+    const wins = windowsBySource[src.actor] ?? [];
+    const match = wins.find((w) => /vrchat/i.test(w.title) || /vrchat/i.test(w.app)) ??
+      wins.find(isVrWindow);
+    if (match) {
+      await setWallpaper({
+        source: src.actor,
+        target: { kind: "window", window: match.id },
+        label: match.title,
+      });
+      return;
+    }
+  }
+  if (vrcSource) {
+    await setWallpaper({ source: vrcSource.actor, target: { kind: "vrchat" } });
+    return;
+  }
+  state.lastError = "No VRChat/OVR source or window found";
+  render();
 }
 
 async function refreshLauncher(): Promise<void> {
@@ -412,7 +483,7 @@ function scheduleGeometryRefresh(): void {
 }
 
 function maybeAutoWallpaper(): void {
-  if (autoWallpaperTried || wallpaper) return;
+  if (autoWallpaperTried || wallpaper || config?.autoVrchatWallpaper === false) return;
   const vrc = sources.find((s) => s.kind === "vrchat");
   if (!vrc) return;
   autoWallpaperTried = true;
@@ -429,13 +500,14 @@ function render(): void {
     windows: () => windows,
     focusedId: () => focusedId,
   };
-  const wpFeed = wallpaper ? feeds[wallpaper.feedId] : undefined;
+  const wpStreamKey = wallpaper ? (wallpaper.streamId ?? wallpaper.feedId) : null;
+  const wpFeed = wpStreamKey ? feeds[wpStreamKey] : undefined;
   browserTab.render(
     <>
       <WallpaperFeed
-        feedId={wallpaper && wpFeed ? wallpaper.feedId : null}
-        feedSize={wallpaper ? feedSizes.get(wallpaper.feedId) ?? null : null}
-        crop={wpFeed?.crop}
+        feedId={wallpaper && wpFeed && wpStreamKey ? wpStreamKey : null}
+        feedSize={wallpaper ? (wallpaper.srcSize ?? feedSizes.get(wpStreamKey!)) ?? null : null}
+        crop={wallpaper?.crop ?? wpFeed?.crop}
         onBackgroundClick={() => focusWindow(null)}
       />
       {windows.map((win, index) => {
@@ -465,8 +537,15 @@ function render(): void {
         openWindows={windows}
         focusedWindowId={focusedId}
         wallpaperLabel={wallpaper?.label ?? null}
+        wallpaperWindowId={wallpaper?.windowId ?? null}
+        vrBackgroundActive={isVrWallpaper(wallpaper)}
         viewerCount={tabs.size}
         onRefreshLauncher={() => void refreshLauncher()}
+        onToggleVrBackground={() =>
+          void toggleVrBackground().catch((err) => {
+            state.lastError = `vr wallpaper: ${err}`;
+            console.error("[compositor] vr wallpaper:", err);
+          })}
         onOpenWindow={(src, w) =>
           void openWindow({ source: src.actor, window: w }).catch((err) => {
             state.lastError = `openWindow: ${err}`;
@@ -483,6 +562,14 @@ function render(): void {
           })}
         onSelectWallpaper={(src) =>
           void setWallpaper(src ? { source: src.actor } : null).catch((err) => {
+            state.lastError = `wallpaper: ${err}`;
+          })}
+        onSelectWindowWallpaper={(src, w) =>
+          void setWallpaper({
+            source: src.actor,
+            target: { kind: "window", window: w.id },
+            label: w.title,
+          }).catch((err) => {
             state.lastError = `wallpaper: ${err}`;
           })}
         onWindowPillClick={(id) => {
@@ -727,6 +814,14 @@ new PostMan(
         }
         changed = true;
       }
+      if (wallpaper) {
+        const slot = layouts[wallpaper.feedId];
+        if (slot) {
+          if (slot.crop) wallpaper.crop = slot.crop;
+          if (slot.srcSize) wallpaper.srcSize = slot.srcSize;
+          changed = true;
+        }
+      }
       if (changed) render();
       // The content changed size: re-read where the window now is, since the geometry read
       // right after RESIZE can predate the client committing it (Wayland).
@@ -738,7 +833,9 @@ new PostMan(
       if (!feedId) return true;
       const before = windows.length;
       windows = windows.filter((w) => w.feedId !== feedId);
-      if (wallpaper?.feedId === feedId) wallpaper = null;
+      if (wallpaper && (wallpaper.feedId === feedId || wallpaper.streamId === feedId)) {
+        wallpaper = null;
+      }
       if (focusedId && !windows.some((w) => w.id === focusedId)) {
         focusedId = [...windows].reverse().find((w) => !w.minimized)?.id ?? null;
       }
@@ -748,8 +845,12 @@ new PostMan(
       }
       return true;
     },
-    SET_WALLPAPER: (payload: { source: ActorId; target?: FeedTarget } | null) =>
+    SET_WALLPAPER: (payload: { source: ActorId; target?: FeedTarget; label?: string } | null) =>
       setWallpaper(payload),
+    TOGGLE_VR_BACKGROUND: async () => {
+      await toggleVrBackground();
+      return wallpaper;
+    },
     OPEN_WINDOW: (
       payload: {
         source: ActorId;

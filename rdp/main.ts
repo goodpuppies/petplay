@@ -36,7 +36,7 @@ const args = parseArgs(Deno.args, {
     vrchat: false,
     watch: false,
   },
-  negatable: ["capture", "input", "site", "repl"],
+  negatable: ["capture", "input", "site", "repl", "vrchat"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
 const host = args.host ?? await tailnetAddress() ?? "127.0.0.1";
@@ -62,10 +62,18 @@ const { link, url, actors } = await postal.PostMessage({
     capture: args.capture,
     input: args.input,
     mode: args.compositor ? "compositor" : "classic",
-    vrchat: args.vrchat || args["vrchat-socket"]
+    vrchat: Deno.args.includes("--no-vrchat")
+      ? false
+      : args.vrchat || args["vrchat-socket"]
       ? {
         socketPath: args["vrchat-socket"],
         layout: args["vrchat-layout"] === "side-by-side" ? "side-by-side" : "mono",
+        autoWallpaper: true,
+      }
+      : args.compositor && Deno.build.os === "linux"
+      ? {
+        layout: args["vrchat-layout"] === "side-by-side" ? "side-by-side" : "mono",
+        autoWallpaper: false,
       }
       : false,
   },

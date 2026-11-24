@@ -18,11 +18,15 @@ export type TaskbarProps = {
   openWindows: FloatingWindowData[];
   focusedWindowId: string | null;
   wallpaperLabel: string | null;
+  wallpaperWindowId: string | null;
+  vrBackgroundActive: boolean;
   viewerCount: number;
   onRefreshLauncher: () => void;
+  onToggleVrBackground: () => void;
   onOpenWindow: (source: SourceSummary, window: WindowInfo) => void;
   onOpenDesktop: (source: SourceSummary) => void;
   onSelectWallpaper: (source: SourceSummary | null) => void;
+  onSelectWindowWallpaper: (source: SourceSummary, window: WindowInfo) => void;
   onWindowPillClick: (id: string) => void;
 };
 
@@ -32,11 +36,15 @@ export function Taskbar({
   openWindows,
   focusedWindowId,
   wallpaperLabel,
+  wallpaperWindowId,
+  vrBackgroundActive,
   viewerCount,
   onRefreshLauncher,
+  onToggleVrBackground,
   onOpenWindow,
   onOpenDesktop,
   onSelectWallpaper,
+  onSelectWindowWallpaper,
   onWindowPillClick,
 }: TaskbarProps) {
   const tab = useTabSize();
@@ -123,7 +131,7 @@ export function Taskbar({
                       }}
                     >
                       <Text fontSize={12} color="#f1f5f9">
-                        {src.kind === "vrchat" ? `${src.machine} (VR)` : src.machine}
+                        {src.kind === "vrchat" ? `${src.machine} (OVR)` : src.machine}
                       </Text>
                     </Container>
                   ))}
@@ -158,23 +166,46 @@ export function Taskbar({
                           No individual windows listed (click Refresh or open Full Desktop)
                         </Text>
                       )
-                      : wins.slice(0, 12).map((w) => (
-                        <Container
-                          key={`${src.actor}-${w.id}`}
-                          paddingX={8}
-                          paddingY={5}
-                          borderRadius={5}
-                          backgroundColor="#1f2736"
-                          onClick={() => {
-                            onOpenWindow(src, w);
-                            setLauncherOpen(false);
-                          }}
-                        >
-                          <Text fontSize={12} color="#e2e8f0">
-                            {`${w.title.slice(0, 48)}${w.app ? `  [${w.app}]` : ""}`}
-                          </Text>
-                        </Container>
-                      ))}
+                      : wins.slice(0, 12).map((w) => {
+                        const isBg = wallpaperWindowId === w.id;
+                        return (
+                          <Container
+                            key={`${src.actor}-${w.id}`}
+                            flexDirection="row"
+                            alignItems="center"
+                            gap={6}
+                          >
+                            <Container
+                              flexGrow={1}
+                              paddingX={8}
+                              paddingY={5}
+                              borderRadius={5}
+                              backgroundColor="#1f2736"
+                              onClick={() => {
+                                onOpenWindow(src, w);
+                                setLauncherOpen(false);
+                              }}
+                            >
+                              <Text fontSize={12} color="#e2e8f0">
+                                {`${w.title.slice(0, 42)}${w.app ? `  [${w.app}]` : ""}`}
+                              </Text>
+                            </Container>
+                            <Container
+                              paddingX={7}
+                              paddingY={5}
+                              borderRadius={5}
+                              backgroundColor={isBg ? "#3b82f6" : "#263042"}
+                              onClick={() => {
+                                if (isBg) onSelectWallpaper(null);
+                                else onSelectWindowWallpaper(src, w);
+                                setLauncherOpen(false);
+                              }}
+                            >
+                              <Text fontSize={11} color="#f1f5f9">{isBg ? "BG*" : "BG"}</Text>
+                            </Container>
+                          </Container>
+                        );
+                      })}
                   </Container>
                 );
               })}
@@ -212,6 +243,19 @@ export function Taskbar({
             }}
           >
             <Text fontSize={13} color="#f8fafc">Apps</Text>
+          </Container>
+
+          {/* VRChat / OVR background toggle */}
+          <Container
+            paddingX={10}
+            paddingY={6}
+            borderRadius={6}
+            backgroundColor={vrBackgroundActive ? "#3b82f6" : "#252e3f"}
+            onClick={() => onToggleVrBackground()}
+          >
+            <Text fontSize={12} color="#f8fafc">
+              {vrBackgroundActive ? "VR BG: On" : "VR BG"}
+            </Text>
           </Container>
 
           {/* Open window pills */}
