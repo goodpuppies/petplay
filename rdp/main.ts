@@ -105,7 +105,8 @@ if (enableRepl) {
 
 if (args.watch) {
   // Actors reload in place when a file in their module graph changes; see stageforge HotReload.
-  await postal.enableHotReload();
+  // Nothing reloads unless the project type-checks (tsrs, about a second).
+  await postal.enableHotReload({ check: [Deno.execPath(), "task", "check"] });
 
   // The tab's code is a bundle: rebuild it when its sources change.
   const browserDir = fromFileUrl(new URL("./browser/", import.meta.url));
