@@ -306,6 +306,7 @@ def main():
         if args.display_profile not in ('lab', 'virtual1080'):
             parser.error('--headless-display uses the virtual1080 profile, resized by --headless-size')
         args.display_profile = 'virtual1080'
+        args.present_audit = True
     headless_size = (1920, 1080)
     if args.headless_size:
         if not args.headless_display:
@@ -316,7 +317,6 @@ def main():
             headless_size = ()
         if len(headless_size) != 2 or not (64 <= headless_size[0] <= 8192 and 64 <= headless_size[1] <= 8192) or headless_size[0] % 4 or headless_size[1] % 2:
             parser.error('--headless-size must be WxH with W a multiple of 4 and H even, 64..8192')
-        args.present_audit = True
     if args.real_hmd and (args.display_profile != 'lab' or args.refresh_hz is not None):
         parser.error('Synthetic display profiles/refresh overrides cannot be used with --real-hmd')
     if args.refresh_hz is not None and not 30 <= args.refresh_hz <= 240:
