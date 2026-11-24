@@ -41,6 +41,7 @@
       "meshline": ["./node_modules/meshline/dist/index.d.ts"],
       // deno.json "scopes": PetPlay's copies, not the vendored checkouts' own node_modules
       "@preact/signals-core": ["./node_modules/@preact/signals-core"],
+      "zod": ["./node_modules/zod"],
       "yoga-layout": ["./node_modules/yoga-layout/dist/src/index.d.ts"],
       "yoga-layout/load": ["./node_modules/yoga-layout/dist/src/load.d.ts"],
       "gl-matrix": ["./node_modules/gl-matrix/index.d.ts"],

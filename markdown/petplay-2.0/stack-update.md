@@ -62,6 +62,12 @@ All of these come in through the `submodules/threewebxrwebgpudeno` workspace mem
   deprecated in favour of `state.renderer` and is typed by a registered renderer:
   `types/r3f-webgpu-renderer.d.ts` registers `webgpu` (its version pin moves with the others).
   460/462 tests, same two pre-existing failures.
+- 2026-11-24: uikit → `v1.0.78`. Added `zod` and generated `src/flex/schema.ts`, and ported
+  `local-uikit` imports onto upstream's split `panel/material`, `panel/interaction`, and
+  `panel/geometry.ts` modules. `deno task check` passes (0 errors in our code / `local-uikit`),
+  all 7 UI Studio scenes match the `v1.0.68` Raythree IR + screenshot baseline (`0` non-numeric
+  diffs, `≤ 0.01 px` float rounding across 822 items), and `430/432` unit tests pass (same two
+  pre-existing failures).
 
 ## Done when
 

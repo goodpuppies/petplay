@@ -158,6 +158,7 @@
       "yoga-layout": "npm:yoga-layout@3.2.1",
       "yoga-layout/": "npm:/yoga-layout@3.2.1/",
       "gl-matrix": "npm:gl-matrix@3.4.4",
+      "zod": "npm:zod@4.6.7",
       "webxr-layers-polyfill": "npm:webxr-layers-polyfill@1.1.0",
       "iwer": "./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/index.ts",
       "iwer/": "./submodules/threewebxrwebgpudeno/submodules/iwer/packages/iwer/src/",

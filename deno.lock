@@ -1059,7 +1059,8 @@
       "npm:gl-matrix@3.4.4",
       "npm:three@0.187.0",
       "npm:webxr-layers-polyfill@1.1.0",
-      "npm:yoga-layout@3.2.1"
+      "npm:yoga-layout@3.2.1",
+      "npm:zod@4.6.7"
     ],
     "packageJson": {
       "dependencies": [
@@ -1101,6 +1102,7 @@
         "npm:webxr-layers-polyfill@1.1.0",
         "npm:word-wrapper@1.0.7",
         "npm:yoga-layout@3.2.1",
+        "npm:zod@4.6.7",
         "npm:zustand@4.5.7"
       ],
       "overrides": {
