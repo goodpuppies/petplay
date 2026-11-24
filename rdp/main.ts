@@ -28,7 +28,14 @@ const args = parseArgs(Deno.args, {
     "vrchat-layout",
   ],
   boolean: ["capture", "input", "site", "compositor", "vrchat", "watch", "repl"],
-  default: { capture: true, input: true, site: true, compositor: false, vrchat: false, watch: false },
+  default: {
+    capture: true,
+    input: true,
+    site: true,
+    compositor: false,
+    vrchat: false,
+    watch: false,
+  },
   negatable: ["capture", "input", "site", "repl"],
 });
 const topics = args.topics ?? Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://topic.petplay.fi";
@@ -69,7 +76,11 @@ const query = new URLSearchParams();
 if (args.topics) query.set("topics", args.topics);
 if (args.relay) query.set("relay", args.relay);
 if (url) {
-  console.log(`\nOpen: ${url}${query.size ? `?${query}` : ""}${sitePassword ? " (password protected)" : ""}\n`);
+  console.log(
+    `\nOpen: ${url}${query.size ? `?${query}` : ""}${
+      sitePassword ? " (password protected)" : ""
+    }\n`,
+  );
 } else {
   const [base, secret] = link.split("#");
   console.log(`\nOpen: ${base}${query.size ? `?${query}` : ""}#${secret}\n`);
@@ -92,54 +103,28 @@ if (enableRepl) {
   }
 }
 
-if (args.watch && actors.ui) {
-  const uiActor = actors.ui;
-  const rdpDir = fromFileUrl(new URL("./", import.meta.url));
+if (args.watch) {
+  // Actors reload in place when a file in their module graph changes; see stageforge HotReload.
+  await postal.enableHotReload();
+
+  // The tab's code is a bundle: rebuild it when its sources change.
   const browserDir = fromFileUrl(new URL("./browser/", import.meta.url));
   const sceneStreamDir = fromFileUrl(new URL("../web/scene-stream/", import.meta.url));
+  const liaison = fromFileUrl(new URL("./liaison.ts", import.meta.url));
   const buildScript = fromFileUrl(new URL("./build.ts", import.meta.url));
-  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
   let buildTimer: ReturnType<typeof setTimeout> | null = null;
-  let reloading = false;
-
-  console.log("[rdp --watch] watching UI and browser sources for hot-reload...");
   void (async () => {
-    const watcher = Deno.watchFs([rdpDir, sceneStreamDir]);
-    for await (const event of watcher) {
+    for await (const event of Deno.watchFs([browserDir, sceneStreamDir, liaison])) {
       if (event.kind !== "modify" && event.kind !== "create") continue;
-      const isBrowser = event.paths.some((p) =>
-        p.startsWith(browserDir) || p.startsWith(sceneStreamDir) || p.endsWith("liaison.ts")
-      );
-      const isUi = event.paths.some((p) =>
-        p.endsWith("compositor.tsx") || p.endsWith("ui.tsx") || p.endsWith("app.tsx") ||
-        p.includes("/components/")
-      );
-      if (isBrowser) {
-        if (buildTimer) clearTimeout(buildTimer);
-        buildTimer = setTimeout(async () => {
-          const res = await new Deno.Command(Deno.execPath(), {
-            args: ["run", "-A", buildScript],
-            stdout: "inherit",
-            stderr: "inherit",
-          }).output();
-          if (res.success) console.log("[rdp --watch] rebuilt dist/rdp (refresh browser tab)");
-        }, 200);
-      }
-      if (isUi) {
-        if (reloadTimer) clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(async () => {
-          if (reloading) return;
-          reloading = true;
-          try {
-            const info = await postal.reload(uiActor);
-            console.log(`[rdp --watch] hot-reloaded ${uiActor} (reload #${info.reloadCount})`);
-          } catch (error) {
-            console.error("[rdp --watch] hot-reload failed:", error);
-          } finally {
-            reloading = false;
-          }
-        }, 150);
-      }
+      if (buildTimer) clearTimeout(buildTimer);
+      buildTimer = setTimeout(async () => {
+        const res = await new Deno.Command(Deno.execPath(), {
+          args: ["run", "-A", buildScript],
+          stdout: "inherit",
+          stderr: "inherit",
+        }).output();
+        if (res.success) console.log("[rdp --watch] rebuilt dist/rdp (refresh browser tab)");
+      }, 200);
     }
   })();
 }
