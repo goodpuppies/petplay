@@ -3,14 +3,18 @@
  * DMA-BUF frame sockets (`petplay_mediatransport/docs/protocol.md`) between native media actors
  * (`petplayMedia@*`, `screenStreamer@*`, `petplay_ovrdriver`) and their TypeScript coordinators.
  *
- * The StageForge transport handshake carries only the bound Unix socket descriptor (`{ socketPath }`)
- * over `TRANSPORTOFFER` / `TRANSPORTSIGNAL`; GPU frames (`SCM_RIGHTS` DMA-BUF FDs) flow directly
- * between native processes without touching JS/Deno.
+ * Opening with `{ feedId, host, port, ... }` starts and owns the feed on `petplayMedia@*` (closing
+ * the transport stops and unlinks it); opening with `{ feedId }` or `{ atlasId, slotId }` attaches
+ * to an existing bound socket. GPU frames (`SCM_RIGHTS` DMA-BUF FDs) flow directly between native
+ * processes without touching JS/Deno.
  */
 import {
   closedSignal,
   type EstablishContext,
   type KindConnection,
+  PostMan,
+  registerTransportKind,
+  type Transport,
   type TransportKind,
   type TransportParams,
 } from "../../submodules/stageforge/mod.ts";
@@ -20,13 +24,28 @@ export const DMABUF_SEQPACKET_KIND = "dmabuf-seqpacket";
 
 export type DmabufSeqpacketEndpoint = {
   socketPath: string;
+  feedId?: string;
+  host?: string;
+  port?: number;
+  fingerprint?: string;
+  code?: string;
+  webrtc?: boolean;
   params: TransportParams;
 };
 
+let clientRegistered = false;
+
+/** Idempotently register the `dmabuf-seqpacket` client transport kind on this actor. */
+export function ensureDmabufSeqpacketClient(): void {
+  if (clientRegistered) return;
+  clientRegistered = true;
+  registerTransportKind(dmabufSeqpacketClientTransport());
+}
+
 /**
  * Initiator side: calls `Transport.open(mediaActor, { purpose: MEDIA_FRAMES_PURPOSE,
- * kinds: [DMABUF_SEQPACKET_KIND], params: { feedId } | { atlasId, slotId } })` and receives the
- * bound Unix `SOCK_SEQPACKET` path in `transport.connection.socketPath`.
+ * kinds: [DMABUF_SEQPACKET_KIND], params: ... })` and receives the bound socket + feed metadata in
+ * `transport.connection`. Closing the transport sends `{ closed: true }` over `TRANSPORTSIGNAL`.
  */
 export function dmabufSeqpacketClientTransport(): TransportKind {
   return {
@@ -35,19 +54,69 @@ export function dmabufSeqpacketClientTransport(): TransportKind {
     listenReach: () => null,
     connectReach: () => (Deno.build.os === "linux" ? "host" : null),
     async establish(ctx: EstablishContext): Promise<KindConnection<DmabufSeqpacketEndpoint>> {
-      const msg = await ctx.signal.recv() as { socketPath?: unknown } | null;
+      const msg = await ctx.signal.recv() as {
+        socketPath?: unknown;
+        feedId?: unknown;
+        host?: unknown;
+        port?: unknown;
+        fingerprint?: unknown;
+        code?: unknown;
+        webrtc?: unknown;
+      } | null;
       if (typeof msg?.socketPath !== "string" || !msg.socketPath) {
         throw new Error("dmabuf-seqpacket signal missing socketPath");
       }
       const { closed, end } = closedSignal();
+      let sentClose = false;
+      ctx.signal.onmessage = (data) => {
+        const d = data as { closed?: unknown; reason?: unknown } | null;
+        if (d?.closed) end(typeof d.reason === "string" ? d.reason : "peer closed");
+      };
       ctx.signal.abort.addEventListener("abort", () => end("signal aborted"), { once: true });
+      const endpoint: DmabufSeqpacketEndpoint = {
+        socketPath: msg.socketPath,
+        ...(typeof msg.feedId === "string" ? { feedId: msg.feedId } : {}),
+        ...(typeof msg.host === "string" ? { host: msg.host } : {}),
+        ...(typeof msg.port === "number" ? { port: msg.port } : {}),
+        ...(typeof msg.fingerprint === "string" ? { fingerprint: msg.fingerprint } : {}),
+        ...(typeof msg.code === "string" ? { code: msg.code } : {}),
+        ...(typeof msg.webrtc === "boolean" ? { webrtc: msg.webrtc } : {}),
+        params: ctx.params,
+      };
       return {
-        connection: { socketPath: msg.socketPath, params: ctx.params },
+        connection: endpoint,
         closed,
-        close: (reason) => end(reason),
+        close: (reason) => {
+          if (!sentClose) {
+            sentClose = true;
+            try {
+              ctx.signal.send({ closed: true, reason });
+            } catch { /* channel already closed */ }
+          }
+          end(reason);
+        },
       };
     },
   };
+}
+
+/**
+ * Close a `dmabuf-seqpacket` transport and wait for the responder (`petplayMedia@*`) to finish
+ * stopping the feed and unlinking its socket before returning.
+ */
+export async function closeDmabufSeqpacketTransport(
+  transport: Transport,
+  reason = "stopped",
+): Promise<void> {
+  if (!transport.isClosed) {
+    await PostMan.PostMessage({
+      target: transport.info.peer,
+      type: "TRANSPORTSIGNAL",
+      payload: { id: transport.info.id, data: { closed: true, reason } },
+    }, true).catch(() => {});
+    transport.close(reason);
+  }
+  await transport.closed;
 }
 
 /** Responder side (for TypeScript actors advertising a local `SOCK_SEQPACKET` socket). */

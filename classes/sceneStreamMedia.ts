@@ -1,12 +1,16 @@
 /**
  * Desktop media feed hosted inside this process's shared `petplayMedia@*` StageForge native actor
- * (`petplay-media actor`, `NativeStdioProxy`).
- *
- * `petplayMedia@*` owns the DMA-BUF `SOCK_SEQPACKET` socket path, GPU VA-API encoder, MoQ/WebTransport
- * server, and in-process WebRTC hub. Callers receive `socketPath` (or negotiate it via the
- * `dmabuf-seqpacket` StageForge `TransportKind`) and exchange WebRTC SDP offers via `WEBRTC_OFFER`.
+ * (`petplay-media actor`, `NativeStdioProxy`), opened and closed as a `dmabuf-seqpacket`
+ * StageForge `Transport`.
  */
-import { type ActorId, PostMan } from "../submodules/stageforge/mod.ts";
+import { type ActorId, PostMan, Transport } from "../submodules/stageforge/mod.ts";
+import {
+  closeDmabufSeqpacketTransport,
+  DMABUF_SEQPACKET_KIND,
+  type DmabufSeqpacketEndpoint,
+  ensureDmabufSeqpacketClient,
+  MEDIA_FRAMES_PURPOSE,
+} from "../rdp/classes/dmabufSeqpacketTransport.ts";
 import { ensurePetplayMedia } from "../rdp/classes/petplayMediaActor.ts";
 
 export type MediaFeedInfo = {
@@ -45,18 +49,19 @@ export class DesktopMediaFeed {
     readonly info: MediaFeedInfo,
     private readonly actorId: ActorId,
     private readonly feedId: string,
+    private readonly transport: Transport,
     readonly exited: Promise<Deno.CommandStatus>,
-    private readonly resolveExited: (status: Deno.CommandStatus) => void,
   ) {}
 
   static async start(options: DesktopMediaOptions): Promise<DesktopMediaFeed> {
+    ensureDmabufSeqpacketClient();
     const actorId = await ensurePetplayMedia();
     const feedId = options.actorFeedId ?? `desktop-${options.port}`;
-    const res = await PostMan.PostMessage({
-      target: actorId,
-      type: "START_SOCKET_FEED",
-      payload: {
-        id: feedId,
+    const transport = await Transport.open(actorId, {
+      purpose: MEDIA_FRAMES_PURPOSE,
+      kinds: [DMABUF_SEQPACKET_KIND],
+      params: {
+        feedId,
         ...(options.socketPath ? { socketPath: options.socketPath } : {}),
         host: options.host,
         port: options.port,
@@ -66,34 +71,27 @@ export class DesktopMediaFeed {
         bitrate: options.bitrate ?? 8_000_000,
         persist: true,
         share: Boolean(options.share),
-        ...(options.subscriber ? { subscriber: options.subscriber } : {}),
       },
-    }, true) as {
-      id: string;
-      socketPath: string;
-      port: number;
-      fingerprint: string;
-      code?: string;
-      webrtc?: boolean;
-    };
-
-    let resolveExited!: (status: Deno.CommandStatus) => void;
-    const exited = new Promise<Deno.CommandStatus>((resolve) => {
-      resolveExited = resolve;
     });
+    const endpoint = transport.connection as DmabufSeqpacketEndpoint;
+    const exited: Promise<Deno.CommandStatus> = transport.closed.then((reason) => ({
+      success: reason === "stopped",
+      code: reason === "stopped" ? 0 : 1,
+      signal: null,
+    }));
 
     return new DesktopMediaFeed(
-      res.socketPath,
+      endpoint.socketPath,
       {
-        port: res.port,
-        fingerprint: res.fingerprint,
-        ...(res.code ? { code: res.code } : {}),
-        ...(res.webrtc ? { webrtc: true } : {}),
+        port: endpoint.port ?? options.port,
+        fingerprint: endpoint.fingerprint ?? "",
+        ...(endpoint.code ? { code: endpoint.code } : {}),
+        ...(endpoint.webrtc ? { webrtc: true } : {}),
       },
       actorId,
-      res.id,
+      endpoint.feedId ?? feedId,
+      transport,
       exited,
-      resolveExited,
     );
   }
 
@@ -107,17 +105,12 @@ export class DesktopMediaFeed {
     return res.sdp;
   }
 
-  /** Called by the owning actor when `petplayMedia@*` pushes `FEED_ENDED` for this feed. */
+  /** Called by the owning actor if `petplayMedia@*` pushes `FEED_ENDED`. */
   notifyActorEnded(): void {
-    this.resolveExited({ success: false, code: 1, signal: null });
+    this.transport.close("feed ended");
   }
 
   async stop(): Promise<void> {
-    await PostMan.PostMessage({
-      target: this.actorId,
-      type: "STOP_FEED",
-      payload: { id: this.feedId },
-    }, true).catch(() => {});
-    this.resolveExited({ success: true, code: 0, signal: null });
+    await closeDmabufSeqpacketTransport(this.transport, "stopped");
   }
 }

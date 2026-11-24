@@ -1,17 +1,18 @@
 /**
  * vrchatSource: exposes `petplay_ovrdriver` -> `petplayMedia@*` as a standard `MediaSource` actor.
  *
- * Implements the same actor contract as `desktopSource` (`DESCRIBE`, `START`, `STOP`, `FEED`,
- * `WEBRTC_OFFER`, `SUBSCRIBE_END`, `SETHOUSEHOLD`, `GUARDED`), so `mediaMux` and `compositor`
- * can treat VRChat (or any SteamVR app running through `petplay_ovrdriver`) identically to a
- * desktop or window feed — for example, as a live wallpaper behind floating windows.
- *
- * Control RPCs (`START_SOCKET_FEED`, `WEBRTC_OFFER`, `STOP_FEED`) go to the shared
- * `petplayMedia@*` StageForge native actor (`NativeStdioProxy`), while GPU frames travel
- * directly from `petplay_ovrdriver` (`media_export.zig`) to `petplay-media` over the Linux
- * `SOCK_SEQPACKET` DMA-BUF socket at `PP_MEDIA_SOCKET`.
+ * Opens a `dmabuf-seqpacket` StageForge `Transport` to `petplayMedia@*`, which binds the Linux
+ * `SOCK_SEQPACKET` DMA-BUF socket at `PP_MEDIA_SOCKET` and starts the MoQ + WebRTC publisher.
+ * Closing the transport (`STOP` / `__SHUTDOWN__`) stops the feed and unlinks the socket.
  */
-import { type ActorId, actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { type ActorId, actorState, PostMan, Transport } from "../submodules/stageforge/mod.ts";
+import {
+  closeDmabufSeqpacketTransport,
+  DMABUF_SEQPACKET_KIND,
+  type DmabufSeqpacketEndpoint,
+  ensureDmabufSeqpacketClient,
+  MEDIA_FRAMES_PURPOSE,
+} from "./classes/dmabufSeqpacketTransport.ts";
 import { guardedDispatch, HouseholdGuard, refuseWhenGuarded } from "./classes/household.ts";
 import { ensurePetplayMedia } from "./classes/petplayMediaActor.ts";
 import type { DesktopDescription, FeedInfo } from "./desktopSource.ts";
@@ -27,16 +28,6 @@ export type VrchatSourceConfig = {
   fps?: number;
   bitrate?: number;
   share?: boolean;
-};
-
-type SocketFeedResponse = {
-  id: string;
-  socketPath: string;
-  host: string;
-  port: number;
-  fingerprint: string;
-  code?: string;
-  webrtc?: boolean;
 };
 
 const FEED_ID = "vrchat";
@@ -55,6 +46,7 @@ let defaults: VrchatSourceConfig | null = null;
 let active: {
   mediaActor: ActorId;
   feedId: string;
+  transport: Transport;
   info: FeedInfo;
   socketPath: string;
 } | null = null;
@@ -100,13 +92,14 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
 
   starting = (async () => {
     try {
+      ensureDmabufSeqpacketClient();
       const mediaActor = await ensurePetplayMedia();
       const socketPath = cfg.socketPath!;
-      const res = await PostMan.PostMessage({
-        target: mediaActor,
-        type: "START_SOCKET_FEED",
-        payload: {
-          id: FEED_ID,
+      const transport = await Transport.open(mediaActor, {
+        purpose: MEDIA_FRAMES_PURPOSE,
+        kinds: [DMABUF_SEQPACKET_KIND],
+        params: {
+          feedId: FEED_ID,
           socketPath,
           host: cfg.host,
           port: cfg.port,
@@ -116,23 +109,38 @@ function startFeed(payload?: Partial<VrchatSourceConfig> | null): Promise<FeedIn
           bitrate: cfg.bitrate ?? 12_000_000,
           persist: true,
           share: Boolean(cfg.share),
-          subscriber: state.id,
         },
-      }, true) as SocketFeedResponse;
+      });
+      const endpoint = transport.connection as DmabufSeqpacketEndpoint;
 
       const info: FeedInfo = {
-        host: res.host,
-        port: res.port,
-        fingerprint: res.fingerprint,
-        ...(res.code ? { code: res.code } : {}),
-        ...(res.webrtc ? { webrtc: true } : {}),
+        host: endpoint.host ?? cfg.host,
+        port: endpoint.port ?? cfg.port,
+        fingerprint: endpoint.fingerprint ?? "",
+        ...(endpoint.code ? { code: endpoint.code } : {}),
+        ...(endpoint.webrtc ? { webrtc: true } : {}),
         ...(cfg.layout === "side-by-side" ? { crop: { x: 0, y: 0, width: 0.5, height: 1 } } : {}),
       };
-      active = { mediaActor, feedId: res.id, info, socketPath: res.socketPath };
+      const entry = {
+        mediaActor,
+        feedId: endpoint.feedId ?? FEED_ID,
+        transport,
+        info,
+        socketPath: endpoint.socketPath,
+      };
+      active = entry;
       state.running = true;
-      state.socketPath = res.socketPath;
+      state.socketPath = endpoint.socketPath;
       state.feed = info;
       state.lastError = null;
+
+      void transport.closed.then(() => {
+        if (active !== entry) return;
+        active = null;
+        state.running = false;
+        state.feed = null;
+        notifyEnded();
+      });
       return info;
     } catch (error) {
       state.lastError = String(error);
@@ -151,11 +159,7 @@ async function stopFeed(): Promise<void> {
   state.running = false;
   state.feed = null;
   if (!current) return;
-  await PostMan.PostMessage({
-    target: current.mediaActor,
-    type: "STOP_FEED",
-    payload: { id: current.feedId },
-  }, true).catch(() => {});
+  await closeDmabufSeqpacketTransport(current.transport, "stopped");
 }
 
 async function acceptWebRtcOffer(offerSdp: string): Promise<{ sdp: string }> {
@@ -211,15 +215,6 @@ new PostMan(
       if (typeof actor === "string" && actor) endSubscribers.add(actor);
       return true;
     }),
-    FEED_ENDED: (payload: { id?: string }) => {
-      if (active && (!payload?.id || payload.id === active.feedId)) {
-        active = null;
-        state.running = false;
-        state.feed = null;
-        notifyEnded();
-      }
-      return true;
-    },
     GUARDED: guardedDispatch(guard, {
       DESCRIBE: describe,
       START: (p) => startFeed(p as Partial<VrchatSourceConfig> | undefined),
