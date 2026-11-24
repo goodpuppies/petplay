@@ -611,7 +611,7 @@ function publishFeeds(): void {
 async function startEncoder(
   monitor: number,
   request: SourceRequest,
-  directory?: string,
+  socketPath?: string,
 ): Promise<Running> {
   const encoder = Deno.build.os === "windows"
     ? await WgcMediaFeed.start({
@@ -627,13 +627,15 @@ async function startEncoder(
       port: request.port,
       fps: request.fps,
       bitrate: request.bitrate,
-      directory,
+      socketPath,
       // A household feed also gets a share code: the Windows receiver takes nothing else, and
       // it reaches past NATs and firewalls.
       share: request.share || guard.active,
       actorFeedId: `desktop-${monitor}`,
       subscriber: state.id,
     });
+  const hasWebRtc = ("webrtc" in encoder.info && Boolean(encoder.info.webrtc)) ||
+    ("webrtcOfferUrl" in encoder.info && Boolean(encoder.info.webrtcOfferUrl));
   const started: Running = {
     encoder,
     request,
@@ -642,9 +644,7 @@ async function startEncoder(
       port: encoder.info.port,
       fingerprint: encoder.info.fingerprint,
       ...(encoder.info.code ? { code: encoder.info.code } : {}),
-      ...(("webrtc" in encoder.info && encoder.info.webrtc) || encoder.info.webrtcOfferUrl
-        ? { webrtc: true }
-        : {}),
+      ...(hasWebRtc ? { webrtc: true } : {}),
     },
   };
   running.set(monitor, started);
@@ -661,8 +661,11 @@ async function superviseEncoder(monitor: number, feed: Running): Promise<void> {
     await sleep(delay);
     if (shuttingDown || running.get(monitor) !== feed) return;
     try {
-      // Same directory, so the capture helper finds the replacement on the same socket.
-      await startEncoder(monitor, feed.request, feed.encoder.directoryPath);
+      // Same socket path, so the capture helper finds the replacement on the same socket.
+      const reuseSocket = feed.encoder instanceof DesktopMediaFeed
+        ? feed.encoder.socketPath
+        : undefined;
+      await startEncoder(monitor, feed.request, reuseSocket);
       state.encoderRestarts++;
       return;
     } catch (error) {
@@ -756,9 +759,7 @@ async function startLinuxOutputFeed(
       port: encoder.info.port,
       fingerprint: encoder.info.fingerprint,
       ...(encoder.info.code ? { code: encoder.info.code } : {}),
-      ...(("webrtc" in encoder.info && encoder.info.webrtc) || encoder.info.webrtcOfferUrl
-        ? { webrtc: true }
-        : {}),
+      ...(encoder.info.webrtc ? { webrtc: true } : {}),
     };
     outputFeeds.set(monitor, { name: screen.name, encoder, info });
     return info;

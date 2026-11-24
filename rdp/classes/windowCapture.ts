@@ -274,7 +274,7 @@ export class WindowMediaFeed {
         port: encoder.info.port,
         fingerprint: encoder.info.fingerprint,
         ...(encoder.info.code ? { code: encoder.info.code } : {}),
-        ...(encoder.info.webrtcOfferUrl ? { webrtc: true } : {}),
+        ...(encoder.info.webrtc ? { webrtc: true } : {}),
       },
       (sdp) => encoder.acceptWebRtcOffer(sdp),
       stop,

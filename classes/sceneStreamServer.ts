@@ -126,7 +126,7 @@ class SceneStream {
   }
 
   /** The media socket of the encoder, once running; the host attaches its capture to it. */
-  private async startMedia(media: NonNullable<SceneStreamOptions["media"]>, directory?: string): Promise<void> {
+  private async startMedia(media: NonNullable<SceneStreamOptions["media"]>, socketPath?: string): Promise<void> {
     this.mediaState = "starting";
     try {
       const feed = await DesktopMediaFeed.start({
@@ -134,7 +134,8 @@ class SceneStream {
         port: media.port,
         fps: media.fps,
         bitrate: media.bitrate,
-        directory,
+        socketPath,
+        actorFeedId: "scene-stream-desktop",
       });
       if (this.stopped) {
         await feed.stop();
@@ -150,24 +151,24 @@ class SceneStream {
         this.mediaState = `exited (${status.code}), restarting`;
         this.lastError = `media: ${feed.log.at(-1) ?? "exited"}`;
         this.setFeeds({});
-        this.restartMedia(media, feed.directoryPath);
+        this.restartMedia(media, feed.socketPath);
       });
     } catch (error) {
       this.mediaState = "failed, retrying";
       this.lastError = `media: ${error}`;
-      this.restartMedia(media, directory);
+      this.restartMedia(media, socketPath);
     }
   }
 
   /**
-   * A replacement worker on the same socket path: the capture helper stays attached and
+   * A replacement feed on the same socket path: the capture helper stays attached and
    * reconnects by itself. Browsers see the new certificate in the next media message.
    */
-  private restartMedia(media: NonNullable<SceneStreamOptions["media"]>, directory?: string): void {
+  private restartMedia(media: NonNullable<SceneStreamOptions["media"]>, socketPath?: string): void {
     this.mediaRestarts++;
     const delay = Math.min(30_000, MEDIA_RESTART_MS * 2 ** Math.min(this.mediaFailures++, 5));
     setTimeout(() => {
-      if (!this.stopped && !this.media) void this.startMedia(media, directory);
+      if (!this.stopped && !this.media) void this.startMedia(media, socketPath);
     }, delay);
   }
 
