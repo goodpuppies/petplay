@@ -14,6 +14,8 @@ import {
 } from "../classes/vrcOriginCodec.ts";
 import {
   type Matrix34Tuple,
+  VrcOriginRoomLock,
+  type VrcOriginRoomLockMode,
   VrcOriginSolver,
   type VrcWorldToStandingTransform,
 } from "../classes/vrcOriginTransform.ts";
@@ -24,6 +26,11 @@ const IDLE_POLL_MS = 250;
 const state = actorState({
   origin: null as OpenVR.HmdMatrix34 | null,
   transform: null as VrcWorldToStandingTransform | null,
+  /** The solver's unlocked estimate; `transform` is what the room lock publishes. */
+  rawTransform: null as VrcWorldToStandingTransform | null,
+  lockMode: null as VrcOriginRoomLockMode | null,
+  lockErrorMeters: 0,
+  lockBreakCount: 0,
   worldPose: null as VrcOriginWorldPose | null,
   originSource: null as VrcOriginSource | null,
   name: "origin",
@@ -39,12 +46,45 @@ const state = actorState({
 });
 
 let solver = new VrcOriginSolver();
+let roomLock = new VrcOriginRoomLock();
 let loopGeneration = 0;
+/** The `IVROverlay` pointer `INITOVROVERLAY` gave, kept so a reload can rebuild `overlayClass`. */
+let overlayPointer: string | null = null;
+let lastStart: { name: string; texture: string; showMarker: boolean } | null = null;
+
+type OriginSnapshot = {
+  vrc: string;
+  hmd: string;
+  overlays: string[];
+  overlayPointer: string | null;
+  start: { name: string; texture: string; showMarker: boolean } | null;
+};
 
 new PostMan(
   state,
   {
     __INIT__: (_payload: void) => {},
+    /** Wiring only: a reload re-solves the origin from the next OSC sample. */
+    __SNAPSHOT__: (_payload: unknown): OriginSnapshot => ({
+      vrc: state.vrc,
+      hmd: state.hmd,
+      overlays: [...state.overlays],
+      overlayPointer,
+      start: state.running ? lastStart : null,
+    }),
+    __RESTORE__: (payload: OriginSnapshot | null) => {
+      if (!payload) return;
+      state.vrc = payload.vrc;
+      state.hmd = payload.hmd;
+      state.overlays = [...payload.overlays];
+      if (payload.overlayPointer) {
+        overlayPointer = payload.overlayPointer;
+        state.overlayClass = new OpenVR.IVROverlay(
+          Deno.UnsafePointer.create(BigInt(payload.overlayPointer)),
+        );
+      }
+      if (payload.start) main(payload.start.name, payload.start.texture, payload.start.showMarker);
+    },
     __SHUTDOWN__: (_payload: unknown) => {
       return stopOrigin();
     },
@@ -60,6 +100,10 @@ new PostMan(
         originSource: state.originSource,
         worldPose: state.worldPose,
         transform: state.transform,
+        rawTransform: state.rawTransform,
+        lockMode: state.lockMode,
+        lockErrorMeters: state.lockErrorMeters,
+        lockBreakCount: state.lockBreakCount,
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -101,6 +145,7 @@ new PostMan(
       return getOverlayTransformAbsolute(state.overlayClass, state.overlayHandle);
     },
     INITOVROVERLAY: (payload: bigint) => {
+      overlayPointer = String(payload);
       const systemPtr = Deno.UnsafePointer.create(payload);
       state.overlayClass = new OpenVR.IVROverlay(systemPtr);
     },
@@ -135,7 +180,10 @@ function stopOrigin(): true {
   state.transform = null;
   state.worldPose = null;
   state.originSource = null;
+  state.rawTransform = null;
+  state.lockMode = null;
   solver.reset();
+  roomLock.reset();
   return true;
 }
 
@@ -183,7 +231,9 @@ function markerMatrixFromOrigin(origin: Matrix34Tuple): OpenVR.HmdMatrix34 {
 
 async function main(overlayName: string, overlayTexture: string, showMarker: boolean) {
   const generation = ++loopGeneration;
+  lastStart = { name: overlayName, texture: overlayTexture, showMarker };
   solver = new VrcOriginSolver();
+  roomLock = new VrcOriginRoomLock();
   state.running = true;
   state.showMarker = showMarker;
 
@@ -242,10 +292,22 @@ async function pollOriginOnce(): Promise<boolean> {
   if (!hmdPose?.bPoseIsValid) return false;
   const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
 
-  const solved = solver.update(worldPose, hmdMatrix);
+  const raw = solver.update(worldPose, hmdMatrix);
+  const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
+  const solved = roomLock.update(
+    raw.transform,
+    worldPose,
+    [hmdMatrix[0][3], hmdMatrix[1][3], hmdMatrix[2][3]],
+    Math.hypot(v[0], v[1], v[2]),
+    performance.now(),
+  );
+  if (state.lockMode === "locked" && solved.mode === "moving") state.lockBreakCount++;
   state.worldPose = worldPose;
   state.originSource = worldPose.source;
+  state.rawTransform = raw.transform;
   state.transform = solved.transform;
+  state.lockMode = solved.mode;
+  state.lockErrorMeters = solved.errorMeters;
 
   const nextOrigin: OpenVR.HmdMatrix34 = { m: solved.matrix };
   if (state.showMarker && state.overlayHandle) {

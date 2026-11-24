@@ -289,3 +289,178 @@ export class VrcOriginSolver {
     return false;
   }
 }
+
+export type VrcOriginRoomLockMode = "locked" | "moving";
+
+export interface VrcOriginRoomLockOptions {
+  /** User-position error (m) that breaks the lock at once: joystick walking, teleports. */
+  breakDistanceMeters?: number;
+  /** Smaller user-position error (m) that breaks the lock when held with a still head. */
+  sustainedBreakDistanceMeters?: number;
+  /** How long (ms) the smaller error must persist before it breaks the lock. */
+  sustainedBreakMs?: number;
+  /** HMD speed (m/s) below which the head counts as still for the sustained break. */
+  stillHeadSpeed?: number;
+  /** Playspace yaw change (rad) that breaks the lock: snap and smooth turns. */
+  breakYawRad?: number;
+  /** While moving: raw changes smaller than this (m) count as settled. */
+  settleDistanceMeters?: number;
+  /** While moving: raw yaw changes smaller than this (rad) count as settled. */
+  settleYawRad?: number;
+  /** While moving: how long (ms) raw must stay settled before the lock is taken again. */
+  settleMs?: number;
+}
+
+export interface VrcOriginRoomLockResult {
+  transform: VrcWorldToStandingTransform;
+  matrix: Matrix34Tuple;
+  mode: VrcOriginRoomLockMode;
+  /** True when the output moved since the last result that reported a change. */
+  changed: boolean;
+  /** Where the held transform puts the avatar root, relative to the floor under the HMD (m). */
+  errorMeters: number;
+}
+
+/**
+ * Holds the VRChat world -> Standing transform fixed in room space while the user is not moving
+ * in VRChat.
+ *
+ * The raw estimate (`VrcOriginSolver`) pairs a live HMD pose with an avatar-root pose that VRChat
+ * sends over OSC at ~8 Hz, and the avatar root sits under the neck rather than under the HMD. So
+ * every head turn, lean or step makes the raw estimate swim and step by centimetres, though the
+ * VRChat world has not moved in the room at all: it only moves on artificial locomotion (joystick
+ * walking and turning, teleports, world changes).
+ *
+ * `locked`: the output stays exactly constant. Locomotion is detected as an error between where the
+ * held transform puts the avatar root and the floor under the HMD (large, or moderate and lasting
+ * with a still head), or a playspace yaw change. That switches to `moving`.
+ * `moving`: the output follows the raw estimate. Once the raw estimate has stopped changing for a
+ * moment, the lock is taken again at its current value.
+ */
+export class VrcOriginRoomLock {
+  private readonly breakDistance: number;
+  private readonly sustainedBreakDistance: number;
+  private readonly sustainedBreakMs: number;
+  private readonly stillHeadSpeed: number;
+  private readonly breakYaw: number;
+  private readonly settleDistance: number;
+  private readonly settleYaw: number;
+  private readonly settleMs: number;
+
+  private mode: VrcOriginRoomLockMode = "moving";
+  private held: VrcWorldToStandingTransform | null = null;
+  private lastOutput: VrcWorldToStandingTransform | null = null;
+  private sustainedSince: number | null = null;
+  private settleAnchor: VrcWorldToStandingTransform | null = null;
+  private settleAnchorAt = 0;
+
+  constructor(options: VrcOriginRoomLockOptions = {}) {
+    this.breakDistance = options.breakDistanceMeters ?? 0.35;
+    this.sustainedBreakDistance = options.sustainedBreakDistanceMeters ?? 0.12;
+    this.sustainedBreakMs = options.sustainedBreakMs ?? 400;
+    this.stillHeadSpeed = options.stillHeadSpeed ?? 0.25;
+    this.breakYaw = options.breakYawRad ?? (2 * Math.PI) / 180;
+    this.settleDistance = options.settleDistanceMeters ?? 0.04;
+    this.settleYaw = options.settleYawRad ?? (0.5 * Math.PI) / 180;
+    this.settleMs = options.settleMs ?? 300;
+  }
+
+  reset(): void {
+    this.mode = "moving";
+    this.held = null;
+    this.lastOutput = null;
+    this.sustainedSince = null;
+    this.settleAnchor = null;
+  }
+
+  getMode(): VrcOriginRoomLockMode {
+    return this.mode;
+  }
+
+  /**
+   * @param raw the solver's transform for this sample
+   * @param worldPose the avatar-root pose the raw transform was solved from
+   * @param hmdPos the HMD position in Standing
+   * @param hmdSpeed the HMD's linear speed (m/s)
+   * @param nowMs a monotonic clock
+   */
+  update(
+    raw: VrcWorldToStandingTransform,
+    worldPose: VrcOriginWorldPose,
+    hmdPos: Vec3,
+    hmdSpeed: number,
+    nowMs: number,
+  ): VrcOriginRoomLockResult {
+    let errorMeters = 0;
+    if (this.mode === "locked" && this.held) {
+      errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
+      const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));
+      let breakLock = errorMeters > this.breakDistance || yawErr > this.breakYaw;
+      if (
+        !breakLock && errorMeters > this.sustainedBreakDistance && hmdSpeed < this.stillHeadSpeed
+      ) {
+        this.sustainedSince ??= nowMs;
+        breakLock = nowMs - this.sustainedSince >= this.sustainedBreakMs;
+      } else {
+        this.sustainedSince = null;
+      }
+      if (breakLock) {
+        this.mode = "moving";
+        this.sustainedSince = null;
+        this.settleAnchor = cloneTransform(raw);
+        this.settleAnchorAt = nowMs;
+      }
+    } else {
+      if (
+        !this.settleAnchor ||
+        translationDistance(raw, this.settleAnchor) > this.settleDistance ||
+        Math.abs(angleDiffRad(raw.yawRad, this.settleAnchor.yawRad)) > this.settleYaw
+      ) {
+        this.settleAnchor = cloneTransform(raw);
+        this.settleAnchorAt = nowMs;
+      } else if (nowMs - this.settleAnchorAt >= this.settleMs) {
+        this.mode = "locked";
+        this.held = cloneTransform(raw);
+        this.sustainedSince = null;
+      }
+    }
+
+    const output = this.mode === "locked" && this.held ? this.held : raw;
+    const changed = !this.lastOutput || translationDistance(output, this.lastOutput) > 1e-6 ||
+      Math.abs(angleDiffRad(output.yawRad, this.lastOutput.yawRad)) > 1e-7 ||
+      Math.abs(output.scale - this.lastOutput.scale) > 1e-7;
+    if (changed) this.lastOutput = cloneTransform(output);
+    return {
+      transform: output,
+      matrix: transformToHmdMatrix34(output),
+      mode: this.mode,
+      changed,
+      errorMeters,
+    };
+  }
+}
+
+function cloneTransform(t: VrcWorldToStandingTransform): VrcWorldToStandingTransform {
+  return { yawRad: t.yawRad, scale: t.scale, translation: [...t.translation] };
+}
+
+function translationDistance(
+  a: VrcWorldToStandingTransform,
+  b: VrcWorldToStandingTransform,
+): number {
+  return Math.hypot(
+    a.translation[0] - b.translation[0],
+    a.translation[1] - b.translation[1],
+    a.translation[2] - b.translation[2],
+  );
+}
+
+/** Distance between where `transform` puts the avatar root and the floor under the HMD. */
+function rootErrorMeters(
+  transform: VrcWorldToStandingTransform,
+  worldPose: VrcOriginWorldPose,
+  hmdPos: Vec3,
+): number {
+  const root = unityWorldPointToStanding(transform, worldPose.position);
+  return Math.hypot(root[0] - hmdPos[0], root[1], root[2] - hmdPos[2]);
+}

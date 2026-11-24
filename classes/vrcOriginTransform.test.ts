@@ -8,6 +8,7 @@ import {
   standingPointToUnityWorld,
   transformToHmdMatrix34,
   unityWorldPointToStanding,
+  VrcOriginRoomLock,
   VrcOriginSolver,
   type VrcWorldToStandingTransform,
 } from "./vrcOriginTransform.ts";
@@ -117,7 +118,10 @@ Deno.test("head-only look-around does not drift playspace yaw, and body catch-up
   assertAlmostEquals(res.transform.yawRad, trueYaw, 1e-6);
 
   // Case 4: Body catches up 30 deg left (Unity yaw decreases by 30 deg -> rawYaw returns to trueYaw).
-  res = solver.update(makeWorldPose([1, 0, 2], trueYaw - head30), makeHmdMatrix([0, 1.6, 0], head30));
+  res = solver.update(
+    makeWorldPose([1, 0, 2], trueYaw - head30),
+    makeHmdMatrix([0, 1.6, 0], head30),
+  );
   assertAlmostEquals(res.transform.yawRad, trueYaw, 1e-6);
 });
 
@@ -178,4 +182,133 @@ Deno.test("publish threshold suppresses sub-millimeter no-op updates", () => {
   const r3 = solver.update(makeWorldPose([1.01, 2, 3], 0.5), makeHmdMatrix([0, 1.6, 0], 0));
   assertEquals(r3.changed, true);
   assert(r3.matrix[0][3] !== r1.matrix[0][3]);
+});
+
+/** Feeds solver + lock one sample, like `petplay/VRCOrigin.ts` does. */
+function lockStep(
+  solver: VrcOriginSolver,
+  lock: VrcOriginRoomLock,
+  world: VrcOriginWorldPose,
+  hmdPos: Vec3,
+  hmdYaw: number,
+  hmdSpeed: number,
+  now: number,
+) {
+  const raw = solver.update(world, makeHmdMatrix(hmdPos, hmdYaw));
+  return lock.update(raw.transform, world, hmdPos, hmdSpeed, now);
+}
+
+Deno.test("room lock: head motion against a stale avatar root leaves the output frozen", () => {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  const world = makeWorldPose([12, 0.6, -22], 0.1);
+  let t = 0;
+  let res = lockStep(solver, lock, world, [0, 1.6, 0], 0, 0, t);
+  for (; t <= 400; t += 16) res = lockStep(solver, lock, world, [0, 1.6, 0], 0, 0, t);
+  assertEquals(res.mode, "locked");
+  const lockedTranslation = [...res.transform.translation] as Vec3;
+
+  // Lean and turn the head; the avatar root (OSC, ~8 Hz) lags and sits under the neck.
+  for (let i = 0; i < 60; i++, t += 16) {
+    const sway = 0.08 * Math.sin(i / 6);
+    res = lockStep(solver, lock, world, [sway, 1.6, sway / 2], 0.3 * Math.sin(i / 9), 0.4, t);
+    assertEquals(res.mode, "locked");
+    assertEquals(res.changed, false);
+  }
+  assertVec3AlmostEquals(res.transform.translation, lockedTranslation, 0);
+});
+
+Deno.test("room lock: joystick walking breaks the lock, follows, then re-locks where it stopped", () => {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  const hmd: Vec3 = [0.3, 1.6, -0.2];
+  let t = 0;
+  let res = lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), hmd, 0, 0, t);
+  for (; t <= 400; t += 16) res = lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), hmd, 0, 0, t);
+  assertEquals(res.mode, "locked");
+
+  // Walk 2 m along Unity +Z at 3 m/s with the stick; the head stays put in the room.
+  let z = 0;
+  let sawMoving = false;
+  for (; z < 2; t += 16) {
+    z = Math.min(2, z + 0.048);
+    res = lockStep(solver, lock, makeWorldPose([0, 0, z], 0), hmd, 0, 0, t);
+    sawMoving ||= res.mode === "moving";
+  }
+  assert(sawMoving, "walking with the stick unlocks");
+  for (const end = t + 400; t <= end; t += 16) {
+    res = lockStep(solver, lock, makeWorldPose([0, 0, 2], 0), hmd, 0, 0, t);
+  }
+  assertEquals(res.mode, "locked");
+  // The avatar root maps to the floor under the HMD again.
+  assertVec3AlmostEquals(
+    unityWorldPointToStanding(res.transform, [0, 0, 2]),
+    [hmd[0], 0, hmd[2]],
+    1e-6,
+  );
+});
+
+Deno.test("room lock: a snap turn breaks the lock", () => {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  let t = 0;
+  let res = lockStep(solver, lock, makeWorldPose([1, 0, 1], 0.2), [0, 1.6, 0], 0, 0, t);
+  for (; t <= 400; t += 16) {
+    res = lockStep(solver, lock, makeWorldPose([1, 0, 1], 0.2), [0, 1.6, 0], 0, 0, t);
+  }
+  assertEquals(res.mode, "locked");
+  res = lockStep(solver, lock, makeWorldPose([1, 0, 1], 0.2 + Math.PI / 4), [0, 1.6, 0], 0, 0, t);
+  assertEquals(res.mode, "moving");
+  assertAlmostEquals(angleDiffRad(res.transform.yawRad, 0.2 + Math.PI / 4), 0, 1e-6);
+});
+
+Deno.test("room lock: a small lasting offset with a still head breaks the lock, a moving head does not", () => {
+  const make = () => {
+    const solver = new VrcOriginSolver();
+    const lock = new VrcOriginRoomLock();
+    let t = 0;
+    for (; t <= 400; t += 16) {
+      lockStep(solver, lock, makeWorldPose([0, 0, 0], 0), [0, 1.6, 0], 0, 0, t);
+    }
+    return { solver, lock, t };
+  };
+  // A 0.2 m joystick nudge, then still.
+  const still = make();
+  let res = lockStep(
+    still.solver,
+    still.lock,
+    makeWorldPose([0, 0, 0.2], 0),
+    [0, 1.6, 0],
+    0,
+    0,
+    still.t,
+  );
+  assertEquals(res.mode, "locked");
+  for (let t = still.t; t <= still.t + 500; t += 16) {
+    res = lockStep(
+      still.solver,
+      still.lock,
+      makeWorldPose([0, 0, 0.2], 0),
+      [0, 1.6, 0],
+      0,
+      0.05,
+      t,
+    );
+  }
+  assertEquals(res.mode, "moving");
+
+  // The same offset while the head moves fast (latency, not locomotion) keeps the lock.
+  const moving = make();
+  for (let t = moving.t; t <= moving.t + 500; t += 16) {
+    res = lockStep(
+      moving.solver,
+      moving.lock,
+      makeWorldPose([0, 0, 0.2], 0),
+      [0, 1.6, 0],
+      0,
+      0.8,
+      t,
+    );
+  }
+  assertEquals(res.mode, "locked");
 });
