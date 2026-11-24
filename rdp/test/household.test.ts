@@ -160,9 +160,7 @@ Deno.test({
       const args = (await Deno.readTextFile(`${dir}/args`)).trim().split("\n");
       assert(args.some((a) => a.includes("--media-socket=")), args.join(" | "));
     } finally {
-      for (const id of [...PostalService.actors.keys()].reverse()) {
-        await Promise.race([call(id, "SHUTDOWN").catch(() => {}), sleep(2000)]);
-      }
+      await postal.shutdownAll({ timeoutMs: 2000, bestEffort: true });
       postal.closeRemote("test done");
       await iroh.stop();
       try {

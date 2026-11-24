@@ -124,9 +124,7 @@ Deno.test({
       assert(!logs.some((l) => l.startsWith("pageerror")), logs.join("\n"));
     } finally {
       await browser.close();
-      for (const id of [...PostalService.actors.keys()].reverse()) {
-        await Promise.race([call(id, "SHUTDOWN").catch(() => {}), sleep(2000)]);
-      }
+      await postal.shutdownAll({ timeoutMs: 2000, bestEffort: true });
       postal.closeRemote("test done");
       await iroh.stop();
       for (const client of clients) client.close();

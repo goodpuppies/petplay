@@ -190,8 +190,7 @@ Deno.test({
       ws?.close();
       for (const id of [studio, preview]) {
         if (!id) continue;
-        await postal.PostMessage({ target: id, type: "SHUTDOWN", payload: null }, true).catch(() => {});
-        PostalService.actors.get(id)?.worker.terminate();
+        await postal.shutdown(id, { bestEffort: true });
       }
       PostalService.actors.clear();
     }

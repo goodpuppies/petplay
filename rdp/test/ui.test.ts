@@ -135,12 +135,8 @@ Deno.test({
       assertEquals(health.domEvents, 5);
     } finally {
       await call(tab, "CLOSE").catch(() => {});
-      for (const actor of [ui, input]) {
-        await postal.PostMessage({ target: actor, type: "SHUTDOWN", payload: null }, true)
-          .catch(() => {});
-      }
       for (const actor of [ui, input, source, tab, stranger]) {
-        PostalService.actors.get(actor)?.worker.terminate();
+        await postal.shutdown(actor, { bestEffort: true });
       }
       PostalService.actors.clear();
       Deno.env.delete("PETPLAY_SCREEN_STREAMER");

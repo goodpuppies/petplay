@@ -324,8 +324,8 @@ Deno.test({
       } catch { /* already closed */ }
       child.kill("SIGTERM");
       await child.status.catch(() => {});
-      await call(bobPeers, "SHUTDOWN").catch(() => {});
-      await call(bobDesktops, "SHUTDOWN").catch(() => {});
+      await postal.shutdown(bobPeers, { bestEffort: true });
+      await postal.shutdown(bobDesktops, { bestEffort: true });
       postal.closeRemote("test done");
       await iroh.stop();
       for (const client of clients) client.close();

@@ -21,10 +21,7 @@ await postal.PostMessage({
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 Deno.addSignalListener("SIGTERM", async () => {
-  await Promise.race([
-    postal.PostMessage({ target: peer, type: "SHUTDOWN", payload: null }, true).catch(() => {}),
-    sleep(2000),
-  ]);
+  await postal.shutdown(peer, { timeoutMs: 2000, bestEffort: true });
   // Let the hub process TOPICUPDATE and flush the leave record over the topic WebSocket.
   await sleep(150);
   postal.closeRemote("child done");

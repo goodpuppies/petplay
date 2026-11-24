@@ -188,7 +188,7 @@ Deno.test({
         malloryChild.kill("SIGTERM");
         await malloryChild.status.catch(() => {});
       }
-      await call(alice, "SHUTDOWN").catch(() => {});
+      await postal.shutdown(alice, { bestEffort: true });
       postal.closeRemote("test done");
       await iroh.stop();
       for (const client of clients) client.close();

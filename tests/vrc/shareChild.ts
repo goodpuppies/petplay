@@ -40,7 +40,7 @@ writeLine({ ready: true, share, vrcPeers });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function shutdown(): Promise<void> {
-  await Promise.race([call(vrcPeers, "SHUTDOWN").catch(() => {}), sleep(2000)]);
+  await postal.shutdown(vrcPeers, { timeoutMs: 2000, bestEffort: true });
   await sleep(150);
   postal.closeRemote("child done");
   await Promise.race([iroh.stop().catch(() => {}), sleep(2000)]);

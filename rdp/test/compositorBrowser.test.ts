@@ -142,7 +142,7 @@ Deno.test({
     } finally {
       await browser.close();
       for (const id of [rdp, source, input]) {
-        await Promise.race([call(id, "SHUTDOWN").catch(() => {}), sleep(500)]);
+        await postal.shutdown(id, { timeoutMs: 500, bestEffort: true });
       }
       postal.closeRemote("test done");
       await iroh.stop();

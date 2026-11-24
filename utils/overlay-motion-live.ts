@@ -50,6 +50,6 @@ try {
 } finally {
   await request("SETMOTIONPROBE", { enabled: false });
   await request("STOPOVERLAYRENDERER");
-  await postal.murder(actor);
+  await postal.shutdown(actor);
 }
 Deno.exit(0);

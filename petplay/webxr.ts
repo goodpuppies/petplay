@@ -25,7 +25,7 @@ import {
   attachDebugBallToCamera,
   toggleDebugBallCameraFollow,
 } from "../classes/vrchatDepth/debugCameraAttachment.ts";
-import { actorState, PostMan, resolveActorId, System } from "../submodules/stageforge/mod.ts";
+import { type ActorId, actorState, PostMan, resolveActorId, System } from "../submodules/stageforge/mod.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import * as THREE from "three";
@@ -3023,7 +3023,9 @@ async function stopRenderOwner() {
     ]);
   } finally {
     state.views.delete(id);
-    PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+    await PostMan.shutdown(id as ActorId).catch((error) =>
+      console.warn(`[webxr] render owner shutdown: ${error}`)
+    );
   }
 }
 

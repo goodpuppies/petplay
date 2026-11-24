@@ -85,12 +85,7 @@ let exiting = false;
 async function exit(): Promise<void> {
   if (exiting) return;
   exiting = true;
-  for (const id of [source, input]) {
-    await Promise.race([
-      call(id, "SHUTDOWN").catch(() => {}),
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
-  }
+  await postal.shutdownAll({ reason: "process-exit", timeoutMs: 3000, bestEffort: true });
   postal.closeRemote("exiting");
   await iroh.stop();
   Deno.exit(0);

@@ -79,8 +79,7 @@ Deno.test({
       );
       assertEquals([health.heldButtons, health.heldKeys, health.activeModifiers], [[], [], []]);
     } finally {
-      await postal.PostMessage({ target: input, type: "SHUTDOWN", payload: null }, true);
-      PostalService.actors.get(input)?.worker.terminate();
+      await postal.shutdown(input);
       PostalService.actors.clear();
       Deno.env.delete("PETPLAY_SCREEN_STREAMER");
       Deno.env.delete("PETPLAY_INPUT_X11_WHEEL");
@@ -128,9 +127,8 @@ Deno.test({
       assertEquals(health.rejected, 2);
       assertEquals(health.heldKeys, []);
     } finally {
-      await postal.PostMessage({ target: input, type: "SHUTDOWN", payload: null }, true);
-      PostalService.actors.get(input)?.worker.terminate();
-      PostalService.actors.get(client)?.worker.terminate();
+      await postal.shutdown(input);
+      await postal.shutdown(client, { bestEffort: true });
       PostalService.actors.clear();
       Deno.env.delete("PETPLAY_SCREEN_STREAMER");
       await Deno.remove(dir, { recursive: true });
@@ -175,8 +173,7 @@ Deno.test({
       assertEquals(await call("FEED"), null);
       await assertSocketGone(socket);
     } finally {
-      await postal.PostMessage({ target: source, type: "SHUTDOWN", payload: null }, true);
-      PostalService.actors.get(source)?.worker.terminate();
+      await postal.shutdown(source);
       PostalService.actors.clear();
       Deno.env.delete("PETPLAY_SCREEN_STREAMER");
       await Deno.remove(dir, { recursive: true });
@@ -220,8 +217,7 @@ async function withSource(
   try {
     await run(call, dir);
   } finally {
-    await postal.PostMessage({ target: source, type: "SHUTDOWN", payload: null }, true);
-    PostalService.actors.get(source)?.worker.terminate();
+    await postal.shutdown(source);
     PostalService.actors.clear();
     Deno.env.delete("PETPLAY_SCREEN_STREAMER");
     await Deno.remove(dir, { recursive: true });

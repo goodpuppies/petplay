@@ -255,6 +255,6 @@ try {
 } finally {
   VR.VR_ShutdownInternal();
 }
-// The process-worker backend retains a parent-side event source after murder.
+// The process-worker backend retains a parent-side event source after shutdown.
 // This standalone diagnostic owns all actors and has completed native shutdown.
 if (Deno.args.some((a) => a.startsWith("--render-images="))) Deno.exit(Deno.exitCode ?? 0);

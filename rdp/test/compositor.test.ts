@@ -150,10 +150,6 @@ Deno.test("mediaMux + inputRouter + compositor: wallpaper, windows, FEED_ENDED, 
     assertEquals(afterReload.windows[0]!.x, 120);
     assertEquals(afterReload.wallpaper?.label, "homepc · VRChat");
   } finally {
-    for (const id of [...PostalService.actors.keys()].reverse()) {
-      await postal.PostMessage({ target: id, type: "SHUTDOWN", payload: null }, true).catch(
-        () => {},
-      );
-    }
+    await postal.shutdownAll({ bestEffort: true });
   }
 });

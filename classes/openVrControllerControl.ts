@@ -80,6 +80,6 @@ export async function connectControllerControl(socket: string) {
     writer,
     setInput: (hand: ControllerHand, input: { system?: boolean; trigger?: number }) =>
       send("SETCONTROLLERINPUT", { hand, ...input }),
-    close: () => postal.murder(id),
+    close: () => postal.shutdown(id),
   };
 }

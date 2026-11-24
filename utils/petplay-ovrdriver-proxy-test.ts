@@ -68,7 +68,7 @@ export async function testNativeDriverProxy() {
       echo.handle === 0xffffffffffffffffn && echo.text === "犬🐾",
       "native socket uses same codec",
     );
-    await postal.murder(id);
+    await postal.shutdown(id);
     id = undefined;
     assert(!exit, "removing proxy leaves external process alive");
     id = await attachOpenVrDriverProxy(postal, socketPath);

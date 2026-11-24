@@ -326,12 +326,8 @@ new PostMan(
       const overlay = state.overlay;
       state.overlay = null;
       if (overlay) {
-        await withTimeout(
-          PostMan.PostMessage({ target: overlay as ActorId, type: "__SHUTDOWN__", payload: null }, true),
-          5_000,
-          "localWindowOverlay shutdown",
-        ).catch(() => {});
-        PostMan.PostMessage({ target: System, type: "MURDER", payload: overlay });
+        await PostMan.shutdown(overlay as ActorId, { timeoutMs: 5_000, bestEffort: true })
+          .catch(() => {});
       }
       tracked.clear();
     },

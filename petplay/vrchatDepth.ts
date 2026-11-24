@@ -167,7 +167,7 @@ function startGpuHelper(): void {
   gpuHelper.starting = (async () => {
     const actor = await PostMan.create("./desktopView.ts", import.meta.url, { worker: "process" });
     if (!captureEnabled) {
-      PostMan.PostMessage({ target: System, type: "MURDER", payload: actor });
+      await PostMan.shutdown(actor);
       return;
     }
     gpuHelper.actor = actor as ActorId;
@@ -191,7 +191,9 @@ async function stopGpuHelper(): Promise<void> {
   if (!actor) return;
   await PostMan.PostMessage({ target: actor, type: "STOPDESKTOPVIEW", payload: null }, true)
     .catch(() => {});
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: actor });
+  await PostMan.shutdown(actor).catch((error) =>
+    LogChannel.error("actor", `[vrchatDepth] GPU capture helper shutdown: ${error}`)
+  );
 }
 
 function startLocalCapture(): void {

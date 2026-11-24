@@ -156,7 +156,7 @@ graph LR
   MAIN -->|INITOVROVERLAY, ASSIGNHMD, ASSIGNVRC, ADDOVERLAY, STARTORIGIN| ORIGIN
   MAIN -->|ASSIGNWEBXR, STARTCAMERAORIGIN| CAMORG
   MAIN -->|STARTWEBXR, STOPWEBXR| WEBXR
-  MAIN -->|CONFIGUREDESKTOP, STARTDESKTOP, SETDISPLAYOVERLAYHOSTACTOR, MURDER| DOH
+  MAIN -->|CONFIGUREDESKTOP, STARTDESKTOP, SETDISPLAYOVERLAYHOSTACTOR, shutdown| DOH
   MAIN -->|START/STOPDESKTOPCONTROL| DCON
   MAIN -->|REGISTER_ACTORS| REPL
   MAIN -->|TRYINIT, RELEASE, GETxPTR| OPENVR
@@ -169,7 +169,7 @@ graph LR
   DCONC -->|"/message SETDESKTOPVIEWOFFSET, GETWRISTMENUSTATE"| REPL
   REPL -->|relay| WEBXR
   REPL -->|relay| WRIST
-  REPL -->|HEALTH, EVALJS, RELOAD, REBOOT, CREATE, MURDER| MAIN
+  REPL -->|HEALTH, EVALJS, RELOAD, REBOOT, CREATE| MAIN
 ```
 
 Actor→actor messages are typed strings; the only transport is
@@ -229,14 +229,24 @@ stateDiagram-v2
 ```
 
 Detach order is load-bearing: `STOPWEBXR` (drops overlay, pacer and IVRInput wrappers) →
-`SETDISPLAYOVERLAYHOSTACTOR null` + no-runtime `STARTWEBXR` → `MURDER` the dependants → wait until
+`SETDISPLAYOVERLAYHOSTACTOR null` + no-runtime `STARTWEBXR` → shut the dependants down (`PostMan.shutdown`) → wait until
 they stop answering → `openvr.RELEASE` (`VR_ShutdownInternal`). Releasing first, or releasing while
 a dependant still holds a wrapper, crashes the process natively — that is why the runtime is the
 first actor created and the last torn down (`petplay/main.ts`, `detachOpenVrRuntime`).
 
 Host teardown (`petplay/petplay.ts:32-88`) stops the supervisor first (`PREPARESHUTDOWN`), then
-shuts actors down in reverse creation order with a bounded await per actor, so a dead transport
-cannot hang Ctrl-C.
+shuts actors down in reverse creation order with a bounded await per actor
+(`postal.shutdownAll`), so a dead transport cannot hang Ctrl-C.
+
+Actors are shut down through one Stageforge API: `postal.shutdown(id, options)` on the host,
+`PostMan.shutdown(id, options)` inside an actor, `postal.shutdownAll(options)` at process exit.
+It runs the actor's `__SHUTDOWN__` hook, then terminates the worker (and waits for a
+child-process worker to exit); an external proxy is only detached. Options: `reason`,
+`timeoutMs`, `terminate: false` (run hooks but leave in-process workers idle until
+`Deno.exit`), `bestEffort` (terminate even if the hook fails; by default a failed hook throws
+and leaves the worker alive, to avoid the native-teardown race). The `SHUTDOWN` /
+`SHUTDOWN_AND_CLOSE` messages underneath are the internal wire protocol: post them directly
+only to a peer that has no local `PostalService` entry. Never post `__SHUTDOWN__` itself.
 
 ## 5. Frame pipeline and rates
 

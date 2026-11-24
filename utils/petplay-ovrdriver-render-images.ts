@@ -94,7 +94,7 @@ export async function probeRenderedImages(
         payload: { enabled: false },
       }, true);
       await postal.PostMessage({ target: actor, type: "STOPOVERLAYRENDERER", payload: null }, true);
-      await postal.murder(actor);
+      await postal.shutdown(actor);
     }
     await native("SETCONTROLLERMOTION", original.config);
     postal.detachProxy(driver);

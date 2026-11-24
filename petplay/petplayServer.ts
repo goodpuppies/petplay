@@ -81,38 +81,14 @@ export async function startPetplayServer(
         // Best effort: teardown must not depend on a live root.
       }
     }
-    // Run native teardown sequentially, but keep each worker alive after its hook.
-    // SHUTDOWN_AND_CLOSE acknowledges before its scheduled globalThis.close(),
-    // allowing the worker's native destructors to race the next actor's cleanup.
-    // The final Deno.exit terminates these already-cleaned, idle workers together.
-    const actorIds = [...PostalService.actors.keys()].reverse();
-    for (const actorId of actorIds) {
-      const actor = PostalService.actors.get(actorId);
-      try {
-        console.log(`[petplay] shutting down actor ${actorId}`);
-        // Bounded: a worker whose transport is already gone (a VR-facing child
-        // that died with SteamVR) never answers, and an unbounded await here
-        // hangs Ctrl-C and the fatal path for the life of the process.
-        await Promise.race([
-          postalservice.PostMessage({
-            target: actorId,
-            type: "SHUTDOWN",
-            payload: { reason: "process-exit" },
-          }, true),
-          wait(5_000),
-        ]);
-        console.log(`[petplay] actor shutdown complete ${actorId}`);
-      } catch (error) {
-        console.warn(`petplay: actor shutdown failed (${actorId}):`, error);
-      }
-      if (actor?.worker instanceof IPCWorker) {
-        actor.worker.terminate();
-        await Promise.race([
-          actor.worker.finished.catch(() => undefined),
-          wait(2_500),
-        ]);
-      }
-    }
+    // Run native teardown sequentially, keeping in-process workers idle until Deno.exit
+    // while terminating IPC child processes cleanly.
+    await postalservice.shutdownAll({
+      reason: "process-exit",
+      timeoutMs: 5_000,
+      terminate: false,
+      bestEffort: true,
+    });
     await disableStageforgeNetworking("process-exit");
     if (Deno.build.os === "windows") {
       await releaseWindowsSyntheticDisplayMouseState();

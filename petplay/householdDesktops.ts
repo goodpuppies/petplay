@@ -273,7 +273,9 @@ async function stopOverlay(desktop: Desktop): Promise<void> {
   if (!overlay) return;
   await withTimeout(PostMan.PostMessage({ target: overlay, type: "STOPMEDIA", payload: null }, true), 10_000, "STOPMEDIA")
     .catch(() => {});
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: overlay });
+  await PostMan.shutdown(overlay).catch((error) =>
+    console.error(`[householdDesktops] overlay shutdown: ${error}`)
+  );
 }
 
 function forget(key: string): void {

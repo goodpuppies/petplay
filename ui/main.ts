@@ -51,12 +51,7 @@ let exiting = false;
 async function exit(): Promise<void> {
   if (exiting) return;
   exiting = true;
-  for (const id of [...PostalService.actors.keys()].reverse()) {
-    await Promise.race([
-      postal.PostMessage({ target: id, type: "SHUTDOWN", payload: null }, true).catch(() => {}),
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
-  }
+  await postal.shutdownAll({ reason: "process-exit", timeoutMs: 3000, bestEffort: true });
   Deno.exit(0);
 }
 Deno.addSignalListener("SIGINT", () => void exit());

@@ -148,12 +148,7 @@ let exiting = false;
 async function exit(): Promise<void> {
   if (exiting) return;
   exiting = true;
-  for (const id of [...PostalService.actors.keys()].reverse()) {
-    await Promise.race([
-      postal.PostMessage({ target: id, type: "__SHUTDOWN__", payload: null }, true).catch(() => {}),
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
-  }
+  await postal.shutdownAll({ reason: "process-exit", timeoutMs: 3000, bestEffort: true });
   postal.closeRemote("exiting");
   await iroh.stop();
   Deno.exit(0);

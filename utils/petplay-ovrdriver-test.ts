@@ -81,13 +81,13 @@ try {
     (await request("PING") as { language: string }).language === "zig",
     "transport remains after SHUTDOWN",
   );
-  await postal.murder(id); // Cooperative shutdown acknowledgment, then terminate only actor transport.
+  await postal.shutdown(id); // Cooperative shutdown acknowledgment, then terminate only actor transport.
   id = undefined;
   console.log(
     "PASS: Stageforge registration, health, Unicode/BigInt roundtrip, 20 callbacks, error recovery, cooperative shutdown",
   );
 } finally {
-  if (id) await postal.murder(id);
+  if (id) await postal.shutdown(id);
 }
 await testNativeDriverProxy();
 Deno.exit(0);

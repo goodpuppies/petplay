@@ -265,7 +265,7 @@ async function watchWebXr() {
 
 /**
  * SteamVR-facing actors. They exist only while the runtime is attached, so
- * every one of them is created on attach and murdered on detach.
+ * every one of them is created on attach and shut down on detach.
  */
 type OpenVrAttachment = {
   hmd: ActorId;
@@ -409,6 +409,17 @@ function registerClientActors(): void {
   });
 }
 
+/**
+ * Shuts a child actor down through Stageforge. A hook that fails or times out is
+ * logged and leaves the worker alive, as before; callers still bound the wait with
+ * `waitForActorsStopped`.
+ */
+async function stopActor(id: ActorId): Promise<void> {
+  await PostMan.shutdown(id).catch((error) => {
+    LogChannel.log("actor", `[actor] shutdown ${id}: ${messageOf(error)}`);
+  });
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -518,7 +529,7 @@ async function stopRemoteMedia() {
   const id = remoteMediaActor;
   if (!id) return true;
   await callActor(id, "STOPMEDIA", 10000);
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await stopActor(id);
   await waitForActorsStopped([id]);
   remoteMediaActor = null;
   return true;
@@ -536,7 +547,7 @@ async function startDesktopView() {
     return await getDesktopViewStatus();
   }
   if (existing != null) {
-    PostMan.PostMessage({ target: System, type: "MURDER", payload: existing });
+    await stopActor(existing);
     await waitForActorsStopped([existing]);
     clientActors.desktopControl = null;
   }
@@ -560,7 +571,7 @@ async function stopDesktopView() {
   await callActor(id, "STOPDESKTOPCONTROL").catch((error) => {
     LogChannel.log("actor", `[desktop] STOPDESKTOPCONTROL: ${messageOf(error)}`);
   });
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await stopActor(id);
   await waitForActorsStopped([id]);
   clientActors.desktopControl = null;
   registerClientActors();
@@ -592,7 +603,7 @@ async function startDecoupledDesktopView(capture: DecoupledViewPayload | null = 
     return await getDecoupledDesktopViewStatus();
   }
   if (existing != null) {
-    PostMan.PostMessage({ target: System, type: "MURDER", payload: existing });
+    await stopActor(existing);
     await waitForActorsStopped([existing]);
     clientActors.desktopView = null;
   }
@@ -621,7 +632,7 @@ async function stopDecoupledDesktopView() {
   await callActor(id, "STOPDESKTOPVIEW").catch((error) => {
     LogChannel.log("actor", `[desktop] STOPDESKTOPVIEW: ${messageOf(error)}`);
   });
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await stopActor(id);
   await waitForActorsStopped([id]);
   clientActors.desktopView = null;
   registerClientActors();
@@ -692,7 +703,7 @@ async function startVrcCameraView(options: VrcCameraViewPayload | null) {
     return await getVrcCameraViewStatus();
   }
   if (existing != null) {
-    PostMan.PostMessage({ target: System, type: "MURDER", payload: existing });
+    await stopActor(existing);
     await waitForActorsStopped([existing]);
     clientActors.vrcCameraView = null;
   }
@@ -714,7 +725,7 @@ async function stopVrcCameraView() {
   await callActor(id, "STOPDESKTOPVIEW").catch((error) => {
     LogChannel.log("actor", `[desktop] vrc camera STOPDESKTOPVIEW: ${messageOf(error)}`);
   });
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await stopActor(id);
   await waitForActorsStopped([id]);
   clientActors.vrcCameraView = null;
   registerClientActors();
@@ -725,7 +736,7 @@ async function stopVrcCameraView() {
 async function startVrcDepth(options: { grid?: number } | null) {
   let id = clientActors.vrchatDepth;
   if (id != null && !(await actorIsResponsive(id, OPENVR_HEALTH_TIMEOUT_MS))) {
-    PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+    await stopActor(id);
     await waitForActorsStopped([id]);
     id = clientActors.vrchatDepth = null;
   }
@@ -745,7 +756,7 @@ async function stopVrcDepth() {
   const id = clientActors.vrchatDepth;
   if (id == null) return { running: false };
   await PostMan.PostMessage({ target: id, type: "STOPVRCDEPTH", payload: null }, true).catch(() => {});
-  PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+  await stopActor(id);
   await waitForActorsStopped([id]);
   clientActors.vrchatDepth = null;
   registerClientActors();
@@ -905,7 +916,7 @@ async function readOpenVrPointers(ivr: ActorId): Promise<OpenVrPointers> {
  * The control plane — wrist menu, VRC camera origin, WebXR scene, desktop view
  * and the agent REPL — comes up immediately and keeps running whether or not
  * SteamVR is there. The SteamVR-facing actors (HMD, VRC origin, display overlay
- * host) are created on attach and murdered on detach, in dependency order: the
+ * host) are created on attach and shut down on detach, in dependency order: the
  * client runtime must outlive every wrapper built from its interface pointers.
  */
 async function createSupervisedScene() {
@@ -1099,7 +1110,7 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
     LogChannel.log("actor", `[supervisor] OpenVR attached (attach #${supervisor.attachCount})`);
   } catch (error) {
     for (const id of created.reverse()) {
-      PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+      await stopActor(id);
     }
     supervisor.attachment = null;
     supervisor.phase = "detached";
@@ -1107,7 +1118,7 @@ async function attachOpenVrRuntime(actors: SupervisedSceneActors): Promise<void>
   }
 }
 
-/** Waits until the murdered actors stop answering, so no wrapper outlives the runtime. */
+/** Waits until the shut-down actors stop answering, so no wrapper outlives the runtime. */
 async function waitForActorsStopped(ids: readonly ActorId[]): Promise<void> {
   const deadline = performance.now() + OPENVR_DETACH_SETTLE_MS;
   while (performance.now() < deadline) {
@@ -1151,7 +1162,7 @@ async function detachOpenVrRuntime(
   // 3. Dependants: their shutdown hooks destroy overlays while the runtime is
   //    still alive, which is the only safe order.
   for (const id of [attachment.displayOverlayHost, attachment.origin, attachment.hmd]) {
-    PostMan.PostMessage({ target: System, type: "MURDER", payload: id });
+    await stopActor(id);
   }
   await waitForActorsStopped([attachment.displayOverlayHost, attachment.origin, attachment.hmd]);
   // 4. Now the client runtime itself can go; `TRYINIT` will build a new one.
