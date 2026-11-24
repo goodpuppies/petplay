@@ -42,6 +42,15 @@ Deno.test({
       assertEquals(feeds[0]!.connected, false);
       assertEquals(feeds[0]!.frames, 0);
 
+      // Negotiate the feed's DMA-BUF socket via StageForge `dmabuf-seqpacket` Transport!
+      const client = await postal.add("./seqpacketClientActor.ts", import.meta.url);
+      const negotiated = await postal.PostMessage({
+        target: client,
+        type: "OPEN",
+        payload: { target: mediaActorId, params: { feedId: "vrchat" } },
+      }, true) as { socketPath: string };
+      assertEquals(negotiated.socketPath, sock);
+
       // STOP cancels the feed and unlinks the socket cleanly.
       await postal.PostMessage({ target: vrc, type: "STOP", payload: null }, true);
       const feedsAfter = await postal.PostMessage({
@@ -86,6 +95,22 @@ Deno.test({
       assertEquals(withAtlas.length, 1);
       assertEquals(withAtlas[0]!.id, "test-atlas");
       assertEquals(withAtlas[0]!.kind, "atlas");
+
+      // ATLAS_ADD allocates & binds a slot socket synchronously; `dmabuf-seqpacket` negotiates it.
+      const added = await postal.PostMessage({
+        target: mediaActorId,
+        type: "ATLAS_ADD",
+        payload: { id: "test-atlas", slotId: "win-42" },
+      }, true) as { slotId: string; socketPath: string };
+      assertEquals(added.slotId, "win-42");
+      Deno.statSync(added.socketPath);
+
+      const negotiatedSlot = await postal.PostMessage({
+        target: client,
+        type: "OPEN",
+        payload: { target: mediaActorId, params: { atlasId: "test-atlas", slotId: "win-42" } },
+      }, true) as { socketPath: string };
+      assertEquals(negotiatedSlot.socketPath, added.socketPath);
 
       await postal.PostMessage({
         target: mediaActorId,

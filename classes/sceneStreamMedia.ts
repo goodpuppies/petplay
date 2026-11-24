@@ -74,6 +74,51 @@ export class DesktopMediaFeed {
   }
 
   static async start(options: DesktopMediaOptions): Promise<DesktopMediaFeed> {
+    if (options.actorFeedId) {
+      const actorId = await ensurePetplayMedia();
+      const res = await PostMan.PostMessage({
+        target: actorId,
+        type: "START_SOCKET_FEED",
+        payload: {
+          id: options.actorFeedId,
+          ...(options.directory ? { socketPath: `${options.directory}/frames.sock` } : {}),
+          host: options.host,
+          port: options.port,
+          layout: "mono",
+          fps: options.fps ?? 30,
+          maxFps: options.fps ?? 30,
+          bitrate: options.bitrate ?? 8_000_000,
+          persist: true,
+          share: Boolean(options.share),
+          ...(options.subscriber ? { subscriber: options.subscriber } : {}),
+        },
+      }, true) as {
+        id: string;
+        socketPath: string;
+        port: number;
+        fingerprint: string;
+        code?: string;
+        webrtc?: boolean;
+      };
+      let resolveExited!: (status: Deno.CommandStatus) => void;
+      const exited = new Promise<Deno.CommandStatus>((resolve) => {
+        resolveExited = resolve;
+      });
+      return new DesktopMediaFeed(
+        res.socketPath,
+        {
+          port: res.port,
+          fingerprint: res.fingerprint,
+          ...(res.code ? { code: res.code } : {}),
+          ...(res.webrtc ? { webrtc: true } : {}),
+        },
+        null,
+        { actorId, feedId: res.id, exited, resolveExited },
+        options.directory ?? "",
+        [],
+      );
+    }
+
     const created = options.directory == null;
     const directory = options.directory ?? await Deno.makeTempDir({
       dir: Deno.env.get("XDG_RUNTIME_DIR") ?? `/run/user/${Deno.uid()}`,
@@ -82,56 +127,6 @@ export class DesktopMediaFeed {
     const socketPath = `${directory}/frames.sock`;
     // A worker that died leaves its socket behind, and a new one refuses an existing path.
     await Deno.remove(socketPath).catch(() => {});
-
-    if (options.actorFeedId) {
-      try {
-        const actorId = await ensurePetplayMedia();
-        const res = await PostMan.PostMessage({
-          target: actorId,
-          type: "START_SOCKET_FEED",
-          payload: {
-            id: options.actorFeedId,
-            socketPath,
-            host: options.host,
-            port: options.port,
-            layout: "mono",
-            fps: options.fps ?? 30,
-            maxFps: options.fps ?? 30,
-            bitrate: options.bitrate ?? 8_000_000,
-            persist: true,
-            share: Boolean(options.share),
-            ...(options.subscriber ? { subscriber: options.subscriber } : {}),
-          },
-        }, true) as {
-          id: string;
-          socketPath: string;
-          port: number;
-          fingerprint: string;
-          code?: string;
-          webrtc?: boolean;
-        };
-        let resolveExited!: (status: Deno.CommandStatus) => void;
-        const exited = new Promise<Deno.CommandStatus>((resolve) => {
-          resolveExited = resolve;
-        });
-        return new DesktopMediaFeed(
-          res.socketPath,
-          {
-            port: res.port,
-            fingerprint: res.fingerprint,
-            ...(res.code ? { code: res.code } : {}),
-            ...(res.webrtc ? { webrtc: true } : {}),
-          },
-          null,
-          { actorId, feedId: res.id, exited, resolveExited },
-          directory,
-          [],
-        );
-      } catch (error) {
-        if (created) await Deno.remove(directory, { recursive: true }).catch(() => {});
-        throw error;
-      }
-    }
     const binary = petplayMediaPath();
     const child = petplayMediaCommand([
       socketPath,
@@ -251,7 +246,7 @@ export class DesktopMediaFeed {
         payload: { id: this.actor.feedId },
       }, true).catch(() => {});
       this.actor.resolveExited({ success: true, code: 0, signal: null });
-      await Deno.remove(this.directory, { recursive: true }).catch(() => {});
+      if (this.directory) await Deno.remove(this.directory, { recursive: true }).catch(() => {});
       return;
     }
     try {

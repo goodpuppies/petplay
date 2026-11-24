@@ -417,10 +417,8 @@ export class WindowAtlas {
   readonly webrtc: boolean;
   private readonly mediaActor: ActorId;
   private readonly atlasId: string;
-  private readonly dir: string;
   private readonly activeWindows = new Set<string>();
   private readonly slots = new Map<string, AtlasSlotLayout>();
-  private slotSeq = 0;
   private stopped = false;
   onLayout: ((layout: AtlasLayoutEvent) => void) | null = null;
   onWindowExited: ((windowId: string) => void) | null = null;
@@ -434,7 +432,6 @@ export class WindowAtlas {
       port: number;
       fingerprint: string;
       webrtc: boolean;
-      dir: string;
     },
   ) {
     this.streamId = args.streamId;
@@ -444,7 +441,6 @@ export class WindowAtlas {
     this.port = args.port;
     this.fingerprint = args.fingerprint;
     this.webrtc = args.webrtc;
-    this.dir = args.dir;
   }
 
   static async start(options: {
@@ -456,47 +452,37 @@ export class WindowAtlas {
     bitrate?: number;
     subscriber?: string;
   }): Promise<WindowAtlas> {
-    const dir = await Deno.makeTempDir({
-      dir: Deno.env.get("XDG_RUNTIME_DIR") ?? `/run/user/${Deno.uid()}`,
-      prefix: "pp-win-atlas-",
-    });
     const atlasId = `atlas-${Deno.hostname()}`;
-    try {
-      const mediaActor = await ensurePetplayMedia();
-      const res = await PostMan.PostMessage({
-        target: mediaActor,
-        type: "ATLAS_START",
-        payload: {
-          id: atlasId,
-          host: options.host,
-          port: options.port,
-          width: options.width ?? 2560,
-          height: options.height ?? 1440,
-          fps: options.fps ?? 30,
-          bitrate: options.bitrate ?? 12_000_000,
-          ...(options.subscriber ? { subscriber: options.subscriber } : {}),
-        },
-      }, true) as {
-        id: string;
-        host: string;
-        port: number;
-        fingerprint: string;
-        webrtc?: boolean;
-      };
-      return new WindowAtlas({
-        streamId: atlasId,
-        atlasId: res.id,
-        mediaActor,
-        host: res.host,
-        port: res.port,
-        fingerprint: res.fingerprint,
-        webrtc: Boolean(res.webrtc),
-        dir,
-      });
-    } catch (error) {
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-      throw error;
-    }
+    const mediaActor = await ensurePetplayMedia();
+    const res = await PostMan.PostMessage({
+      target: mediaActor,
+      type: "ATLAS_START",
+      payload: {
+        id: atlasId,
+        host: options.host,
+        port: options.port,
+        width: options.width ?? 2560,
+        height: options.height ?? 1440,
+        fps: options.fps ?? 30,
+        bitrate: options.bitrate ?? 12_000_000,
+        ...(options.subscriber ? { subscriber: options.subscriber } : {}),
+      },
+    }, true) as {
+      id: string;
+      host: string;
+      port: number;
+      fingerprint: string;
+      webrtc?: boolean;
+    };
+    return new WindowAtlas({
+      streamId: atlasId,
+      atlasId: res.id,
+      mediaActor,
+      host: res.host,
+      port: res.port,
+      fingerprint: res.fingerprint,
+      webrtc: Boolean(res.webrtc),
+    });
   }
 
   /** Called by desktopSource when `petplayMedia@*` pushes `ATLAS_LAYOUT`. */
@@ -531,14 +517,12 @@ export class WindowAtlas {
 
   async addWindow(windowId: string, fps = 30): Promise<ReturnType<WindowAtlas["feedInfoFor"]>> {
     if (this.activeWindows.has(windowId)) return this.feedInfoFor(windowId);
-    const socketPath = `${this.dir}/win-${++this.slotSeq}.sock`;
-    await PostMan.PostMessage({
+    // petplayMedia@* allocates and binds the Unix SOCK_SEQPACKET synchronously before replying.
+    const added = await PostMan.PostMessage({
       target: this.mediaActor,
       type: "ATLAS_ADD",
-      payload: { id: this.atlasId, slotId: windowId, socketPath },
-    }, true);
-    // Brief pause so atlas binds the Unix seqpacket socket before screen-streamer connects.
-    await new Promise((r) => setTimeout(r, 40));
+      payload: { id: this.atlasId, slotId: windowId },
+    }, true) as { slotId: string; socketPath: string };
     const streamer = await ensureScreenStreamer();
     await PostMan.PostMessage({
       target: streamer,
@@ -546,7 +530,7 @@ export class WindowAtlas {
       payload: {
         id: `win:${windowId}`,
         target: { kind: "window", window: windowId },
-        mediaSocket: socketPath,
+        mediaSocket: added.socketPath,
         fps,
       },
     }, true);
@@ -606,6 +590,5 @@ export class WindowAtlas {
       type: "STOP_FEED",
       payload: { id: this.atlasId },
     }, true).catch(() => {});
-    await Deno.remove(this.dir, { recursive: true }).catch(() => {});
   }
 }
