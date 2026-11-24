@@ -62,12 +62,17 @@ All of these come in through the `submodules/threewebxrwebgpudeno` workspace mem
   deprecated in favour of `state.renderer` and is typed by a registered renderer:
   `types/r3f-webgpu-renderer.d.ts` registers `webgpu` (its version pin moves with the others).
   460/462 tests, same two pre-existing failures.
-- 2026-11-24: uikit → `v1.0.78`. Added `zod` and generated `src/flex/schema.ts`, and ported
-  `local-uikit` imports onto upstream's split `panel/material`, `panel/interaction`, and
-  `panel/geometry.ts` modules. `deno task check` passes (0 errors in our code / `local-uikit`),
-  all 7 UI Studio scenes match the `v1.0.68` Raythree IR + screenshot baseline (`0` non-numeric
-  diffs, `≤ 0.01 px` float rounding across 822 items), and `430/432` unit tests pass (same two
-  pre-existing failures).
+- 2026-11-24: uikit → `v1.0.78`, and collapsed `local-uikit/` onto upstream `@pmndrs/uikit`
+  directly. Deleted 10 forked upstream copies (~1,880 lines) in
+  `submodules/threewebxrwebgpudeno/local-uikit/`, keeping only `panel/panel-material-webgpu.ts`
+  as a thin WebGPU fallback (swapping `InstancedPanelMesh` material to TSL `MeshBasicNodeMaterial`
+  and mirroring `aData` into `aData0..aData3` only when `renderer.isWebGPURenderer` is true).
+  `classes/webxrRaythreeUi.ts` now collects upstream `InstancedPanelMesh` directly in
+  `scene.traverseVisible`, and `submodules/raythree/src/lowerers.ts` no longer imports a
+  `local-uikit` registry. `deno task check` passes with 0 errors (including
+  `panel-material-webgpu.ts`, removed from `IGNORED_LOCATIONS`), all 7 UI Studio scenes match the
+  `v1.0.68` Raythree IR baseline (`0` non-numeric diffs, `≤ 0.01 px` float rounding across 822
+  items), and `430/432` unit tests pass (same two pre-existing failures).
 
 ## Done when
 

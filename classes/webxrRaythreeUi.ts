@@ -3,8 +3,9 @@ import { getTextRenderingSettings, type TextRenderingSettings } from "./textRend
 import { captureVectorTextGlyphs, type VectorTextGeometrySource } from "./vectorTextGlyphs.ts";
 import { type Anchored, captureRenderAnchor } from "./overlayRenderTracking.ts";
 import type { InstancedBufferAttribute, Material, Object3D } from "three";
-import type { RootContext } from "../submodules/threewebxrwebgpudeno/local-uikit/context.ts";
-import { Component } from "../submodules/threewebxrwebgpudeno/local-uikit/components/component.ts";
+import type { RootContext } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/context.ts";
+import { Component } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/components/component.ts";
+import { InstancedPanelMesh } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/panel/instance/mesh.ts";
 import {
   type OrderInfo,
   orderInfoKey,
@@ -215,6 +216,7 @@ function hasPanelDataAttributes(
 
 export type CollectedWebXRRaythreeUi = {
   roots: Set<RootContext>;
+  panelMeshes: Object3D[];
   textObjects: Object3D[];
   imageObjects: Object3D[];
 };
@@ -224,13 +226,16 @@ export function createWebXRRaythreeUiCollector(): {
   visit: (object: Object3D) => void;
 } {
   const roots = new Set<RootContext>();
+  const panelMeshes: Object3D[] = [];
   const textObjects: Object3D[] = [];
   const imageObjects: Object3D[] = [];
   return {
-    collected: { roots, textObjects, imageObjects },
+    collected: { roots, panelMeshes, textObjects, imageObjects },
     visit(object: Object3D) {
       if (object instanceof Component) {
         roots.add(object.root.value);
+      } else if (object instanceof InstancedPanelMesh) {
+        panelMeshes.push(object);
       }
       const ud = object.userData as {
         raythreeUiText?: unknown;
@@ -273,17 +278,18 @@ export function extractWebXRRaythreeUiFromCollected(
     return index;
   };
 
-  const { roots, textObjects, imageObjects } = collected;
+  const { roots, panelMeshes, textObjects, imageObjects } = collected;
 
   for (const rootCtx of roots) {
-    const rootIndex = rootIndexFor(rootCtx);
-    rootCtx.panelGroupManager.forEachGroup((group) => {
-      const mesh = group.getInstancedPanelMesh();
-      if (mesh == null || !mesh.visible) {
-        return;
-      }
-      maybeCollectPanels(mesh, snapshot.panels, rootIndex);
-    });
+    rootIndexFor(rootCtx);
+  }
+  for (let i = 0; i < panelMeshes.length; i++) {
+    const mesh = panelMeshes[i]!;
+    if (!mesh.visible) {
+      continue;
+    }
+    const rootIndex = resolveRootIndex(mesh, rootIndexFor);
+    maybeCollectPanels(mesh, snapshot.panels, rootIndex);
   }
 
   for (let i = 0; i < textObjects.length; i++) {

@@ -22,7 +22,6 @@ const IGNORED_LOCATIONS = [
   "dist/",
   "research/",
   "submodules/threewebxrwebgpudeno/submodules/",
-  "submodules/threewebxrwebgpudeno/local-uikit/",
   "submodules/threewebxrwebgpudeno/vendor/",
   "submodules/gluten/",
   "submodules/byte_type_C/",
