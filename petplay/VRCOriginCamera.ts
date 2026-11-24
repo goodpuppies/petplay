@@ -4,6 +4,7 @@ import { listenOscReceiver } from "../classes/oscReceiverSocket.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import type { Vec3Tuple, VrcCameraDebugPose } from "../classes/vrcCameraDebugState.ts";
 import { decodeVrcOriginPose, isVrcOriginOscAddress } from "../classes/vrcOriginCodec.ts";
+import type { VrcOriginSample } from "../classes/vrcOriginTransform.ts";
 
 type OscMessage = {
   address: string;
@@ -103,10 +104,75 @@ const state = actorState({
   lastDebugPostAt: 0,
 });
 
+/**
+ * Origin OSC parameters as they arrive: `[epochMs, packet, address, value]`. `packet` numbers the
+ * UDP datagrams, so values VRChat sent together share one. For locomotion analysis
+ * (`GETORIGINOSCTRACE`).
+ */
+const originOscTrace: [number, number, string, number][] = [];
+const ORIGIN_OSC_TRACE_MAX = 60_000;
+let oscPacketCount = 0;
+
+/**
+ * Decoded avatar-root poses, one per OSC burst (VRChat sends every changed parameter within ~1 ms,
+ * ~20 times a second while moving), stamped with the burst's first arrival (epoch ms). The origin
+ * actor fits motion through these (`GETORIGINSAMPLES`).
+ */
+const originSamples: VrcOriginSample[] = [];
+const ORIGIN_SAMPLES_MAX = 2_000;
+/** Quiet time (ms) after an origin parameter before its burst counts as complete. */
+const ORIGIN_BURST_SETTLE_MS = 3;
+let originBurstStart: number | null = null;
+let originBurstTimer: ReturnType<typeof setTimeout> | null = null;
+
+function noteOriginParameter(arrivedAt: number): void {
+  originBurstStart ??= arrivedAt;
+  if (originBurstTimer != null) clearTimeout(originBurstTimer);
+  originBurstTimer = setTimeout(flushOriginBurst, ORIGIN_BURST_SETTLE_MS);
+}
+
+function flushOriginBurst(): void {
+  originBurstTimer = null;
+  const t = originBurstStart;
+  originBurstStart = null;
+  if (t == null) return;
+  const pose = decodeVrcOriginPose(state.customObjectSyncCoordinates);
+  if (!pose) return;
+  const last = originSamples.at(-1)?.pose;
+  if (
+    last && last.yawRad === pose.yawRad && last.position[0] === pose.position[0] &&
+    last.position[1] === pose.position[1] && last.position[2] === pose.position[2]
+  ) return;
+  originSamples.push({ t, pose });
+  if (originSamples.length > ORIGIN_SAMPLES_MAX) originSamples.splice(0, 500);
+}
+
 new PostMan(
   state,
   {
     __INIT__: (_payload: void) => {},
+    /** Wiring only; the camera estimate starts over. */
+    __SNAPSHOT__: (_payload: unknown) => ({
+      webxr: state.webxr,
+      started: state.driver != null,
+    }),
+    __RESTORE__: (payload: { webxr: ActorId | null; started: boolean } | null) => {
+      if (!payload) return;
+      state.webxr = payload.webxr;
+      if (payload.started) {
+        PostMan.PostMessage({ target: state.id, type: "STARTCAMERAORIGIN", payload: null });
+      }
+    },
+    GETORIGINSAMPLES: (payload: { sinceMs?: number } | null) => {
+      const since = payload?.sinceMs ?? 0;
+      let i = originSamples.length;
+      while (i > 0 && originSamples[i - 1].t > since) i--;
+      return originSamples.slice(i);
+    },
+    GETORIGINOSCTRACE: (payload: { sinceMs?: number } | null) => {
+      const since = payload?.sinceMs ?? 0;
+      return originOscTrace.filter((entry) => entry[0] > since);
+    },
     __SHUTDOWN__: async (_payload: unknown) => {
       await stopCameraOrigin();
     },
@@ -219,11 +285,15 @@ async function stopCameraOrigin(): Promise<true> {
   return true;
 }
 
-function handleOscMessage(message: OscMessage): void {
+function handleOscMessage(message: OscMessage, packet: number): void {
   if (isVrcOriginOscAddress(message.address)) {
     const value = message.args[0];
     if (typeof value === "number") {
       state.customObjectSyncCoordinates[message.address] = value;
+      const arrivedAt = performance.timeOrigin + performance.now();
+      originOscTrace.push([arrivedAt, packet, message.address, value]);
+      if (originOscTrace.length > ORIGIN_OSC_TRACE_MAX) originOscTrace.splice(0, 10_000);
+      noteOriginParameter(arrivedAt);
     }
   }
 
@@ -487,7 +557,7 @@ class CameraOscQueryDriver {
       httpPort: number;
       oscPort: number;
       vrchatOscPort: number;
-      onMessage: (message: OscMessage) => void;
+      onMessage: (message: OscMessage, packet: number) => void;
     },
   ) {}
 
@@ -584,8 +654,9 @@ class CameraOscQueryDriver {
     if (!this.oscSocket) return;
     try {
       for await (const [data] of this.oscSocket) {
+        const packet = ++oscPacketCount;
         for (const message of parseOscPacket(data)) {
-          this.options.onMessage(message);
+          this.options.onMessage(message, packet);
         }
       }
     } catch {

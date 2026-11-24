@@ -14,13 +14,16 @@ import {
 } from "../classes/vrcOriginCodec.ts";
 import {
   type Matrix34Tuple,
+  type VrcOriginMotion,
   VrcOriginRoomLock,
   type VrcOriginRoomLockMode,
+  type VrcOriginSample,
   VrcOriginSolver,
+  VrcRootPredictor,
   type VrcWorldToStandingTransform,
 } from "../classes/vrcOriginTransform.ts";
 
-const ACTIVE_POLL_MS = 16;
+const ACTIVE_POLL_MS = 11;
 const IDLE_POLL_MS = 250;
 
 const state = actorState({
@@ -45,8 +48,15 @@ const state = actorState({
   overlays: [] as string[],
 });
 
+/** Polled HMD poses: `[epochMs, x, y, z, yawRad, speed]`, for locomotion analysis (`GETHMDTRACE`). */
+const hmdTrace: [number, number, number, number, number, number][] = [];
+const HMD_TRACE_MAX = 60_000;
+
 let solver = new VrcOriginSolver();
 let roomLock = new VrcOriginRoomLock();
+let predictor = new VrcRootPredictor();
+/** Arrival time of the newest sample taken from the camera actor's `GETORIGINSAMPLES`. */
+let newestSampleAt = 0;
 let loopGeneration = 0;
 /** The `IVROverlay` pointer `INITOVROVERLAY` gave, kept so a reload can rebuild `overlayClass`. */
 let overlayPointer: string | null = null;
@@ -117,6 +127,10 @@ new PostMan(
     ADDADDRESS: (payload: ActorId) => {
       state.addressBook.add(payload);
     },
+    GETHMDTRACE: (payload: { sinceMs?: number } | null) => {
+      const since = payload?.sinceMs ?? 0;
+      return hmdTrace.filter((entry) => entry[0] > since);
+    },
     GETVRCORIGIN: (_payload: void) => {
       return state.origin;
     },
@@ -184,6 +198,8 @@ function stopOrigin(): true {
   state.lockMode = null;
   solver.reset();
   roomLock.reset();
+  predictor.reset();
+  newestSampleAt = 0;
   return true;
 }
 
@@ -234,6 +250,8 @@ async function main(overlayName: string, overlayTexture: string, showMarker: boo
   lastStart = { name: overlayName, texture: overlayTexture, showMarker };
   solver = new VrcOriginSolver();
   roomLock = new VrcOriginRoomLock();
+  predictor = new VrcRootPredictor();
+  newestSampleAt = 0;
   state.running = true;
   state.showMarker = showMarker;
 
@@ -273,27 +291,50 @@ async function main(overlayName: string, overlayTexture: string, showMarker: boo
 }
 
 async function pollOriginOnce(): Promise<boolean> {
-  const coordinate = await PostMan.PostMessage({
+  const samples = await withTimeout(PostMan.PostMessage({
     target: state.vrc,
-    type: "GETCOORDINATE",
-    payload: null,
-  }, true) as Record<string, number> | null;
+    type: "GETORIGINSAMPLES",
+    payload: { sinceMs: newestSampleAt },
+  }, true)) as VrcOriginSample[] | null;
+  for (const sample of samples ?? []) {
+    predictor.add(sample);
+    newestSampleAt = Math.max(newestSampleAt, sample.t);
+  }
+  if (!predictor.hasSamples()) {
+    // VRChat only sends what changes: after a reload, standing still, seed from the latest values.
+    const coordinate = await withTimeout(PostMan.PostMessage({
+      target: state.vrc,
+      type: "GETCOORDINATE",
+      payload: null,
+    }, true)) as Record<string, number> | null;
+    const seed = coordinate ? decodeVrcOriginPose(coordinate) : null;
+    if (!seed) return false;
+    predictor.add({ t: performance.timeOrigin + performance.now() - 1000, pose: seed });
+  }
+  const now = performance.timeOrigin + performance.now();
+  const prediction = predictor.predict(now);
+  const worldPose = prediction.pose;
 
-  if (!coordinate) return false;
-  const worldPose = decodeVrcOriginPose(coordinate);
-  if (!worldPose) return false;
-
-  const hmdPose = await PostMan.PostMessage({
+  const hmdPose = await withTimeout(PostMan.PostMessage({
     target: state.hmd,
     type: "GETHMDPOSITION",
     payload: null,
-  }, true) as OpenVR.TrackedDevicePose;
+  }, true)) as OpenVR.TrackedDevicePose;
 
   if (!hmdPose?.bPoseIsValid) return false;
   const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
 
   const raw = solver.update(worldPose, hmdMatrix);
   const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
+  hmdTrace.push([
+    performance.timeOrigin + performance.now(),
+    hmdMatrix[0][3],
+    hmdMatrix[1][3],
+    hmdMatrix[2][3],
+    Math.atan2(hmdMatrix[0][2], hmdMatrix[2][2]),
+    Math.hypot(v[0], v[1], v[2]),
+  ]);
+  if (hmdTrace.length > HMD_TRACE_MAX) hmdTrace.splice(0, 10_000);
   const solved = roomLock.update(
     raw.transform,
     worldPose,
@@ -302,6 +343,7 @@ async function pollOriginOnce(): Promise<boolean> {
     performance.now(),
   );
   if (state.lockMode === "locked" && solved.mode === "moving") state.lockBreakCount++;
+  const modeChanged = state.lockMode !== solved.mode;
   state.worldPose = worldPose;
   state.originSource = worldPose.source;
   state.rawTransform = raw.transform;
@@ -309,17 +351,50 @@ async function pollOriginOnce(): Promise<boolean> {
   state.lockMode = solved.mode;
   state.lockErrorMeters = solved.errorMeters;
 
-  const nextOrigin: OpenVR.HmdMatrix34 = { m: solved.matrix };
+  let motion: VrcOriginMotion | null = null;
+  if (solved.mode === "moving") {
+    const [x, y, z] = worldPose.position;
+    const [vx, vy, vz] = prediction.velocity;
+    motion = {
+      t: now,
+      yawRad: solved.transform.yawRad,
+      // Playspace yaw is HMD yaw + avatar yaw (`VrcOriginSolver`): it turns with the avatar.
+      yawRate: prediction.yawRate,
+      scale: solved.transform.scale,
+      pivot: [hmdMatrix[0][3], 0, hmdMatrix[2][3]],
+      rootRH: [x, y, -z],
+      rootVelocityRH: [vx, vy, -vz],
+    };
+  }
+  const nextOrigin: OpenVR.HmdMatrix34 & { motion: VrcOriginMotion | null } = {
+    m: solved.matrix,
+    motion,
+  };
   if (state.showMarker && state.overlayHandle) {
     setTransform(markerMatrixFromOrigin(solved.matrix));
   }
 
-  if (solved.changed) {
+  // A mode change always goes out: webxr must drop (or pick up) the motion model.
+  if (solved.changed || modeChanged) {
     state.origin = nextOrigin;
     state.originChangeCount++;
     originReaction();
   }
   return true;
+}
+
+/**
+ * A reply that never comes (its actor reloaded mid-request) would stall the poll loop for good;
+ * this turns it into an error the loop logs and retries.
+ */
+function withTimeout<T>(promise: Promise<T>, ms = 1000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no reply in ${ms} ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function setTransform(transform: OpenVR.HmdMatrix34): void {

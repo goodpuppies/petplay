@@ -160,7 +160,25 @@ export function setVRCOriginFromHmdMatrix34(
   vrcOriginKnown = true;
 }
 
+/**
+ * Called (at most every 2 ms) before the matrix is read, so a moving origin can be evaluated at
+ * frame time rather than when its last update arrived (`webxr.ts` sets it).
+ */
+let vrcOriginRefresh: (() => void) | null = null;
+let vrcOriginRefreshedAt = 0;
+
+export function setVRCOriginRefresh(refresh: (() => void) | null): void {
+  vrcOriginRefresh = refresh;
+}
+
 export function getVRCOriginMatrixElements(): Float32Array {
+  if (vrcOriginRefresh) {
+    const now = performance.now();
+    if (now - vrcOriginRefreshedAt > 2) {
+      vrcOriginRefreshedAt = now;
+      vrcOriginRefresh();
+    }
+  }
   return vrcOriginMatrixElements;
 }
 

@@ -92,7 +92,13 @@ import {
 import {
   setShadowControllerPose,
   setVRCOriginFromHmdMatrix34,
+  setVRCOriginRefresh,
 } from "../classes/webxrShadowScene.ts";
+import {
+  evaluateVrcOriginMotion,
+  transformToHmdMatrix34,
+  type VrcOriginMotion,
+} from "../classes/vrcOriginTransform.ts";
 import {
   type Matrix34Tuple,
   setVrcCameraDebugPose,
@@ -491,14 +497,27 @@ const state = actorState({
 
 /** VRChat's origin, in Standing: it follows the game world through a playspace drag. */
 let standingVrcOrigin: Matrix34Tuple | null = null;
+/**
+ * While the user moves in VRChat, the origin actor's motion model: the origin is evaluated from it
+ * at frame time (`setVRCOriginRefresh`), so content moves every frame rather than stepping with
+ * the ~60 Hz updates. Null while room-locked.
+ */
+let vrcOriginMotion: VrcOriginMotion | null = null;
 function applyVrcOrigin(): void {
   if (!standingVrcOrigin) return;
-  const matrix = standingVrcOrigin.map((row) => [...row]) as Matrix34Tuple;
+  const matrix = vrcOriginMotion
+    ? transformToHmdMatrix34(
+      evaluateVrcOriginMotion(vrcOriginMotion, performance.timeOrigin + performance.now()),
+    )
+    : standingVrcOrigin.map((row) => [...row]) as Matrix34Tuple;
   playspaceFrame.poseRowsFromStanding(matrix as unknown as number[][]);
   setVrcLegacyOriginDebugMatrix(matrix);
   setVRCOriginFromHmdMatrix34(matrix);
 }
 playspaceFrame.onStandingChange(applyVrcOrigin);
+setVRCOriginRefresh(() => {
+  if (vrcOriginMotion) applyVrcOrigin();
+});
 
 new PostMan(
   state,
@@ -870,9 +889,10 @@ new PostMan(
         });
       }
     },
-    ORIGINUPDATE: (payload: OpenVR.HmdMatrix34 | null) => {
+    ORIGINUPDATE: (payload: (OpenVR.HmdMatrix34 & { motion?: VrcOriginMotion | null }) | null) => {
       if (!payload) return;
       standingVrcOrigin = payload.m as Matrix34Tuple;
+      vrcOriginMotion = payload.motion ?? null;
       applyVrcOrigin();
     },
     /** A decoded depth block from the `vrchatDepth` actor (`markdown/vrchat-depth/README.md`). */

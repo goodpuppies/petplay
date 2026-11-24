@@ -279,6 +279,14 @@ const OPENVR_DETACHED_POLL_MS = 3_000;
 const OPENVR_ATTACHED_POLL_MS = 1_000;
 const OPENVR_CALL_TIMEOUT_MS = 5_000;
 const OPENVR_HEALTH_TIMEOUT_MS = 1_500;
+/**
+ * How long a watched SteamVR-facing actor must stay unresponsive before it counts as stopped. A
+ * hot reload (snapshot, shutdown, re-create, restore) can miss one health check, and on its own
+ * that exited the whole server.
+ */
+const OPENVR_ACTOR_STOPPED_GRACE_MS = 6_000;
+/** When each watched actor first missed a health check (cleared once it answers). */
+const openVrActorUnresponsiveSince = new Map<ActorId, number>();
 /** Time after `STARTWEBXR` before a non-running overlay pump counts as a loss. */
 const OPENVR_OVERLAY_GRACE_MS = 10_000;
 /** How long a detach waits for dependants to stop touching the interfaces. */
@@ -1172,9 +1180,17 @@ async function openVrLossReason(
     ["display overlay host", attachment.displayOverlayHost],
   ];
   for (const [label, id] of watched) {
-    if (!await actorIsResponsive(id, OPENVR_HEALTH_TIMEOUT_MS)) {
+    if (await actorIsResponsive(id, OPENVR_HEALTH_TIMEOUT_MS)) {
+      openVrActorUnresponsiveSince.delete(id);
+      continue;
+    }
+    const since = openVrActorUnresponsiveSince.get(id) ?? Date.now();
+    openVrActorUnresponsiveSince.set(id, since);
+    if (Date.now() - since >= OPENVR_ACTOR_STOPPED_GRACE_MS) {
+      openVrActorUnresponsiveSince.delete(id);
       return `${label} actor stopped`;
     }
+    LogChannel.log("actor", `[supervisor] ${label} actor not answering; waiting before detaching`);
   }
   // A hard SteamVR kill delivers no event; the stalled overlay pump is the
   // first thing that notices. A webxr worker that is stopping (hot reload, watchdog restart) also

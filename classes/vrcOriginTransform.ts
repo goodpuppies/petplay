@@ -464,3 +464,257 @@ function rootErrorMeters(
   const root = unityWorldPointToStanding(transform, worldPose.position);
   return Math.hypot(root[0] - hmdPos[0], root[1], root[2] - hmdPos[2]);
 }
+
+/** One avatar-root pose from VRChat, stamped when its OSC burst arrived (epoch ms). */
+export interface VrcOriginSample {
+  t: number;
+  pose: VrcOriginWorldPose;
+}
+
+export interface VrcRootPredictorOptions {
+  /** Samples older than this (ms) before the newest leave a channel's fit. */
+  windowMs?: number;
+  /** Full-velocity extrapolation past a channel's newest sample (ms). */
+  extrapolateMs?: number;
+  /** After `extrapolateMs`, the prediction holds this long (ms): VRChat skips updates mid-walk. */
+  holdMs?: number;
+  /** After holding, the prediction fades back to the newest sample over this (ms): a stop. */
+  fadeMs?: number;
+  /** A position this far (m) from the prediction is a teleport: that channel's fit starts over. */
+  resetDistanceMeters?: number;
+  /** A yaw this far (rad) from the prediction is a snap turn: that channel's fit starts over. */
+  resetYawRad?: number;
+}
+
+export interface VrcRootPrediction {
+  pose: VrcOriginWorldPose;
+  /** Root velocity in Unity world space (m/s). */
+  velocity: Vec3;
+  /** Avatar yaw rate (Unity yaw, rad/s). */
+  yawRate: number;
+}
+
+/**
+ * Constant-velocity least-squares fit of one channel (`dims` values) over a sliding window of
+ * timestamped samples.
+ */
+class MotionChannel {
+  /** `[t, ...values]` */
+  samples: number[][] = [];
+  velocity: number[];
+  /** Fitted values at `fitTime`. */
+  fitted: number[];
+  fitTime = 0;
+
+  constructor(readonly dims: number) {
+    this.velocity = new Array(dims).fill(0);
+    this.fitted = new Array(dims).fill(0);
+  }
+
+  reset(): void {
+    this.samples = [];
+    this.velocity.fill(0);
+  }
+
+  newest(): number[] | undefined {
+    return this.samples.at(-1);
+  }
+
+  push(t: number, values: number[], windowMs: number): void {
+    this.samples.push([t, ...values]);
+    const cutoff = t - windowMs;
+    while (this.samples.length > 1 && this.samples[0][0] < cutoff) this.samples.shift();
+    this.fit();
+  }
+
+  /**
+   * Value at `t`: the fitted line (which averages out the jittery arrival times) up to
+   * `extrapolateMs` past the newest sample, held for `holdMs`, then faded over `fadeMs` to the
+   * newest sample itself.
+   */
+  at(
+    t: number,
+    extrapolateMs: number,
+    holdMs: number,
+    fadeMs: number,
+  ): { values: number[]; moving: boolean } {
+    const last = this.samples.at(-1)!;
+    const dt = t - last[0];
+    const tEval = last[0] + Math.min(Math.max(dt, 0), extrapolateMs);
+    const values = this.fitted.map((v, k) => v + this.velocity[k] * (tEval - this.fitTime) / 1000);
+    if (dt > extrapolateMs + holdMs) {
+      const u = Math.min(1, (dt - extrapolateMs - holdMs) / fadeMs);
+      for (let k = 0; k < this.dims; k++) values[k] += (last[k + 1] - values[k]) * u;
+    }
+    return { values, moving: dt <= extrapolateMs };
+  }
+
+  private fit(): void {
+    const n = this.samples.length;
+    const last = this.samples[n - 1];
+    if (n < 2) {
+      this.velocity.fill(0);
+      this.fitted = last.slice(1);
+      this.fitTime = last[0];
+      return;
+    }
+    let mt = 0;
+    for (const s of this.samples) mt += s[0] / n;
+    const means = new Array(this.dims).fill(0);
+    for (const s of this.samples) for (let k = 0; k < this.dims; k++) means[k] += s[k + 1] / n;
+    let stt = 0;
+    const sxy = new Array(this.dims).fill(0);
+    for (const s of this.samples) {
+      const dt = s[0] - mt;
+      stt += dt * dt;
+      for (let k = 0; k < this.dims; k++) sxy[k] += dt * (s[k + 1] - means[k]);
+    }
+    this.fitTime = mt;
+    this.fitted = means;
+    this.velocity = stt > 0 ? sxy.map((v) => (v / stt) * 1000) : new Array(this.dims).fill(0);
+  }
+}
+
+/**
+ * Predicts the avatar root pose at any time from the timestamped samples VRChat sends.
+ *
+ * Measured (2026-11-24): while moving, the contacts advance the root in regular ticks, but the OSC
+ * bursts carrying them arrive with ~±20 ms jitter, sometimes two ticks in one burst and sometimes
+ * none (about a third of bursts change only yaw), with gaps up to ~200 ms, and nothing at all once
+ * the root stops changing. So position and yaw are separate channels, each fed only when its
+ * value changes, and each a least-squares line through the last `windowMs`: the line averages the
+ * timing noise out. It extrapolates for `extrapolateMs` past the channel's newest sample, holds
+ * for `holdMs` (a skipped update), then fades back to the newest sample (a stop: VRChat stops
+ * instantly and goes silent), so a stop settles where VRChat put the root. A
+ * sample far off the prediction (teleport, snap turn) restarts its channel so the jump is taken at
+ * once rather than smeared.
+ */
+export class VrcRootPredictor {
+  private readonly windowMs: number;
+  private readonly extrapolateMs: number;
+  private readonly holdMs: number;
+  private readonly fadeMs: number;
+  private readonly resetDistance: number;
+  private readonly resetYaw: number;
+  private readonly position = new MotionChannel(3);
+  /** Unwrapped yaw. */
+  private readonly yaw = new MotionChannel(1);
+  private source: VrcOriginWorldPose["source"] = "petplay-origin";
+  private lastPose: VrcOriginWorldPose | null = null;
+
+  constructor(options: VrcRootPredictorOptions = {}) {
+    this.windowMs = options.windowMs ?? 200;
+    this.extrapolateMs = options.extrapolateMs ?? 70;
+    this.holdMs = options.holdMs ?? 130;
+    this.fadeMs = options.fadeMs ?? 150;
+    this.resetDistance = options.resetDistanceMeters ?? 1.0;
+    this.resetYaw = options.resetYawRad ?? (20 * Math.PI) / 180;
+  }
+
+  reset(): void {
+    this.position.reset();
+    this.yaw.reset();
+    this.lastPose = null;
+  }
+
+  hasSamples(): boolean {
+    return this.lastPose != null;
+  }
+
+  add(sample: VrcOriginSample): void {
+    const { pose, t } = sample;
+    this.source = pose.source;
+    const prev = this.lastPose;
+    const positionChanged = !prev || pose.position.some((v, k) => v !== prev.position[k]);
+    const yawChanged = !prev || pose.yawRad !== prev.yawRad;
+    this.lastPose = pose;
+
+    if (positionChanged) {
+      const newest = this.position.newest();
+      if (newest && t <= newest[0]) return;
+      if (newest) {
+        const predicted = this.position.at(t, this.extrapolateMs, this.holdMs, this.fadeMs).values;
+        if (
+          Math.hypot(...pose.position.map((v, k) => v - predicted[k])) > this.resetDistance
+        ) this.position.reset();
+      }
+      this.position.push(t, [...pose.position], this.windowMs);
+    }
+    if (yawChanged) {
+      const newest = this.yaw.newest();
+      if (newest && t <= newest[0]) return;
+      let yaw = pose.yawRad;
+      if (newest) {
+        yaw = newest[1] + angleDiffRad(yaw, newest[1]);
+        const predicted = this.yaw.at(t, this.extrapolateMs, this.holdMs, this.fadeMs).values[0];
+        if (Math.abs(yaw - predicted) > this.resetYaw) this.yaw.reset();
+      }
+      this.yaw.push(t, [yaw], this.windowMs);
+    }
+  }
+
+  predict(tMs: number): VrcRootPrediction {
+    if (!this.lastPose) {
+      return {
+        pose: { source: this.source, position: [0, 0, 0], yawRad: 0 },
+        velocity: [0, 0, 0],
+        yawRate: 0,
+      };
+    }
+    const p = this.position.at(tMs, this.extrapolateMs, this.holdMs, this.fadeMs);
+    const y = this.yaw.at(tMs, this.extrapolateMs, this.holdMs, this.fadeMs);
+    return {
+      pose: {
+        source: this.source,
+        position: p.values as Vec3,
+        yawRad: normalizeAngleRad(y.values[0]),
+      },
+      velocity: p.moving ? [...this.position.velocity] as Vec3 : [0, 0, 0],
+      yawRate: y.moving ? this.yaw.velocity[0] : 0,
+    };
+  }
+}
+
+/**
+ * What webxr needs to evaluate the VRChat world -> Standing transform at its own frame times:
+ * the root moves at `rootVelocityRH` in world space and the playspace turns at `yawRate`, while
+ * the root stays over the Standing floor point `pivot`.
+ * `c(t) = pivot - scale * R_y(yaw + yawRate*dt) * (rootRH + rootVelocityRH*dt)`.
+ */
+export interface VrcOriginMotion {
+  /** Epoch ms the model is evaluated from. */
+  t: number;
+  yawRad: number;
+  /** Playspace yaw rate (rad/s, right-handed, same sign as `yawRad`). */
+  yawRate: number;
+  scale: number;
+  /** Standing point the avatar root maps to at `t` (floor under the HMD). */
+  pivot: Vec3;
+  rootRH: Vec3;
+  rootVelocityRH: Vec3;
+}
+
+/** The transform `motion` gives at `tMs`, extrapolating at most `maxAheadMs` past `motion.t`. */
+export function evaluateVrcOriginMotion(
+  motion: VrcOriginMotion,
+  tMs: number,
+  maxAheadMs = 50,
+): VrcWorldToStandingTransform {
+  const dt = Math.min(Math.max(0, tMs - motion.t), maxAheadMs) / 1000;
+  const yawRad = motion.yawRad + motion.yawRate * dt;
+  const root: Vec3 = [
+    motion.rootRH[0] + motion.rootVelocityRH[0] * dt,
+    motion.rootRH[1] + motion.rootVelocityRH[1] * dt,
+    motion.rootRH[2] + motion.rootVelocityRH[2] * dt,
+  ];
+  const r = rotateYawRH(root, yawRad);
+  return {
+    yawRad,
+    scale: motion.scale,
+    translation: [
+      motion.pivot[0] - motion.scale * r[0],
+      motion.pivot[1] - motion.scale * r[1],
+      motion.pivot[2] - motion.scale * r[2],
+    ],
+  };
+}

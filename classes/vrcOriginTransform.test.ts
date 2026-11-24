@@ -3,6 +3,7 @@ import type { Vec3, VrcOriginWorldPose } from "./vrcOriginCodec.ts";
 import {
   angleDiffRad,
   computeWorldOriginTranslation,
+  evaluateVrcOriginMotion,
   hmdYawRightHandedRad,
   type Matrix34Tuple,
   standingPointToUnityWorld,
@@ -10,6 +11,7 @@ import {
   unityWorldPointToStanding,
   VrcOriginRoomLock,
   VrcOriginSolver,
+  VrcRootPredictor,
   type VrcWorldToStandingTransform,
 } from "./vrcOriginTransform.ts";
 
@@ -311,4 +313,67 @@ Deno.test("room lock: a small lasting offset with a still head breaks the lock, 
     );
   }
   assertEquals(res.mode, "locked");
+});
+
+Deno.test("root predictor: jittery arrivals of a steady run predict the true path, yaw-only bursts do not stall it", () => {
+  const predictor = new VrcRootPredictor();
+  // 4 m/s along -X in 0.16 m ticks every 40 ms; arrivals jittered ±18 ms; every third burst
+  // only changes yaw (the position repeats).
+  const jitter = [0, 14, -11, 18, -6, 9, -17, 3, 12, -9, 6, -14, 16, -3, 8];
+  let yaw = 0.1;
+  for (let i = 0; i < jitter.length; i++) {
+    const tTrue = 1000 + i * 40;
+    if (i % 3 === 2) {
+      yaw += 0.001;
+      const prev = 10 - 0.16 * (i - 1);
+      predictor.add({ t: tTrue + jitter[i], pose: makeWorldPose([prev, 0, 0], yaw) });
+    } else {
+      predictor.add({ t: tTrue + jitter[i], pose: makeWorldPose([10 - 0.16 * i, 0, 0], yaw) });
+    }
+  }
+  const now = 1000 + 14 * 40 + 20;
+  const p = predictor.predict(now);
+  assertAlmostEquals(p.pose.position[0], 10 - 4 * (now - 1000) / 1000, 0.06);
+  assertAlmostEquals(p.velocity[0], -4, 0.6);
+});
+
+Deno.test("root predictor: after a stop (silence) it settles on the last sample", () => {
+  const predictor = new VrcRootPredictor();
+  for (let i = 0; i <= 6; i++) {
+    predictor.add({ t: i * 40, pose: makeWorldPose([0.16 * i, 0, 0], 0) });
+  }
+  const settled = predictor.predict(6 * 40 + 1000);
+  assertAlmostEquals(settled.pose.position[0], 0.96, 1e-9);
+  assertEquals(settled.velocity, [0, 0, 0]);
+});
+
+Deno.test("root predictor: a snap turn is taken at once, not smeared", () => {
+  const predictor = new VrcRootPredictor();
+  for (let i = 0; i <= 4; i++) predictor.add({ t: i * 40, pose: makeWorldPose([0, 0, 0], 0.2) });
+  predictor.add({ t: 200, pose: makeWorldPose([0, 0, 0], 0.2 + Math.PI / 4) });
+  assertAlmostEquals(predictor.predict(205).pose.yawRad, 0.2 + Math.PI / 4, 1e-9);
+});
+
+Deno.test("motion model at its own time equals the solver's transform, and follows the root", () => {
+  const yawRad = 0.7;
+  const unityRoot: Vec3 = [3, 1, -4];
+  const hmd: Vec3 = [0.4, 1.6, -0.3];
+  const translation = computeWorldOriginTranslation(unityRoot, hmd, yawRad, 1);
+  const motion = {
+    t: 5000,
+    yawRad,
+    yawRate: 0,
+    scale: 1,
+    pivot: [hmd[0], 0, hmd[2]] as Vec3,
+    rootRH: [unityRoot[0], unityRoot[1], -unityRoot[2]] as Vec3,
+    rootVelocityRH: [2, 0, 0] as Vec3,
+  };
+  assertVec3AlmostEquals(evaluateVrcOriginMotion(motion, 5000).translation, translation, 1e-9);
+  // 30 ms later the root has moved 6 cm along world +X, and still maps to the pivot.
+  const later = evaluateVrcOriginMotion(motion, 5030);
+  assertVec3AlmostEquals(
+    unityWorldPointToStanding(later, [unityRoot[0] + 0.06, unityRoot[1], unityRoot[2]]),
+    [hmd[0], 0, hmd[2]],
+    1e-9,
+  );
 });
