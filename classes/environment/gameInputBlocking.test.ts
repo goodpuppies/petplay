@@ -66,3 +66,41 @@ Deno.test("multiple pointers retain blocking until all leave; unmount and reset 
   unregister();
   assertEquals(blocking.priority("left", true), 0);
 });
+
+Deno.test("focus target follows hits on UI without its own SteamVR overlay", () => {
+  const { blocking, state, root, child } = fixture();
+  const hit = {
+    object: child,
+    point: { x: 1, y: 2, z: 3 },
+    pointerPosition: { x: 0, y: 1, z: 0 },
+  };
+  const pointer = {
+    getEnabled: () => true,
+    getIntersection: () => hit,
+    getPointerCapture: () => undefined,
+  };
+  state.enabled = false;
+  blocking.register(pointer, "right");
+  blocking.priority("right", false);
+  assertEquals(blocking.focusTarget("right"), { point: [1, 2, 3], origin: [0, 1, 0] });
+  // Held off the UI: blocking and the overlay stay where they were.
+  hit.object = { parent: null, userData: {} } as unknown as typeof child;
+  blocking.priority("right", true);
+  assertEquals(blocking.focusTarget("right")?.point, [1, 2, 3]);
+  blocking.priority("right", false);
+  assertEquals(blocking.focusTarget("right"), null);
+  // Displays carry their own overlay.
+  hit.object = child;
+  (root.userData as Record<string, unknown>).steamVrInputOverlay = true;
+  assertEquals(blocking.priority("right", false), OVERLAY_INPUT_PRIORITY);
+  assertEquals(blocking.focusTarget("right"), null);
+});
+
+Deno.test("the nearest blockGameInput flag decides", () => {
+  const { blocking, child, root } = fixture();
+  (child.userData as Record<string, unknown>).blockGameInput = false;
+  assertEquals(blocking.priority("left", false), 0);
+  (child.userData as Record<string, unknown>).blockGameInput = true;
+  (root.userData as Record<string, unknown>).blockGameInput = false;
+  assertEquals(blocking.priority("left", false), OVERLAY_INPUT_PRIORITY);
+});

@@ -46,6 +46,7 @@ import { describeProjectionLayer, getProjectionLayer } from "./webxrProjectionLa
 import { WebXRSurfaceHost } from "./webxrSurfaceHost.ts";
 import { playspaceFrame } from "./playspaceFrame.ts";
 import { PlayspaceMover } from "./playspaceMover.ts";
+import { syncInputFocusOverlays } from "./inputFocusOverlays.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import {
   getScheduler,
@@ -1085,6 +1086,9 @@ export class WebXRHost {
   /** App-wide single source of OpenVR HMD + controller pose (allocation-free). */
   private readonly directOpenVrInputSource = new DirectOpenVrInputSource();
   private playspaceMover: PlayspaceMover | null = null;
+  /** Kept to retry {@link PlayspaceMover.tryCreate} until SteamVR has a standing zero pose. */
+  private vrChaperoneSetupPointer: number | bigint | null = null;
+  private playspaceMoverRetryAt = 0;
   private renderGripOffsets: Partial<Record<"left" | "right", Float32Array>> = {};
   private directRaylibOpenVrHmdPoseLogged = false;
   private emulatedControllerApplyPrevWallAt = 0;
@@ -1213,9 +1217,11 @@ export class WebXRHost {
     this.disableOpenVrHmdPose = options.disableOpenVrHmdPose ?? false;
     this.playspaceMover?.dispose();
     // The caller withholds the pointer when another process renders (it reads Standing).
-    this.playspaceMover = this.vrInputPointer == null
+    this.vrChaperoneSetupPointer = this.vrInputPointer == null
       ? null
-      : PlayspaceMover.tryCreate(options.vrChaperoneSetupPointer);
+      : options.vrChaperoneSetupPointer ?? null;
+    this.playspaceMover = PlayspaceMover.tryCreate(this.vrChaperoneSetupPointer);
+    this.playspaceMoverRetryAt = 0;
     this.onBeforeExternalControllerApply = options.onBeforeExternalControllerApply;
     this.onInProcessControllerFrame = options.onInProcessControllerFrame;
     this.sessionMode = options.sessionMode === "immersive-ar" ? "immersive-ar" : "immersive-vr";
@@ -1767,6 +1773,7 @@ export class WebXRHost {
     this.directOpenVrInputSource.resetInput();
     this.playspaceMover?.dispose();
     this.playspaceMover = null;
+    this.vrChaperoneSetupPointer = null;
     if (this.xrDevice != null && this.openVrDrivenBeforeIwerFrameStart) {
       const d = this.xrDevice as XrDeviceBridge & {
         setBeforeFrameStartHook?: (cb: ((frame: XRFrame) => void) | null | undefined) => void;
@@ -2262,6 +2269,7 @@ export class WebXRHost {
         this.updateEmulatedHeadsetFromOpenVr();
         this.xrHmdEmulationMetric.record(performance.now() - tHmd);
         this.directOpenVrInputSource.updateActionState();
+        syncInputFocusOverlays();
         const tCtrl = performance.now();
         this.applyExternalControllerData();
         this.xrControllerApplyMetric.record(performance.now() - tCtrl);
@@ -2634,6 +2642,7 @@ export class WebXRHost {
     this.updateEmulatedHeadsetFromOpenVr();
     this.xrHmdEmulationMetric.record(performance.now() - tHmd);
     this.directOpenVrInputSource.updateActionState();
+    syncInputFocusOverlays();
     const tCtrl = performance.now();
     this.applyExternalControllerData();
     this.xrControllerApplyMetric.record(performance.now() - tCtrl);
@@ -2642,7 +2651,16 @@ export class WebXRHost {
   }
 
   private updatePlayspaceMover(): void {
-    const mover = this.playspaceMover;
+    let mover = this.playspaceMover;
+    if (!mover && this.vrChaperoneSetupPointer != null) {
+      // Attached before the chaperone loaded: no zero pose to anchor at yet. Anchoring later is
+      // seamless, since until a drag PetPlay's frame equals Standing.
+      const now = performance.now();
+      if (now >= this.playspaceMoverRetryAt) {
+        this.playspaceMoverRetryAt = now + 2000;
+        mover = this.playspaceMover = PlayspaceMover.tryCreate(this.vrChaperoneSetupPointer, true);
+      }
+    }
     if (!mover) return;
     const left = this.directOpenVrInputSource.getSnapshot().controllers.left;
     mover.update(this.directOpenVrInputSource.isSpaceDragHeld(), left?.position ?? null);

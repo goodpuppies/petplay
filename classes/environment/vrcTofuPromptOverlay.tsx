@@ -204,6 +204,7 @@ export function VrcTofuPromptOverlay(
       name="vrc-tofu-prompt"
       userData={{
         vrcTofuPrompt: true,
+        blockGameInput: true,
         vrcUserId: active.vrcUserId,
         trust: active.trust,
       }}

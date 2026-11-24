@@ -363,7 +363,12 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
           ? (
             <mesh
               renderOrder={-100}
-              userData={{ displayInstanceRayHitSurface: true, passthroughCutout: true }}
+              // The display's own SteamVR overlay keeps game input off it: no focus overlay needed.
+              userData={{
+                displayInstanceRayHitSurface: true,
+                passthroughCutout: true,
+                steamVrInputOverlay: true,
+              }}
               onPointerMove={penHandler(emitMove)}
               onPointerDown={penHandler((e: PenPointerEvent) => emitButton(e, true))}
               onPointerUp={penHandler((e: PenPointerEvent) => emitButton(e, false))}

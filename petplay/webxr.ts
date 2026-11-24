@@ -43,6 +43,7 @@ import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
 import { OpenVrProjectionOverlays } from "../classes/openVrProjectionOverlays.ts";
 import { playspaceFrame } from "../classes/playspaceFrame.ts";
 import { reanchorPlayspaceFrame } from "../classes/playspaceMover.ts";
+import { configureInputFocusOverlays } from "../classes/inputFocusOverlays.ts";
 import { setLaserControllerModel } from "../classes/environment/laserOffset.ts";
 import { closeRaylibAudio } from "../classes/environment/raylibAudioContext.ts";
 import type { CompositorFrameTiming } from "../classes/openVrOverlayFramePacing.ts";
@@ -1752,6 +1753,7 @@ globalThis.addEventListener("unload", () => {
   state.raylibOverlay?.cleanup();
   state.raylibProjectionOverlays?.cleanup();
   state.raylibOverlayRaylib?.cleanup();
+  configureInputFocusOverlays(null);
   closeRaylibAudio();
   state.webGpuOverlay = null;
   state.raylibProjectionOverlays = null;
@@ -2821,6 +2823,7 @@ async function stopWebXR(): Promise<true> {
   state.raylibShadowNoSourceLogged = false;
   state.raylibShadowNoSceneLogged = false;
   state.raylibOpenVrPacedLastStatusLogAt = 0;
+  configureInputFocusOverlays(null);
   state.webGpuOverlayConfig = null;
   state.raylibOverlayConfig = null;
   state.controllerActor = null;
@@ -3087,6 +3090,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       attachToHmd: true,
       staleKeys: staleOverlayKeys,
     };
+    configureInputFocusOverlays(payload.overlayPointer, raylibOverlayKey && `${raylibOverlayKey}.inputfocus`);
     LogChannel.log(
       "webxrv2",
       "[webxr] raylib overlay running in webxr worker hot loop",

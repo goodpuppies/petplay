@@ -397,6 +397,7 @@ export function WristMenuPanel(
       position={position}
       rotation={rotation}
       scale={scale}
+      userData={{ blockGameInput: true }}
       {...({ pointerEventsOrder: WRIST_MENU_POINTER_EVENTS_ORDER } as Record<string, unknown>)}
     >
       <group

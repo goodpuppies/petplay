@@ -1101,7 +1101,12 @@ function WindowLayer({
   // hidden takes its props at construction, so the first show does not restyle every window.
   return (
     <SpatialAudioProvider>
-      <group ref={layer} {...({ intersectChildren: visible } as Record<string, unknown>)}>
+      {/* Windows, keyboards and their toolbars: the laser on them keeps the game's input. */}
+      <group
+        ref={layer}
+        userData={{ blockGameInput: true }}
+        {...({ intersectChildren: visible } as Record<string, unknown>)}
+      >
         <React.Activity mode={visible ? "visible" : "hidden"}>
           <ConstructWithPropsContext.Provider value={constructWithProps}>
             <WindowLayerContent

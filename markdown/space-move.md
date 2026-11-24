@@ -1,6 +1,6 @@
 # Space move (playspace drag) — plan
 
-Status: working on Touch in the headset (2026-11-12); Index chord untested. Code:
+Status: working on Touch in the headset (2026-11-12) and on Index (2026-11-24). Code:
 `classes/playspaceFrame.ts`, `classes/playspaceMover.ts` (tests in `classes/playspaceFrame.test.ts`,
 `classes/actionBindings.test.ts`). Reference implementation: WayVR's OpenVR mover,
 `~/git/wayvr/wayvr/src/backend/openvr/playspace.rs`.
@@ -73,6 +73,10 @@ Changes:
 - Run-directory binding copies are now refreshed when they differ (`classes/utils.ts`): a reboot
   keeps the process's `tmp/run-<pid>`, and the stale copies left `SpaceDrag` unbound.
 - Live-verified on Touch (Steam Link), 2026-11-12: drag works and RESET SPACE appears.
+- Index, 2026-11-24: the chord was fine, but SteamVR autostarted PetPlay before the chaperone
+  had a standing zero pose, so no mover was created and nothing retried. The host now retries
+  `PlayspaceMover.tryCreate` every 2 s until it anchors (seamless: until a drag, the frame equals
+  Standing).
 - Needs a full server restart to take effect: `main`, the `openvr` actor and `displayOverlayHost`
   changed, not only the webxr graph.
 

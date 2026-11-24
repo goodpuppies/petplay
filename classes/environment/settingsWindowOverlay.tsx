@@ -79,7 +79,7 @@ export function SettingsWindowOverlay() {
   return (
     <group
       ref={groupRef}
-      userData={{ settingsWindowOverlay: true }}
+      userData={{ settingsWindowOverlay: true, blockGameInput: true }}
       {...({ pointerEventsOrder: 20 } as Record<string, unknown>)}
     >
       <GrabBox

@@ -63,15 +63,26 @@ export class PlayspaceMover {
   private drag: Drag | null = null;
   private lastCommittedAt = 0;
 
-  /** `null` when the runtime has no chaperone interface or no standing zero pose. */
-  static tryCreate(pointer: number | bigint | null | undefined): PlayspaceMover | null {
+  /**
+   * `null` when the runtime has no chaperone interface or no standing zero pose yet (SteamVR can
+   * attach PetPlay before the chaperone is loaded; the host retries). `quiet` skips the log.
+   */
+  static tryCreate(
+    pointer: number | bigint | null | undefined,
+    quiet = false,
+  ): PlayspaceMover | null {
     if (pointer == null) return null;
     const ptr = Deno.UnsafePointer.create(typeof pointer === "bigint" ? pointer : BigInt(pointer));
     if (!ptr) return null;
     const mover = new PlayspaceMover(new OpenVR.IVRChaperoneSetup(ptr));
     const anchor = mover.readZeroPose();
     if (!anchor) {
-      LogChannel.log("webxrv2", "[space move] no standing zero pose; staying in Standing");
+      if (!quiet) {
+        LogChannel.log(
+          "webxrv2",
+          "[space move] no standing zero pose yet; staying in Standing and retrying",
+        );
+      }
       return null;
     }
     playspaceFrame.setAnchor(anchor);
