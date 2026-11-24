@@ -1,5 +1,5 @@
 import "../../submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/pointer.ts";
-import { HandleStore } from "@pmndrs/handle";
+import { PetPlayHandleStore as HandleStore } from "./petplayHandleStore.tsx";
 import * as THREE from "three/webgpu";
 import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
 import { cancelStaleHandleGrab } from "./grabbox.tsx";

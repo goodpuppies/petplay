@@ -54,10 +54,10 @@ import {
 import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
 import {
   defaultApply,
-  type HandleOptions,
   type HandleState,
   type HandleStore,
 } from "@pmndrs/handle";
+import { PetPlayHandleStore, type PetPlayHandleOptions } from "./petplayHandleStore.tsx";
 import { subscribeLayoutRecenter, useWindowLayerVisible } from "./windowLayerMode.ts";
 import { setGrabboxOutlineVisible, useGrabboxOutlineVisible } from "./grabboxOutlineMode.ts";
 import { useHingedOneHandScaleMaxGrabOffset } from "./spatialManipulationMode.ts";
@@ -502,7 +502,7 @@ function applyDampedHandleState(
  * it with the grabbing controller's fresh pose while it is resized by trigger.
  */
 function freeGrabOptions(
-  options: Omit<HandleOptions<unknown>, "filter">,
+  options: Omit<PetPlayHandleOptions<unknown>, "filter">,
 ): GrabBoxManipulationOptions {
   return { ...options, triggerResize: { carryWithController: true } };
 }
@@ -583,7 +583,7 @@ function CommonOverlayChords({
         const constraint = closestNodeId == null
           ? undefined
           : graph.nodes[closestNodeId]?.constraint;
-        if (constraint?.kind === "hinge") {
+        if (constraint?.kind === "hinge" && closestStore instanceof PetPlayHandleStore) {
           // A hinge has no free translation, so the stick angles it instead of pushing it away.
           // Handing over an absolute angle rebases the grab, so the hand stops turning the hinge
           // while the stick is deflected — the two inputs never fight. The angle is clamped before
@@ -1409,7 +1409,7 @@ type SpatialGraphViewProps = {
 type SpatialNodeViewProps = SpatialGraphViewProps & {
   node: SpatialNode;
   manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
-  manipulationOptions?: Omit<HandleOptions<unknown>, "filter">;
+  manipulationOptions?: Omit<PetPlayHandleOptions<unknown>, "filter">;
   manipulationStoreRef?: React.Ref<HandleStore<unknown>>;
   localTransformOverride?: SpatialTransform;
 };
@@ -2516,7 +2516,7 @@ function AttachedSpatialNodeView(
       setGraph,
     ],
   );
-  const hingeOptions = React.useMemo<Omit<HandleOptions<unknown>, "filter">>(
+  const hingeOptions = React.useMemo<Omit<PetPlayHandleOptions<unknown>, "filter">>(
     () => ({
       apply: applyHinge,
       // A second hand joins to pinch-resize; the rotation still comes from the first pointer.
@@ -2555,7 +2555,7 @@ function AttachedSpatialNodeView(
     },
     [node.id, node.kind, setGraph],
   );
-  const freeOptions = React.useMemo<Omit<HandleOptions<unknown>, "filter">>(
+  const freeOptions = React.useMemo<Omit<PetPlayHandleOptions<unknown>, "filter">>(
     // Same frozen-point model as the hinge so the post-breakaway grab does not inherit the ray
     // projection the hinge just dropped.
     () => freeGrabOptions({ apply: applyFree, projectRays: false }),

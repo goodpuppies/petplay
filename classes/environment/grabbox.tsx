@@ -10,8 +10,8 @@ import React, {
 // @deno-types="@types/three/webgpu"
 import * as THREE from "three/webgpu";
 import { extend, type ThreeToJSXElements, useFrame, useThree } from "@react-three/fiber/webgpu";
-import { Handle } from "@react-three/handle";
-import { defaultApply, type HandleOptions, type HandleState, type HandleStore } from "@pmndrs/handle";
+import { defaultApply, type HandleState, type HandleStore } from "@pmndrs/handle";
+import { PetPlayHandle, type PetPlayHandleOptions } from "./petplayHandleStore.tsx";
 import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Icon } from "./ui/icons.tsx";
 import { COLOR } from "./ui/tokens.ts";
@@ -57,7 +57,7 @@ export type TriggerResize = {
 };
 
 /** Handle options, plus the trigger resize, which travels with them through wrapping layers. */
-export type GrabBoxManipulationOptions = Omit<HandleOptions<unknown>, "filter"> & {
+export type GrabBoxManipulationOptions = Omit<PetPlayHandleOptions<unknown>, "filter"> & {
   triggerResize?: TriggerResize;
 };
 
@@ -328,7 +328,7 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
     }
   }, [manipulationStoreRef, resizeStores]);
   const worldScale = useMemo(() => new THREE.Vector3(), []);
-  const handleOptions = useMemo((): Omit<HandleOptions<unknown>, "filter"> | undefined => {
+  const handleOptions = useMemo((): Omit<PetPlayHandleOptions<unknown>, "filter"> | undefined => {
     const { triggerResize, ...options } = manipulationOptions ?? {};
     let innerApply = options.apply ?? defaultApply;
     let alwaysUpdate = options.alwaysUpdate;
@@ -507,7 +507,7 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
   );
   if (!grabbable) return box;
   return (
-    <Handle
+    <PetPlayHandle
       ref={setHandleStore}
       handleRef={boxRef as unknown as React.RefObject<import("three").Object3D | null>}
       targetRef={manipulationTargetRef as React.RefObject<import("three").Object3D | null>}
@@ -517,6 +517,6 @@ export const GrabBox = forwardRef<THREE.Group, GrabBoxProps>(function GrabBox(
       filter={grabFilter}
     >
       {box}
-    </Handle>
+    </PetPlayHandle>
   );
 });

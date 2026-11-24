@@ -1,5 +1,9 @@
 import "../../submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/pointer.ts";
-import { type HandleOptions, HandleStore } from "@pmndrs/handle";
+import type { HandleStore } from "@pmndrs/handle";
+import {
+  PetPlayHandleStore,
+  type PetPlayHandleOptions as HandleOptions,
+} from "./petplayHandleStore.tsx";
 import * as THREE from "three/webgpu";
 import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
 
@@ -75,7 +79,7 @@ function hingeOptions(projectRays = false): HandleOptions<unknown> {
 Deno.test("an absolute axis angle owns the rotation while the hand is moving", () => {
   const handle = new THREE.Object3D();
   const target = transformedObject();
-  const store = new HandleStore(target, hingeOptions);
+  const store = new PetPlayHandleStore(target, hingeOptions);
   store.handlers.onPointerDown(pointerEvent(handle));
   assert(Math.abs(target.rotation.y) < 1e-6, "a fresh grab starts aligned with the pointer");
 
@@ -132,7 +136,7 @@ Deno.test("a hinge turns by the same angle wherever it is grabbed along its axis
   const turnedFor = (lateralOffset: number) => {
     const handle = new THREE.Object3D();
     const target = transformedObject();
-    const store = new HandleStore(target, () => hingeAxisOptions("x"));
+    const store = new PetPlayHandleStore(target, () => hingeAxisOptions("x"));
     store.handlers.onPointerDown(pointerEvent(handle, { point: [lateralOffset, radius, 0] }));
     store.update(1, true);
     // The same physical hand motion: the grab point swings a fixed angle about the hinge axis.
@@ -161,7 +165,7 @@ Deno.test("one hand scales a hinge by its radius, but only when the grab is at t
   const scaledFor = (lateralOffset: number, handOffset: number) => {
     const handle = new THREE.Object3D();
     const target = transformedObject();
-    const store = new HandleStore(target, () => ({
+    const store = new PetPlayHandleStore(target, () => ({
       ...hingeAxisOptions("x"),
       translate: "as-rotate-and-scale",
       scale: { uniform: true },
@@ -213,7 +217,7 @@ Deno.test("one hand scales a hinge by its radius, but only when the grab is at t
 Deno.test("a second pointer pinch-scales a constrained-rotation handle", () => {
   const handle = new THREE.Object3D();
   const target = transformedObject();
-  const store = new HandleStore(target, () => ({
+  const store = new PetPlayHandleStore(target, () => ({
     ...hingeAxisOptions("y"),
     scale: { uniform: true },
     multitouch: true,
@@ -248,7 +252,7 @@ Deno.test("a second pointer pinch-scales a constrained-rotation handle", () => {
  */
 Deno.test("a hinge follows the frozen grab point, not the hand's ray", () => {
   const tilted = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.6, 0, 0));
-  const nudgeHand = (store: HandleStore<unknown>) => {
+  const nudgeHand = (store: PetPlayHandleStore<unknown>) => {
     const handle = new THREE.Object3D();
     store.handlers.onPointerDown(pointerEvent(handle, {
       point: [0.5, 0, 0],
@@ -267,14 +271,14 @@ Deno.test("a hinge follows the frozen grab point, not the hand's ray", () => {
   };
 
   const frozen = transformedObject();
-  nudgeHand(new HandleStore(frozen, () => hingeOptions(false)));
+  nudgeHand(new PetPlayHandleStore(frozen, () => hingeOptions(false)));
   assert(
     Math.abs(frozen.rotation.y) < 1e-3,
     `a frozen grab point must not rotate with the hand (got ${frozen.rotation.y})`,
   );
 
   const projected = transformedObject();
-  nudgeHand(new HandleStore(projected, () => hingeOptions(true)));
+  nudgeHand(new PetPlayHandleStore(projected, () => hingeOptions(true)));
   assert(
     Math.abs(projected.rotation.y) > 0.05,
     "ray projection is what turned hand translation into hinge rotation",
