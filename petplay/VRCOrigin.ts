@@ -131,6 +131,7 @@ new PostMan(
         lockMode: state.lockMode,
         lockErrorMeters: state.lockErrorMeters,
         lockBreakCount: state.lockBreakCount,
+        turnGain: predictor.turnGain(),
         sticks: latestSticks
           ? { ...latestSticks, ageMs: performance.timeOrigin + performance.now() - latestSticks.t }
           : null,
@@ -373,7 +374,7 @@ async function pollOriginOnce(): Promise<boolean> {
   if (!hmdPose?.bPoseIsValid) return false;
   const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
 
-  const raw = solver.update(worldPose, hmdMatrix);
+  const raw = solver.update(worldPose, hmdMatrix, predictor.isStickTurning());
   const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
   lastHeadYawRate = Math.abs(hmdPose.vAngularVelocity?.v?.[1] ?? 0);
   hmdTrace.push([

@@ -492,3 +492,43 @@ Deno.test("room lock: a held stick breaks the lock at once and keeps it open", (
     assertEquals(res.mode, "moving");
   }
 });
+
+Deno.test("stick turning: yaw follows the stick, stops on release, ignores the lagging PhysBone", () => {
+  const predictor = new VrcRootPredictor({ turnGainRadPerSec: Math.PI }); // 180°/s at full stick
+  let t = 0;
+  for (; t <= 300; t += 11) {
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0 });
+    predictor.add({ t, pose: makeWorldPose([0, 0, 0], 0) });
+  }
+  // Hold full right for 500 ms: VRChat turns 90°; the PhysBone reading lags ~0.4 s behind.
+  const start = t;
+  const physbone = (tt: number) =>
+    Math.max(0, Math.min(Math.PI / 2, Math.PI * (tt - start - 400) / 1000));
+  for (; t <= start + 500; t += 11) {
+    predictor.setInput({ t, move: [0, 0], turn: 1, headYawRate: 0 });
+    predictor.add({ t, pose: makeWorldPose([0, 0, 0], physbone(t)) });
+  }
+  assertAlmostEquals(predictor.predict(t).pose.yawRad, Math.PI / 2, 0.06);
+  assert(predictor.isStickTurning());
+  // Released: the estimate holds at ~90° while the PhysBone catches up, then settles there.
+  for (const end = t + 1500; t <= end; t += 11) {
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0 });
+    predictor.add({ t, pose: makeWorldPose([0, 0, 0], physbone(t)) });
+    assertAlmostEquals(predictor.predict(t).pose.yawRad, Math.PI / 2, 0.08, `at ${t - start} ms`);
+  }
+});
+
+Deno.test("solver: while the stick turns, avatar yaw changes apply 1:1 even toward the old yaw", () => {
+  const solver = new VrcOriginSolver();
+  solver.update(makeWorldPose([0, 0, 0], 0.5), makeHmdMatrix([0, 1.6, 0], 0));
+  // Head turned 30° earlier (body didn't follow): playspace yaw stays 0.5.
+  const head = (30 * Math.PI) / 180;
+  solver.update(makeWorldPose([0, 0, 0], 0.5), makeHmdMatrix([0, 1.6, 0], head));
+  // A stick turn of -10° moves rawYaw toward 0.5 (looks like catch-up) but is a turn.
+  const r = solver.update(
+    makeWorldPose([0, 0, 0], 0.5 - (10 * Math.PI) / 180),
+    makeHmdMatrix([0, 1.6, 0], head),
+    true,
+  );
+  assertAlmostEquals(r.transform.yawRad, 0.5 - (10 * Math.PI) / 180, 1e-9);
+});

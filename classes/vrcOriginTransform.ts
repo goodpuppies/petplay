@@ -215,7 +215,15 @@ export class VrcOriginSolver {
     }
   }
 
-  update(worldPose: VrcOriginWorldPose, hmdMatrix: Matrix34Tuple): VrcOriginSolverResult {
+  /**
+   * @param stickTurning the turn stick is held: every avatar yaw change is the playspace turning
+   *   (not the body catching up to the head), so it applies 1:1
+   */
+  update(
+    worldPose: VrcOriginWorldPose,
+    hmdMatrix: Matrix34Tuple,
+    stickTurning = false,
+  ): VrcOriginSolverResult {
     const hmdPos: Vec3 = [hmdMatrix[0][3], hmdMatrix[1][3], hmdMatrix[2][3]];
     const hmdYaw = hmdYawRightHandedRad(hmdMatrix);
     const rawYaw = normalizeAngleRad(hmdYaw + worldPose.yawRad);
@@ -227,7 +235,9 @@ export class VrcOriginSolver {
       const prevErr = Math.abs(angleDiffRad(this.prevRawYawRad, this.yawRad));
       const nextErr = Math.abs(angleDiffRad(rawYaw, this.yawRad));
 
-      if (Math.abs(dAvatarYaw) >= this.avatarYawEps) {
+      if (stickTurning) {
+        this.yawRad = normalizeAngleRad(this.yawRad + dAvatarYaw);
+      } else if (Math.abs(dAvatarYaw) >= this.avatarYawEps) {
         if (nextErr > prevErr + 1e-4) {
           // Avatar yaw moved rawYaw further from our current playspace yaw (e.g. joystick turn):
           // apply the avatar yaw delta so any existing head-vs-body offset is not folded in.
@@ -563,6 +573,8 @@ export interface VrcRootPredictorOptions {
   changingYawProcessNoise?: number;
   /** How long (ms) after a stick change the filter stays responsive. */
   stickChangeMs?: number;
+  /** Initial smooth-turn rate per unit of turn stick (rad/s); learned from each turn after. */
+  turnGainRadPerSec?: number;
   /**
    * After `extrapolateMs`, velocity decays with this time constant (ms) rather than stopping dead:
    * VRChat skips updates for up to ~200 ms mid-walk.
@@ -687,6 +699,15 @@ class KalmanChannel {
     this.updatedAt = t;
   }
 
+  /** Overwrite the estimate at `t` (dead reckoning from the stick). */
+  set(t: number, values: number[], velocity: number[]): void {
+    this.state = values.map((x, k) => [x, velocity[k]]);
+    this.cov = values.map(() => [this.r, 0, 0.01]);
+    this.updatedAt = t;
+    // The stop fade settles on this, not on a reading from before the dead reckoning.
+    this.newestRaw = [...values];
+  }
+
   /** Pull the velocity toward `values` (per second) with variance `r`, without moving in time. */
   measureVelocity(values: number[], r: number): void {
     for (let k = 0; k < this.state.length; k++) {
@@ -793,6 +814,83 @@ class StickTracker {
   }
 }
 
+/** Dead reckoning of a smooth turn from the turn stick, and learning its rate. */
+class StickTurn {
+  turning = false;
+  settling = false;
+  disabled = false;
+  releasedAt = 0;
+  private yaw = 0;
+  private startYaw = 0;
+  private startRaw = 0;
+  private lastT = 0;
+  private lastStick = 0;
+  private mismatches = 0;
+
+  constructor(public gain: number) {}
+
+  /** Easing the estimate to the settled reading: `[endsAt, target]`. */
+  correction: [number, number] | null = null;
+  private startT = 0;
+
+  /** Whether the stick (not the PhysBone reading) owns yaw right now. */
+  get steering(): boolean {
+    return this.turning || this.settling || this.correction != null;
+  }
+
+  cancel(): void {
+    this.turning = false;
+    this.settling = false;
+    this.correction = null;
+  }
+
+  begin(t: number, estimate: number, rawYaw: number): void {
+    this.turning = true;
+    this.settling = false;
+    this.correction = null;
+    this.startT = t;
+    this.yaw = this.startYaw = estimate;
+    this.startRaw = rawYaw;
+    this.lastT = t;
+    this.lastStick = 0;
+  }
+
+  advance(t: number, stick: number): number {
+    this.yaw += (this.gain * stick * Math.max(0, t - this.lastT)) / 1000;
+    this.lastT = t;
+    this.lastStick = stick;
+    return this.yaw;
+  }
+
+  end(t: number): number {
+    this.advance(t, this.lastStick);
+    this.turning = false;
+    this.settling = true;
+    this.releasedAt = t;
+    return this.yaw;
+  }
+
+  /**
+   * The PhysBone reading settled at `rawYaw` (unwrapped): learn from predicted vs measured. The
+   * reading is the avatar body's yaw, which also swings tens of degrees against the head, so only
+   * long turns (where that is small next to the turn) teach the gain.
+   */
+  settle(rawYaw: number): void {
+    this.settling = false;
+    const predicted = this.yaw - this.startYaw;
+    const measured = rawYaw - this.startRaw;
+    if (Math.abs(predicted) < Math.PI / 3 || this.releasedAt - this.startT < 400) return;
+    const ratio = measured / predicted;
+    if (ratio > 0.6 && ratio < 1.6) {
+      this.gain = Math.min(8, Math.max(1, this.gain * (1 + 0.5 * (ratio - 1))));
+      this.mismatches = 0;
+    } else if (++this.mismatches >= 3) {
+      // Not smooth turning as modelled (snap turning, other bindings): measurements only.
+      this.disabled = true;
+    }
+  }
+}
+
 /**
  * Predicts the avatar root pose from the timestamped samples VRChat sends, and smooths what is
  * shown.
@@ -837,6 +935,10 @@ export class VrcRootPredictor {
   private readonly stickChangeMs: number;
   private readonly move = new StickTracker();
   private readonly turn = new StickTracker();
+  private readonly stickTurn: StickTurn;
+  /** The measured (PhysBone) yaw, unwrapped, and when it last changed. */
+  private rawYaw: number | null = null;
+  private rawYawChangedAt = 0;
 
   constructor(options: VrcRootPredictorOptions = {}) {
     this.position = new KalmanChannel(
@@ -859,6 +961,7 @@ export class VrcRootPredictor {
       changingYaw: options.changingYawProcessNoise ?? 40,
     };
     this.stickChangeMs = options.stickChangeMs ?? 300;
+    this.stickTurn = new StickTurn(options.turnGainRadPerSec ?? (200 * Math.PI) / 180);
     this.timing = {
       extrapolateMs: options.extrapolateMs ?? 60,
       heldMs: options.heldExtrapolateMs ?? 400,
@@ -875,6 +978,18 @@ export class VrcRootPredictor {
     this.yaw.reset();
     this.lastPose = null;
     this.shown = null;
+    this.rawYaw = null;
+    this.stickTurn.cancel();
+  }
+
+  /** Whether the turn stick is driving yaw right now (`VrcOriginSolver.update`'s hint). */
+  isStickTurning(): boolean {
+    return this.stickTurn.turning;
+  }
+
+  /** The learned smooth-turn rate per unit of stick (rad/s), and whether stick turning is used. */
+  turnGain(): { radPerSec: number; enabled: boolean } {
+    return { radPerSec: this.stickTurn.gain, enabled: !this.stickTurn.disabled };
   }
 
   hasSamples(): boolean {
@@ -896,6 +1011,7 @@ export class VrcRootPredictor {
     if (!input) {
       this.move.clear();
       this.turn.clear();
+      this.stickTurn.cancel();
       this.position.q = this.q.position;
       this.yaw.q = this.q.yaw;
       return;
@@ -903,7 +1019,7 @@ export class VrcRootPredictor {
     const moveEvent = this.move.update(input.t, input.move, input.headYawRate > 0.5);
     const turnEvent = this.turn.update(input.t, [input.turn, 0], false);
     if (moveEvent === "released") this.position.stop(input.t);
-    if (turnEvent === "released") this.yaw.stop(input.t);
+    this.steerYaw(input.t, input.turn, turnEvent);
     const steady = (stick: StickTracker) => input.t - stick.changedAt >= this.stickChangeMs;
     this.position.q = this.move.active
       ? (steady(this.move) ? this.q.steadyPosition : this.q.changingPosition)
@@ -947,6 +1063,14 @@ export class VrcRootPredictor {
       // Just after a release VRChat is standing still; late samples must not restart motion.
       if (this.move.releasedWithin(t, 500)) this.position.measureVelocity([0, 0, 0], 1e-4);
     }
+    if (yawChanged) {
+      this.rawYaw = this.rawYaw == null
+        ? pose.yawRad
+        : this.rawYaw + angleDiffRad(pose.yawRad, this.rawYaw);
+      this.rawYawChangedAt = t;
+    }
+    // While the stick turns (and until the PhysBone yaw catches up), the stick drives yaw.
+    if (this.stickTurn.steering) return;
     if (yawChanged && (!this.yaw.started || t > this.yaw.updatedAt)) {
       let yaw = pose.yawRad;
       if (this.yaw.started) {
@@ -960,6 +1084,53 @@ export class VrcRootPredictor {
       this.yaw.measure(t, [yaw]);
       if (this.turn.releasedWithin(t, 500)) this.yaw.measureVelocity([0], 1e-4);
     }
+  }
+
+  /**
+   * Smooth turning from the stick. The rig's yaw comes from PhysBones, which follow the avatar
+   * with ~0.4 s of spring lag (measured: the reading kept turning ~60° after a release), while
+   * VRChat turns at `gain × stick` and stops on release. So while the turn stick is held the
+   * yaw is dead-reckoned from it; once the PhysBone reading settles after release, the estimate
+   * takes the measured yaw and the gain learns from the whole turn.
+   */
+  private steerYaw(t: number, stick: number, event: "pressed" | "released" | null): void {
+    const turn = this.stickTurn;
+    if (!this.yaw.started || this.rawYaw == null || turn.disabled) {
+      turn.cancel();
+      return;
+    }
+    if (this.turn.active) {
+      if (!turn.turning) {
+        const estimate = this.yaw.at(t, this.timing).values[0];
+        turn.begin(t, estimate, this.rawYaw);
+      }
+      const yaw = turn.advance(t, stick);
+      this.yaw.set(t, [yaw], [turn.gain * stick]);
+      return;
+    }
+    if (turn.turning || event === "released") {
+      const yaw = turn.end(t);
+      this.yaw.set(t, [yaw], [0]);
+      return;
+    }
+    if (turn.correction) {
+      if (t >= turn.correction[0]) {
+        this.yaw.set(t, [turn.correction[1]], [0]);
+        turn.correction = null;
+      }
+      return;
+    }
+    if (!turn.settling) return;
+    const since = t - turn.releasedAt;
+    const quiet = t - this.rawYawChangedAt;
+    if (since < 300 || (quiet < 150 && since < 1000)) return;
+    // Settled: ease to the reading over 400 ms (it carries the body's swing against the head,
+    // so a jump would show that as a lurch).
+    const estimate = this.yaw.at(t, this.timing).values[0];
+    const measured = estimate + angleDiffRad(this.rawYaw, estimate);
+    turn.settle(this.rawYaw);
+    turn.correction = [t + 400, measured];
+    this.yaw.set(t, [estimate], [((measured - estimate) * 1000) / 400]);
   }
 
   /** The filters' estimate at `tMs` (no output smoothing). */
