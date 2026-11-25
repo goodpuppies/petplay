@@ -163,6 +163,9 @@ jobs:
           else
             pkgs+=(pkg-config clang libpipewire-0.3-dev libdbus-1-dev libva-dev libgbm-dev libasound2-dev libopus-dev)
           fi
+          if [[ "${{ runner.arch }}" == "X64" ]]; then
+            pkgs+=(libgl-dev)
+          fi
           if [[ "${{ runner.arch }}" == "ARM64" ]]; then
             pkgs+=(xvfb xauth libgl1-mesa-dri)
             if [[ "${{ steps.arm64-raylib.outputs.cache-hit }}" != "true" ]]; then
@@ -182,6 +185,13 @@ jobs:
         if: runner.arch == 'ARM64' && steps.arm64-raylib.outputs.cache-hit != 'true'
         with:
           version: 0.13.0
+      - uses: mlugg/setup-zig@v2
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        with:
+          version: 0.16.0
+      - name: Build native overlay presenter (Linux x64)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: deno task overlay:presenter:build
       - run: deno task preconf
       - run: deno install --allow-import
       - name: Build test-only GLFW 3.4 (matching Frame's required API)

@@ -491,11 +491,23 @@ async function run(options: Start) {
   let pendingProjectionCamSlot = 0;
   let activeDmabufBanks: DmabufBankCount | null = null;
   let presenter = null as OverlayPresenterNative | null;
+  let presenterLoadError: string | null = null;
   // Panorama is the main mode and presents without it; load the native helper only for the
   // projection path and `panoramaPacing: "presenter"`.
   let overlayPointer: Deno.PointerValue = null;
   let ipcResourceManagerPointer: Deno.PointerValue = null;
   const nativePresenter = () => presenter ??= new OverlayPresenterNative(overlayPointer!);
+  const tryNativePresenter = (): OverlayPresenterNative | null => {
+    if (presenter) return presenter;
+    if (presenterLoadError) return null;
+    try {
+      return nativePresenter();
+    } catch (err) {
+      presenterLoadError = err instanceof Error ? err.message : String(err);
+      console.warn("[overlay_renderer] Native presenter unavailable; falling back to OpenGL:", presenterLoadError);
+      return null;
+    }
+  };
   let panorama: OpenVrOverlayTexture | null = null;
   let panoramaBankOverlays: OpenVrOverlayTexture[] = [];
   const clearPendingBanks = () => {
@@ -689,10 +701,10 @@ async function run(options: Start) {
           presenter?.resetVisibility();
           let bankReady = false;
           if (desiredDmabufBanks === 2 || desiredDmabufBanks === 3) {
-            const native = nativePresenter();
-            const ipcPtr = native.hasDmabufBanks ? acquireIpcResourceManager() : null;
+            const native = tryNativePresenter();
+            const ipcPtr = native?.hasDmabufBanks ? acquireIpcResourceManager() : null;
             const outSize = renderer.getPreferredOutputSize();
-            const pool = ipcPtr
+            const pool = native && ipcPtr
               ? native.createDmabufBankPool(
                 ipcPtr,
                 outSize.width,
@@ -701,7 +713,7 @@ async function run(options: Start) {
                 1,
               )
               : null;
-            if (pool) {
+            if (pool && native) {
               try {
                 for (let b = 0; b < desiredDmabufBanks; b++) {
                   const bankOv = new OpenVrOverlayTexture(
@@ -745,7 +757,9 @@ async function run(options: Start) {
                 renderer.setExternalOutputBanks(null);
               }
             } else {
-              const reason = !native.hasDmabufBanks
+              const reason = !native
+                ? (presenterLoadError || "native presenter unavailable")
+                : !native.hasDmabufBanks
                 ? "native library lacks DMA-BUF bank symbols"
                 : !ipcPtr
                 ? "IVRIPCResourceManagerClient_003 unavailable"
@@ -766,13 +780,13 @@ async function run(options: Start) {
           presenter?.resetVisibility();
           let bankReady = false;
           if (desiredDmabufBanks === 2 || desiredDmabufBanks === 3) {
-            const native = nativePresenter();
-            const ipcPtr = native.hasDmabufBanks ? acquireIpcResourceManager() : null;
+            const native = tryNativePresenter();
+            const ipcPtr = native?.hasDmabufBanks ? acquireIpcResourceManager() : null;
             const eyeSize = renderer.getPreferredEyeSize();
-            const pool = ipcPtr
+            const pool = native && ipcPtr
               ? native.createDmabufBankPool(ipcPtr, eyeSize, eyeSize, desiredDmabufBanks, 2)
               : null;
-            if (pool) {
+            if (pool && native) {
               try {
                 const extBanks: {
                   left: { fbo: number; colorTexture: number; depthRbo: number };
@@ -812,7 +826,9 @@ async function run(options: Start) {
                 renderer.setExternalEyeBanks(null);
               }
             } else {
-              const reason = !native.hasDmabufBanks
+              const reason = !native
+                ? (presenterLoadError || "native presenter unavailable")
+                : !native.hasDmabufBanks
                 ? "native library lacks DMA-BUF bank symbols"
                 : !ipcPtr
                 ? "IVRIPCResourceManagerClient_003 unavailable"
