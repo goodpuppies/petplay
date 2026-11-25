@@ -480,10 +480,15 @@ function applyDampedHandleState(
   state: HandleState<unknown>,
   target: import("three").Object3D,
 ): void {
-  // HandleState.delta.time is in milliseconds.
-  const rawMs = state.delta?.time;
-  const dt = Math.max(0, Math.min(0.1, typeof rawMs === "number" && rawMs > 0 ? rawMs / 1000 : 1 / 72));
   const laserSmoothing = Number(target.userData.laserGrabSmoothing) || 0;
+  // @react-three/handle's hook passes clock.getElapsedTime() (seconds) to store.update, except
+  // state.first uses event.timeStamp (ms), making frame 2's delta negative.
+  const rawDt = state.delta?.time;
+  const fallbackDt = typeof rawDt === "number" && rawDt > 0 ? rawDt : 1 / 72;
+  const dt = Math.max(
+    0,
+    Math.min(0.1, laserSmoothing > 0 ? (Number(target.userData.laserGrabDt) || fallbackDt) : fallbackDt),
+  );
   // A window the renderer carries with the controller (`renderTrackingFollow`) stays rigid to it:
   // damping by irregular worker frame times makes its offset from the hand wobble, which the
   // fresh controller pose would then show against the steady hand.

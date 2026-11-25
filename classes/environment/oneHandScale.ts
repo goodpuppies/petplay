@@ -179,11 +179,18 @@ function applyWithOptionalLaserSmoothing<T>(
   smoothingAmount: number,
 ): T {
   const active = smoothingAmount > 0;
-  target.userData.laserGrabSmoothing = active ? smoothingAmount : 0;
-  target.userData.laserGrabSmoothingApplied = false;
   const now = performance.now();
   const prevMs = smoothLastMs.get(target);
   smoothLastMs.set(target, now);
+  // Measure frame dt directly from performance.now(): @react-three/handle mixes event.timeStamp
+  // (ms) on state.first with clock.getElapsedTime() (s) on subsequent frames, so state.delta.time
+  // is negative on frame 2 and in seconds (not ms) thereafter.
+  const dtSeconds = prevMs != null && now > prevMs
+    ? Math.max(1 / 1000, Math.min(0.1, (now - prevMs) / 1000))
+    : 1 / 72;
+  target.userData.laserGrabSmoothing = active ? smoothingAmount : 0;
+  target.userData.laserGrabDt = dtSeconds;
+  target.userData.laserGrabSmoothingApplied = false;
   if (!active || state.first) {
     return apply(state, target);
   }
@@ -193,13 +200,6 @@ function applyWithOptionalLaserSmoothing<T>(
   if (target.userData.laserGrabSmoothingApplied) {
     return result;
   }
-  // HandleState.delta.time is in milliseconds; fall back to wall-clock delta in seconds.
-  const rawMs = state.delta?.time;
-  const dtSeconds = typeof rawMs === "number" && rawMs > 0
-    ? rawMs / 1000
-    : prevMs != null
-    ? (now - prevMs) / 1000
-    : 1 / 72;
   applyLaserGrabSmoothing(target, smoothPrevPos, smoothPrevQuat, smoothingAmount, dtSeconds);
   return result;
 }
@@ -241,6 +241,7 @@ export function withOneHandScale<T>(
       const follow = target.userData.renderTrackingFollow as CarryFollow | undefined;
       if (state.last && follow != null) {
         delete target.userData.laserGrabSmoothing;
+        delete target.userData.laserGrabDt;
         delete target.userData.laserGrabSmoothingApplied;
         releaseCarried(state, target, follow, apply);
         return undefined;
@@ -255,10 +256,12 @@ export function withOneHandScale<T>(
           prevSmoothing,
         );
         delete target.userData.laserGrabSmoothing;
+        delete target.userData.laserGrabDt;
         delete target.userData.laserGrabSmoothingApplied;
         return result;
       }
       delete target.userData.laserGrabSmoothing;
+      delete target.userData.laserGrabDt;
       delete target.userData.laserGrabSmoothingApplied;
       return apply(state, target);
     }
@@ -295,6 +298,7 @@ export function withOneHandScale<T>(
       return applyWithOptionalLaserSmoothing(state, target, apply, smoothAmount);
     }
     delete target.userData.laserGrabSmoothing;
+    delete target.userData.laserGrabDt;
     delete target.userData.laserGrabSmoothingApplied;
     if (!down) {
       session.active = undefined;
