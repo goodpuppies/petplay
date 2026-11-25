@@ -1319,7 +1319,11 @@ export class WebXRRaythreeRaylibRenderer {
     },
     debugContext?: string,
     ui?: WebXRRaythreeUiSnapshot,
-    options?: { skipAssetSync?: boolean; clear?: boolean },
+    options?: {
+      skipAssetSync?: boolean;
+      clear?: boolean;
+      viewport?: { width: number; height: number };
+    },
   ): {
     textGeometryBuilds: number;
     textBatchRebuilds: number;
@@ -1359,6 +1363,7 @@ export class WebXRRaythreeRaylibRenderer {
       matrices,
       ui,
       options?.clear !== false,
+      options?.viewport,
     );
     const t2 = performance.now();
     return {
@@ -1622,6 +1627,7 @@ export class WebXRRaythreeRaylibRenderer {
     },
     ui?: WebXRRaythreeUiSnapshot,
     clear = true,
+    viewport?: { width: number; height: number },
   ): {
     prepMs: number;
     opaqueMs: number;
@@ -1720,13 +1726,20 @@ export class WebXRRaythreeRaylibRenderer {
     let uiTextCount = 0;
     let uiPanelDrawn = 0;
     let uiTextDrawn = 0;
+    let hasHudOverUi = false;
+    for (let i = 0; i < frame.instances.length; i++) {
+      if (frame.instances[i]!.hudOverUi) {
+        hasHudOverUi = true;
+        break;
+      }
+    }
     if (ui !== undefined) {
       setUiDepthMaskEnabled(false);
       setUiDepthTestEnabled(this.foreground != null);
       setUiBackfaceCullingEnabled(false);
       beginUiAlphaBlend();
       try {
-        const uiPhases = this.drawUiSnapshot(ui, viewMatrix, projectionMatrix);
+        const uiPhases = this.drawUiSnapshot(ui, viewMatrix, projectionMatrix, viewport);
         uiSortPrepMs = uiPhases.sortPrepMs;
         uiPanelsMs = uiPhases.panelsMs;
         uiTextMs = uiPhases.textMs;
@@ -1740,9 +1753,13 @@ export class WebXRRaythreeRaylibRenderer {
         setUiDepthTestEnabled(true);
         setUiDepthMaskEnabled(true);
       }
-      this.writeUiDepth();
+      if (hasHudOverUi) {
+        this.writeUiDepth();
+      }
     }
-    this.drawHudOverUiInstances(frame);
+    if (hasHudOverUi) {
+      this.drawHudOverUiInstances(frame);
+    }
     const tUi1 = performance.now();
     raylib.H.EndBlendMode();
 
@@ -1773,6 +1790,7 @@ export class WebXRRaythreeRaylibRenderer {
     ui: WebXRRaythreeUiSnapshot,
     viewMatrix: Float32Array,
     projectionMatrix: Float32Array,
+    viewport?: { width: number; height: number },
   ): {
     sortPrepMs: number;
     panelsMs: number;
@@ -1961,7 +1979,9 @@ export class WebXRRaythreeRaylibRenderer {
     const panelsStart = performance.now();
     this.prepareUiPanelRuns(ops);
     panelsMs += performance.now() - panelsStart;
-    const glyphViewport = this.textRenderer === "glyph" && this.glyphText != null
+    const glyphViewport = viewport != null && viewport.width > 0 && viewport.height > 0
+      ? viewport
+      : this.textRenderer === "glyph" && this.glyphText != null
       ? this.glyphText.readViewport()
       : null;
     const glyphFastPass = glyphViewport != null

@@ -7,7 +7,13 @@ import { OpenVrOverlayFramePacer } from "../classes/openVrOverlayFramePacing.ts"
 import { OpenVrControllerTipPoseResolver } from "../classes/openVrControllerTipPose.ts";
 import { OpenVrProjectionOverlays } from "../classes/openVrProjectionOverlays.ts";
 import { OpenVrOverlayTexture } from "../classes/openVrOverlayTexture.ts";
-import { OverlayPresenterNative, type RenderCameras } from "../classes/overlayPresenterNative.ts";
+import {
+  type DmabufBankPool,
+  OverlayPresenterNative,
+  type RenderCameras,
+} from "../classes/overlayPresenterNative.ts";
+import { stringToPointer } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
+import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { trackingMatrix34, writeStereoRenderViews } from "../classes/overlayRenderCamera.ts";
 import {
   followFrame,
@@ -38,13 +44,25 @@ import { OverlaySceneInbox } from "../classes/overlaySceneDelivery.ts";
  * in-worker renderer did: sorts with other overlays normally, no reprojection.
  */
 export type PresentMode = "projection" | "panorama";
+export type DmabufBankCount = 0 | 2 | 3;
 type PanoramaPacing = "vsync" | "frame-sync" | "presenter";
+
+function defaultDmabufBanks(): DmabufBankCount {
+  if (Deno.build.os !== "linux") return 0;
+  const raw = Deno.env.get("PETPLAY_DMABUF_BANKS");
+  if (raw === "0") return 0;
+  if (raw === "2") return 2;
+  if (raw === "3") return 3;
+  return 3;
+}
+
 type Start = {
   webxrTarget?: string;
   overlayKey?: string;
   overlayName?: string;
   eyeSize?: number;
   presentMode?: PresentMode;
+  dmabufBanks?: DmabufBankCount;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
 };
@@ -87,6 +105,11 @@ const state = actorState({
   // This chooses optical parameters only; render eye views remain independent of IR-time poses.
   projectionMode: "scene-compatible" as "headset" | "scene-compatible",
   presentMode: "projection" as PresentMode,
+  /**
+   * Linux projection mode: number of pre-bound DMA-BUF overlay banks (2 or 3) flipped via
+   * ShowOverlay/HideOverlay with zero per-frame SetOverlayTexture calls. 0 = legacy GL submit.
+   */
+  dmabufBanks: defaultDmabufBanks() as DmabufBankCount,
   /**
    * Panorama only: whole display frames to predict the head pose beyond the next vsync. The
    * panorama is head-locked and never reprojected, so any gap between the predicted and the
@@ -209,6 +232,7 @@ new PostMan(
       if (loop) throw new Error("Renderer already started; stop it before reconfiguration");
       state.webxrTarget = options.webxrTarget ?? null;
       state.presentMode = options.presentMode ?? "projection";
+      if (options.dmabufBanks != null) state.dmabufBanks = options.dmabufBanks;
       state.stopRequested = false;
       state.error = null;
       latest = null;
@@ -320,6 +344,7 @@ new PostMan(
       dropLateFrames?: boolean;
       renderThreadNice?: number;
       projectionMode?: "headset" | "scene-compatible";
+      dmabufBanks?: DmabufBankCount;
     }) => {
       state.panoramaExtraPredictionFrames = value.panoramaExtraPredictionFrames ??
         state.panoramaExtraPredictionFrames;
@@ -345,6 +370,12 @@ new PostMan(
           throw new Error("Unknown projection comparison mode");
         }
         state.projectionMode = value.projectionMode;
+      }
+      if (value.dmabufBanks != null) {
+        if (value.dmabufBanks !== 0 && value.dmabufBanks !== 2 && value.dmabufBanks !== 3) {
+          throw new Error("dmabufBanks must be 0, 2, or 3");
+        }
+        state.dmabufBanks = value.dmabufBanks;
       }
       // Re-prime the complete asset baseline after rejecting frozen deliveries.
       if (wasFrozen && !state.freezeScene && registered) register();
@@ -428,12 +459,37 @@ function projection(system: OpenVR.IVRSystem, eye: OpenVR.Eye) {
 async function run(options: Start) {
   let renderer: WebXROverlayRaylib | null = null;
   let overlays: OpenVrProjectionOverlays | null = null;
+  let bankOverlays: OpenVrProjectionOverlays[] = [];
+  let bankPool: DmabufBankPool | null = null;
+  let activeBank = -1;
+  let activeDmabufBanks: DmabufBankCount | null = null;
   let presenter = null as OverlayPresenterNative | null;
   // Panorama is the main mode and presents without it; load the native helper only for the
   // projection path and `panoramaPacing: "presenter"`.
   let overlayPointer: Deno.PointerValue = null;
+  let ipcResourceManagerPointer: Deno.PointerValue = null;
   const nativePresenter = () => presenter ??= new OverlayPresenterNative(overlayPointer!);
   let panorama: OpenVrOverlayTexture | null = null;
+  const teardownDmabufBanks = () => {
+    renderer?.setExternalEyeBanks(null);
+    for (const bank of bankOverlays) bank.cleanup();
+    bankOverlays = [];
+    bankPool?.destroy();
+    bankPool = null;
+    activeBank = -1;
+  };
+  const acquireIpcResourceManager = (): Deno.PointerValue => {
+    if (ipcResourceManagerPointer) return ipcResourceManagerPointer;
+    const errPtr = P.Int32P<OpenVR.InitError>();
+    const ptr = OpenVR.VR_GetGenericInterface(
+      stringToPointer("IVRIPCResourceManagerClient_003"),
+      errPtr,
+    );
+    const err = new Deno.UnsafePointerView(errPtr).getInt32();
+    if (!ptr || err !== OpenVR.InitError.VRInitError_None) return null;
+    ipcResourceManagerPointer = ptr;
+    return ptr;
+  };
   try {
     const pointers = runtime.initialize({
       system: "required",
@@ -527,18 +583,87 @@ async function run(options: Start) {
         renderer.resetSceneAssets();
         activeEpoch = payload.delivery.epoch;
       }
-      if (activeMode !== state.presentMode) {
+      const desiredDmabufBanks: DmabufBankCount = state.presentMode === "projection"
+        ? state.dmabufBanks
+        : 0;
+      if (activeMode !== state.presentMode || activeDmabufBanks !== desiredDmabufBanks) {
+        teardownDmabufBanks();
         if (state.presentMode === "panorama") {
           overlays.cleanup();
           presenter?.resetVisibility();
+          state.transport = "OpenGL panorama";
         } else {
           panorama.cleanup();
           panoramaReady = false;
-          overlays.initialize({ key: overlayKey, name: overlayName, sortOrder: 20 });
+          overlays.cleanup();
+          presenter?.resetVisibility();
+          let bankReady = false;
+          if (desiredDmabufBanks === 2 || desiredDmabufBanks === 3) {
+            const native = nativePresenter();
+            const ipcPtr = native.hasDmabufBanks ? acquireIpcResourceManager() : null;
+            const eyeSize = renderer.getPreferredEyeSize();
+            const pool = ipcPtr
+              ? native.createDmabufBankPool(ipcPtr, eyeSize, eyeSize, desiredDmabufBanks, 2)
+              : null;
+            if (pool) {
+              try {
+                const extBanks: {
+                  left: { fbo: number; colorTexture: number; depthRbo: number };
+                  right: { fbo: number; colorTexture: number; depthRbo: number };
+                }[] = [];
+                for (let b = 0; b < desiredDmabufBanks; b++) {
+                  const bankOv = new OpenVrProjectionOverlays(
+                    Deno.UnsafePointer.value(pointers.overlay!),
+                  );
+                  bankOv.initialize({
+                    key: `${overlayKey}.bank${b}`,
+                    name: `${overlayName} bank ${b}`,
+                    sortOrder: 20,
+                  });
+                  bankOv.applyTextureBounds(true);
+                  const [lh, rh] = bankOv.getHandles();
+                  const leftSlot = pool.slots[b * 2];
+                  const rightSlot = pool.slots[b * 2 + 1];
+                  const bindL = native.bindDmabufOverlay(lh, leftSlot.sharedHandle);
+                  const bindR = native.bindDmabufOverlay(rh, rightSlot.sharedHandle);
+                  if (bindL !== 0 || bindR !== 0) {
+                    throw new Error(`bindDmabufOverlay failed: left=${bindL} right=${bindR}`);
+                  }
+                  bankOverlays.push(bankOv);
+                  extBanks.push({ left: leftSlot, right: rightSlot });
+                }
+                bankPool = pool;
+                renderer.setExternalEyeBanks(extBanks, eyeSize, eyeSize);
+                state.transport =
+                  `DMA-BUF ${desiredDmabufBanks}-bank visibility flip (${eyeSize}x${eyeSize})`;
+                bankReady = true;
+              } catch (err) {
+                console.warn("[overlay_renderer] DMA-BUF bank setup failed, falling back to GL:", err);
+                for (const bank of bankOverlays) bank.cleanup();
+                bankOverlays = [];
+                pool.destroy();
+                renderer.setExternalEyeBanks(null);
+              }
+            } else {
+              const reason = !native.hasDmabufBanks
+                ? "native library lacks DMA-BUF bank symbols"
+                : !ipcPtr
+                ? "IVRIPCResourceManagerClient_003 unavailable"
+                : (native.getDmabufBankLastError() || "pool creation failed");
+              console.warn(`[overlay_renderer] DMA-BUF banks unavailable (${reason}); using GL`);
+              state.transport = `OpenGL fallback (${reason})`;
+            }
+          } else {
+            state.transport = "OpenGL baseline (compositor image reuse is not resolved)";
+          }
+          if (!bankReady) {
+            overlays.initialize({ key: overlayKey, name: overlayName, sortOrder: 20 });
+          }
         }
         shownLeft = 0;
         shownPanorama = 0;
         activeMode = state.presentMode;
+        activeDmabufBanks = desiredDmabufBanks;
       }
       const panoramaMode = activeMode === "panorama";
       // Vsync pacing starts each frame at the display vsync (panorama's default); otherwise
@@ -637,8 +762,16 @@ async function run(options: Start) {
       for (const [space, matrix] of Object.entries(anchors)) {
         if (matrix) state.renderedAnchors[space] = Array.from(matrix);
       }
-      if (!renderer.useEyeTargetsOtherThan([shownLeft])) {
-        throw new Error("No eligible render targets");
+      const useDmabufProjection = !panoramaMode && bankPool !== null && bankOverlays.length >= 2;
+      const nextBank = useDmabufProjection ? (activeBank + 1) % bankOverlays.length : -1;
+      if (useDmabufProjection) {
+        if (!renderer.selectExternalEyeBank(nextBank)) {
+          throw new Error(`Invalid DMA-BUF bank index ${nextBank}`);
+        }
+      } else {
+        if (!renderer.useEyeTargetsOtherThan([shownLeft])) {
+          throw new Error("No eligible render targets");
+        }
       }
       if (
         panoramaMode && state.panoramaTextureRotation &&
@@ -756,6 +889,35 @@ async function run(options: Start) {
         }
         if (published) {
           shownPanorama = texture;
+          state.publishedFrames++;
+        }
+      } else if (useDmabufProjection) {
+        const native = nativePresenter();
+        const showHandles = bankOverlays[nextBank].getHandles();
+        const hideHandles = activeBank >= 0 && activeBank !== nextBank
+          ? bankOverlays[activeBank].getHandles()
+          : null;
+        const result = native.presentProjectionBank(showHandles, hideHandles, cameras, onTime);
+        state.lastPresent = { mode: "projection-dmabuf-bank", bank: nextBank, ...result };
+        const dropped = "dropped" in result && result.dropped;
+        if (dropped) state.droppedLateFrames++;
+        const phase = timeline ? pacer.sampleVsyncPhase() : null;
+        mark(
+          dropped ? "drop" : "present",
+          phase ? Number(phase.frameIndex) : null,
+          phase?.msSinceVsync,
+          result.gpuFinishMs,
+          result.waitMs,
+          result.publicationMs,
+          result.waitResult,
+        );
+        if (dropped) { /* compositor keeps reprojecting the previously visible bank */ }
+        else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
+          state.waitTimeouts++;
+        } else if (result.error) {
+          throw new Error(`DMA-BUF bank projection publication failed: ${JSON.stringify(result)}`);
+        } else {
+          activeBank = nextBank;
           state.publishedFrames++;
         }
       } else {
@@ -876,6 +1038,7 @@ async function run(options: Start) {
     probeClock = null;
     state.motionProbe = false;
     latest = null;
+    teardownDmabufBanks();
     overlays?.cleanup();
     panorama?.cleanup();
     presenter?.close();

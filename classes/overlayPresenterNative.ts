@@ -35,7 +35,57 @@ const symbols = {
     result: "i32",
     optional: true,
   },
+  // Linux DMA-BUF bank pool + visibility-flip presenter (optional).
+  pp_dmabuf_bank_last_error: { parameters: [], result: "pointer", optional: true },
+  pp_dmabuf_bank_create: {
+    parameters: [
+      "pointer",
+      "u32",
+      "u32",
+      "u32",
+      "u32",
+      "buffer",
+      "buffer",
+      "buffer",
+      "buffer",
+    ],
+    result: "pointer",
+    optional: true,
+  },
+  pp_dmabuf_bank_destroy: { parameters: ["pointer"], result: "void", optional: true },
+  pp_dmabuf_bank_bind_overlay: {
+    parameters: ["pointer", "u64", "u64"],
+    result: "i32",
+    optional: true,
+  },
+  pp_overlay_fence_finish: { parameters: ["buffer"], result: "i32", optional: true },
+  pp_overlay_set_projection: {
+    parameters: ["pointer", "u64", "u64", "buffer", "buffer"],
+    result: "i32",
+    optional: true,
+  },
+  pp_overlay_flip_banks: {
+    parameters: ["pointer", "u64", "u64", "u64", "u64", "buffer"],
+    result: "i32",
+    optional: true,
+  },
 } as const;
+
+export type DmabufBankSlot = {
+  fbo: number;
+  colorTexture: number;
+  depthRbo: number;
+  sharedHandle: bigint;
+};
+
+export type DmabufBankPool = {
+  readonly width: number;
+  readonly height: number;
+  readonly bankCount: 2 | 3;
+  readonly eyeCount: 1 | 2;
+  readonly slots: readonly DmabufBankSlot[];
+  destroy(): void;
+};
 const WAIT_TIMEOUT_MS = 100;
 /**
  * GL finish, the `WaitFrameSync` wait and OpenVR submission, all on the context owner's thread.
@@ -123,6 +173,131 @@ export class OverlayPresenterNative {
     const s = this.library.symbols;
     return !!(s.pp_overlay_finish && s.pp_overlay_wait_blocking && s.pp_overlay_publish &&
       s.pp_overlay_publish_texture);
+  }
+  /** Whether the library exports the Linux DMA-BUF bank pool + visibility-flip path. */
+  get hasDmabufBanks(): boolean {
+    const s = this.library.symbols;
+    return !!(s.pp_dmabuf_bank_create && s.pp_dmabuf_bank_destroy &&
+      s.pp_dmabuf_bank_bind_overlay && s.pp_overlay_fence_finish &&
+      s.pp_overlay_wait_blocking && s.pp_overlay_set_projection &&
+      s.pp_overlay_flip_banks);
+  }
+  getDmabufBankLastError(): string {
+    const ptr = this.library.symbols.pp_dmabuf_bank_last_error?.();
+    return ptr ? new Deno.UnsafePointerView(ptr).getCString() : "";
+  }
+  createDmabufBankPool(
+    ipcClientPtr: Deno.PointerValue,
+    width: number,
+    height: number,
+    bankCount: 2 | 3,
+    eyeCount: 1 | 2,
+  ): DmabufBankPool | null {
+    if (!this.hasDmabufBanks || !ipcClientPtr) return null;
+    const total = bankCount * eyeCount;
+    const fbos = new Uint32Array(total);
+    const colorTextures = new Uint32Array(total);
+    const depthRbos = new Uint32Array(total);
+    const sharedHandles = new BigUint64Array(total);
+    const ptr = this.library.symbols.pp_dmabuf_bank_create!(
+      ipcClientPtr,
+      width,
+      height,
+      bankCount,
+      eyeCount,
+      fbos,
+      colorTextures,
+      depthRbos,
+      sharedHandles,
+    );
+    if (!ptr) return null;
+    const slots: DmabufBankSlot[] = [];
+    for (let i = 0; i < total; i++) {
+      slots.push({
+        fbo: fbos[i],
+        colorTexture: colorTextures[i],
+        depthRbo: depthRbos[i],
+        sharedHandle: sharedHandles[i],
+      });
+    }
+    let destroyed = false;
+    const destroyFn = this.library.symbols.pp_dmabuf_bank_destroy!;
+    return {
+      width,
+      height,
+      bankCount,
+      eyeCount,
+      slots,
+      destroy: () => {
+        if (destroyed) return;
+        destroyed = true;
+        destroyFn(ptr);
+      },
+    };
+  }
+  bindDmabufOverlay(overlayHandle: bigint, sharedHandle: bigint): number {
+    if (!this.library.symbols.pp_dmabuf_bank_bind_overlay) return -1;
+    return this.library.symbols.pp_dmabuf_bank_bind_overlay(
+      this.table,
+      overlayHandle,
+      sharedHandle,
+    );
+  }
+  /**
+   * Bank-flipped projection present:
+   * 1. Wait for producer GPU fence on the hidden bank's DMA-BUFs.
+   * 2. Update projection poses on the hidden bank (never touching the visible bank).
+   * 3. Wait for `WaitFrameSync`.
+   * 4. Optionally drop if late (`beforePublish() === false`).
+   * 5. Flip `ShowOverlay(show)` / `HideOverlay(hide)` back-to-back in ~1 us.
+   */
+  presentProjectionBank(
+    showHandles: readonly [bigint, bigint],
+    hideHandles: readonly [bigint, bigint] | null,
+    cameras: RenderCameras,
+    beforePublish?: () => boolean,
+  ) {
+    const s = this.library.symbols;
+    writeEyeFromTracking(cameras.leftEyeViewMatrix, this.views.subarray(0, 12));
+    writeEyeFromTracking(cameras.rightEyeViewMatrix, this.views.subarray(12));
+    writeProjectionTangents(cameras.leftEyeProjectionMatrix, true, this.frusta.subarray(0, 4));
+    writeProjectionTangents(cameras.rightEyeProjectionMatrix, true, this.frusta.subarray(4));
+
+    let error = s.pp_overlay_fence_finish!(this.stats);
+    if (!error) {
+      error = s.pp_overlay_set_projection!(
+        this.table,
+        showHandles[0],
+        showHandles[1],
+        this.views,
+        this.frusta,
+      );
+      if (error) this.stats[4] = error;
+    }
+    if (!error) {
+      const start = performance.now();
+      const wait = s.pp_overlay_wait_blocking!(this.table, WAIT_TIMEOUT_MS);
+      this.stats[1] = performance.now() - start;
+      this.stats[5] = wait;
+      if (wait) {
+        this.stats[4] = wait;
+        error = wait;
+      }
+    }
+    if (!error && beforePublish && !beforePublish()) {
+      return { ...this.result(0, false), dropped: true };
+    }
+    if (!error) {
+      error = s.pp_overlay_flip_banks!(
+        this.table,
+        showHandles[0],
+        showHandles[1],
+        hideHandles ? hideHandles[0] : 0n,
+        hideHandles ? hideHandles[1] : 0n,
+        this.stats,
+      );
+    }
+    return { ...this.result(error, error !== 0 && this.stats[3] > 0), dropped: false };
   }
   private publishProjection(
     handles: readonly [bigint, bigint],

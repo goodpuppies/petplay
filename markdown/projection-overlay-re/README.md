@@ -1,7 +1,9 @@
 # Reverse engineering how SteamVR consumes overlay pose and texture
 
 **Start with the [standalone frame-pacing deep dive](deep-dive.md)** for the complete research
-story, corrected findings, GPU and VRChat results, and remaining limitations. The notes below
+story, corrected findings, GPU and VRChat results, and remaining limitations. For the
+**implemented zero-copy Linux fix** (2/3-bank DMA-BUF bind-once + visibility-flip in pure Zig),
+see [DMA-BUF overlay bank visibility-flip](dmabuf-bank-visibility-flip.md). The notes below
 and linked follow-ups retain the individual experiments and build-specific address details.
 
 Implementation direction: [independent IR renderer and event-driven presenter plan](decoupled-render-present-plan.md).

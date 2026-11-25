@@ -328,6 +328,12 @@ function samePanelInputs(entry: PanelCacheEntry | undefined): entry is PanelCach
   return true;
 }
 
+function samePanelInputsRange(entry: PanelCacheEntry, start: number, end: number): boolean {
+  const inputs = entry.inputs;
+  for (let i = start; i < end; i++) if (inputs[i] !== panelInputs[i]) return false;
+  return true;
+}
+
 function sameOrderInfo(
   left: WebXRRaythreeUiOrderInfo | undefined,
   right: WebXRRaythreeUiOrderInfo | undefined,
@@ -434,12 +440,71 @@ function maybeCollectPanels(
         : clippingArray[dataOffset + k]!;
     }
     let entry = cache[index];
-    if (
-      !samePanelInputs(entry) || entry.snapshot.rootIndex !== rootIndex ||
-      entry.snapshot.renderOrder !== renderOrder || entry.snapshot.depthTest !== depthTest ||
-      entry.snapshot.depthWrite !== depthWrite ||
-      !sameOrderInfo(entry.snapshot.orderInfo, orderInfo)
+    const staticMatch = entry != null &&
+      entry.snapshot.rootIndex === rootIndex &&
+      entry.snapshot.renderOrder === renderOrder &&
+      entry.snapshot.depthTest === depthTest &&
+      entry.snapshot.depthWrite === depthWrite &&
+      sameOrderInfo(entry.snapshot.orderInfo, orderInfo);
+    if (staticMatch && samePanelInputs(entry)) {
+      // Tracking can change under an unchanged panel (attached to a hand, a grab starting).
+      const anchor = captureRenderAnchor(
+        object,
+        entry!.snapshot.worldMatrix,
+        instanceArray,
+        entry!.snapshot.renderAnchor,
+        matrixOffset,
+      );
+      if (anchor !== entry!.snapshot.renderAnchor) {
+        entry!.snapshot = { ...entry!.snapshot, renderAnchor: anchor };
+      }
+    } else if (
+      staticMatch && entry!.snapshot.renderAnchor != null &&
+      samePanelInputsRange(entry!, 16, 48)
     ) {
+      // Anchored panel moved with its hand/grab: reuse snapshot & typed arrays when anchor holds.
+      matrixHelper.copy(object.matrixWorld);
+      instanceMatrixHelper.fromArray(
+        instanceMatrix.array as unknown as number[],
+        matrixOffset,
+      );
+      matrixHelper.multiply(instanceMatrixHelper);
+      const anchor = captureRenderAnchor(
+        object,
+        matrixHelper.elements,
+        instanceArray,
+        entry!.snapshot.renderAnchor,
+        matrixOffset,
+      );
+      if (anchor === entry!.snapshot.renderAnchor) {
+        entry!.snapshot.worldMatrix.set(matrixHelper.elements);
+        for (let k = 0; k < 16; k++) {
+          entry!.inputs[k] = panelInputs[k]!;
+          entry!.inputs[48 + k] = panelInputs[48 + k]!;
+          entry!.snapshot.clipping[k] = panelInputs[48 + k]!;
+        }
+      } else {
+        const worldMatrix = new Float32Array(matrixHelper.elements);
+        entry = {
+          inputs: panelInputs.slice(),
+          snapshot: {
+            worldMatrix,
+            data: new Float32Array(dataBlock16),
+            clipping: clippingArray == null
+              ? new Float32Array(DEFAULT_CLIPPING)
+              : new Float32Array(panelInputs.subarray(48, 64)),
+            instanceIndex: index,
+            rootIndex,
+            renderOrder,
+            depthTest,
+            depthWrite,
+            orderInfo,
+            renderAnchor: anchor,
+          },
+        };
+        cache[index] = entry;
+      }
+    } else {
       matrixHelper.copy(object.matrixWorld);
       instanceMatrixHelper.fromArray(
         instanceMatrix.array as unknown as number[],
@@ -472,20 +537,8 @@ function maybeCollectPanels(
         },
       };
       cache[index] = entry;
-    } else {
-      // Tracking can change under an unchanged panel (attached to a hand, a grab starting).
-      const anchor = captureRenderAnchor(
-        object,
-        entry.snapshot.worldMatrix,
-        instanceArray,
-        entry.snapshot.renderAnchor,
-        matrixOffset,
-      );
-      if (anchor !== entry.snapshot.renderAnchor) {
-        entry.snapshot = { ...entry.snapshot, renderAnchor: anchor };
-      }
     }
-    target.push(entry.snapshot);
+    target.push(entry!.snapshot);
   }
   if (cache.length > count) cache.length = count;
 }
@@ -557,25 +610,38 @@ function maybeCollectText(
   // Reuse last frame's snapshot while nothing it was built from changed; see panelSnapshotCache.
   const world = object.matrixWorld.elements;
   const cached = textSnapshotCache.get(object);
-  if (
-    cached != null && cached.metadata === metadata && cached.geometry === geometry &&
+  const textMetaMatch = cached != null && cached.metadata === metadata &&
+    cached.geometry === geometry &&
     cached.snapshot.rootIndex === rootIndex && cached.snapshot.text === metadata.text &&
     cached.snapshot.color === metadata.color && cached.snapshot.fontSize === metadata.fontSize &&
     cached.snapshot.align === metadata.align && cached.snapshot.anchorX === metadata.anchorX &&
-    cached.snapshot.font === metadata.font && cached.snapshot.bounds === metadata.bounds &&
-    sameWorld(world, cached.world)
-  ) {
+    cached.snapshot.font === metadata.font && cached.snapshot.bounds === metadata.bounds;
+  if (textMetaMatch && sameWorld(world, cached!.world)) {
     const anchor = captureRenderAnchor(
       object,
       world,
       undefined,
-      cached.snapshot.renderAnchor,
+      cached!.snapshot.renderAnchor,
     );
-    if (anchor !== cached.snapshot.renderAnchor) {
-      cached.snapshot = { ...cached.snapshot, renderAnchor: anchor };
+    if (anchor !== cached!.snapshot.renderAnchor) {
+      cached!.snapshot = { ...cached!.snapshot, renderAnchor: anchor };
     }
-    target.push(cached.snapshot);
+    target.push(cached!.snapshot);
     return;
+  }
+  if (textMetaMatch && cached!.snapshot.renderAnchor != null) {
+    const anchor = captureRenderAnchor(
+      object,
+      world,
+      undefined,
+      cached!.snapshot.renderAnchor,
+    );
+    if (anchor === cached!.snapshot.renderAnchor) {
+      cached!.world.set(world);
+      cached!.snapshot.worldMatrix.set(world);
+      target.push(cached!.snapshot);
+      return;
+    }
   }
   const snapshot: WebXRRaythreeUiTextSnapshot = {
     worldMatrix: new Float32Array(world),

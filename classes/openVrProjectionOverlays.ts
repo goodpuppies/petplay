@@ -207,6 +207,23 @@ export class OpenVrProjectionOverlays {
     return [this.eyes[0].handle, this.eyes[1].handle];
   }
 
+  /**
+   * Apply texture bounds once for pre-bound DMA-BUF overlays. OpenGL renders bottom-up while
+   * Vulkan/DMA-BUF samples top-down, so DMA-BUF overlays invert V relative to `TextureType_OpenGL`.
+   */
+  applyTextureBounds(invertVForDmabuf = false) {
+    if (this.eyes.length !== 2) throw new Error("projection overlays not initialized");
+    const flipV = (this.conventions.flipV !== FLIP_OVERLAY_Y) !== invertVForDmabuf;
+    this.bounds.set(flipV ? [0, 1, 1, 0] : [0, 0, 1, 1]);
+    for (const eye of this.eyes) {
+      this.check(
+        this.overlayClass.SetOverlayTextureBounds(eye.handle, this.boundsPtr),
+        "SetOverlayTextureBounds",
+      );
+    }
+    this.appliedFlipV = flipV;
+  }
+
   hide() {
     if (!this.visible) {
       return;

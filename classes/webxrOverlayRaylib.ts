@@ -178,6 +178,9 @@ export class WebXROverlayRaylib {
   private rightEyeTarget: raylib.RenderTexture2D | null = null;
   /** Eye pairs besides the active one, for projection presents; see {@link useEyeTargetsOtherThan}. */
   private spareEyeTargets: [raylib.RenderTexture2D, raylib.RenderTexture2D][] = [];
+  /** External DMA-BUF-backed eye FBO pairs (owned by native DmabufBankPool, not unloaded by raylib). */
+  private externalEyeBanks: [raylib.RenderTexture2D, raylib.RenderTexture2D][] | null = null;
+  private activeExternalEyeBank = 0;
   private outputTarget: raylib.RenderTexture2D | null = null;
   private spareOutputTargets: raylib.RenderTexture2D[] = [];
   private combineShader: raylib.Shader | null = null;
@@ -383,10 +386,72 @@ export class WebXROverlayRaylib {
 
   /** The per-eye perspective targets, for presenting them as projection overlays. */
   getEyeTextureHandles(): { left: number; right: number } | null {
+    if (this.externalEyeBanks && this.externalEyeBanks.length > 0) {
+      const pair = this.externalEyeBanks[this.activeExternalEyeBank];
+      if (pair) return { left: pair[0].texture.id, right: pair[1].texture.id };
+    }
     if (!this.leftEyeTarget || !this.rightEyeTarget) {
       return null;
     }
     return { left: this.leftEyeTarget.texture.id, right: this.rightEyeTarget.texture.id };
+  }
+
+  /** Resolved/preferred eye target width/height in pixels. */
+  getPreferredEyeSize(): number {
+    return this.resolvedEyeSize ?? (this.requestedEyeSize ?? getRaylibNativeEyeSize());
+  }
+
+  /**
+   * Attach externally owned DMA-BUF-backed eye FBO pairs so projection rendering draws straight
+   * into them with zero extra copies. Pass `null` to detach and return to raylib-owned targets.
+   */
+  setExternalEyeBanks(
+    banks:
+      | readonly {
+        left: { fbo: number; colorTexture: number; depthRbo: number };
+        right: { fbo: number; colorTexture: number; depthRbo: number };
+      }[]
+      | null,
+    width = 0,
+    height = 0,
+  ): void {
+    if (!banks || banks.length === 0) {
+      this.externalEyeBanks = null;
+      this.activeExternalEyeBank = 0;
+      return;
+    }
+    const wrap = (
+      slot: { fbo: number; colorTexture: number; depthRbo: number },
+    ): raylib.RenderTexture2D => ({
+      id: slot.fbo,
+      texture: {
+        id: slot.colorTexture,
+        width,
+        height,
+        mipmaps: 1,
+        format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+      },
+      depth: {
+        id: slot.depthRbo,
+        width,
+        height,
+        mipmaps: 1,
+        format: 19,
+      },
+    });
+    this.externalEyeBanks = banks.map((b) => [wrap(b.left), wrap(b.right)]);
+    this.activeExternalEyeBank = 0;
+    this.renderWidth = width;
+    this.renderHeight = height;
+    this.resolvedEyeSize = width;
+  }
+
+  selectExternalEyeBank(bankIndex: number): boolean {
+    if (!this.externalEyeBanks || bankIndex < 0 || bankIndex >= this.externalEyeBanks.length) {
+      return false;
+    }
+    this.activeExternalEyeBank = bankIndex;
+    return true;
   }
 
   private static isRenderTargetValid(
@@ -601,17 +666,21 @@ export class WebXROverlayRaylib {
       this.setPanoramaFilter(selection.panoramaFilter);
     }
     const renderT0 = performance.now();
-    this.checkGlHealth();
-    this.rebuildRenderTargetsIfRequested();
-    this.ensureTexture(eye, eye, eye, eye);
+    const externalPair = this.externalEyeBanks?.[this.activeExternalEyeBank] ?? null;
+    if (!externalPair) {
+      this.checkGlHealth();
+      this.rebuildRenderTargetsIfRequested();
+      this.ensureTexture(eye, eye, eye, eye);
+    }
 
-    const leftTarget = this.leftEyeTarget;
-    const rightTarget = this.rightEyeTarget;
+    const leftTarget = externalPair ? externalPair[0] : this.leftEyeTarget;
+    const rightTarget = externalPair ? externalPair[1] : this.rightEyeTarget;
     const outputTarget = this.outputTarget;
     const shader = this.combineShader;
     const sceneRenderer = this.sceneRenderer;
     if (
-      !leftTarget || !rightTarget || !outputTarget || !shader || !sceneRenderer
+      !leftTarget || !rightTarget || (!options.skipCombine && (!outputTarget || !shader)) ||
+      !sceneRenderer
     ) {
       throw new Error("raylib compositor not initialized");
     }
@@ -633,6 +702,12 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=left`,
         payload.ui,
+        {
+          viewport: {
+            width: leftTarget.texture.width,
+            height: leftTarget.texture.height,
+          },
+        },
       );
       this.markCanary(
         "eyePostScene",
@@ -658,7 +733,13 @@ export class WebXROverlayRaylib {
         },
         `frame=${payload.frame.frameCount} eye=right`,
         payload.ui,
-        { skipAssetSync: skipRightAssetSync },
+        {
+          skipAssetSync: skipRightAssetSync,
+          viewport: {
+            width: rightTarget.texture.width,
+            height: rightTarget.texture.height,
+          },
+        },
       );
       this.markCanary(
         "eyePostScene",
@@ -679,7 +760,7 @@ export class WebXROverlayRaylib {
     const batchMaterials = leftB.batchMaterials + rightB.batchMaterials;
 
     const tCombine0 = performance.now();
-    if (!options.skipCombine) {
+    if (!options.skipCombine && outputTarget && shader) {
       this.combineEyesIntoPanorama(
         options.lookRotation
           ? { lookRotation: options.lookRotation, halfFovInRadians: payload.frame.halfFovInRadians }

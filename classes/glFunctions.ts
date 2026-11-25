@@ -29,6 +29,10 @@ const SIGNATURES = {
   glDepthMask: { parameters: ["u8"], result: "void" },
   glDisable: { parameters: ["u32"], result: "void" },
   glDrawArraysInstanced: { parameters: ["u32", "i32", "i32", "i32"], result: "void" },
+  glDrawArraysInstancedBaseInstance: {
+    parameters: ["u32", "i32", "i32", "i32", "u32"],
+    result: "void",
+  },
   glEnable: { parameters: ["u32"], result: "void" },
   glEnableVertexAttribArray: { parameters: ["u32"], result: "void" },
   glGenBuffers: { parameters: ["i32", "buffer"], result: "void" },
@@ -66,10 +70,20 @@ const SIGNATURES = {
 } as const satisfies Record<string, Deno.UnsafeCallbackDefinition>;
 
 type Signatures = typeof SIGNATURES;
+const OPTIONAL_FUNCTIONS = new Set<keyof Signatures>(["glDrawArraysInstancedBaseInstance"]);
+
 export type GlFunctions = {
-  [K in keyof Signatures]: (
+  [K in Exclude<keyof Signatures, "glDrawArraysInstancedBaseInstance">]: (
     ...args: Deno.ToNativeParameterTypes<Signatures[K]["parameters"]>
   ) => Deno.FromNativeResultType<Signatures[K]["result"]>;
+} & {
+  glDrawArraysInstancedBaseInstance:
+    | ((
+      ...args: Deno.ToNativeParameterTypes<
+        Signatures["glDrawArraysInstancedBaseInstance"]["parameters"]
+      >
+    ) => void)
+    | null;
 };
 
 let cached: GlFunctions | null = null;
@@ -78,17 +92,31 @@ let cached: GlFunctions | null = null;
 export function loadGlFunctions(): GlFunctions {
   if (cached != null) return cached;
   const statics = Object.fromEntries(
-    Object.keys(SIGNATURES).map((name) => [`glad_${name}`, { type: "pointer" as const }]),
+    Object.keys(SIGNATURES).map((name) => [
+      `glad_${name}`,
+      { type: "pointer" as const, optional: OPTIONAL_FUNCTIONS.has(name as keyof Signatures) },
+    ]),
   );
   // The same path raylib was loaded from, so this is the same loaded library and its variables.
   const library = Deno.dlopen(getRaylibLibraryPath(), statics);
   const functions: Record<string, unknown> = {};
   for (const [name, definition] of Object.entries(SIGNATURES)) {
+    const isOptional = OPTIONAL_FUNCTIONS.has(name as keyof Signatures);
     // A `pointer` static is the variable's address; the function pointer is the value stored in it.
     const variable = (library.symbols as Record<string, Deno.PointerValue>)[`glad_${name}`];
-    if (variable == null) throw new Error(`raylib does not export glad_${name}`);
+    if (variable == null) {
+      if (isOptional) {
+        functions[name] = null;
+        continue;
+      }
+      throw new Error(`raylib does not export glad_${name}`);
+    }
     const pointer = Deno.UnsafePointer.create(new Deno.UnsafePointerView(variable).getBigUint64());
     if (pointer == null) {
+      if (isOptional) {
+        functions[name] = null;
+        continue;
+      }
       throw new Error(`OpenGL function ${name} is not loaded; create raylib's window first`);
     }
     const fn = new Deno.UnsafeFnPointer(

@@ -124,13 +124,16 @@ export function captureRenderAnchor(
   for (let root: THREE.Object3D | null = object; root; root = root.parent) {
     const follow = root.userData?.renderTrackingFollow as RenderTrackingFollow | undefined;
     if (follow?.active() && spaces.includes(follow.space)) {
-      if (Math.abs(follow.pose.determinant()) < 1e-12) return undefined;
-      followHelper.copy(follow.pose).invert()
-        .multiply(chainHelper.fromArray(worldMatrix as number[]));
+      const inv = getFollowPoseInverse(follow.pose);
+      if (inv === null) return undefined;
+      localMatrixUnder(root, object, worldMatrix, objectLocal, objectLocalOffset);
+      followHelper.copy(inv).multiply(root.matrixWorld).multiply(
+        chainHelper.fromArray(localScratch as unknown as number[]),
+      );
       localScratch.set(followHelper.elements);
       if (
         previous?.follow && previous.space === follow.space && previous.pair === follow.pair &&
-        sameElements(previous.localMatrix, localScratch)
+        sameElementsApprox(previous.localMatrix, localScratch, 1e-5)
       ) {
         return previous;
       }
@@ -157,12 +160,40 @@ export function captureRenderAnchor(
 }
 
 const followHelper = new THREE.Matrix4();
+const followPoseCacheSrc = new Float64Array(16);
+const followPoseCacheInv = new THREE.Matrix4();
+let followPoseCacheValid = false;
+let followPoseCacheDetOk = false;
+
+function getFollowPoseInverse(pose: THREE.Matrix4): THREE.Matrix4 | null {
+  const el = pose.elements;
+  if (followPoseCacheValid && sameElements(followPoseCacheSrc, el)) {
+    return followPoseCacheDetOk ? followPoseCacheInv : null;
+  }
+  followPoseCacheSrc.set(el);
+  followPoseCacheValid = true;
+  if (Math.abs(pose.determinant()) < 1e-12) {
+    followPoseCacheDetOk = false;
+    return null;
+  }
+  followPoseCacheInv.copy(pose).invert();
+  followPoseCacheDetOk = true;
+  return followPoseCacheInv;
+}
+
 const localHelper = new THREE.Matrix4();
 /** {@link localMatrixUnder}'s result; copied out only when an anchor changes. */
 const localScratch = new Float64Array(16);
 
 function sameElements(left: ArrayLike<number>, right: ArrayLike<number>): boolean {
   for (let i = 0; i < 16; i++) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+function sameElementsApprox(left: ArrayLike<number>, right: ArrayLike<number>, eps: number): boolean {
+  for (let i = 0; i < 16; i++) {
+    if (Math.abs(left[i]! - right[i]!) > eps) return false;
+  }
   return true;
 }
 

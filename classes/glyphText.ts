@@ -8,6 +8,7 @@
  * the same instance data and the same shader. tests/pathfinder_text/render.ts compares the two.
  */
 import * as THREE from "three";
+import { fromFileUrl } from "@std/path";
 import { getRaylibLibraryPath } from "./nativeLibraryPaths.ts";
 import {
   bufferOffset,
@@ -45,8 +46,43 @@ const PLACEMENT_WORDS = 5;
 
 type Page = { textures: [number, number, number] };
 
+type NativeGlyphDrawFn = (
+  header: Uint32Array,
+  uniforms: Float32Array,
+  runs: Uint32Array,
+  instanceData: Float32Array,
+  instanceBytes: number,
+) => number;
+
+let nativeGlyphDrawTried = false;
+let nativeGlyphDrawCached: NativeGlyphDrawFn | null = null;
+
+function loadNativeGlyphDraw(): NativeGlyphDrawFn | null {
+  if (nativeGlyphDrawTried) return nativeGlyphDrawCached;
+  nativeGlyphDrawTried = true;
+  if (Deno.build.os !== "linux") return null;
+  try {
+    const path = fromFileUrl(new URL("../resources/libpetplay_overlay_presenter.so", import.meta.url));
+    const lib = Deno.dlopen(path, {
+      pp_glyph_draw_fast: {
+        parameters: ["buffer", "buffer", "buffer", "buffer", "usize"],
+        result: "i32",
+        optional: true,
+      },
+    });
+    nativeGlyphDrawCached = (lib.symbols.pp_glyph_draw_fast as NativeGlyphDrawFn | null) ?? null;
+  } catch {
+    nativeGlyphDrawCached = null;
+  }
+  return nativeGlyphDrawCached;
+}
+
 export class GlyphTextRenderer {
   private readonly gl: GlFunctions;
+  private readonly nativeDraw: NativeGlyphDrawFn | null;
+  private readonly nativeHeader = new Uint32Array(10);
+  private readonly nativeUniforms = new Float32Array(5);
+  private nativeRuns = new Uint32Array(64 * 5);
   private readonly raylib: Deno.DynamicLibrary<
     { rlDrawRenderBatchActive: { parameters: []; result: "void" } }
   >;
@@ -73,6 +109,9 @@ export class GlyphTextRenderer {
   private readonly runPages: number[] = [];
   private readonly runFirsts: number[] = [];
   private readonly runCounts: number[] = [];
+  private pageCounts = new Int32Array(0);
+  private pageCursors = new Int32Array(0);
+  private readonly resolvedScratch: (ResolvedPlacements | null)[] = [];
   private readonly placementCache = new WeakMap<Float32Array, ResolvedPlacements>();
   private lastExponent = Number.NaN;
   private lastWeight = Number.NaN;
@@ -84,6 +123,7 @@ export class GlyphTextRenderer {
 
   constructor() {
     this.gl = loadGlFunctions();
+    this.nativeDraw = loadNativeGlyphDraw();
     this.raylib = Deno.dlopen(getRaylibLibraryPath(), {
       rlDrawRenderBatchActive: { parameters: [], result: "void" },
     });
@@ -178,6 +218,7 @@ export class GlyphTextRenderer {
     const staticWords = new Uint32Array(staticFloats.buffer);
     const pages = new Int32Array(maxGlyphs);
     let count = 0;
+    let singlePage = -2;
     for (let p = 0; p < placements.length; p += PLACEMENT_WORDS) {
       const code = placements[p]!;
       const slot = placements[p + 4]!;
@@ -197,7 +238,10 @@ export class GlyphTextRenderer {
       penX[count] = placements[p + 1]!;
       penY[count] = placements[p + 2]!;
       size[count] = placements[p + 3]!;
-      pages[count] = fontEntry.pageBase + glyph.page;
+      const page = fontEntry.pageBase + glyph.page;
+      pages[count] = page;
+      if (singlePage === -2) singlePage = page;
+      else if (singlePage !== page) singlePage = -1;
       const off = count * 14;
       const [minX, minY, maxX, maxY] = glyph.bounds;
       staticFloats[off] = minX;
@@ -220,6 +264,7 @@ export class GlyphTextRenderer {
     }
     const resolved: ResolvedPlacements = {
       count,
+      singlePage: singlePage >= 0 ? singlePage : -1,
       penX,
       penY,
       size,
@@ -242,34 +287,73 @@ export class GlyphTextRenderer {
     fastUiPass?: { width?: number; height?: number; restoreDepthTest: boolean },
   ): number | null {
     if (this.disposed) return null;
+    const numPages = this.pages.length;
+    if (this.pageCounts.length < numPages) {
+      this.pageCounts = new Int32Array(numPages);
+      this.pageCursors = new Int32Array(numPages);
+    }
+    const pageCounts = this.pageCounts;
+    const pageCursors = this.pageCursors;
+    pageCounts.fill(0, 0, numPages);
+
+    const resolvedScratch = this.resolvedScratch;
+    resolvedScratch.length = texts.length;
     let count = 0;
     let visible = 0;
     for (let i = 0; i < texts.length; i++) {
       const text = texts[i]!;
-      if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) continue;
+      if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) {
+        resolvedScratch[i] = null;
+        continue;
+      }
       const glyphs = text.geometry.vectorGlyphs;
       if (glyphs == null) return null;
-      count += glyphs.length / PLACEMENT_WORDS;
+      const resolved = this.resolvePlacements(glyphs);
+      resolvedScratch[i] = resolved;
+      const n = resolved.count;
+      if (n > 0) {
+        if (resolved.singlePage >= 0) {
+          pageCounts[resolved.singlePage] = pageCounts[resolved.singlePage]! + n;
+        } else {
+          const pageArr = resolved.pages;
+          for (let g = 0; g < n; g++) {
+            const p = pageArr[g]!;
+            pageCounts[p] = pageCounts[p]! + 1;
+          }
+        }
+        count += n;
+      }
       visible++;
     }
     if (count === 0) return visible === 0 ? 0 : visible;
     this.reserve(count);
 
-    // Instances in the producer's order; consecutive glyphs on the same page draw together.
+    // Group glyphs by font page into contiguous slices so each active page draws in one instanced call.
     let runCount = 0;
-    let index = 0;
+    let cursor = 0;
+    for (let p = 0; p < numPages; p++) {
+      const c = pageCounts[p]!;
+      if (c === 0) continue;
+      this.runPages[runCount] = p;
+      this.runFirsts[runCount] = cursor;
+      this.runCounts[runCount] = c;
+      pageCursors[p] = cursor;
+      cursor += c;
+      runCount++;
+    }
+
     const f = this.floats;
     const u = this.words;
     for (let ti = 0; ti < texts.length; ti++) {
+      const resolved = resolvedScratch[ti];
+      if (resolved == null || resolved.count === 0) continue;
       const text = texts[ti]!;
-      if (text.text.length === 0 || text.color[3] <= 0 || text.geometry == null) continue;
       this.mvp.multiplyMatrices(projectionView, this.world.fromArray(text.worldMatrix));
       const m = this.mvp.elements;
       const m0 = m[0]!, m1 = m[1]!, m2 = m[2]!, m3 = m[3]!;
       const m4 = m[4]!, m5 = m[5]!, m6 = m[6]!, m7 = m[7]!;
       const m8 = m[8]!, m9 = m[9]!, m10 = m[10]!, m11 = m[11]!;
       const m12 = m[12]!, m13 = m[13]!, m14 = m[14]!, m15 = m[15]!;
-      const resolved = this.resolvePlacements(text.geometry.vectorGlyphs!);
       const tr = toSrgb(text.color[0]);
       const tg = toSrgb(text.color[1]);
       const tb = toSrgb(text.color[2]);
@@ -283,18 +367,12 @@ export class GlyphTextRenderer {
       const pageArr = resolved.pages;
       for (let g = 0; g < n; g++) {
         const page = pageArr[g]!;
-        if (runCount > 0 && this.runPages[runCount - 1] === page) {
-          this.runCounts[runCount - 1]!++;
-        } else {
-          this.runPages[runCount] = page;
-          this.runFirsts[runCount] = index;
-          this.runCounts[runCount] = 1;
-          runCount++;
-        }
+        const idx = pageCursors[page]!;
+        pageCursors[page] = idx + 1;
         const px = penXArr[g]!;
         const py = penYArr[g]!;
         const sz = sizeArr[g]!;
-        const at = index * INSTANCE_WORDS;
+        const at = idx * INSTANCE_WORDS;
         const off = g * 14;
         f[at] = m0 * sz;
         f[at + 1] = m1 * sz;
@@ -330,30 +408,92 @@ export class GlyphTextRenderer {
         f[at + 31] = tg;
         f[at + 32] = tb;
         f[at + 33] = ta;
-        index++;
       }
     }
+    const index = cursor;
     if (index === 0) return visible;
 
     const gl = this.gl;
     this.raylib.symbols.rlDrawRenderBatchActive();
     const saved = fastUiPass ? null : this.saveDrawState();
-    try {
-      let vpW: number;
-      let vpH: number;
-      if (fastUiPass?.width && fastUiPass?.height) {
-        vpW = fastUiPass.width;
-        vpH = fastUiPass.height;
-      } else {
-        gl.glGetIntegerv(GL.VIEWPORT, this.scratch);
-        vpW = this.scratch[2]!;
-        vpH = this.scratch[3]!;
+    let vpW: number;
+    let vpH: number;
+    if (fastUiPass?.width && fastUiPass?.height) {
+      vpW = fastUiPass.width;
+      vpH = fastUiPass.height;
+    } else {
+      gl.glGetIntegerv(GL.VIEWPORT, this.scratch);
+      vpW = this.scratch[2]!;
+      vpH = this.scratch[3]!;
+    }
+    if (vpW <= 0 || vpH <= 0) throw new Error("Invalid Glyph viewport");
+    const exp = tuning?.glyphCoverageExponent ?? 1;
+    const wgt = tuning?.glyphWeightPixels ?? 0;
+    const aaw = tuning?.glyphAaWidth ?? 1;
+
+    // Fast path: submit the entire root in one native Zig FFI call (zero UnsafeFnPointer crossings).
+    if (fastUiPass && this.nativeDraw != null) {
+      let flags = 0;
+      if (exp !== this.lastExponent) {
+        flags |= 1;
+        this.lastExponent = exp;
       }
-      if (vpW <= 0 || vpH <= 0) throw new Error("Invalid Glyph viewport");
+      if (wgt !== this.lastWeight) {
+        flags |= 2;
+        this.lastWeight = wgt;
+      }
+      if (aaw !== this.lastAaWidth) {
+        flags |= 4;
+        this.lastAaWidth = aaw;
+      }
+      if (vpW !== this.lastVpW || vpH !== this.lastVpH) {
+        flags |= 8;
+        this.lastVpW = vpW;
+        this.lastVpH = vpH;
+      }
+      if (this.nativeRuns.length < runCount * 5) {
+        this.nativeRuns = new Uint32Array(runCount * 5 * 2);
+      }
+      const runs = this.nativeRuns;
+      for (let r = 0; r < runCount; r++) {
+        const textures = this.pages[this.runPages[r]!]!.textures;
+        const base = r * 5;
+        runs[base] = textures[0];
+        runs[base + 1] = textures[1];
+        runs[base + 2] = textures[2];
+        runs[base + 3] = this.runFirsts[r]!;
+        runs[base + 4] = this.runCounts[r]!;
+      }
+      const h = this.nativeHeader;
+      h[0] = this.program;
+      h[1] = this.vao;
+      h[2] = this.instanceBuffer;
+      h[3] = runCount;
+      h[4] = fastUiPass.restoreDepthTest ? 1 : 0;
+      h[5] = flags;
+      h[6] = this.uniforms.exponent >>> 0;
+      h[7] = this.uniforms.weight >>> 0;
+      h[8] = this.uniforms.aaWidth >>> 0;
+      h[9] = this.uniforms.viewport >>> 0;
+      const uArr = this.nativeUniforms;
+      uArr[0] = exp;
+      uArr[1] = wgt;
+      uArr[2] = aaw;
+      uArr[3] = vpW;
+      uArr[4] = vpH;
+      if (this.nativeDraw(h, uArr, runs, this.floats, index * INSTANCE_WORDS * 4) === 0) {
+        return visible;
+      }
+      // If native GL proc lookup failed, reset cached uniform state and fall through to JS GL.
+      this.lastExponent = Number.NaN;
+      this.lastWeight = Number.NaN;
+      this.lastAaWidth = Number.NaN;
+      this.lastVpW = -1;
+      this.lastVpH = -1;
+    }
+
+    try {
       gl.glUseProgram(this.program);
-      const exp = tuning?.glyphCoverageExponent ?? 1;
-      const wgt = tuning?.glyphWeightPixels ?? 0;
-      const aaw = tuning?.glyphAaWidth ?? 1;
       if (exp !== this.lastExponent) {
         gl.glUniform1f(this.uniforms.exponent, exp);
         this.lastExponent = exp;
@@ -391,6 +531,7 @@ export class GlyphTextRenderer {
         Deno.UnsafePointer.of(this.floats),
         GL.STREAM_DRAW,
       );
+      const drawBaseInstance = gl.glDrawArraysInstancedBaseInstance;
       for (let r = 0; r < runCount; r++) {
         const page = this.runPages[r]!;
         const first = this.runFirsts[r]!;
@@ -400,19 +541,23 @@ export class GlyphTextRenderer {
           gl.glActiveTexture(GL.TEXTURE0 + unit);
           gl.glBindTexture(GL.TEXTURE_2D, textures[unit]!);
         }
-        // Only re-point vertex attributes when `first` changes (99% of roots have a single run at 0).
-        if (first !== this.lastBoundFirst) {
-          for (const [location, size, offset, integer] of ATTRIBUTES) {
-            const at = bufferOffset((first * INSTANCE_WORDS + offset) * 4);
-            if (integer) {
-              gl.glVertexAttribIPointer(location, size, GL.UNSIGNED_INT, INSTANCE_WORDS * 4, at);
-            } else {
-              gl.glVertexAttribPointer(location, size, GL.FLOAT, 0, INSTANCE_WORDS * 4, at);
+        if (drawBaseInstance != null) {
+          drawBaseInstance(GL.TRIANGLES, 0, 6, countInRun, first);
+        } else {
+          // Only re-point vertex attributes when `first` changes (99% of roots have a single run at 0).
+          if (first !== this.lastBoundFirst) {
+            for (const [location, size, offset, integer] of ATTRIBUTES) {
+              const at = bufferOffset((first * INSTANCE_WORDS + offset) * 4);
+              if (integer) {
+                gl.glVertexAttribIPointer(location, size, GL.UNSIGNED_INT, INSTANCE_WORDS * 4, at);
+              } else {
+                gl.glVertexAttribPointer(location, size, GL.FLOAT, 0, INSTANCE_WORDS * 4, at);
+              }
             }
+            this.lastBoundFirst = first;
           }
-          this.lastBoundFirst = first;
+          gl.glDrawArraysInstanced(GL.TRIANGLES, 0, 6, countInRun);
         }
-        gl.glDrawArraysInstanced(GL.TRIANGLES, 0, 6, countInRun);
       }
     } finally {
       if (saved) {
@@ -678,6 +823,7 @@ export class GlyphTextRenderer {
 
 type ResolvedPlacements = {
   count: number;
+  singlePage: number;
   penX: Float32Array;
   penY: Float32Array;
   size: Float32Array;
@@ -744,6 +890,15 @@ const ATTRIBUTES: readonly (readonly [number, number, number, boolean])[] = [
   [9, 4, 30, false],
 ];
 
+const SRGB_CACHE = new Map<number, number>();
+
 function toSrgb(value: number): number {
-  return value <= 0.0031308 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - 0.055;
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  if (value <= 0.0031308) return value * 12.92;
+  const cached = SRGB_CACHE.get(value);
+  if (cached !== undefined) return cached;
+  const result = 1.055 * Math.pow(value, 1 / 2.4) - 0.055;
+  if (SRGB_CACHE.size < 256) SRGB_CACHE.set(value, result);
+  return result;
 }
