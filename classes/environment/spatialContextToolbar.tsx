@@ -645,7 +645,7 @@ export function SpatialSettingsSlider({
   const rightR = rightRem < r ? Math.min(r - rightRem, trackHeight / 2, fillW / 2) : 0;
 
   const updateFromEvent = (event: unknown, hapticOnStep: boolean) => {
-    const t = sliderFractionFromEvent(event, trackRef.current, trackWidth);
+    const t = sliderFractionFromEvent(event, trackRef.current);
     if (t == null) return;
     const raw = min + t * (max - min);
     const snapped = Math.round(raw / step) * step;
@@ -654,6 +654,7 @@ export function SpatialSettingsSlider({
       if (hapticOnStep) pulseForPointerEvent(event, "hover");
       onChange(clamped);
     }
+    (event as { stopPropagation?: () => void } | null)?.stopPropagation?.();
   };
 
   const endDrag = (event: unknown) => {

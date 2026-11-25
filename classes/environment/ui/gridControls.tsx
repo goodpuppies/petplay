@@ -14,12 +14,14 @@ import { pulseForPointerEvent } from "../haptics.ts";
 
 const _sliderLocal = new THREE.Vector3();
 
-/** Compute normalized 0..1 slider position from a pointer event on the track container. */
+/**
+ * Compute normalized 0..1 slider position from a pointer event on a uikit Container.
+ * Matches `@pmndrs/uikit-default` / `@pmndrs/uikit-horizon` Slider: a uikit Container's
+ * `worldToLocal(point).x` is already normalized to `[-0.5, +0.5]` across its layout width.
+ */
 export function sliderFractionFromEvent(
   event: unknown,
   trackObj: THREE.Object3D | null | undefined,
-  trackWidthPx: number,
-  pixelSize = 0.001,
 ): number | null {
   const e = event as {
     point?: THREE.Vector3;
@@ -27,12 +29,11 @@ export function sliderFractionFromEvent(
     currentTarget?: THREE.Object3D;
   } | null;
   const host = trackObj ?? e?.currentTarget;
-  if (e?.point && host && typeof host.worldToLocal === "function" && trackWidthPx > 0) {
+  if (e?.point && host && typeof host.worldToLocal === "function") {
     _sliderLocal.copy(e.point);
     host.worldToLocal(_sliderLocal);
-    const halfW = (trackWidthPx * pixelSize) * 0.5;
-    if (halfW > 1e-6) {
-      return Math.max(0, Math.min(1, (_sliderLocal.x + halfW) / (2 * halfW)));
+    if (Number.isFinite(_sliderLocal.x)) {
+      return Math.max(0, Math.min(1, _sliderLocal.x + 0.5));
     }
   }
   const uvX = e?.uv?.x;
@@ -78,7 +79,7 @@ export function GridSlider({
   const compact = height < 58;
 
   const updateFromEvent = (event: unknown, hapticOnStep: boolean) => {
-    const t = sliderFractionFromEvent(event, trackRef.current, width);
+    const t = sliderFractionFromEvent(event, trackRef.current);
     if (t == null) return;
     const raw = min + t * (max - min);
     const snapped = Math.round(raw / step) * step;
@@ -87,6 +88,7 @@ export function GridSlider({
       if (hapticOnStep) pulseForPointerEvent(event, "hover");
       onChange(clamped);
     }
+    (event as { stopPropagation?: () => void } | null)?.stopPropagation?.();
   };
 
   const endDrag = (event: unknown) => {
