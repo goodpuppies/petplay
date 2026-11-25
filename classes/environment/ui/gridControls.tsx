@@ -150,9 +150,11 @@ export function GridSlider({
           pointerType?: string;
         };
         if (typeof e.pointerId === "number" && e.pointerId !== draggingPointerId.current) return;
-        // If no button is held (e.g. pointerup was missed when opening/closing the panel),
-        // stop dragging immediately so plain hover never moves the slider.
-        if (typeof e.buttons === "number" && e.buttons === 0 && e.pointerType !== "poker") {
+        // DOM mouse pointers maintain `buttons`; XR ray pointers leave `buttons === 0` while trigger is held.
+        if (
+          (e.pointerType === "mouse" || e.pointerType === "screen-mouse") &&
+          typeof e.buttons === "number" && e.buttons === 0
+        ) {
           draggingPointerId.current = null;
           return;
         }

@@ -714,7 +714,10 @@ export function SpatialSettingsSlider({
           pointerType?: string;
         };
         if (typeof e.pointerId === "number" && e.pointerId !== draggingPointerId.current) return;
-        if (typeof e.buttons === "number" && e.buttons === 0 && e.pointerType !== "poker") {
+        if (
+          (e.pointerType === "mouse" || e.pointerType === "screen-mouse") &&
+          typeof e.buttons === "number" && e.buttons === 0
+        ) {
           draggingPointerId.current = null;
           return;
         }
