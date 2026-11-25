@@ -5,7 +5,7 @@ import {
   parseNotifyLine,
   stripNotificationMarkup,
 } from "./desktopNotifications.ts";
-import type { Toast, ToastInput } from "./toastStore.ts";
+import { DEFAULT_TOAST_MS, type Toast, type ToastInput } from "./toastStore.ts";
 
 const line = (data: unknown[], member = "Notify") =>
   JSON.stringify({
@@ -55,7 +55,7 @@ Deno.test("a body-only notification uses the body as its title, and -1 gets the 
   assertEquals(parsed?.app, "Desktop");
   assertEquals(parsed?.toast.title, 'line one\nline "two"');
   assertEquals(parsed?.toast.content, "");
-  assertEquals(parsed?.toast.timeoutMs, 4000);
+  assertEquals(parsed?.toast.timeoutMs, DEFAULT_TOAST_MS);
 });
 
 Deno.test("markup is stripped and entities decoded", () => {
