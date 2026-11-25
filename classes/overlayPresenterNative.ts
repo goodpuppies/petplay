@@ -59,6 +59,9 @@ const symbols = {
     optional: true,
   },
   pp_overlay_fence_finish: { parameters: ["buffer"], result: "i32", optional: true },
+  pp_overlay_fence_create: { parameters: [], result: "pointer", optional: true },
+  pp_overlay_fence_wait: { parameters: ["pointer", "buffer"], result: "i32", optional: true },
+  pp_overlay_fence_delete: { parameters: ["pointer"], result: "void", optional: true },
   pp_overlay_set_projection: {
     parameters: ["pointer", "u64", "u64", "buffer", "buffer"],
     result: "i32",
@@ -297,6 +300,49 @@ export class OverlayPresenterNative {
         this.stats,
       );
     }
+    return { ...this.result(error, error !== 0 && this.stats[3] > 0), dropped: false };
+  }
+  /** Whether the library exports async split GPU fence primitives for 1-frame bank pipelining. */
+  get hasAsyncFence(): boolean {
+    const s = this.library.symbols;
+    return !!(s.pp_overlay_fence_create && s.pp_overlay_fence_wait && s.pp_overlay_fence_delete);
+  }
+  /** Insert a non-blocking GPU fence and flush; returns an opaque GLsync handle (or null). */
+  createGpuFence(): Deno.PointerValue {
+    return this.library.symbols.pp_overlay_fence_create?.() ?? null;
+  }
+  /** Wait for a previously created GPU fence and delete it. */
+  waitGpuFence(fence: Deno.PointerValue): { error: number; gpuFinishMs: number } {
+    const error = this.library.symbols.pp_overlay_fence_wait!(fence, this.stats);
+    return { error, gpuFinishMs: this.stats[0] };
+  }
+  /** Delete an unwaited GPU fence during teardown/reset. */
+  deleteGpuFence(fence: Deno.PointerValue): void {
+    if (fence) this.library.symbols.pp_overlay_fence_delete?.(fence);
+  }
+  /** Wait for the producer GPU fence on the hidden DMA-BUF bank before flipping visibility. */
+  finishGpuFence(): { error: number; gpuFinishMs: number } {
+    const error = this.library.symbols.pp_overlay_fence_finish!(this.stats);
+    return { error, gpuFinishMs: this.stats[0] };
+  }
+  /** Flip a pre-bound stereo-panorama DMA-BUF bank after `finishGpuFence()` has already completed. */
+  flipPanoramaBank(
+    showHandle: bigint,
+    hideHandle: bigint | null,
+    beforePublish?: () => boolean,
+  ) {
+    const s = this.library.symbols;
+    if (beforePublish && !beforePublish()) {
+      return { ...this.result(0, false), dropped: true };
+    }
+    const error = s.pp_overlay_flip_banks!(
+      this.table,
+      showHandle,
+      0n,
+      hideHandle ?? 0n,
+      0n,
+      this.stats,
+    );
     return { ...this.result(error, error !== 0 && this.stats[3] > 0), dropped: false };
   }
   /**

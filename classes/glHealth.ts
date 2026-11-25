@@ -47,6 +47,7 @@ type GlHealthSymbols = {
   glGetGraphicsResetStatus: () => number;
   glIsTexture: (texture: number) => number;
   glXGetCurrentContext: () => Deno.PointerValue;
+  eglGetCurrentContext?: () => Deno.PointerValue;
 };
 
 let symbols: GlHealthSymbols | null | undefined;
@@ -78,6 +79,16 @@ function load(): GlHealthSymbols | null {
         glXGetCurrentContext: { parameters: [], result: "pointer" },
       });
       symbols = library.symbols as unknown as GlHealthSymbols;
+      if (Deno.build.os === "linux") {
+        try {
+          const egl = Deno.dlopen("libEGL.so.1", {
+            eglGetCurrentContext: { parameters: [], result: "pointer" },
+          });
+          symbols.eglGetCurrentContext = egl.symbols.eglGetCurrentContext;
+        } catch {
+          // Optional: only needed when running on an EGL context.
+        }
+      }
       return symbols;
     } catch {
       // Try the next candidate; a missing entry point is not fatal.
@@ -99,7 +110,7 @@ export function getCurrentContextId(): string | null {
   const s = load();
   if (s == null) return null;
   try {
-    const ptr = s.glXGetCurrentContext();
+    const ptr = s.glXGetCurrentContext() ?? s.eglGetCurrentContext?.() ?? null;
     return ptr == null ? "0" : `0x${Deno.UnsafePointer.value(ptr).toString(16)}`;
   } catch {
     return null;

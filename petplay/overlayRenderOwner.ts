@@ -45,7 +45,7 @@ import { OverlaySceneInbox } from "../classes/overlaySceneDelivery.ts";
  */
 export type PresentMode = "projection" | "panorama";
 export type DmabufBankCount = 0 | 2 | 3;
-type PanoramaPacing = "vsync" | "frame-sync" | "presenter";
+type PanoramaPacing = "vsync" | "vsync-locked" | "frame-sync" | "presenter";
 
 function defaultDmabufBanks(): DmabufBankCount {
   if (Deno.build.os !== "linux") return 0;
@@ -123,14 +123,13 @@ const state = actorState({
    * loop (fast pacer, render, native GPU finish + `WaitFrameSync` + publish), so the two modes
    * differ only in the combine pass and the overlay type.
    */
-  panoramaPacing: "vsync" as PanoramaPacing,
+  panoramaPacing: "vsync-locked" as PanoramaPacing,
   /**
-   * Vsync-paced panorama: hold each present until this many ms after the frame's vsync. The
-   * compositor latches overlays 4-7 ms after a vsync, and a render finishing around 5 ms
-   * straddles that, so frames alternate between two display frames. Presenting past the latch
-   * puts every frame on the same one, as the in-worker renderer did by running the sim first.
+   * Vsync-paced / vsync-locked panorama: hold each present until this many ms after the frame's
+   * vsync (after the GPU fence completes in `vsync-locked`). SteamVR latches overlays ~8.5 ms
+   * after vsync; flipping at 10.5 ms places every frame cleanly in the same latch window.
    */
-  panoramaPresentMinMs: 0,
+  panoramaPresentMinMs: 10.5,
   /** Diagnostic only: match projection's alternating submitted source images. */
   panoramaTextureRotation: false,
   lastRenderImages: null as { left: number; right: number; output: number } | null,
@@ -352,7 +351,7 @@ new PostMan(
       state.panoramaTextureRotation = value.panoramaTextureRotation ??
         state.panoramaTextureRotation;
       if (value.panoramaPacing != null) {
-        if (!["vsync", "frame-sync", "presenter"].includes(value.panoramaPacing)) {
+        if (!["vsync", "vsync-locked", "frame-sync", "presenter"].includes(value.panoramaPacing)) {
           throw new Error("Unknown panorama pacing");
         }
         state.panoramaPacing = value.panoramaPacing;
@@ -462,6 +461,8 @@ async function run(options: Start) {
   let bankOverlays: OpenVrProjectionOverlays[] = [];
   let bankPool: DmabufBankPool | null = null;
   let activeBank = -1;
+  let pendingPanorama: { bank: number; showHandle: bigint; fence: Deno.PointerValue } | null =
+    null;
   let activeDmabufBanks: DmabufBankCount | null = null;
   let presenter = null as OverlayPresenterNative | null;
   // Panorama is the main mode and presents without it; load the native helper only for the
@@ -471,7 +472,14 @@ async function run(options: Start) {
   const nativePresenter = () => presenter ??= new OverlayPresenterNative(overlayPointer!);
   let panorama: OpenVrOverlayTexture | null = null;
   let panoramaBankOverlays: OpenVrOverlayTexture[] = [];
+  const clearPendingPanorama = () => {
+    if (pendingPanorama) {
+      presenter?.deleteGpuFence(pendingPanorama.fence);
+      pendingPanorama = null;
+    }
+  };
   const teardownDmabufBanks = () => {
+    clearPendingPanorama();
     renderer?.setExternalEyeBanks(null);
     renderer?.setExternalOutputBanks(null);
     for (const bank of bankOverlays) bank.cleanup();
@@ -515,6 +523,39 @@ async function run(options: Start) {
       "vsync",
       "independent-panorama",
     );
+    const displayHzRaw = system.GetFloatTrackedDeviceProperty(
+      OpenVR.k_unTrackedDeviceIndex_Hmd,
+      OpenVR.TrackedDeviceProperty.Prop_DisplayFrequency_Float,
+      null,
+    );
+    const displayPeriodMs = Number.isFinite(displayHzRaw) && displayHzRaw > 1
+      ? 1000 / displayHzRaw
+      : 1000 / 75;
+    // Own vsync-locked wake: run once per HMD vsync at `phaseMs` after the tick. Unlike
+    // `vsyncLockedScheduler`, if a fresh vsync already started (e.g. `await wait(0)` returned at
+    // 2 ms of N+1), run it immediately instead of skipping N+1 and sleeping a full 13.3 ms.
+    let lastLockedVsync: bigint | null = null;
+    const VSYNC_LOCKED_PHASE_MS = 1.5;
+    const waitVsyncLocked = async () => {
+      for (;;) {
+        const phase = fastPacer.sampleVsyncPhase();
+        if (!phase || phase.msSinceVsync < 0 || phase.msSinceVsync > displayPeriodMs * 2) {
+          await wait(displayPeriodMs);
+          return;
+        }
+        if (lastLockedVsync === null || phase.frameIndex > lastLockedVsync) {
+          const untilPhase = VSYNC_LOCKED_PHASE_MS - phase.msSinceVsync;
+          if (untilPhase > 0.5) {
+            await wait(untilPhase);
+            continue;
+          }
+          lastLockedVsync = phase.frameIndex;
+          return;
+        }
+        const untilNext = displayPeriodMs - phase.msSinceVsync + VSYNC_LOCKED_PHASE_MS;
+        await wait(Math.max(1, Math.min(displayPeriodMs, untilNext)));
+      }
+    };
     const tip = new OpenVrControllerTipPoseResolver(pointers.system!, pointers.renderModels!);
     overlayPointer = pointers.overlay;
     renderer = new WebXROverlayRaylib(options.eyeSize);
@@ -541,6 +582,8 @@ async function run(options: Start) {
     };
     const lookRotation = new Float32Array(16);
     const lookRotationMatrix = new THREE.Matrix4();
+    const sampledHeadScratch = new THREE.Matrix4();
+    const lastRenderHeadScratch = new Array<number>(16).fill(0);
     const zFlip = new THREE.Matrix4().makeScale(1, 1, -1);
     let shownLeft = 0;
     let shownPanorama = 0;
@@ -743,12 +786,20 @@ async function run(options: Start) {
       // Vsync pacing starts each frame at the display vsync (panorama's default); otherwise
       // frames start right after the previous presentation's wait.
       const vsyncPaced = panoramaMode && state.panoramaPacing === "vsync";
+      const vsyncLocked = panoramaMode && state.panoramaPacing === "vsync-locked";
+      const usePipelinedPanorama = vsyncLocked && bankPool !== null &&
+        panoramaBankOverlays.length >= 3 && (presenter?.hasAsyncFence ?? false);
+      if (!usePipelinedPanorama && pendingPanorama) clearPendingPanorama();
       const pacer = vsyncPaced ? vsyncPacer : fastPacer;
-      pacer.extraPredictionFrames = panoramaMode ? state.panoramaExtraPredictionFrames : 0;
+      pacer.extraPredictionFrames = panoramaMode
+        ? state.panoramaExtraPredictionFrames + (usePipelinedPanorama ? 1 : 0)
+        : 0;
       mark("pace0");
       if (vsyncPaced) await pacer.paceToDisplayAndRefreshPosesYielding();
       else {
-        if (panoramaMode && state.panoramaPacing === "frame-sync") {
+        if (vsyncLocked) {
+          await waitVsyncLocked();
+        } else if (panoramaMode && state.panoramaPacing === "frame-sync") {
           overlayInterface.WaitFrameSync(100);
         }
         pacer.paceToDisplayAndRefreshPoses();
@@ -764,11 +815,12 @@ async function run(options: Start) {
       const sampleMs = performance.now();
       const sampleMonotonicSeconds = probeClock?.now();
       const predictionMs = pacer.getLastPredictedSecondsToPhotons() * 1000;
-      const sampledHead = new THREE.Matrix4().fromArray(hmd.matrix);
+      const sampledHead = sampledHeadScratch.fromArray(hmd.matrix);
       if (probe && !probeHead) probeHead = sampledHead.clone();
       const head = probe ? probeHead! : sampledHead;
+      for (let i = 0; i < 16; i++) lastRenderHeadScratch[i] = head.elements[i]!;
       state.lastRenderTracking = {
-        head: head.toArray(),
+        head: lastRenderHeadScratch,
         predictedSecondsToPhotons: pacer.getLastPredictedSecondsToPhotons(),
       };
       writeStereoRenderViews(head, leftEye, rightEye, cameras);
@@ -834,7 +886,13 @@ async function run(options: Start) {
         }
       }
       for (const [space, matrix] of Object.entries(anchors)) {
-        if (matrix) state.renderedAnchors[space] = Array.from(matrix);
+        if (!matrix) continue;
+        let dst = state.renderedAnchors[space];
+        if (!dst || dst.length !== matrix.length) {
+          dst = new Array<number>(matrix.length);
+          state.renderedAnchors[space] = dst;
+        }
+        for (let i = 0; i < matrix.length; i++) dst[i] = matrix[i]!;
       }
       const useDmabufProjection = !panoramaMode && bankPool !== null && bankOverlays.length >= 2;
       const useDmabufPanorama = panoramaMode && bankPool !== null &&
@@ -844,7 +902,10 @@ async function run(options: Start) {
         : useDmabufPanorama
         ? panoramaBankOverlays.length
         : 0;
-      const nextBank = bankCount >= 2 ? (activeBank + 1) % bankCount : -1;
+      const lastRenderedBank: number = usePipelinedPanorama && pendingPanorama
+        ? pendingPanorama.bank
+        : activeBank;
+      const nextBank: number = bankCount >= 2 ? (lastRenderedBank + 1) % bankCount : -1;
       if (useDmabufProjection) {
         if (!renderer.selectExternalEyeBank(nextBank)) {
           throw new Error(`Invalid DMA-BUF bank index ${nextBank}`);
@@ -923,22 +984,91 @@ async function run(options: Start) {
         }
         if (useDmabufPanorama) {
           const native = nativePresenter();
-          const showHandle = panoramaBankOverlays[nextBank].getHandle();
-          const hideHandle = activeBank >= 0 && activeBank !== nextBank
-            ? panoramaBankOverlays[activeBank].getHandle()
-            : null;
-          const result = native.presentPanoramaBank(showHandle, hideHandle, presenterPaced, onTime);
-          state.lastPresent = { mode: "panorama-dmabuf-bank", bank: nextBank, ...result };
-          if ("dropped" in result && result.dropped) {
-            state.droppedLateFrames++;
-            published = false;
-          } else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
-            state.waitTimeouts++;
-            published = false;
-          } else if (result.error) {
-            throw new Error(`Panorama DMA-BUF bank flip failed: ${JSON.stringify(result)}`);
+          const showHandle: bigint = panoramaBankOverlays[nextBank].getHandle();
+          const hideHandle = activeBank >= 0 ? panoramaBankOverlays[activeBank].getHandle() : null;
+          let result;
+          if (usePipelinedPanorama) {
+            // 1-frame async GPU fence pipeline across 3 banks: flush this frame's bank with a
+            // non-blocking fence, then wait for the PREVIOUS frame's bank (which has already had
+            // ~13.3 ms to finish on the GPU in parallel with VRChat) and flip it into view.
+            const fence = native.createGpuFence();
+            const ready = pendingPanorama;
+            pendingPanorama = { bank: nextBank, showHandle, fence };
+            if (!ready) {
+              published = false;
+              state.lastPresent = { mode: "panorama-dmabuf-bank-prime", bank: nextBank };
+            } else {
+              const fin = native.waitGpuFence(ready.fence);
+              if (fin.error) {
+                throw new Error(`Panorama DMA-BUF async fence wait failed: ${JSON.stringify(fin)}`);
+              }
+              if (syncPhase && state.panoramaPresentMinMs > 0) {
+                const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
+                  (performance.now() - sampleMs);
+                const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
+                if (remainingMs > 0) {
+                  await wait(remainingMs);
+                }
+              }
+              const flipHide = activeBank >= 0 && activeBank !== ready.bank
+                ? panoramaBankOverlays[activeBank].getHandle()
+                : null;
+              result = native.flipPanoramaBank(ready.showHandle, flipHide, onTime);
+              state.lastPresent = { mode: "panorama-dmabuf-bank-pipelined", bank: ready.bank, ...result };
+              if ("dropped" in result && result.dropped) {
+                state.droppedLateFrames++;
+                published = false;
+              } else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
+                state.waitTimeouts++;
+                published = false;
+              } else if (result.error) {
+                throw new Error(`Panorama DMA-BUF bank flip failed: ${JSON.stringify(result)}`);
+              } else {
+                activeBank = ready.bank;
+              }
+            }
           } else {
-            activeBank = nextBank;
+            if (vsyncLocked) {
+              // Wait for the GPU fence first; only hold after it if we finished before the
+              // compositor's safe latch window (`panoramaPresentMinMs`), so slow GPU frames
+              // flip immediately instead of adding hold time on top of GPU latency.
+              const fin = native.finishGpuFence();
+              if (fin.error) {
+                throw new Error(`Panorama DMA-BUF fence wait failed: ${JSON.stringify(fin)}`);
+              }
+              if (syncPhase && state.panoramaPresentMinMs > 0) {
+                const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
+                  (performance.now() - sampleMs);
+                const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
+                if (remainingMs > 0) {
+                  await wait(remainingMs);
+                }
+              }
+              result = native.flipPanoramaBank(
+                showHandle,
+                activeBank !== nextBank ? hideHandle : null,
+                onTime,
+              );
+            } else {
+              result = native.presentPanoramaBank(
+                showHandle,
+                activeBank !== nextBank ? hideHandle : null,
+                presenterPaced,
+                onTime,
+              );
+            }
+            state.lastPresent = { mode: "panorama-dmabuf-bank", bank: nextBank, ...result };
+            if ("dropped" in result && result.dropped) {
+              state.droppedLateFrames++;
+              published = false;
+            } else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
+              state.waitTimeouts++;
+              published = false;
+            } else if (result.error) {
+              throw new Error(`Panorama DMA-BUF bank flip failed: ${JSON.stringify(result)}`);
+            } else {
+              activeBank = nextBank;
+            }
           }
         } else {
           if (!panoramaReady) {

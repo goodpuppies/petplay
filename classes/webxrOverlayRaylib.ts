@@ -13,6 +13,10 @@ import {
   getGraphicsResetStatus,
   isTextureAlive,
 } from "./glHealth.ts";
+import {
+  type HighPriorityEglContext,
+  upgradeToHighPriorityEglContext,
+} from "./eglHighPriorityContext.ts";
 
 export type NativeOpenVrRaylibDebugFrame = {
   leftProjectionMatrix: Float32Array;
@@ -170,6 +174,7 @@ function createRaylibLookRotation(values: Float32Array): raylib.Matrix {
 
 export class WebXROverlayRaylib {
   private windowInitialized = false;
+  private highPriorityEgl: HighPriorityEglContext | null = null;
   private renderWidth = 0;
   private renderHeight = 0;
   private outputEyeWidth = 0;
@@ -238,6 +243,11 @@ export class WebXROverlayRaylib {
     );
     raylib.SetTraceLogLevel(raylib.TraceLogLevel.LOG_WARNING);
     this.windowInitialized = true;
+    this.highPriorityEgl = upgradeToHighPriorityEglContext(
+      getDefaultRaylibPath(),
+      CONTEXT_WINDOW_WIDTH,
+      CONTEXT_WINDOW_HEIGHT,
+    );
 
     this.combineShader = raylib.H.LoadShaderFromMemory(
       null,
@@ -1092,6 +1102,10 @@ export class WebXROverlayRaylib {
     if (this.combineShader) {
       raylib.H.UnloadShader(this.combineShader);
       this.combineShader = null;
+    }
+    if (this.highPriorityEgl) {
+      this.highPriorityEgl.cleanup();
+      this.highPriorityEgl = null;
     }
     if (this.windowInitialized) {
       LogChannel.log(

@@ -270,6 +270,13 @@ export function anchoredLowerers(): RenderLowerer[] {
   }));
 }
 
+const resolveOldMatrix = new THREE.Matrix4();
+const resolveNextMatrix = new THREE.Matrix4();
+const resolveLocalMatrix = new THREE.Matrix4();
+const resolveDeltaMatrix = new THREE.Matrix4();
+const resolvePlaneVector = new THREE.Vector4();
+const resolveNormalMatrix = new THREE.Matrix3();
+
 /** Mutates only the child-owned working copy. The saved local matrices never change. */
 export function resolveRenderAnchors(
   payload: WebXRRaythreeRenderPayload,
@@ -304,31 +311,31 @@ export function resolveRenderAnchors(
     }
     // Hold last visual placement on tracking loss, matching the existing scene policy.
     if (!tracked) return;
-    const old = new THREE.Matrix4().fromArray(item.worldMatrix);
-    const next = new THREE.Matrix4().fromArray(tracked).multiply(
-      new THREE.Matrix4().fromArray(anchor.localMatrix),
+    const old = resolveOldMatrix.fromArray(item.worldMatrix);
+    const next = resolveNextMatrix.fromArray(tracked).multiply(
+      resolveLocalMatrix.fromArray(anchor.localMatrix),
     );
     if (item.clipping && Math.abs(old.determinant()) > 1e-12) {
-      const delta = next.clone().multiply(old.clone().invert());
+      const delta = resolveDeltaMatrix.copy(next).multiply(old.invert());
       const planeTransform = delta.invert().transpose();
       for (let i = 0; i < 16; i += 4) {
-        const plane = new THREE.Vector4().fromArray(item.clipping, i).applyMatrix4(planeTransform);
-        plane.toArray(item.clipping, i);
+        resolvePlaneVector.fromArray(item.clipping, i).applyMatrix4(planeTransform);
+        resolvePlaneVector.toArray(item.clipping, i);
       }
     }
     // The process transport JSON-encodes typed arrays as numeric-keyed objects.
     // Indexed writes work for that wire representation as well as typed arrays.
     for (let i = 0; i < 16; i++) item.worldMatrix[i] = next.elements[i];
-    if (item.normalMatrix) new THREE.Matrix3().getNormalMatrix(next).toArray(item.normalMatrix);
+    if (item.normalMatrix) resolveNormalMatrix.getNormalMatrix(next).toArray(item.normalMatrix);
     count++;
   };
   // Extracted scene data is eye invariant; do not resolve an aliased eye twice.
-  const eyes = new Set([payload.leftEye, payload.rightEye]);
-  for (const eye of eyes) for (const item of eye.frame.instances) resolve(item);
-  for (const items of [payload.ui.panels, payload.ui.texts, payload.ui.images]) {
-    for (const item of items) {
-      resolve(item);
-    }
+  for (const item of payload.leftEye.frame.instances) resolve(item);
+  if (payload.rightEye !== payload.leftEye) {
+    for (const item of payload.rightEye.frame.instances) resolve(item);
   }
+  for (const item of payload.ui.panels) resolve(item);
+  for (const item of payload.ui.texts) resolve(item);
+  for (const item of payload.ui.images) resolve(item);
   return count;
 }

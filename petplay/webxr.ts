@@ -652,10 +652,15 @@ new PostMan(
           payload: null,
         });
       }
-      state.decoupledRenderer = payload?.decoupledRenderer ??
+      state.decoupledRenderer = payload?.decoupledRenderer ?? (
         Deno.args.some((arg) =>
-          arg === "--webxr-decoupled-renderer" || arg === "--webxr-decoupled-renderer=1"
-        );
+          arg === "--webxr-decoupled-renderer=0" || arg === "--no-webxr-decoupled-renderer"
+        )
+          ? false
+          : Deno.args.some((arg) =>
+              arg === "--webxr-decoupled-renderer" || arg === "--webxr-decoupled-renderer=1"
+            ) || Deno.build.os === "linux"
+      );
       state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ??
         false;
       // A registered IR view may have asked for camera control; its grant has to

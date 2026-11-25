@@ -113,6 +113,15 @@ export class GlyphTextRenderer {
   private pageCursors = new Int32Array(0);
   private readonly resolvedScratch: (ResolvedPlacements | null)[] = [];
   private readonly placementCache = new WeakMap<Float32Array, ResolvedPlacements>();
+  /**
+   * Content-addressed L2 cache so unchanged labels arriving in fresh wire packets reuse their
+   * resolved typed arrays instead of reallocating ~250 KB/frame when any unrelated scene item
+   * (such as a controller ray) triggers a packet delivery.
+   */
+  private readonly placementContentCache = new Map<
+    number,
+    { raw: Float32Array; resolved: ResolvedPlacements }
+  >();
   private lastExponent = Number.NaN;
   private lastWeight = Number.NaN;
   private lastAaWidth = Number.NaN;
@@ -209,6 +218,12 @@ export class GlyphTextRenderer {
   private resolvePlacements(placements: Float32Array): ResolvedPlacements {
     const cached = this.placementCache.get(placements);
     if (cached != null) return cached;
+    const hash = hashFloat32Array(placements);
+    const contentHit = this.placementContentCache.get(hash);
+    if (contentHit != null && sameFloat32Array(contentHit.raw, placements)) {
+      this.placementCache.set(placements, contentHit.resolved);
+      return contentHit.resolved;
+    }
     const maxGlyphs = placements.length / PLACEMENT_WORDS;
     const penX = new Float32Array(maxGlyphs);
     const penY = new Float32Array(maxGlyphs);
@@ -273,6 +288,10 @@ export class GlyphTextRenderer {
       pages,
     };
     this.placementCache.set(placements, resolved);
+    if (this.placementContentCache.size >= 1024) {
+      this.placementContentCache.clear();
+    }
+    this.placementContentCache.set(hash, { raw: placements.slice(), resolved });
     return resolved;
   }
 
@@ -889,6 +908,24 @@ const ATTRIBUTES: readonly (readonly [number, number, number, boolean])[] = [
   [8, 4, 26, false],
   [9, 4, 30, false],
 ];
+
+function hashFloat32Array(arr: Float32Array): number {
+  let h = (0x811c9dc5 ^ arr.length) | 0;
+  // Reinterpret directly when 4-byte aligned (always true for Float32Array).
+  const u32 = new Uint32Array(arr.buffer, arr.byteOffset, arr.length);
+  for (let i = 0; i < u32.length; i++) {
+    h = Math.imul(h ^ u32[i]!, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function sameFloat32Array(a: Float32Array, b: Float32Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 
 const SRGB_CACHE = new Map<number, number>();
 

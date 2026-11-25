@@ -155,6 +155,55 @@ pub export fn pp_overlay_flip_banks(
     return err;
 }
 
+pub export fn pp_overlay_fence_create() ?*anyopaque {
+    if (builtin.os.tag != .linux) return null;
+    if (vk.glGetString(vk.GL_VERSION) == null) return null;
+    const pFence = loadGlProc(vk.PFNGLFENCESYNCPROC, "glFenceSync");
+    if (pFence) |f| {
+        const sync = f(vk.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        vk.glFlush();
+        if (sync) |s| return @ptrFromInt(@intFromPtr(s));
+        return null;
+    }
+    vk.glFlush();
+    return null;
+}
+
+pub export fn pp_overlay_fence_wait(sync_ptr: ?*anyopaque, stats_ptr: ?[*]f64) i32 {
+    const stats = stats_ptr orelse return -1;
+    @memset(stats[0..6], 0.0);
+    if (builtin.os.tag != .linux) return 0;
+    if (vk.glGetString(vk.GL_VERSION) == null) {
+        stats[4] = -2.0;
+        return -2;
+    }
+    const t = presenter.nowMs();
+    const pWait = loadGlProc(vk.PFNGLCLIENTWAITSYNCPROC, "glClientWaitSync");
+    const pDel = loadGlProc(vk.PFNGLDELETESYNCPROC, "glDeleteSync");
+    if (sync_ptr != null and pWait != null and pDel != null) {
+        const sync: vk.GLsync = @ptrFromInt(@intFromPtr(sync_ptr.?));
+        const res = pWait.?(sync, 0, vk.GL_TIMEOUT_IGNORED);
+        pDel.?(sync);
+        if (res != vk.GL_ALREADY_SIGNALED and res != vk.GL_CONDITION_SATISFIED) {
+            vk.glFinish();
+        }
+    } else {
+        vk.glFinish();
+    }
+    stats[0] = presenter.nowMs() - t;
+    return 0;
+}
+
+pub export fn pp_overlay_fence_delete(sync_ptr: ?*anyopaque) void {
+    if (builtin.os.tag != .linux or sync_ptr == null) return;
+    if (vk.glGetString(vk.GL_VERSION) == null) return;
+    const pDel = loadGlProc(vk.PFNGLDELETESYNCPROC, "glDeleteSync");
+    if (pDel) |d| {
+        const sync: vk.GLsync = @ptrFromInt(@intFromPtr(sync_ptr.?));
+        d(sync);
+    }
+}
+
 pub export fn pp_overlay_fence_finish(stats_ptr: ?[*]f64) i32 {
     const stats = stats_ptr orelse return -1;
     @memset(stats[0..6], 0.0);
