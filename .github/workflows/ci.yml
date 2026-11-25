@@ -189,11 +189,11 @@ jobs:
         if: runner.os == 'Linux' && runner.arch == 'X64'
         with:
           version: 0.16.0
+      - run: deno task preconf
+      - run: deno install --allow-import
       - name: Build native overlay presenter (Linux x64)
         if: runner.os == 'Linux' && runner.arch == 'X64'
         run: deno task overlay:presenter:build
-      - run: deno task preconf
-      - run: deno install --allow-import
       - name: Build test-only GLFW 3.4 (matching Frame's required API)
         if: runner.arch == 'ARM64' && steps.arm64-raylib.outputs.cache-hit != 'true'
         run: bash utils/native/raylib/build-ci-glfw.sh
