@@ -34,7 +34,7 @@ jobs:
         with:
           deno-version: v2.9.7
       - name: Build Unity origin package
-        run: deno task build:unity-origin
+        run: deno run -A --no-config utils/build-unity-origin-package.ts
       - name: Hash release executables
         run: |
           cd dist

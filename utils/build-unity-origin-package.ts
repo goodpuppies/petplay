@@ -12,7 +12,7 @@
  *   deno run -A utils/build-unity-origin-package.ts [--out=<path>]
  */
 
-import { join, relative } from "@std/path";
+import { join, relative } from "node:path";
 
 export const DEFAULT_SOURCE_DIR = "unity/PetPlayOrigin";
 export const DEFAULT_UNITY_ROOT = "Assets/PetPlay/Origin";
