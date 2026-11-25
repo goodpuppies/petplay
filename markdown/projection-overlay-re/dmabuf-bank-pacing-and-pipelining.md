@@ -2,8 +2,6 @@
 
 This addendum documents the follow-up work after [dmabuf-bank-visibility-flip.md](dmabuf-bank-visibility-flip.md) to make the decoupled renderer the default on Linux and eliminate the remaining occasional and heavy-load wrist jitter in live SteamVR sessions (Bigscreen Beyond @ 75 Hz, VRChat + desktop displays + keyboard + wrist UI).
 
-Credit to [SafariMonkey](https://github.com/SafariMonkey) for originally discovering the bind-once + visibility-flip overlay technique and for sharing key observations on SteamVR's projection-overlay asymmetric-frustum behavior and latch-phase sensitivity.
-
 ---
 
 ## 1. Extending 3-Bank DMA-BUF Flip to Stereo-Panorama & Defaulting Decoupled Mode
