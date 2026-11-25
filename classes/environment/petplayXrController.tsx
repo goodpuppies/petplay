@@ -724,6 +724,7 @@ export function PetplayDefaultXRController(props: DefaultXRControllerOptions) {
         <PetplayDefaultXRInputSourceRayPointer
           {...rayP}
           {...(laserEnabled ? {} : { rayModel: false })}
+          clickThresholdMs={rayP.clickThresholdMs ?? 600}
           makeDefault
           minDistance={minD}
         />
