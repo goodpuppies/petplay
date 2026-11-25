@@ -25,6 +25,16 @@ pub fn nowMs() f64 {
     return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
 }
 
+var tracking_universe = std.atomic.Value(u32).init(1); // ETrackingUniverseOrigin_TrackingUniverseStanding
+
+pub fn getTrackingUniverse() c.ETrackingUniverseOrigin {
+    return @intCast(tracking_universe.load(.monotonic));
+}
+
+pub export fn pp_overlay_set_universe(universe: u32) void {
+    tracking_universe.store(universe, .monotonic);
+}
+
 pub export fn pp_overlay_abi() u32 {
     return if (std.mem.eql(u8, std.mem.span(c.IVROverlay_Version), "IVROverlay_027")) 27 else 0;
 }
@@ -99,7 +109,7 @@ pub export fn pp_overlay_publish(
         @memcpy(std.mem.asBytes(&projection), std.mem.sliceAsBytes(frusta[i * 4 .. i * 4 + 4]));
         err = @intCast(set_proj(
             handles[i],
-            c.ETrackingUniverseOrigin_TrackingUniverseStanding,
+            getTrackingUniverse(),
             &view,
             &projection,
             @intCast(i),

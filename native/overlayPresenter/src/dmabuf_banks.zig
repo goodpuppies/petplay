@@ -111,7 +111,7 @@ pub export fn pp_overlay_set_projection(
         @memcpy(std.mem.asBytes(&projection), std.mem.sliceAsBytes(frusta[i * 4 .. i * 4 + 4]));
         const err: i32 = @intCast(set_proj(
             handles[i],
-            c.ETrackingUniverseOrigin_TrackingUniverseStanding,
+            presenter.getTrackingUniverse(),
             &view,
             &projection,
             @intCast(i),

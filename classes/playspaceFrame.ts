@@ -28,6 +28,7 @@ class PlayspaceFrame {
   readonly standingToPetplay = identity();
   private isActive = false;
   private readonly standingListeners = new Set<() => void>();
+  private readonly anchorListeners = new Set<(anchor: Float32Array | null) => void>();
 
   get active(): boolean {
     return this.isActive;
@@ -53,6 +54,14 @@ class PlayspaceFrame {
       this.isActive = true;
     }
     this.notifyStanding();
+    const anchor = this.isActive ? this.petplayToRaw : null;
+    for (const listener of this.anchorListeners) listener(anchor);
+  }
+
+  /** Called whenever {@link setAnchor} updates the PetPlay frame anchor. Returns an unsubscribe. */
+  onAnchorChange(listener: (anchor: Float32Array | null) => void): () => void {
+    this.anchorListeners.add(listener);
+    return () => this.anchorListeners.delete(listener);
   }
 
   /** The live standing zero pose `Z` changed (a drag or reset). */

@@ -903,10 +903,7 @@ new PostMan(
             vrSystemPointer: payload?.vrSystemPointer,
             vrCompositorPointer: payload?.vrCompositorPointer ?? null,
             vrInputPointer: payload?.vrInputPointer ?? null,
-            // The decoupled renderer and its native presenter read and write Standing.
-            vrChaperoneSetupPointer: state.decoupledRenderer
-              ? null
-              : payload?.vrChaperoneSetupPointer ?? null,
+            vrChaperoneSetupPointer: payload?.vrChaperoneSetupPointer ?? null,
             wristMenuActor: payload?.wristMenuActor,
             displayOverlayHostActor: payload?.displayOverlayHostActor,
             desktopInputActor: payload?.desktopInputActor ?? null,
@@ -3128,9 +3125,19 @@ async function startRenderOwner() {
       presentMode: initialPresentMode,
       overlayWidthInMeters: config?.overlayWidthInMeters,
       overlayDistance: config?.overlayDistance,
+      playspaceAnchor: playspaceFrame.active ? Array.from(playspaceFrame.petplayToRaw) : null,
     },
   }, true);
 }
+
+playspaceFrame.onAnchorChange((anchor) => {
+  if (!state.renderOwner) return;
+  PostMan.PostMessage({
+    target: state.renderOwner,
+    type: "SETPLAYSPACEANCHOR",
+    payload: anchor ? Array.from(anchor) : null,
+  });
+});
 
 subscribeSettings(() => {
   const mode = getSettings().overlayPresentMode;

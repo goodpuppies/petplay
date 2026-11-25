@@ -3,6 +3,7 @@ import { actorState, PostMan } from "../submodules/stageforge/mod.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import * as THREE from "three";
 import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
+import { playspaceFrame } from "../classes/playspaceFrame.ts";
 import { OpenVrOverlayFramePacer } from "../classes/openVrOverlayFramePacing.ts";
 import { OpenVrControllerTipPoseResolver } from "../classes/openVrControllerTipPose.ts";
 import { OpenVrProjectionOverlays } from "../classes/openVrProjectionOverlays.ts";
@@ -65,6 +66,7 @@ type Start = {
   dmabufBanks?: DmabufBankCount;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
+  playspaceAnchor?: number[] | null;
 };
 const state = actorState({
   name: "overlay_renderer",
@@ -233,6 +235,7 @@ new PostMan(
       state.webxrTarget = options.webxrTarget ?? null;
       state.eyeSize = options.eyeSize ?? null;
       state.presentMode = options.presentMode ?? "projection";
+      playspaceFrame.setAnchor(options.playspaceAnchor ?? null);
       if (options.dmabufBanks != null) state.dmabufBanks = options.dmabufBanks;
       state.stopRequested = false;
       state.error = null;
@@ -276,6 +279,10 @@ new PostMan(
       }
       state.eyeSize = eyeSize;
       return health();
+    },
+    SETPLAYSPACEANCHOR: (anchor: number[] | null) => {
+      playspaceFrame.setAnchor(anchor);
+      return { active: playspaceFrame.active };
     },
     GETPANORAMAPHASE: () => panoramaPhase.slice(),
     /** `durationMs`, or `{ durationMs, intervalUs }` for finer sampling than 1 ms. */

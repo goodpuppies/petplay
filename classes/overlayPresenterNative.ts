@@ -1,6 +1,7 @@
 import { IVROverlay_Version } from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { fromFileUrl } from "@std/path";
 import { writeEyeFromTracking, writeProjectionTangents } from "./openVrProjectionOverlays.ts";
+import { playspaceFrame } from "./playspaceFrame.ts";
 export type RenderCameras = {
   leftEyeViewMatrix: Float32Array;
   rightEyeViewMatrix: Float32Array;
@@ -9,6 +10,7 @@ export type RenderCameras = {
 };
 const symbols = {
   pp_overlay_abi: { parameters: [], result: "u32" },
+  pp_overlay_set_universe: { parameters: ["u32"], result: "void", optional: true },
   pp_overlay_present: {
     parameters: ["pointer", "u64", "u64", "u32", "u32", "buffer", "buffer", "u32", "u32", "buffer"],
     result: "i32",
@@ -124,6 +126,11 @@ export class OverlayPresenterNative {
   ) {
     writeEyeFromTracking(cameras.leftEyeViewMatrix, this.views.subarray(0, 12));
     writeEyeFromTracking(cameras.rightEyeViewMatrix, this.views.subarray(12));
+    if (this.library.symbols.pp_overlay_set_universe) {
+      this.library.symbols.pp_overlay_set_universe(playspaceFrame.universe);
+      playspaceFrame.viewRows34ToUniverse(this.views.subarray(0, 12));
+      playspaceFrame.viewRows34ToUniverse(this.views.subarray(12));
+    }
     writeProjectionTangents(cameras.leftEyeProjectionMatrix, true, this.frusta.subarray(0, 4));
     writeProjectionTangents(cameras.rightEyeProjectionMatrix, true, this.frusta.subarray(4));
     if (beforePublish && this.hasSplitPhases) {
@@ -263,6 +270,11 @@ export class OverlayPresenterNative {
     const s = this.library.symbols;
     writeEyeFromTracking(cameras.leftEyeViewMatrix, this.views.subarray(0, 12));
     writeEyeFromTracking(cameras.rightEyeViewMatrix, this.views.subarray(12));
+    if (this.library.symbols.pp_overlay_set_universe) {
+      this.library.symbols.pp_overlay_set_universe(playspaceFrame.universe);
+      playspaceFrame.viewRows34ToUniverse(this.views.subarray(0, 12));
+      playspaceFrame.viewRows34ToUniverse(this.views.subarray(12));
+    }
     writeProjectionTangents(cameras.leftEyeProjectionMatrix, true, this.frusta.subarray(0, 4));
     writeProjectionTangents(cameras.rightEyeProjectionMatrix, true, this.frusta.subarray(4));
 
@@ -335,6 +347,11 @@ export class OverlayPresenterNative {
     const s = this.library.symbols;
     writeEyeFromTracking(cameras.leftEyeViewMatrix, this.views.subarray(0, 12));
     writeEyeFromTracking(cameras.rightEyeViewMatrix, this.views.subarray(12));
+    if (this.library.symbols.pp_overlay_set_universe) {
+      this.library.symbols.pp_overlay_set_universe(playspaceFrame.universe);
+      playspaceFrame.viewRows34ToUniverse(this.views.subarray(0, 12));
+      playspaceFrame.viewRows34ToUniverse(this.views.subarray(12));
+    }
     writeProjectionTangents(cameras.leftEyeProjectionMatrix, true, this.frusta.subarray(0, 4));
     writeProjectionTangents(cameras.rightEyeProjectionMatrix, true, this.frusta.subarray(4));
     let error = s.pp_overlay_set_projection!(
