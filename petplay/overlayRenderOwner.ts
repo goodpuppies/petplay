@@ -470,10 +470,14 @@ async function run(options: Start) {
   let ipcResourceManagerPointer: Deno.PointerValue = null;
   const nativePresenter = () => presenter ??= new OverlayPresenterNative(overlayPointer!);
   let panorama: OpenVrOverlayTexture | null = null;
+  let panoramaBankOverlays: OpenVrOverlayTexture[] = [];
   const teardownDmabufBanks = () => {
     renderer?.setExternalEyeBanks(null);
+    renderer?.setExternalOutputBanks(null);
     for (const bank of bankOverlays) bank.cleanup();
     bankOverlays = [];
+    for (const bank of panoramaBankOverlays) bank.cleanup();
+    panoramaBankOverlays = [];
     bankPool?.destroy();
     bankPool = null;
     activeBank = -1;
@@ -583,15 +587,85 @@ async function run(options: Start) {
         renderer.resetSceneAssets();
         activeEpoch = payload.delivery.epoch;
       }
-      const desiredDmabufBanks: DmabufBankCount = state.presentMode === "projection"
-        ? state.dmabufBanks
-        : 0;
+      const desiredDmabufBanks: DmabufBankCount = state.dmabufBanks;
       if (activeMode !== state.presentMode || activeDmabufBanks !== desiredDmabufBanks) {
         teardownDmabufBanks();
         if (state.presentMode === "panorama") {
           overlays.cleanup();
+          panorama.cleanup();
+          panoramaReady = false;
           presenter?.resetVisibility();
-          state.transport = "OpenGL panorama";
+          let bankReady = false;
+          if (desiredDmabufBanks === 2 || desiredDmabufBanks === 3) {
+            const native = nativePresenter();
+            const ipcPtr = native.hasDmabufBanks ? acquireIpcResourceManager() : null;
+            const outSize = renderer.getPreferredOutputSize();
+            const pool = ipcPtr
+              ? native.createDmabufBankPool(
+                ipcPtr,
+                outSize.width,
+                outSize.height,
+                desiredDmabufBanks,
+                1,
+              )
+              : null;
+            if (pool) {
+              try {
+                for (let b = 0; b < desiredDmabufBanks; b++) {
+                  const bankOv = new OpenVrOverlayTexture(
+                    Deno.UnsafePointer.value(pointers.overlay!),
+                  );
+                  bankOv.initialize(0, {
+                    key: `${overlayKey}.panorama.bank${b}`,
+                    name: `${overlayName} (panorama bank ${b})`,
+                    widthInMeters: options.overlayWidthInMeters,
+                    distance: options.overlayDistance,
+                    mode: "stereo-panorama",
+                    sortOrder: 20,
+                    attachToHmd: true,
+                    // OpenGL FBO is bottom-up while Vulkan/DMA-BUF samples top-down.
+                    flipVertical: true,
+                    skipInitialTextureAndShow: true,
+                  });
+                  const bindErr = native.bindDmabufOverlay(
+                    bankOv.getHandle(),
+                    pool.slots[b].sharedHandle,
+                  );
+                  if (bindErr !== 0) {
+                    throw new Error(`bindDmabufOverlay(panorama bank ${b}) failed: ${bindErr}`);
+                  }
+                  panoramaBankOverlays.push(bankOv);
+                }
+                bankPool = pool;
+                renderer.setExternalOutputBanks(pool.slots, outSize.width, outSize.height);
+                state.transport =
+                  `DMA-BUF ${desiredDmabufBanks}-bank panorama flip (${outSize.width}x${outSize.height})`;
+                bankReady = true;
+              } catch (err) {
+                console.warn(
+                  "[overlay_renderer] DMA-BUF panorama bank setup failed, falling back to GL:",
+                  err,
+                );
+                for (const bank of panoramaBankOverlays) bank.cleanup();
+                panoramaBankOverlays = [];
+                pool.destroy();
+                renderer.setExternalOutputBanks(null);
+              }
+            } else {
+              const reason = !native.hasDmabufBanks
+                ? "native library lacks DMA-BUF bank symbols"
+                : !ipcPtr
+                ? "IVRIPCResourceManagerClient_003 unavailable"
+                : (native.getDmabufBankLastError() || "pool creation failed");
+              console.warn(
+                `[overlay_renderer] DMA-BUF panorama banks unavailable (${reason}); using GL`,
+              );
+              state.transport = `OpenGL panorama fallback (${reason})`;
+            }
+          }
+          if (!bankReady && !state.transport.startsWith("OpenGL panorama fallback")) {
+            state.transport = "OpenGL panorama";
+          }
         } else {
           panorama.cleanup();
           panoramaReady = false;
@@ -763,7 +837,14 @@ async function run(options: Start) {
         if (matrix) state.renderedAnchors[space] = Array.from(matrix);
       }
       const useDmabufProjection = !panoramaMode && bankPool !== null && bankOverlays.length >= 2;
-      const nextBank = useDmabufProjection ? (activeBank + 1) % bankOverlays.length : -1;
+      const useDmabufPanorama = panoramaMode && bankPool !== null &&
+        panoramaBankOverlays.length >= 2;
+      const bankCount = useDmabufProjection
+        ? bankOverlays.length
+        : useDmabufPanorama
+        ? panoramaBankOverlays.length
+        : 0;
+      const nextBank = bankCount >= 2 ? (activeBank + 1) % bankCount : -1;
       if (useDmabufProjection) {
         if (!renderer.selectExternalEyeBank(nextBank)) {
           throw new Error(`Invalid DMA-BUF bank index ${nextBank}`);
@@ -773,7 +854,11 @@ async function run(options: Start) {
           throw new Error("No eligible render targets");
         }
       }
-      if (
+      if (useDmabufPanorama) {
+        if (!renderer.selectExternalOutputBank(nextBank)) {
+          throw new Error(`Invalid DMA-BUF panorama bank index ${nextBank}`);
+        }
+      } else if (
         panoramaMode && state.panoramaTextureRotation &&
         !renderer.useOutputTargetOtherThan([shownPanorama])
       ) {
@@ -825,20 +910,6 @@ async function run(options: Start) {
         : null;
       if (panoramaMode) {
         const texture = renderer.getTextureHandle();
-        if (!panoramaReady) {
-          panorama.initialize(texture, {
-            key: `${overlayKey}.panorama`,
-            name: `${overlayName} (panorama)`,
-            widthInMeters: options.overlayWidthInMeters,
-            distance: options.overlayDistance,
-            mode: "stereo-panorama",
-            sortOrder: 20,
-            attachToHmd: true,
-            flipVertical: false,
-          });
-          panoramaReady = true;
-        }
-        panorama.setTextureHandle(texture);
         const presenterPaced = state.panoramaPacing === "presenter";
         let published = true;
         if (vsyncPaced && syncPhase) {
@@ -850,10 +921,14 @@ async function run(options: Start) {
             await wait(remainingMs > 1.5 ? remainingMs - 1 : 0);
           }
         }
-        if (presenterPaced) {
+        if (useDmabufPanorama) {
           const native = nativePresenter();
-          const result = native.presentTexture(panorama.getHandle(), texture, onTime);
-          state.lastPresent = { mode: "panorama-presenter", ...result };
+          const showHandle = panoramaBankOverlays[nextBank].getHandle();
+          const hideHandle = activeBank >= 0 && activeBank !== nextBank
+            ? panoramaBankOverlays[activeBank].getHandle()
+            : null;
+          const result = native.presentPanoramaBank(showHandle, hideHandle, presenterPaced, onTime);
+          state.lastPresent = { mode: "panorama-dmabuf-bank", bank: nextBank, ...result };
           if ("dropped" in result && result.dropped) {
             state.droppedLateFrames++;
             published = false;
@@ -861,12 +936,43 @@ async function run(options: Start) {
             state.waitTimeouts++;
             published = false;
           } else if (result.error) {
-            throw new Error(`Panorama publication failed: ${JSON.stringify(result)}`);
+            throw new Error(`Panorama DMA-BUF bank flip failed: ${JSON.stringify(result)}`);
+          } else {
+            activeBank = nextBank;
           }
-        } else if (!panorama.present()) throw new Error("Panorama texture rejected");
-        else state.lastPresent = { mode: "panorama", texture };
+        } else {
+          if (!panoramaReady) {
+            panorama.initialize(texture, {
+              key: `${overlayKey}.panorama`,
+              name: `${overlayName} (panorama)`,
+              widthInMeters: options.overlayWidthInMeters,
+              distance: options.overlayDistance,
+              mode: "stereo-panorama",
+              sortOrder: 20,
+              attachToHmd: true,
+              flipVertical: false,
+            });
+            panoramaReady = true;
+          }
+          panorama.setTextureHandle(texture);
+          if (presenterPaced) {
+            const native = nativePresenter();
+            const result = native.presentTexture(panorama.getHandle(), texture, onTime);
+            state.lastPresent = { mode: "panorama-presenter", ...result };
+            if ("dropped" in result && result.dropped) {
+              state.droppedLateFrames++;
+              published = false;
+            } else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
+              state.waitTimeouts++;
+              published = false;
+            } else if (result.error) {
+              throw new Error(`Panorama publication failed: ${JSON.stringify(result)}`);
+            }
+          } else if (!panorama.present()) throw new Error("Panorama texture rejected");
+          else state.lastPresent = { mode: "panorama", texture };
+        }
         const presentPhase = pacer.sampleVsyncPhase();
-        const presented = presenterPaced
+        const presented = (presenterPaced || useDmabufPanorama)
           ? state.lastPresent as { gpuFinishMs?: number; waitMs?: number; publicationMs?: number }
           : {};
         mark(

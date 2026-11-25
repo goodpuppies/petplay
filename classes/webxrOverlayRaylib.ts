@@ -181,6 +181,8 @@ export class WebXROverlayRaylib {
   /** External DMA-BUF-backed eye FBO pairs (owned by native DmabufBankPool, not unloaded by raylib). */
   private externalEyeBanks: [raylib.RenderTexture2D, raylib.RenderTexture2D][] | null = null;
   private activeExternalEyeBank = 0;
+  private externalOutputBanks: raylib.RenderTexture2D[] | null = null;
+  private activeExternalOutputBank = 0;
   private outputTarget: raylib.RenderTexture2D | null = null;
   private spareOutputTargets: raylib.RenderTexture2D[] = [];
   private combineShader: raylib.Shader | null = null;
@@ -314,6 +316,10 @@ export class WebXROverlayRaylib {
   }
 
   getTextureHandle(): number {
+    if (this.externalOutputBanks && this.externalOutputBanks.length > 0) {
+      const target = this.externalOutputBanks[this.activeExternalOutputBank];
+      if (target) return target.texture.id;
+    }
     if (!this.outputTarget) {
       throw new Error("raylib output texture not initialized");
     }
@@ -399,6 +405,62 @@ export class WebXROverlayRaylib {
   /** Resolved/preferred eye target width/height in pixels. */
   getPreferredEyeSize(): number {
     return this.resolvedEyeSize ?? (this.requestedEyeSize ?? getRaylibNativeEyeSize());
+  }
+
+  /** Resolved/preferred side-by-side stereo panorama output dimensions in pixels. */
+  getPreferredOutputSize(): { width: number; height: number } {
+    if (this.outputTarget) {
+      return {
+        width: this.outputTarget.texture.width,
+        height: this.outputTarget.texture.height,
+      };
+    }
+    const eye = this.getPreferredEyeSize();
+    return { width: eye * 2, height: eye * 2 };
+  }
+
+  /**
+   * Attach externally owned DMA-BUF-backed output FBOs so stereo-panorama combine draws straight
+   * into them with zero extra copies. Pass `null` to detach and return to raylib-owned outputTarget.
+   */
+  setExternalOutputBanks(
+    banks: readonly { fbo: number; colorTexture: number; depthRbo: number }[] | null,
+    width = 0,
+    height = 0,
+  ): void {
+    if (!banks || banks.length === 0) {
+      this.externalOutputBanks = null;
+      this.activeExternalOutputBank = 0;
+      return;
+    }
+    this.externalOutputBanks = banks.map((slot) => ({
+      id: slot.fbo,
+      texture: {
+        id: slot.colorTexture,
+        width,
+        height,
+        mipmaps: 1,
+        format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+      },
+      depth: {
+        id: slot.depthRbo,
+        width,
+        height,
+        mipmaps: 1,
+        format: 19,
+      },
+    }));
+    this.activeExternalOutputBank = 0;
+  }
+
+  selectExternalOutputBank(bankIndex: number): boolean {
+    if (
+      !this.externalOutputBanks || bankIndex < 0 || bankIndex >= this.externalOutputBanks.length
+    ) {
+      return false;
+    }
+    this.activeExternalOutputBank = bankIndex;
+    return true;
   }
 
   /**
@@ -675,7 +737,8 @@ export class WebXROverlayRaylib {
 
     const leftTarget = externalPair ? externalPair[0] : this.leftEyeTarget;
     const rightTarget = externalPair ? externalPair[1] : this.rightEyeTarget;
-    const outputTarget = this.outputTarget;
+    const outputTarget = this.externalOutputBanks?.[this.activeExternalOutputBank] ??
+      this.outputTarget;
     const shader = this.combineShader;
     const sceneRenderer = this.sceneRenderer;
     if (

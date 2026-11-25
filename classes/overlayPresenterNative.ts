@@ -299,6 +299,46 @@ export class OverlayPresenterNative {
     }
     return { ...this.result(error, error !== 0 && this.stats[3] > 0), dropped: false };
   }
+  /**
+   * Bank-flipped stereo-panorama present:
+   * 1. Wait for producer GPU fence on the hidden bank's DMA-BUF.
+   * 2. Optionally wait for `WaitFrameSync` (`waitForSync = true` for `panoramaPacing: "presenter"`).
+   * 3. Optionally drop if late (`beforePublish() === false`).
+   * 4. Flip `ShowOverlay(show)` / `HideOverlay(hide)` back-to-back in ~1 us.
+   */
+  presentPanoramaBank(
+    showHandle: bigint,
+    hideHandle: bigint | null,
+    waitForSync: boolean,
+    beforePublish?: () => boolean,
+  ) {
+    const s = this.library.symbols;
+    let error = s.pp_overlay_fence_finish!(this.stats);
+    if (!error && waitForSync) {
+      const start = performance.now();
+      const wait = s.pp_overlay_wait_blocking!(this.table, WAIT_TIMEOUT_MS);
+      this.stats[1] = performance.now() - start;
+      this.stats[5] = wait;
+      if (wait) {
+        this.stats[4] = wait;
+        error = wait;
+      }
+    }
+    if (!error && beforePublish && !beforePublish()) {
+      return { ...this.result(0, false), dropped: true };
+    }
+    if (!error) {
+      error = s.pp_overlay_flip_banks!(
+        this.table,
+        showHandle,
+        0n,
+        hideHandle ?? 0n,
+        0n,
+        this.stats,
+      );
+    }
+    return { ...this.result(error, error !== 0 && this.stats[3] > 0), dropped: false };
+  }
   private publishProjection(
     handles: readonly [bigint, bigint],
     textures: { left: number; right: number },

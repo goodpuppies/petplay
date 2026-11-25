@@ -12,6 +12,8 @@ type OverlayOptions = {
   sortOrder?: number;
   attachToHmd?: boolean;
   flipVertical?: boolean;
+  /** Skip initial OpenGL SetOverlayTexture and ShowOverlay (for DMA-BUF bank-flipped overlays). */
+  skipInitialTextureAndShow?: boolean;
   /** Keys of overlays whose owning process is gone; destroyed before creating. */
   staleKeys?: string[];
 };
@@ -198,9 +200,10 @@ export class OpenVrOverlayTexture {
       "SetOverlayTextureBounds",
     );
 
-    this.setTextureHandle(textureHandle);
-
-    this.assertOverlayOk(this.overlayClass.ShowOverlay(this.overlayHandle), "ShowOverlay");
+    if (!options.skipInitialTextureAndShow) {
+      this.setTextureHandle(textureHandle);
+      this.assertOverlayOk(this.overlayClass.ShowOverlay(this.overlayHandle), "ShowOverlay");
+    }
   }
 
   /** Process-local handle, for presenting through the native presenter. */
