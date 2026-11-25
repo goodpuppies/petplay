@@ -212,6 +212,40 @@ export class OpenVrOverlayTexture {
     return this.overlayHandle;
   }
 
+  /** Update sort order on a live overlay (e.g. yielding behind the SteamVR dashboard). */
+  setSortOrder(sortOrder: number): void {
+    if (!this.overlayHandle) return;
+    this.assertOverlayOk(
+      this.overlayClass.SetOverlaySortOrder(this.overlayHandle, sortOrder),
+      "SetOverlaySortOrder",
+    );
+  }
+
+  /** Update HMD-relative Z distance on a live overlay (used as OpenVR's equal-sortOrder tie-breaker). */
+  setHmdDistance(distance: number): void {
+    if (!this.overlayHandle) return;
+    const transform: OpenVR.HmdMatrix34 = {
+      m: [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, -distance],
+      ],
+    };
+    const [transformPtr, transformView] = createStruct<OpenVR.HmdMatrix34>(
+      transform,
+      OpenVR.HmdMatrix34Struct,
+    );
+    this.transformView = transformView;
+    this.assertOverlayOk(
+      this.overlayClass.SetOverlayTransformTrackedDeviceRelative(
+        this.overlayHandle,
+        OpenVR.k_unTrackedDeviceIndex_Hmd,
+        transformPtr,
+      ),
+      "SetOverlayTransformTrackedDeviceRelative",
+    );
+  }
+
   setTextureHandle(textureHandle: number) {
     if (!Number.isInteger(textureHandle) || textureHandle <= 0) {
       throw new Error(`Invalid OpenGL texture handle: ${textureHandle}`);

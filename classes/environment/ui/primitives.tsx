@@ -384,10 +384,12 @@ export function Footer({ children }: { children?: React.ReactNode }) {
  * size is the free one — here the footer height is load-bearing elsewhere.
  */
 export function Shell(
-  { children, footer, pointerEventsType, opacity = 1 }: {
+  { children, footer, pointerEventsType, pointerEventsOrder = 100, opacity = 1 }: {
     children?: React.ReactNode;
     footer?: React.ReactNode;
     pointerEventsType?: AllowedPointerEventsType;
+    /** Inherited by every uikit Container inside the shell so displays behind it (order 1) never steal hits. */
+    pointerEventsOrder?: number;
     /** Whole-panel opacity; uikit's `opacity` is inherited by everything inside. */
     opacity?: number;
   },
@@ -398,6 +400,7 @@ export function Shell(
       <Container
         pixelSize={0.001}
         pointerEventsType={pointerEventsType}
+        pointerEventsOrder={pointerEventsOrder}
         opacity={opacity}
         width={GRID_WIDTH + GAP * 2}
         padding={GAP}

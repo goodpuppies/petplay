@@ -132,6 +132,7 @@ export function WristToastStack({
         anchorX="center"
         anchorY="bottom"
         pointerEventsType={pointerEventsType}
+        pointerEventsOrder={100}
         flexDirection="column-reverse"
         alignItems="center"
         gap={GAP}

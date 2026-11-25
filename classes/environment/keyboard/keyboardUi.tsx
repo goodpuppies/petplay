@@ -1026,6 +1026,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       <Container
         ref={topBar == null ? ref : undefined}
         pixelSize={pixelSize}
+        pointerEventsOrder={topBar == null ? 20 : undefined}
         opacity={topBar == null ? opacity : undefined}
         flexDirection="row"
         alignItems="flex-start"
@@ -1051,6 +1052,7 @@ export const KeyboardFromJson = forwardRef<THREE.Object3D, KeyboardFromJsonProps
       <Container
         ref={ref}
         pixelSize={pixelSize}
+        pointerEventsOrder={20}
         opacity={opacity}
         flexDirection="column"
         alignItems="stretch"

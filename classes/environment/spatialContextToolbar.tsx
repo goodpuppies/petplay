@@ -409,6 +409,7 @@ export function SpatialContextToolbar({
         )}
         <Container
           {...toolbarShell}
+          pointerEventsOrder={20}
           anchorX={side === "right" ? "left" : side === "left" ? "right" : undefined}
           anchorY={side === "above" ? "bottom" : "top"}
           flexDirection={side === "above" ? "column-reverse" : "column"}

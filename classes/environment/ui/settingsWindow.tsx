@@ -954,6 +954,7 @@ export function SettingsWindow({
       padding={GAP}
       radius={RADIUS.shell}
       pixelSize={pixelSize}
+      pointerEventsOrder={20}
       showGuides={showGuides}
     >
       {/* Left sidebar: 2 × 5 category list */}

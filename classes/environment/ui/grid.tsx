@@ -142,6 +142,7 @@ export type GridProps = {
   backgroundOpacity?: number;
   opacity?: number;
   pointerEventsType?: AllowedPointerEventsType;
+  pointerEventsOrder?: number;
   /** Draws faint guide outlines over every 1×1 track in this grid. */
   showGuides?: boolean;
   children?: React.ReactNode;
@@ -160,6 +161,7 @@ export function Grid({
   backgroundOpacity,
   opacity,
   pointerEventsType,
+  pointerEventsOrder,
   showGuides = false,
   children,
 }: GridProps) {
@@ -202,6 +204,7 @@ export function Grid({
       <Container
         pixelSize={pixelSize}
         pointerEventsType={pointerEventsType}
+        pointerEventsOrder={pointerEventsOrder}
         opacity={opacity}
         width={metrics.outerWidth}
         height={metrics.outerHeight}

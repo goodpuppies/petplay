@@ -598,6 +598,15 @@ async function run(options: Start) {
     let panoramaReady = false;
     let activeMode: PresentMode | null = null;
     let activeEyeSize: number | null = state.eyeSize;
+    const normalPanoramaDistance = options.overlayDistance ?? 1;
+    let dashboardVisible = overlayInterface.IsDashboardVisible();
+    const applyPanoramaLayering = (ov: OpenVrOverlayTexture, behindDashboard: boolean) => {
+      // When the SteamVR dashboard is open, drop to sortOrder 0 and push behind the ~2m
+      // dashboard (stereopanorama samples by view ray, so distance only affects OpenVR's
+      // equal-sortOrder tie-breaker). Otherwise use sortOrder 1 to stay above desktop quads (0).
+      ov.setSortOrder(behindDashboard ? 0 : 1);
+      ov.setHmdDistance(behindDashboard ? 100 : normalPanoramaDistance);
+    };
     const leftEye = trackingMatrix34(system.GetEyeToHeadTransform(OpenVR.Eye.Eye_Left).m);
     const rightEye = trackingMatrix34(system.GetEyeToHeadTransform(OpenVR.Eye.Eye_Right).m);
     state.eyeToHead = { left: leftEye.toArray(), right: rightEye.toArray() };
@@ -702,10 +711,10 @@ async function run(options: Start) {
                     key: `${overlayKey}.panorama.bank${b}`,
                     name: `${overlayName} (panorama bank ${b})`,
                     widthInMeters: options.overlayWidthInMeters,
-                    distance: options.overlayDistance,
+                    distance: dashboardVisible ? 100 : normalPanoramaDistance,
                     mode: "stereo-panorama",
                     // Above desktop quad overlays (0), below SteamVR dashboard.
-                    sortOrder: 1,
+                    sortOrder: dashboardVisible ? 0 : 1,
                     attachToHmd: true,
                     // OpenGL FBO is bottom-up while Vulkan/DMA-BUF samples top-down.
                     flipVertical: true,
@@ -824,6 +833,18 @@ async function run(options: Start) {
         activeDmabufBanks = desiredDmabufBanks;
       }
       const panoramaMode = activeMode === "panorama";
+      const nextDashboardVisible = overlayInterface.IsDashboardVisible();
+      if (nextDashboardVisible !== dashboardVisible) {
+        dashboardVisible = nextDashboardVisible;
+        if (panoramaMode) {
+          for (const bank of panoramaBankOverlays) {
+            applyPanoramaLayering(bank, dashboardVisible);
+          }
+          if (panoramaReady && panorama) {
+            applyPanoramaLayering(panorama, dashboardVisible);
+          }
+        }
+      }
       // Vsync pacing starts each frame at the display vsync (panorama's default); otherwise
       // frames start right after the previous presentation's wait.
       const vsyncPaced = panoramaMode && state.panoramaPacing === "vsync";
@@ -1123,9 +1144,9 @@ async function run(options: Start) {
               key: `${overlayKey}.panorama`,
               name: `${overlayName} (panorama)`,
               widthInMeters: options.overlayWidthInMeters,
-              distance: options.overlayDistance,
+              distance: dashboardVisible ? 100 : normalPanoramaDistance,
               mode: "stereo-panorama",
-              sortOrder: 1,
+              sortOrder: dashboardVisible ? 0 : 1,
               attachToHmd: true,
               flipVertical: false,
             });
