@@ -325,6 +325,41 @@ export class OverlayPresenterNative {
     const error = this.library.symbols.pp_overlay_fence_finish!(this.stats);
     return { error, gpuFinishMs: this.stats[0] };
   }
+  /** Update hidden bank projection poses and flip visibility after `waitGpuFence()` has completed. */
+  flipProjectionBank(
+    showHandles: readonly [bigint, bigint],
+    hideHandles: readonly [bigint, bigint] | null,
+    cameras: RenderCameras,
+    beforePublish?: () => boolean,
+  ) {
+    const s = this.library.symbols;
+    writeEyeFromTracking(cameras.leftEyeViewMatrix, this.views.subarray(0, 12));
+    writeEyeFromTracking(cameras.rightEyeViewMatrix, this.views.subarray(12));
+    writeProjectionTangents(cameras.leftEyeProjectionMatrix, true, this.frusta.subarray(0, 4));
+    writeProjectionTangents(cameras.rightEyeProjectionMatrix, true, this.frusta.subarray(4));
+    let error = s.pp_overlay_set_projection!(
+      this.table,
+      showHandles[0],
+      showHandles[1],
+      this.views,
+      this.frusta,
+    );
+    if (error) this.stats[4] = error;
+    if (!error && beforePublish && !beforePublish()) {
+      return { ...this.result(0, false), dropped: true };
+    }
+    if (!error) {
+      error = s.pp_overlay_flip_banks!(
+        this.table,
+        showHandles[0],
+        showHandles[1],
+        hideHandles ? hideHandles[0] : 0n,
+        hideHandles ? hideHandles[1] : 0n,
+        this.stats,
+      );
+    }
+    return { ...this.result(error, error !== 0 && this.stats[3] > 0), dropped: false };
+  }
   /** Flip a pre-bound stereo-panorama DMA-BUF bank after `finishGpuFence()` has already completed. */
   flipPanoramaBank(
     showHandle: bigint,

@@ -264,6 +264,9 @@ export function anchoredLowerers(): RenderLowerer[] {
         Object.assign(instance, {
           passthroughKey: object.userData.passthroughKey === true,
           passthroughCutout: object.userData.passthroughCutout === true,
+          ...(object.userData.desktopSurface
+            ? { desktopSurface: object.userData.desktopSurface }
+            : {}),
         });
         return instance;
       }),

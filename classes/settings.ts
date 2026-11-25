@@ -94,6 +94,13 @@ export const SETTINGS_SCHEMA = {
     valid: (value: unknown): value is "linear" | "catmull-rom" | null =>
       value === null || value === "linear" || value === "catmull-rom",
   } satisfies SettingSpec<"linear" | "catmull-rom" | null>,
+  overlayPresentMode: {
+    default: "panorama" as "panorama" | "projection",
+    label:
+      "Overlay presentation mode: panorama (default, native quad displays) or projection (lower VRAM, head reprojection)",
+    valid: (value: unknown): value is "panorama" | "projection" =>
+      value === "panorama" || value === "projection",
+  } satisfies SettingSpec<"panorama" | "projection">,
   grabboxOutline: {
     default: true as boolean,
     label: "Draw grab-box outlines (the hull stays grabbable either way)",

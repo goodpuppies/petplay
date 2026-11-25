@@ -50,6 +50,11 @@ type SpatialNodeBase = {
   /** Displays: fade out while the head is turned away from it (XSO's auto-hide). */
   autoHide?: boolean;
   /**
+   * Displays: in projection overlay mode, swap this display back to its native SteamVR quad
+   * overlay for single-pass sharpness (tradeoff: renders on top of PetPlay's projection UI).
+   */
+  hqQuad?: boolean;
+  /**
    * Displays showing this machine's own screen: offered to others on the share topic
    * (`petplay/displayShare.ts`). `remoteInput`: they may also drive it with mouse and keys.
    */
@@ -889,6 +894,19 @@ export function setSpatialNodeAutoHide(
   const graph = cloneGraph(current);
   const { autoHide: _previous, ...rest } = node;
   graph.nodes[nodeId] = (autoHide ? { ...rest, autoHide } : rest) as SpatialNode;
+  return graph;
+}
+
+export function setSpatialNodeHqQuad(
+  current: SpatialGraph,
+  nodeId: SpatialNodeId,
+  hqQuad: boolean,
+): SpatialGraph {
+  const node = current.nodes[nodeId];
+  if (!node || (node.hqQuad ?? false) === hqQuad) return current;
+  const graph = cloneGraph(current);
+  const { hqQuad: _previous, ...rest } = node;
+  graph.nodes[nodeId] = (hqQuad ? { ...rest, hqQuad } : rest) as SpatialNode;
   return graph;
 }
 

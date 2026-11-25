@@ -116,7 +116,13 @@ import {
   vrcCameraStore,
 } from "../classes/environment/vrcCameraStore.ts";
 import { captureDenoCpuProfile } from "../classes/denoCpuProfile.ts";
-import { getSettings, isSettingKey, loadSettings, setSetting } from "../classes/settings.ts";
+import {
+  getSettings,
+  isSettingKey,
+  loadSettings,
+  setSetting,
+  subscribeSettings,
+} from "../classes/settings.ts";
 import { pushToast, type ToastInput } from "../classes/environment/toastStore.ts";
 import { batteryStore } from "../classes/environment/batteryStore.ts";
 import { readOpenVrBatteries } from "../classes/openVrBattery.ts";
@@ -485,6 +491,7 @@ const state = actorState({
   renderOwner: null as string | null,
   displayOverlayHostActor: null as string | null,
   renderOwnerStatus: null as unknown,
+  desktopSuppressedForProjection: false,
   /**
    * Extra renderers of this scene, keyed by actor id (see [desktopView](desktopView.ts)):
    * each gets the same IR payload the in-worker raylib overlay rasterizes, and
@@ -1236,8 +1243,34 @@ new PostMan(
       }
       return mode;
     },
+    SETOVERLAYPRESENTMODE: (mode: "panorama" | "projection") => {
+      if (mode !== "panorama" && mode !== "projection") {
+        throw new Error(`Unknown overlay present mode: ${mode}`);
+      }
+      state.raylibProjectionOverlayEnabled = mode === "projection";
+      if (state.renderOwner) {
+        PostMan.PostMessage({
+          target: state.renderOwner,
+          type: "SETPRESENTMODE",
+          payload: mode,
+        });
+      }
+      return { mode };
+    },
     OVERLAYRENDERSTATUS: (payload: { actorId: string; status: unknown }) => {
-      if (payload.actorId === state.renderOwner) state.renderOwnerStatus = payload.status;
+      if (payload.actorId === state.renderOwner) {
+        state.renderOwnerStatus = payload.status;
+        const mode = (payload.status as { presentMode?: string } | null)?.presentMode;
+        const shouldSuppress = mode === "projection";
+        if (state.displayOverlayHostActor && state.desktopSuppressedForProjection !== shouldSuppress) {
+          state.desktopSuppressedForProjection = shouldSuppress;
+          PostMan.PostMessage({
+            target: state.displayOverlayHostActor,
+            type: "SETSUPPRESSOVERLAYSFORPROJECTION",
+            payload: shouldSuppress,
+          });
+        }
+      }
     },
     STOPWEBXR: async (_payload: void) => {
       return await stopWebXR();
@@ -3063,6 +3096,11 @@ async function startRenderOwner() {
   });
   state.renderOwner = resolveActorId(actor);
   const config = state.lastStartPayload;
+  const initialPresentMode: "panorama" | "projection" = state.raylibProjectionOverlayEnabled ||
+      getSettings().overlayPresentMode === "projection"
+    ? "projection"
+    : "panorama";
+  state.raylibProjectionOverlayEnabled = initialPresentMode === "projection";
   await PostMan.PostMessage({
     target: state.renderOwner,
     type: "STARTOVERLAYRENDERER",
@@ -3071,17 +3109,39 @@ async function startRenderOwner() {
       overlayKey: `${config?.overlayKey ?? "petplay.webxr"}.independent.${Deno.pid}`,
       overlayName: config?.overlayName,
       eyeSize: getRaylibNativeEyeSize(),
-      presentMode: state.raylibProjectionOverlayEnabled ? "projection" : "panorama",
+      presentMode: initialPresentMode,
       overlayWidthInMeters: config?.overlayWidthInMeters,
       overlayDistance: config?.overlayDistance,
     },
   }, true);
 }
+
+subscribeSettings(() => {
+  const mode = getSettings().overlayPresentMode;
+  const wantProjection = mode === "projection";
+  if (state.raylibProjectionOverlayEnabled === wantProjection) return;
+  state.raylibProjectionOverlayEnabled = wantProjection;
+  if (state.renderOwner) {
+    PostMan.PostMessage({
+      target: state.renderOwner,
+      type: "SETPRESENTMODE",
+      payload: mode,
+    });
+  }
+});
 async function stopRenderOwner() {
   const id = state.renderOwner;
   if (!id) return;
   state.renderOwner = null;
   state.renderOwnerStatus = null;
+  if (state.displayOverlayHostActor && state.desktopSuppressedForProjection) {
+    state.desktopSuppressedForProjection = false;
+    PostMan.PostMessage({
+      target: state.displayOverlayHostActor,
+      type: "SETSUPPRESSOVERLAYSFORPROJECTION",
+      payload: false,
+    });
+  }
   try {
     await Promise.race([
       PostMan.PostMessage({ target: id, type: "STOPOVERLAYRENDERER", payload: null }, true),

@@ -408,35 +408,57 @@ function GrabThresholdRow({ row }: { row: number }) {
   );
 }
 
+function OverlayModeRow({ row }: { row: number }) {
+  const mode = useSetting("overlayPresentMode");
+  return (
+    <SettingRow
+      row={row}
+      title="Overlay Mode"
+      description="Panorama (default, native displays) or Projection (lower VRAM, head reprojection)"
+    >
+      <SegmentedControl
+        value={mode}
+        onChange={(next) => setSetting("overlayPresentMode", next as "panorama" | "projection")}
+        options={[
+          { value: "panorama", label: "PANO" },
+          { value: "projection", label: "PROJ" },
+        ]}
+        itemWidth={92}
+      />
+    </SettingRow>
+  );
+}
+
 function GeneralPage({ showGuides }: { showGuides: boolean }) {
   return (
-    <Grid cols={1} rows={6} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={7} gap={GAP} padding={0} showGuides={showGuides}>
+      <OverlayModeRow row={0} />
       <BooleanSettingRow
-        row={0}
+        row={1}
         title="Controller Lasers"
         description="Draw aiming beams from both controllers"
         setting="controllerLaser"
       />
       <BooleanSettingRow
-        row={1}
+        row={2}
         title="Haptic Feedback"
         description="Subtle vibration on hover and click"
         setting="haptics"
       />
       <BooleanSettingRow
-        row={2}
+        row={3}
         title="Desktop Notifications"
         description="Forward Linux desktop alerts as VR toasts"
         setting="desktopNotifications"
       />
       <BooleanSettingRow
-        row={3}
+        row={4}
         title="Grab-Box Outlines"
         description="Show wireframe frames around spatial windows"
         setting="grabboxOutline"
       />
-      <GrabThresholdRow row={4} />
-      <PeerNetworkingRow row={5} />
+      <GrabThresholdRow row={5} />
+      <PeerNetworkingRow row={6} />
     </Grid>
   );
 }

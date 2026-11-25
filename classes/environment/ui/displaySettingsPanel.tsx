@@ -32,6 +32,8 @@ export type DisplaySettingsPanelProps = {
   onChangeLaserMouse: (next: boolean) => void;
   autoHide: boolean;
   onChangeAutoHide: (next: boolean) => void;
+  hqQuad?: boolean;
+  onChangeHqQuad?: (next: boolean) => void;
   grabOutline: boolean;
   onChangeGrabOutline: (next: boolean) => void;
   showSharing?: boolean;
@@ -62,6 +64,8 @@ export function DisplaySettingsPanel({
   onChangeLaserMouse,
   autoHide,
   onChangeAutoHide,
+  hqQuad = false,
+  onChangeHqQuad,
   grabOutline,
   onChangeGrabOutline,
   showSharing = true,
@@ -284,9 +288,9 @@ export function DisplaySettingsPanel({
         </Grid>
       </Cell>
 
-      {/* Row 3: 2×2 pill toggles + Reset pose framed inside a 4×1 tile */}
+      {/* Row 3: 2×3 pill toggles + Reset pose framed inside a 4×1 tile */}
       <Cell col={0} row={3} colSpan={4} rowSpan={1} surface="tile">
-        <Grid cols={2} rows={2} gap={INNER_GAP} padding={INNER_GAP} showGuides={showGuides}>
+        <Grid cols={2} rows={3} gap={INNER_GAP} padding={INNER_GAP} showGuides={showGuides}>
           {showLaserMouse
             ? (
               <Cell col={0} row={0} shape="round">
@@ -318,6 +322,16 @@ export function DisplaySettingsPanel({
           </Cell>
           <Cell col={1} row={1} shape="round" surface="outline" onClick={onResetPose}>
             <Text color={COLOR.ink} fontSize={16}>Reset pose</Text>
+          </Cell>
+          <Cell col={0} row={2} shape="round">
+            <GridToggle
+              label="HQ mode"
+              value={hqQuad}
+              onChange={(next) => onChangeHqQuad?.(next)}
+            />
+          </Cell>
+          <Cell col={1} row={2} flexDirection="row" justifyContent="flex-start" paddingX={8}>
+            <Text color={COLOR.inkDim} fontSize={13}>Native quad (on top in Proj)</Text>
           </Cell>
         </Grid>
       </Cell>

@@ -463,6 +463,23 @@ async function run(options: Start) {
   let activeBank = -1;
   let pendingPanorama: { bank: number; showHandle: bigint; fence: Deno.PointerValue } | null =
     null;
+  let pendingProjection: {
+    bank: number;
+    showHandles: readonly [bigint, bigint];
+    fence: Deno.PointerValue;
+    cameras: RenderCameras;
+  } | null = null;
+  const makeCamerasBuffer = (): RenderCameras => ({
+    leftEyeViewMatrix: new Float32Array(16),
+    rightEyeViewMatrix: new Float32Array(16),
+    leftEyeProjectionMatrix: new Float32Array(16),
+    rightEyeProjectionMatrix: new Float32Array(16),
+  });
+  const pendingProjectionCameras: [RenderCameras, RenderCameras] = [
+    makeCamerasBuffer(),
+    makeCamerasBuffer(),
+  ];
+  let pendingProjectionCamSlot = 0;
   let activeDmabufBanks: DmabufBankCount | null = null;
   let presenter = null as OverlayPresenterNative | null;
   // Panorama is the main mode and presents without it; load the native helper only for the
@@ -472,14 +489,18 @@ async function run(options: Start) {
   const nativePresenter = () => presenter ??= new OverlayPresenterNative(overlayPointer!);
   let panorama: OpenVrOverlayTexture | null = null;
   let panoramaBankOverlays: OpenVrOverlayTexture[] = [];
-  const clearPendingPanorama = () => {
+  const clearPendingBanks = () => {
     if (pendingPanorama) {
       presenter?.deleteGpuFence(pendingPanorama.fence);
       pendingPanorama = null;
     }
+    if (pendingProjection) {
+      presenter?.deleteGpuFence(pendingProjection.fence);
+      pendingProjection = null;
+    }
   };
   const teardownDmabufBanks = () => {
-    clearPendingPanorama();
+    clearPendingBanks();
     renderer?.setExternalEyeBanks(null);
     renderer?.setExternalOutputBanks(null);
     for (const bank of bankOverlays) bank.cleanup();
@@ -789,15 +810,18 @@ async function run(options: Start) {
       const vsyncLocked = panoramaMode && state.panoramaPacing === "vsync-locked";
       const usePipelinedPanorama = vsyncLocked && bankPool !== null &&
         panoramaBankOverlays.length >= 3 && (presenter?.hasAsyncFence ?? false);
-      if (!usePipelinedPanorama && pendingPanorama) clearPendingPanorama();
+      const usePipelinedProjection = !panoramaMode && bankPool !== null &&
+        bankOverlays.length >= 3 && (presenter?.hasAsyncFence ?? false);
+      if (!usePipelinedPanorama && pendingPanorama) clearPendingBanks();
+      if (!usePipelinedProjection && pendingProjection) clearPendingBanks();
       const pacer = vsyncPaced ? vsyncPacer : fastPacer;
       pacer.extraPredictionFrames = panoramaMode
         ? state.panoramaExtraPredictionFrames + (usePipelinedPanorama ? 1 : 0)
-        : 0;
+        : (usePipelinedProjection ? 1 : 0);
       mark("pace0");
       if (vsyncPaced) await pacer.paceToDisplayAndRefreshPosesYielding();
       else {
-        if (vsyncLocked) {
+        if (vsyncLocked || usePipelinedProjection) {
           await waitVsyncLocked();
         } else if (panoramaMode && state.panoramaPacing === "frame-sync") {
           overlayInterface.WaitFrameSync(100);
@@ -904,6 +928,8 @@ async function run(options: Start) {
         : 0;
       const lastRenderedBank: number = usePipelinedPanorama && pendingPanorama
         ? pendingPanorama.bank
+        : usePipelinedProjection && pendingProjection
+        ? pendingProjection.bank
         : activeBank;
       const nextBank: number = bankCount >= 2 ? (lastRenderedBank + 1) % bankCount : -1;
       if (useDmabufProjection) {
@@ -939,6 +965,7 @@ async function run(options: Start) {
       try {
         renderWork = renderer.renderRaythreeFrame(payload, {
           skipCombine: !panoramaMode,
+          drawDesktopSurfaces: !panoramaMode,
           cameras,
           lookRotation,
         });
@@ -1129,32 +1156,100 @@ async function run(options: Start) {
         }
       } else if (useDmabufProjection) {
         const native = nativePresenter();
-        const showHandles = bankOverlays[nextBank].getHandles();
-        const hideHandles = activeBank >= 0 && activeBank !== nextBank
-          ? bankOverlays[activeBank].getHandles()
-          : null;
-        const result = native.presentProjectionBank(showHandles, hideHandles, cameras, onTime);
-        state.lastPresent = { mode: "projection-dmabuf-bank", bank: nextBank, ...result };
-        const dropped = "dropped" in result && result.dropped;
-        if (dropped) state.droppedLateFrames++;
-        const phase = timeline ? pacer.sampleVsyncPhase() : null;
-        mark(
-          dropped ? "drop" : "present",
-          phase ? Number(phase.frameIndex) : null,
-          phase?.msSinceVsync,
-          result.gpuFinishMs,
-          result.waitMs,
-          result.publicationMs,
-          result.waitResult,
-        );
-        if (dropped) { /* compositor keeps reprojecting the previously visible bank */ }
-        else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
-          state.waitTimeouts++;
-        } else if (result.error) {
-          throw new Error(`DMA-BUF bank projection publication failed: ${JSON.stringify(result)}`);
+        const showHandles: readonly [bigint, bigint] = bankOverlays[nextBank].getHandles();
+        if (usePipelinedProjection) {
+          // 1-frame async GPU fence pipeline across 3 projection banks: flush this frame's bank
+          // with a non-blocking fence + saved cameras, then wait for the previous frame's bank
+          // (already ~13.3 ms in flight on the GPU) and flip its poses + visibility into view.
+          const fence = native.createGpuFence();
+          const camBuf = pendingProjectionCameras[pendingProjectionCamSlot];
+          pendingProjectionCamSlot ^= 1;
+          camBuf.leftEyeViewMatrix.set(cameras.leftEyeViewMatrix);
+          camBuf.rightEyeViewMatrix.set(cameras.rightEyeViewMatrix);
+          camBuf.leftEyeProjectionMatrix.set(cameras.leftEyeProjectionMatrix);
+          camBuf.rightEyeProjectionMatrix.set(cameras.rightEyeProjectionMatrix);
+          const ready = pendingProjection;
+          pendingProjection = { bank: nextBank, showHandles, fence, cameras: camBuf };
+          if (!ready) {
+            state.lastPresent = { mode: "projection-dmabuf-bank-prime", bank: nextBank };
+          } else {
+            const fin = native.waitGpuFence(ready.fence);
+            if (fin.error) {
+              throw new Error(`Projection DMA-BUF async fence wait failed: ${JSON.stringify(fin)}`);
+            }
+            if (syncPhase && state.panoramaPresentMinMs > 0) {
+              const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
+                (performance.now() - sampleMs);
+              const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
+              if (remainingMs > 0) {
+                await wait(remainingMs);
+              }
+            }
+            const hideHandles = activeBank >= 0 && activeBank !== ready.bank
+              ? bankOverlays[activeBank].getHandles()
+              : null;
+            const result = native.flipProjectionBank(
+              ready.showHandles,
+              hideHandles,
+              ready.cameras,
+              onTime,
+            );
+            state.lastPresent = {
+              mode: "projection-dmabuf-bank-pipelined",
+              bank: ready.bank,
+              ...result,
+            };
+            const dropped = "dropped" in result && result.dropped;
+            if (dropped) state.droppedLateFrames++;
+            const phase = timeline ? pacer.sampleVsyncPhase() : null;
+            mark(
+              dropped ? "drop" : "present",
+              phase ? Number(phase.frameIndex) : null,
+              phase?.msSinceVsync,
+              result.gpuFinishMs,
+              result.waitMs,
+              result.publicationMs,
+              result.waitResult,
+            );
+            if (dropped) { /* compositor keeps reprojecting the previously visible bank */ }
+            else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
+              state.waitTimeouts++;
+            } else if (result.error) {
+              throw new Error(
+                `DMA-BUF bank projection publication failed: ${JSON.stringify(result)}`,
+              );
+            } else {
+              activeBank = ready.bank;
+              state.publishedFrames++;
+            }
+          }
         } else {
-          activeBank = nextBank;
-          state.publishedFrames++;
+          const hideHandles = activeBank >= 0 && activeBank !== nextBank
+            ? bankOverlays[activeBank].getHandles()
+            : null;
+          const result = native.presentProjectionBank(showHandles, hideHandles, cameras, onTime);
+          state.lastPresent = { mode: "projection-dmabuf-bank", bank: nextBank, ...result };
+          const dropped = "dropped" in result && result.dropped;
+          if (dropped) state.droppedLateFrames++;
+          const phase = timeline ? pacer.sampleVsyncPhase() : null;
+          mark(
+            dropped ? "drop" : "present",
+            phase ? Number(phase.frameIndex) : null,
+            phase?.msSinceVsync,
+            result.gpuFinishMs,
+            result.waitMs,
+            result.publicationMs,
+            result.waitResult,
+          );
+          if (dropped) { /* compositor keeps reprojecting the previously visible bank */ }
+          else if (result.waitResult === OpenVR.OverlayError.VROverlayError_TimedOut) {
+            state.waitTimeouts++;
+          } else if (result.error) {
+            throw new Error(`DMA-BUF bank projection publication failed: ${JSON.stringify(result)}`);
+          } else {
+            activeBank = nextBank;
+            state.publishedFrames++;
+          }
         }
       } else {
         const textures = renderer.getEyeTextureHandles();

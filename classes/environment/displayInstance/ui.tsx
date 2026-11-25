@@ -60,6 +60,8 @@ export type DisplayInstanceFrameProps = {
   rayHitSurface?: boolean;
   /** OpenVR overlay curvature; the ray proxy bends to match (`curvedSurface.ts`). */
   curvature?: number;
+  /** In projection mode, use the native SteamVR quad overlay instead of drawing in-scene. */
+  hqQuad?: boolean;
   /**
    * The media feed this display shows and which part of it, for renderers that draw the picture
    * in the scene themselves (the scene stream's `videoSurface`, `classes/sceneStoreWriter.ts`).
@@ -136,6 +138,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
       shellRayPickable = false,
       rayHitSurface = true,
       curvature = 0,
+      hqQuad = false,
       videoFeed = null,
       onMouse,
       mouseButtonForPointer,
@@ -368,6 +371,9 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
                 displayInstanceRayHitSurface: true,
                 passthroughCutout: true,
                 steamVrInputOverlay: true,
+                desktopSurface: !hqQuad && videoFeed
+                  ? { crop: videoFeed.crop, opacity: videoFeed.opacity }
+                  : null,
               }}
               onPointerMove={penHandler(emitMove)}
               onPointerDown={penHandler((e: PenPointerEvent) => emitButton(e, true))}

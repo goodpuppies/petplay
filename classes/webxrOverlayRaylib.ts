@@ -683,6 +683,7 @@ export class WebXROverlayRaylib {
     payload: WebXRRaythreeRenderPayload,
     options: {
       skipCombine?: boolean;
+      drawDesktopSurfaces?: boolean;
       cameras?: Pick<
         WebXRRaythreeRenderPayload["frame"],
         | "leftEyeViewMatrix"
@@ -758,6 +759,7 @@ export class WebXROverlayRaylib {
       throw new Error("raylib compositor not initialized");
     }
 
+    sceneRenderer.setDrawDesktopSurfaces(options.drawDesktopSurfaces === true);
     sceneRenderer.beginUiFrame();
     const skipRightAssetSync = areNativeAssetBatchesIdenticalForSync(
       payload.leftEye.assets,

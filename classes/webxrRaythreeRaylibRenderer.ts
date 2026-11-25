@@ -6,6 +6,7 @@ import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import * as THREE from "three";
 import { PathfinderTextRenderer } from "./pathfinderText.ts";
 import { GlyphTextRenderer } from "./glyphText.ts";
+import { DesktopTextureUploader } from "./desktopTextureUploader.ts";
 import { beginUiAlphaBlend } from "./uiAlphaBlend.ts";
 import {
   FOREGROUND_BLOCK_FRAGMENT,
@@ -1486,6 +1487,12 @@ export class WebXRRaythreeRaylibRenderer {
       raylib.H.UnloadShader(this.passthroughCutoutGpu.shader);
       this.passthroughCutoutGpu = null;
     }
+    if (this.desktopSurfaceGpu) {
+      raylib.H.UnloadShader(this.desktopSurfaceGpu.shader);
+      this.desktopSurfaceGpu = null;
+    }
+    this.desktopUploader?.dispose();
+    this.desktopUploader = null;
     if (this.foregroundGpu) {
       if (this.foregroundGpu.texture) raylib.H.UnloadTexture(this.foregroundGpu.texture);
       raylib.H.UnloadShader(this.foregroundGpu.shader);
@@ -1578,11 +1585,238 @@ export class WebXRRaythreeRaylibRenderer {
   private passthroughCutoutGpu:
     | { shader: raylibBindings.Shader; material: raylibBindings.Material }
     | null = null;
+  private desktopUploader: DesktopTextureUploader | null = null;
+  private drawDesktopSurfaces = false;
+  private desktopSurfaceGpu:
+    | {
+      shader: raylibBindings.Shader;
+      mapsBytes: Uint8Array;
+      material: raylibBindings.Material;
+      cropLoc: number;
+      cursorLoc: number;
+      texSizeLoc: number;
+      opacityLoc: number;
+      cropBuf: Float32Array;
+      cursorBuf: Float32Array;
+      texSizeBuf: Float32Array;
+      opacityBuf: Float32Array;
+    }
+    | null = null;
+
+  setDrawDesktopSurfaces(enabled: boolean): void {
+    this.drawDesktopSurfaces = enabled;
+  }
+
+  getDesktopUploadStats(): { uploadCount: number; lastUploadMs: number; width: number; height: number } | null {
+    if (!this.desktopUploader) return null;
+    const dim = this.desktopUploader.getDimensions();
+    return {
+      uploadCount: this.desktopUploader.uploadCount,
+      lastUploadMs: this.desktopUploader.lastUploadMs,
+      width: dim.width,
+      height: dim.height,
+    };
+  }
+
+  private ensureDesktopSurfaceGpu() {
+    if (this.desktopSurfaceGpu) return this.desktopSurfaceGpu;
+    const vert = `#version 330
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+uniform mat4 mvp;
+out vec2 fragTexCoord;
+void main() {
+  fragTexCoord = vertexTexCoord;
+  gl_Position = mvp * vec4(vertexPosition, 1.0);
+}`;
+    const frag = `#version 330
+in vec2 fragTexCoord;
+uniform sampler2D texture0;
+uniform vec4 uCrop;
+uniform vec4 uCursor;
+uniform vec2 uTexSize;
+uniform float uOpacity;
+out vec4 finalColor;
+
+// Fast 5-tap Catmull-Rom bicubic (Jimenez / Filmic SMAA): much crisper than bilinear near 1:1.
+vec3 sampleCatmullRom(sampler2D tex, vec2 uv, vec2 texSize) {
+  vec2 pos = uv * texSize;
+  vec2 tc1 = floor(pos - 0.5) + 0.5;
+  vec2 f = pos - tc1;
+  vec2 f2 = f * f;
+  vec2 f3 = f2 * f;
+  vec2 w0 = f2 - 0.5 * (f3 + f);
+  vec2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+  vec2 w3 = 0.5 * (f3 - f2);
+  vec2 w2 = 1.0 - w0 - w1 - w3;
+  vec2 w12 = w1 + w2;
+  vec2 tc0 = (tc1 - 1.0) / texSize;
+  vec2 tc3 = (tc1 + 2.0) / texSize;
+  vec2 tc12 = (tc1 + w2 / w12) / texSize;
+  vec3 result = vec3(0.0);
+  result += textureLod(tex, vec2(tc12.x, tc0.y), 0.0).rgb * (w12.x * w0.y);
+  result += textureLod(tex, vec2(tc0.x, tc12.y), 0.0).rgb * (w0.x * w12.y);
+  result += textureLod(tex, vec2(tc12.x, tc12.y), 0.0).rgb * (w12.x * w12.y);
+  result += textureLod(tex, vec2(tc3.x, tc12.y), 0.0).rgb * (w3.x * w12.y);
+  result += textureLod(tex, vec2(tc12.x, tc3.y), 0.0).rgb * (w12.x * w3.y);
+  float wSum = (w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y) + (w3.x * w12.y) + (w12.x * w3.y);
+  return clamp(result / max(wSum, 1e-5), 0.0, 1.0);
+}
+
+void main() {
+  vec2 wsUv = uCrop.xy + vec2(fragTexCoord.x, 1.0 - fragTexCoord.y) * uCrop.zw;
+  // Estimate texel footprint: use bicubic when magnified / near 1:1, and hardware
+  // trilinear + 16x anisotropic mipmaps when minified at distance or steep angles.
+  vec2 dx = dFdx(wsUv * uTexSize);
+  vec2 dy = dFdy(wsUv * uTexSize);
+  float footprint = max(length(dx), length(dy));
+  float mipBlend = smoothstep(0.95, 1.45, footprint);
+  vec3 rgbAniso = texture(texture0, wsUv).rgb;
+  vec3 rgb = mipBlend < 0.99
+    ? mix(sampleCatmullRom(texture0, wsUv, uTexSize), rgbAniso, mipBlend)
+    : rgbAniso;
+  // Mild Contrast Adaptive Sharpening (CAS) to recover text crispness across the 2nd resample.
+  vec2 px = 1.0 / uTexSize;
+  vec3 n = texture(texture0, wsUv + vec2(0.0, -px.y)).rgb;
+  vec3 s = texture(texture0, wsUv + vec2(0.0, px.y)).rgb;
+  vec3 e = texture(texture0, wsUv + vec2(px.x, 0.0)).rgb;
+  vec3 w = texture(texture0, wsUv + vec2(-px.x, 0.0)).rgb;
+  vec3 mn = min(rgb, min(min(n, s), min(e, w)));
+  vec3 mx = max(rgb, max(max(n, s), max(e, w)));
+  vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+  vec3 weight = amp * (-0.16);
+  rgb = clamp((rgb + (n + s + e + w) * weight) / (1.0 + 4.0 * weight), 0.0, 1.0);
+  if (uCursor.z > 0.5) {
+    vec2 diffPx = (wsUv - uCursor.xy) * uTexSize;
+    float d = length(diffPx);
+    if (d < 7.0) {
+      float edge = smoothstep(5.0, 6.5, d);
+      vec3 cursorCol = mix(vec3(1.0), vec3(0.0), edge);
+      float cursorAlpha = 1.0 - smoothstep(6.2, 7.2, d);
+      rgb = mix(rgb, cursorCol, cursorAlpha);
+    }
+  }
+  finalColor = vec4(rgb, uOpacity);
+}`;
+    const shader = raylib.H.LoadShaderFromMemory(vert, frag);
+    if (shader.id === this.baseMaterial.shader.id) {
+      throw new Error("Desktop surface shader failed to compile");
+    }
+    const mapsBytes = cloneMaterialMaps(this.baseMaterial);
+    const material = {
+      shader,
+      maps: pointerAddress(mapsBytes),
+      params: [...this.baseMaterial.params] as [number, number, number, number],
+    } as unknown as raylibBindings.Material;
+    this.desktopSurfaceGpu = {
+      shader,
+      mapsBytes,
+      material,
+      cropLoc: raylib.H.GetShaderLocation(shader, "uCrop"),
+      cursorLoc: raylib.H.GetShaderLocation(shader, "uCursor"),
+      texSizeLoc: raylib.H.GetShaderLocation(shader, "uTexSize"),
+      opacityLoc: raylib.H.GetShaderLocation(shader, "uOpacity"),
+      cropBuf: new Float32Array(4),
+      cursorBuf: new Float32Array(4),
+      texSizeBuf: new Float32Array(2),
+      opacityBuf: new Float32Array(1),
+    };
+    return this.desktopSurfaceGpu;
+  }
+
+  private drawDesktopSurfaceInstance(
+    nativeMesh: NativeMesh,
+    instance: RenderFrame["instances"][number],
+    surface: { crop: { x: number; y: number; width: number; height: number }; opacity: number },
+  ): boolean {
+    if (!this.desktopUploader) return false;
+    const texId = this.desktopUploader.getTextureId();
+    if (texId === 0) return false;
+    const dim = this.desktopUploader.getDimensions();
+    if (dim.width <= 0 || dim.height <= 0) return false;
+    const gpu = this.ensureDesktopSurfaceGpu();
+    const cursor = this.desktopUploader.readCursor();
+    gpu.cropBuf[0] = surface.crop.x;
+    gpu.cropBuf[1] = surface.crop.y;
+    gpu.cropBuf[2] = surface.crop.width;
+    gpu.cropBuf[3] = surface.crop.height;
+    gpu.cursorBuf[0] = cursor.x;
+    gpu.cursorBuf[1] = cursor.y;
+    gpu.cursorBuf[2] = cursor.visible ? 1 : 0;
+    gpu.cursorBuf[3] = 0;
+    gpu.texSizeBuf[0] = dim.width;
+    gpu.texSizeBuf[1] = dim.height;
+    gpu.opacityBuf[0] = surface.opacity ?? 1;
+
+    if (gpu.cropLoc >= 0) {
+      raylib.H.SetShaderValue(
+        gpu.shader,
+        gpu.cropLoc,
+        Deno.UnsafePointer.of(gpu.cropBuf as unknown as BufferSource),
+        raylib.ShaderUniformDataType.SHADER_UNIFORM_VEC4,
+      );
+    }
+    if (gpu.cursorLoc >= 0) {
+      raylib.H.SetShaderValue(
+        gpu.shader,
+        gpu.cursorLoc,
+        Deno.UnsafePointer.of(gpu.cursorBuf as unknown as BufferSource),
+        raylib.ShaderUniformDataType.SHADER_UNIFORM_VEC4,
+      );
+    }
+    if (gpu.texSizeLoc >= 0) {
+      raylib.H.SetShaderValue(
+        gpu.shader,
+        gpu.texSizeLoc,
+        Deno.UnsafePointer.of(gpu.texSizeBuf as unknown as BufferSource),
+        raylib.ShaderUniformDataType.SHADER_UNIFORM_VEC2,
+      );
+    }
+    if (gpu.opacityLoc >= 0) {
+      raylib.H.SetShaderValue(
+        gpu.shader,
+        gpu.opacityLoc,
+        Deno.UnsafePointer.of(gpu.opacityBuf as unknown as BufferSource),
+        raylib.ShaderUniformDataType.SHADER_UNIFORM_FLOAT,
+      );
+    }
+
+    const albedo = readMaterialMap(
+      gpu.mapsBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+    );
+    writeMaterialMap(
+      gpu.mapsBytes,
+      raylibBindings.MaterialMapIndex.MATERIAL_MAP_ALBEDO,
+      {
+        ...albedo,
+        texture: {
+          id: texId,
+          width: dim.width,
+          height: dim.height,
+          mipmaps: 1,
+          format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+        },
+        color: raylib.WHITE,
+      },
+    );
+    setUiDepthTestEnabled(true);
+    setUiDepthMaskEnabled(true);
+    setUiBackfaceCullingEnabled(true);
+    rlFast.DrawMesh(
+      nativeMesh.mesh,
+      gpu.material,
+      this.matrixForDraw(instance.worldMatrix),
+    );
+    return true;
+  }
+
   /** Screens remain holes even when the key sphere is nearer than their proxy geometry. */
   private drawPassthroughCutouts(frame: RenderFrame): void {
-    const cutouts = frame.instances.filter((i) =>
-      (i as typeof i & { passthroughCutout?: boolean }).passthroughCutout
-    );
+    const cutouts = frame.instances.filter((i) => {
+      const ext = i as typeof i & { passthroughCutout?: boolean; desktopSurface?: unknown };
+      return ext.passthroughCutout && !(this.drawDesktopSurfaces && ext.desktopSurface);
+    });
     if (cutouts.length === 0) return;
     if (!this.passthroughCutoutGpu) {
       const shader = raylib.H.LoadShaderFromMemory(
@@ -1691,18 +1925,32 @@ export class WebXRRaythreeRaylibRenderer {
     }
     const tPrep1 = performance.now();
 
+    let drewDesktopSurfaces = false;
     for (const instance of frame.instances) {
       const nativeMesh = this.geometries.get(instance.geometryId);
       const nativeMaterial = this.materials.get(instance.materialId);
-      if (
-        !nativeMesh || !nativeMaterial || nativeMaterial.transparent ||
-        instance.hudOverUi
-      ) {
+      if (!nativeMesh || !nativeMaterial || instance.hudOverUi) {
+        continue;
+      }
+      const ext = instance as typeof instance & {
+        passthroughKey?: boolean;
+        desktopSurface?: {
+          crop: { x: number; y: number; width: number; height: number };
+          opacity: number;
+        };
+      };
+      if (this.drawDesktopSurfaces && ext.desktopSurface) {
+        if (this.drawDesktopSurfaceInstance(nativeMesh, instance, ext.desktopSurface)) {
+          drewDesktopSurfaces = true;
+          continue;
+        }
+      }
+      if (nativeMaterial.transparent) {
         continue;
       }
 
       this.drawInstance(nativeMesh, nativeMaterial, instance);
-      if ((instance as typeof instance & { passthroughKey?: boolean }).passthroughKey) {
+      if (ext.passthroughKey) {
         this.drawPassthroughCutouts(frame);
       }
     }
@@ -1735,7 +1983,7 @@ export class WebXRRaythreeRaylibRenderer {
     }
     if (ui !== undefined) {
       setUiDepthMaskEnabled(false);
-      setUiDepthTestEnabled(this.foreground != null);
+      setUiDepthTestEnabled(this.foreground != null || drewDesktopSurfaces);
       setUiBackfaceCullingEnabled(false);
       beginUiAlphaBlend();
       try {
@@ -2696,6 +2944,10 @@ export class WebXRRaythreeRaylibRenderer {
   /** Call once per stereo frame, before the first eye. */
   beginUiFrame(): void {
     this.uiFrame++;
+    if (this.drawDesktopSurfaces) {
+      this.desktopUploader ??= new DesktopTextureUploader();
+      this.desktopUploader.update();
+    }
   }
 
   private ensureUikitPanelDataTexture(slot: UiPanelFrameData, rowCount: number): void {

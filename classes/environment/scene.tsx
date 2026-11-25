@@ -95,6 +95,7 @@ import {
   SCENE_ORIGIN_ID,
   setHingeAngle,
   setSpatialNodeAutoHide,
+  setSpatialNodeHqQuad,
   setSpatialNodeCurvature,
   setSpatialNodeLocked,
   setSpatialNodeMouseBlocked,
@@ -1869,6 +1870,7 @@ function DisplaySpatialNodeView({
         opacity={node.opacity}
         curvature={node.curvature}
         autoHide={node.autoHide}
+        hqQuad={node.hqQuad}
         onMouse={activeDisplayOverlayHostActor != null && feedAcceptsMouse && !node.mouseBlocked
           ? croppedMouseSink
           : undefined}
@@ -2007,6 +2009,9 @@ function DisplaySpatialNodeView({
               autoHide={node.autoHide ?? false}
               onChangeAutoHide={(next) =>
                 setGraph((latest) => setSpatialNodeAutoHide(latest, node.id, next))}
+              hqQuad={node.hqQuad ?? false}
+              onChangeHqQuad={(next) =>
+                setGraph((latest) => setSpatialNodeHqQuad(latest, node.id, next))}
               grabOutline={grabOutlineVisible}
               onChangeGrabOutline={(next) => setGrabboxOutlineVisible(next)}
               showSharing={localOutput}

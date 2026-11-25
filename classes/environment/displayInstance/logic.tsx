@@ -44,6 +44,8 @@ export type DisplayInstanceProps = DisplayInstanceFrameProps & {
   curvature?: number;
   /** Fade out, and stop taking rays, while the head is turned away (see `autoHide.ts`). */
   autoHide?: boolean;
+  /** In projection mode, render this display via native SteamVR quad overlay instead of in-scene. */
+  hqQuad?: boolean;
   /** Transform target for this display's GrabBox; defaults to the display itself. */
   manipulationTargetRef?: React.RefObject<THREE.Object3D | null>;
   /** Optional constraint/apply policy for the Handle targeting this display. */
@@ -118,6 +120,7 @@ export function DisplayInstance(
     opacity = 1,
     curvature = 0,
     autoHide = false,
+    hqQuad = false,
     manipulationTargetRef,
     manipulationOptions,
     manipulationStoreRef,
@@ -139,6 +142,7 @@ export function DisplayInstance(
   const lastSentWidth = useRef<number | null>(null);
   const lastSentOpacity = useRef<number | null>(null);
   const lastSentCurvature = useRef<number | null>(null);
+  const lastSentHqQuad = useRef<boolean | null>(null);
   const lastSentDevice = useRef<number | undefined>(undefined);
   /** Last crop sent to the overlay host, compared field-wise to avoid a per-frame JSON.stringify. */
   const lastSentCrop = useRef<WorkspaceRect | null>(null);
@@ -274,6 +278,7 @@ export function DisplayInstance(
         Math.abs(lastSentWidth.current - widthMeters) < 0.0001 &&
         lastSentOpacity.current === sentOpacity &&
         lastSentCurvature.current === curvature &&
+        lastSentHqQuad.current === hqQuad &&
         lastSentDevice.current === deviceIndex &&
         cropUnchanged
       ) {
@@ -284,6 +289,7 @@ export function DisplayInstance(
     lastSentWidth.current = widthMeters;
     lastSentOpacity.current = sentOpacity;
     lastSentCurvature.current = curvature;
+    lastSentHqQuad.current = hqQuad;
     lastSentDevice.current = deviceIndex;
     lastSentCrop.current = workspaceCrop ? { ...workspaceCrop } : null;
     try {
@@ -300,6 +306,7 @@ export function DisplayInstance(
               widthMeters,
               opacity: sentOpacity,
               curvature,
+              hqQuad,
               deviceIndex,
               rawUniverse,
             },
@@ -346,6 +353,7 @@ export function DisplayInstance(
           : null}
         {...(raysOff ? { rayHitSurface: false, shellRayPickable: false, onMouse: undefined } : {})}
         curvature={curvature}
+        hqQuad={hqQuad}
         manipulationTargetRef={manipulationTargetRef}
         manipulationOptions={manipulationOptions}
         manipulationStoreRef={manipulationStoreRef}

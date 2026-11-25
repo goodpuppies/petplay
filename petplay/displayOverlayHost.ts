@@ -18,6 +18,9 @@ import { matrixEquals } from "../classes/matrixutils.ts";
 import { isLayoutVisibilityAction } from "../classes/environment/wristMenu/types.ts";
 import { OpenVrRuntime } from "../classes/openVrRuntime.ts";
 import { tryCreateOpenVrOverlayFramePacer } from "../classes/openVrOverlayFramePacing.ts";
+import { DesktopFrameShmWriter } from "../classes/desktopFrameShm.ts";
+
+const desktopShmWriter = new DesktopFrameShmWriter();
 
 const state = actorState({
   name: "display_overlay_host",
@@ -31,6 +34,7 @@ const state = actorState({
   } | null,
   isRunning: false,
   isStarting: false,
+  suppressedForProjection: false,
   lastStartError: null as string | null,
   glManager: null as OpenGLManager | null,
   /** Where the capture helper streams frames; `desktopSource` runs the helper. */
@@ -144,6 +148,7 @@ type SyncVirtualDisplayPayload = SyncDisplayPosePayload & {
   id: string;
   crop: WorkspaceCrop;
   name?: string;
+  hqQuad?: boolean;
 };
 type VirtualOverlay = SyncVirtualDisplayPayload & {
   handle: bigint;
@@ -363,6 +368,20 @@ new PostMan(
       void registerFrameSink();
       return getDisplayOverlayHostStatus();
     },
+    /** Hide/show SteamVR display quad overlays when projection mode renders screens in-scene. */
+    SETSUPPRESSOVERLAYSFORPROJECTION: (suppressed: boolean) => {
+      state.suppressedForProjection = !!suppressed;
+      if (state.overlayClass) {
+        for (const entry of virtualOverlays.values()) {
+          if (shouldShowVirtualOverlay(entry)) {
+            state.overlayClass.ShowOverlay(entry.handle);
+          } else {
+            state.overlayClass.HideOverlay(entry.handle);
+          }
+        }
+      }
+      return { suppressed: state.suppressedForProjection, visible: state.visible };
+    },
     WRIST_MENU_ACTION: (
       payload: { id: string; active: boolean },
     ) => {
@@ -378,7 +397,9 @@ new PostMan(
       }
       if (state.overlayClass && virtualOverlays.size > 0) {
         for (const entry of virtualOverlays.values()) {
-          state.overlayClass.ShowOverlay(entry.handle);
+          if (shouldShowVirtualOverlay(entry)) {
+            state.overlayClass.ShowOverlay(entry.handle);
+          }
         }
       } else if (state.lastStartConfig) {
         void startDesktopWithRetry(state.lastStartConfig);
@@ -682,19 +703,35 @@ function updateCursorFromPointerControl(command: string): void {
   const workspaceY = Number(yText);
   if (!Number.isFinite(workspaceX) || !Number.isFinite(workspaceY)) return;
   state.cursorWorkspacePosition = { x: workspaceX, y: workspaceY };
+  desktopShmWriter.writeCursor(true, workspaceX, workspaceY);
   // Repaint immediately rather than waiting for the next desktop frame, so the
   // cursor stays responsive even when the capture stream is slow or stalled.
-  if (state.textureReady) {
+  if (state.textureReady && !state.suppressedForProjection) {
     drawCursorIntoFrame();
     submitTextureToOverlays();
   }
 }
 
-/** Re-hand the (now updated) texture to every virtual display overlay. */
+function shouldShowVirtualOverlay(entry: VirtualOverlay): boolean {
+  return state.visible && (!state.suppressedForProjection || entry.hqQuad === true);
+}
+
+function anyNativeQuadActive(): boolean {
+  if (!state.suppressedForProjection) return true;
+  for (const entry of virtualOverlays.values()) {
+    if (entry.hqQuad === true) return true;
+  }
+  return false;
+}
+
+/** Re-hand the (now updated) texture to every visible virtual display overlay. */
 function submitTextureToOverlays(): void {
+  if (!anyNativeQuadActive()) return;
   if (!state.overlayClass || !state.textureStructPtr) return;
   for (const entry of virtualOverlays.values()) {
-    state.overlayClass.SetOverlayTexture(entry.handle, state.textureStructPtr);
+    if (shouldShowVirtualOverlay(entry)) {
+      state.overlayClass.SetOverlayTexture(entry.handle, state.textureStructPtr);
+    }
   }
 }
 
@@ -705,6 +742,7 @@ function submitTextureToOverlays(): void {
  * display contains it, with no per-overlay bookkeeping.
  */
 function drawCursorIntoFrame(): void {
+  if (!anyNativeQuadActive()) return;
   const position = state.cursorWorkspacePosition;
   if (!position || !state.glManager) return;
   if (state.captureFrameWidth <= 0 || state.captureFrameHeight <= 0) return;
@@ -785,7 +823,8 @@ function syncVirtualDisplay(sync: SyncVirtualDisplayPayload): void {
   if (state.textureReady && state.textureStructPtr) {
     overlay.SetOverlayTexture(entry.handle, state.textureStructPtr);
   }
-  if (state.visible) overlay.ShowOverlay(entry.handle);
+  if (shouldShowVirtualOverlay(entry)) overlay.ShowOverlay(entry.handle);
+  else overlay.HideOverlay(entry.handle);
 }
 
 function setOverlayAlphaLogged(handle: bigint, alpha: number, label: string): void {
@@ -993,6 +1032,8 @@ function scheduleDeferredStartRetry(config: StartDesktopPayload): void {
 }
 
 function createTextureFromScreenshot(pixels: Uint8Array, width: number, height: number): void {
+  desktopShmWriter.writeFrame(pixels, width, height);
+  if (!anyNativeQuadActive()) return;
   if (!state.glManager) throw new Error("glManager is null");
   state.glManager.createTextureFromBgraScreenshot(pixels, width, height);
 }
@@ -1039,15 +1080,18 @@ async function deskCapLoop(
     frameCount++;
     updateCaptureDimensions(frame.width, frame.height);
     createTextureFromScreenshot(frame.data, frame.width, frame.height);
-    drawCursorIntoFrame();
-    state.textureReady = true;
-    for (const entry of virtualOverlays.values()) {
-      const err = overlay.SetOverlayTexture(entry.handle, textureStructPtr);
-      if (err !== OpenVR.OverlayError.VROverlayError_None) {
-        LogChannel.error(
-          "actor",
-          `SetOverlayTexture(${entry.id}): ${OpenVR.OverlayError[err]}`,
-        );
+    if (anyNativeQuadActive()) {
+      drawCursorIntoFrame();
+      state.textureReady = true;
+      for (const entry of virtualOverlays.values()) {
+        if (!shouldShowVirtualOverlay(entry)) continue;
+        const err = overlay.SetOverlayTexture(entry.handle, textureStructPtr);
+        if (err !== OpenVR.OverlayError.VROverlayError_None) {
+          LogChannel.error(
+            "actor",
+            `SetOverlayTexture(${entry.id}): ${OpenVR.OverlayError[err]}`,
+          );
+        }
       }
     }
     state.captureFramesPresented++;
