@@ -20,6 +20,7 @@ import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
 import { Container } from "../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Text } from "./ui/text.tsx";
 import { Pill } from "./ui/primitives.tsx";
+import { sliderFractionFromEvent } from "./ui/gridControls.tsx";
 import { Icon, type IconName } from "./ui/icons.tsx";
 import {
   COLOR,
@@ -630,7 +631,9 @@ export function SpatialSettingsSlider({
   formatValue: (value: number) => string;
   onChange: (next: number) => void;
 }) {
-  const dragging = useRef(false);
+  const trackRef = useRef<THREE.Object3D | null>(null);
+  const draggingPointerId = useRef<number | null>(null);
+  const [hovered, setHovered] = useState(false);
   const trackWidth = unitSpan(4);
   const trackHeight = 66;
   const r = RADIUS.slot;
@@ -641,53 +644,100 @@ export function SpatialSettingsSlider({
   const rightRem = trackWidth - fillW;
   const rightR = rightRem < r ? Math.min(r - rightRem, trackHeight / 2, fillW / 2) : 0;
 
-  const updateFromEvent = (event: unknown) => {
-    const uvX = (event as { uv?: { x?: number } } | null)?.uv?.x;
-    if (typeof uvX !== "number" || !Number.isFinite(uvX)) return;
-    const t = Math.max(0, Math.min(1, uvX));
+  const updateFromEvent = (event: unknown, hapticOnStep: boolean) => {
+    const t = sliderFractionFromEvent(event, trackRef.current, trackWidth);
+    if (t == null) return;
     const raw = min + t * (max - min);
     const snapped = Math.round(raw / step) * step;
     const clamped = Math.max(min, Math.min(max, Math.round(snapped * 1000) / 1000));
-    if (Math.abs(clamped - value) > 1e-4) onChange(clamped);
+    if (Math.abs(clamped - value) > 1e-4) {
+      if (hapticOnStep) pulseForPointerEvent(event, "hover");
+      onChange(clamped);
+    }
+  };
+
+  const endDrag = (event: unknown) => {
+    const e = event as {
+      pointerId?: number;
+      currentTarget?: { releasePointerCapture?: (id: number) => void };
+      target?: { releasePointerCapture?: (id: number) => void };
+    } | null;
+    if (
+      draggingPointerId.current != null &&
+      typeof e?.pointerId === "number" &&
+      e.pointerId !== draggingPointerId.current
+    ) {
+      return;
+    }
+    const id = draggingPointerId.current;
+    draggingPointerId.current = null;
+    if (id != null && id >= 0) (e?.currentTarget ?? e?.target)?.releasePointerCapture?.(id);
   };
 
   return (
     <Container
+      ref={trackRef}
       width={trackWidth}
       height={trackHeight}
       borderRadius={r}
-      backgroundColor="#141418"
+      backgroundColor={hovered ? "#1c1e26" : "#141418"}
       backgroundOpacity={1}
       positionType="relative"
       flexDirection="row"
       alignItems="center"
       justifyContent="space-between"
       paddingX={GAP}
+      onPointerOver={() => setHovered(true)}
+      onPointerOut={() => setHovered(false)}
       onPointerDown={(event: unknown) => {
-        dragging.current = true;
         const e = event as {
           pointerId?: number;
+          pointerType?: string;
+          button?: number;
+          currentTarget?: { setPointerCapture?: (id: number) => void };
           target?: { setPointerCapture?: (id: number) => void };
         };
-        if (typeof e.pointerId === "number") e.target?.setPointerCapture?.(e.pointerId);
+        if (e.pointerType === "grab") return;
+        if (typeof e.button === "number" && e.button !== 0) return;
+        const id = typeof e.pointerId === "number" ? e.pointerId : -1;
+        draggingPointerId.current = id;
+        if (id >= 0) (e.currentTarget ?? e.target)?.setPointerCapture?.(id);
         pulseForPointerEvent(event, "click");
-        updateFromEvent(event);
+        updateFromEvent(event, false);
       }}
       onPointerMove={(event: unknown) => {
-        if (!dragging.current) return;
-        updateFromEvent(event);
-      }}
-      onPointerUp={(event: unknown) => {
-        dragging.current = false;
+        if (draggingPointerId.current == null) return;
         const e = event as {
           pointerId?: number;
-          target?: { releasePointerCapture?: (id: number) => void };
+          buttons?: number;
+          pointerType?: string;
         };
-        if (typeof e.pointerId === "number") e.target?.releasePointerCapture?.(e.pointerId);
+        if (typeof e.pointerId === "number" && e.pointerId !== draggingPointerId.current) return;
+        if (typeof e.buttons === "number" && e.buttons === 0 && e.pointerType !== "poker") {
+          draggingPointerId.current = null;
+          return;
+        }
+        updateFromEvent(event, true);
+      }}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onPointerLeave={(event: unknown) => {
+        const e = event as {
+          pointerId?: number;
+          currentTarget?: { hasPointerCapture?: (id: number) => boolean };
+          target?: { hasPointerCapture?: (id: number) => boolean };
+        };
+        const id = draggingPointerId.current;
+        if (id == null) return;
+        if (typeof e.pointerId === "number" && e.pointerId !== id) return;
+        if (id < 0 || !(e.currentTarget ?? e.target)?.hasPointerCapture?.(id)) {
+          draggingPointerId.current = null;
+        }
       }}
     >
       {fillW > 0 && (
         <Container
+          pointerEvents="none"
           positionType="absolute"
           positionLeft={0}
           positionTop={0}
@@ -701,8 +751,12 @@ export function SpatialSettingsSlider({
           backgroundOpacity={1}
         />
       )}
-      <Text color={COLOR.ink} fontSize={20}>{label}</Text>
-      <Text color={COLOR.accent} fontSize={22}>{formatValue(value)}</Text>
+      <Container pointerEvents="none">
+        <Text color={COLOR.ink} fontSize={20}>{label}</Text>
+      </Container>
+      <Container pointerEvents="none">
+        <Text color={COLOR.accent} fontSize={22}>{formatValue(value)}</Text>
+      </Container>
     </Container>
   );
 }

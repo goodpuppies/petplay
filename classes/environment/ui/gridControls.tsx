@@ -5,11 +5,42 @@
  * spacing, and concentric corner radii are always inherited from the grid — never hardcoded.
  */
 import React, { useRef, useState } from "react";
+import * as THREE from "three";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Text } from "./text.tsx";
 import { Cell, Grid, useCellRect } from "./grid.tsx";
 import { COLOR, GAP, INNER_GAP } from "./tokens.ts";
 import { pulseForPointerEvent } from "../haptics.ts";
+
+const _sliderLocal = new THREE.Vector3();
+
+/** Compute normalized 0..1 slider position from a pointer event on the track container. */
+export function sliderFractionFromEvent(
+  event: unknown,
+  trackObj: THREE.Object3D | null | undefined,
+  trackWidthPx: number,
+  pixelSize = 0.001,
+): number | null {
+  const e = event as {
+    point?: THREE.Vector3;
+    uv?: { x?: number };
+    currentTarget?: THREE.Object3D;
+  } | null;
+  const host = trackObj ?? e?.currentTarget;
+  if (e?.point && host && typeof host.worldToLocal === "function" && trackWidthPx > 0) {
+    _sliderLocal.copy(e.point);
+    host.worldToLocal(_sliderLocal);
+    const halfW = (trackWidthPx * pixelSize) * 0.5;
+    if (halfW > 1e-6) {
+      return Math.max(0, Math.min(1, (_sliderLocal.x + halfW) / (2 * halfW)));
+    }
+  }
+  const uvX = e?.uv?.x;
+  if (typeof uvX === "number" && Number.isFinite(uvX)) {
+    return Math.max(0, Math.min(1, uvX));
+  }
+  return null;
+}
 
 /**
  * Horizontal slider bar filling its enclosing `<Cell>` (click or drag anywhere along the track).
@@ -33,7 +64,9 @@ export function GridSlider({
   onChange: (next: number) => void;
 }) {
   const rect = useCellRect();
+  const trackRef = useRef<THREE.Object3D | null>(null);
   const draggingPointerId = useRef<number | null>(null);
+  const [hovered, setHovered] = useState(false);
   if (!rect) return null;
 
   const { width, height, radius: r } = rect;
@@ -44,19 +77,22 @@ export function GridSlider({
   const rightR = rightRem < r ? Math.min(r - rightRem, height / 2, fillW / 2) : 0;
   const compact = height < 58;
 
-  const updateFromEvent = (event: unknown) => {
-    const uvX = (event as { uv?: { x?: number } } | null)?.uv?.x;
-    if (typeof uvX !== "number" || !Number.isFinite(uvX)) return;
-    const t = Math.max(0, Math.min(1, uvX));
+  const updateFromEvent = (event: unknown, hapticOnStep: boolean) => {
+    const t = sliderFractionFromEvent(event, trackRef.current, width);
+    if (t == null) return;
     const raw = min + t * (max - min);
     const snapped = Math.round(raw / step) * step;
     const clamped = Math.max(min, Math.min(max, Math.round(snapped * 1000) / 1000));
-    if (Math.abs(clamped - value) > 1e-4) onChange(clamped);
+    if (Math.abs(clamped - value) > 1e-4) {
+      if (hapticOnStep) pulseForPointerEvent(event, "hover");
+      onChange(clamped);
+    }
   };
 
   const endDrag = (event: unknown) => {
     const e = event as {
       pointerId?: number;
+      currentTarget?: { releasePointerCapture?: (id: number) => void };
       target?: { releasePointerCapture?: (id: number) => void };
     } | null;
     if (
@@ -68,35 +104,41 @@ export function GridSlider({
     }
     const id = draggingPointerId.current;
     draggingPointerId.current = null;
-    if (id != null && id >= 0) e?.target?.releasePointerCapture?.(id);
+    if (id != null && id >= 0) {
+      (e?.currentTarget ?? e?.target)?.releasePointerCapture?.(id);
+    }
   };
 
   return (
     <Container
+      ref={trackRef}
       width={width}
       height={height}
       borderRadius={r}
-      backgroundColor="#141418"
+      backgroundColor={hovered ? "#1c1e26" : "#141418"}
       backgroundOpacity={1}
       positionType="relative"
       flexDirection="row"
       alignItems="center"
       justifyContent="space-between"
       paddingX={GAP}
+      onPointerOver={() => setHovered(true)}
+      onPointerOut={() => setHovered(false)}
       onPointerDown={(event: unknown) => {
         const e = event as {
           pointerId?: number;
           pointerType?: string;
           button?: number;
+          currentTarget?: { setPointerCapture?: (id: number) => void };
           target?: { setPointerCapture?: (id: number) => void };
         };
         if (e.pointerType === "grab") return;
         if (typeof e.button === "number" && e.button !== 0) return;
         const id = typeof e.pointerId === "number" ? e.pointerId : -1;
         draggingPointerId.current = id;
-        if (id >= 0) e.target?.setPointerCapture?.(id);
+        if (id >= 0) (e.currentTarget ?? e.target)?.setPointerCapture?.(id);
         pulseForPointerEvent(event, "click");
-        updateFromEvent(event);
+        updateFromEvent(event, false);
       }}
       onPointerMove={(event: unknown) => {
         if (draggingPointerId.current == null) return;
@@ -112,25 +154,27 @@ export function GridSlider({
           draggingPointerId.current = null;
           return;
         }
-        updateFromEvent(event);
+        updateFromEvent(event, true);
       }}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onPointerLeave={(event: unknown) => {
         const e = event as {
           pointerId?: number;
+          currentTarget?: { hasPointerCapture?: (id: number) => boolean };
           target?: { hasPointerCapture?: (id: number) => boolean };
         };
         const id = draggingPointerId.current;
         if (id == null) return;
         if (typeof e.pointerId === "number" && e.pointerId !== id) return;
-        if (id < 0 || !e.target?.hasPointerCapture?.(id)) {
+        if (id < 0 || !(e.currentTarget ?? e.target)?.hasPointerCapture?.(id)) {
           draggingPointerId.current = null;
         }
       }}
     >
       {fillW > 0 && (
         <Container
+          pointerEvents="none"
           positionType="absolute"
           positionLeft={0}
           positionTop={0}
@@ -144,8 +188,12 @@ export function GridSlider({
           backgroundOpacity={1}
         />
       )}
-      <Text color={COLOR.ink} fontSize={compact ? 18 : 22}>{label}</Text>
-      <Text color={COLOR.accent} fontSize={compact ? 20 : 24}>{formatValue(value)}</Text>
+      <Container pointerEvents="none">
+        <Text color={COLOR.ink} fontSize={compact ? 18 : 22}>{label}</Text>
+      </Container>
+      <Container pointerEvents="none">
+        <Text color={COLOR.accent} fontSize={compact ? 20 : 24}>{formatValue(value)}</Text>
+      </Container>
     </Container>
   );
 }
