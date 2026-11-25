@@ -33,7 +33,7 @@ export function GridSlider({
   onChange: (next: number) => void;
 }) {
   const rect = useCellRect();
-  const dragging = useRef(false);
+  const draggingPointerId = useRef<number | null>(null);
   if (!rect) return null;
 
   const { width, height, radius: r } = rect;
@@ -54,6 +54,23 @@ export function GridSlider({
     if (Math.abs(clamped - value) > 1e-4) onChange(clamped);
   };
 
+  const endDrag = (event: unknown) => {
+    const e = event as {
+      pointerId?: number;
+      target?: { releasePointerCapture?: (id: number) => void };
+    } | null;
+    if (
+      draggingPointerId.current != null &&
+      typeof e?.pointerId === "number" &&
+      e.pointerId !== draggingPointerId.current
+    ) {
+      return;
+    }
+    const id = draggingPointerId.current;
+    draggingPointerId.current = null;
+    if (id != null && id >= 0) e?.target?.releasePointerCapture?.(id);
+  };
+
   return (
     <Container
       width={width}
@@ -67,26 +84,49 @@ export function GridSlider({
       justifyContent="space-between"
       paddingX={GAP}
       onPointerDown={(event: unknown) => {
-        dragging.current = true;
         const e = event as {
           pointerId?: number;
+          pointerType?: string;
+          button?: number;
           target?: { setPointerCapture?: (id: number) => void };
         };
-        if (typeof e.pointerId === "number") e.target?.setPointerCapture?.(e.pointerId);
+        if (e.pointerType === "grab") return;
+        if (typeof e.button === "number" && e.button !== 0) return;
+        const id = typeof e.pointerId === "number" ? e.pointerId : -1;
+        draggingPointerId.current = id;
+        if (id >= 0) e.target?.setPointerCapture?.(id);
         pulseForPointerEvent(event, "click");
         updateFromEvent(event);
       }}
       onPointerMove={(event: unknown) => {
-        if (!dragging.current) return;
-        updateFromEvent(event);
-      }}
-      onPointerUp={(event: unknown) => {
-        dragging.current = false;
+        if (draggingPointerId.current == null) return;
         const e = event as {
           pointerId?: number;
-          target?: { releasePointerCapture?: (id: number) => void };
+          buttons?: number;
+          pointerType?: string;
         };
-        if (typeof e.pointerId === "number") e.target?.releasePointerCapture?.(e.pointerId);
+        if (typeof e.pointerId === "number" && e.pointerId !== draggingPointerId.current) return;
+        // If no button is held (e.g. pointerup was missed when opening/closing the panel),
+        // stop dragging immediately so plain hover never moves the slider.
+        if (typeof e.buttons === "number" && e.buttons === 0 && e.pointerType !== "poker") {
+          draggingPointerId.current = null;
+          return;
+        }
+        updateFromEvent(event);
+      }}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onPointerLeave={(event: unknown) => {
+        const e = event as {
+          pointerId?: number;
+          target?: { hasPointerCapture?: (id: number) => boolean };
+        };
+        const id = draggingPointerId.current;
+        if (id == null) return;
+        if (typeof e.pointerId === "number" && e.pointerId !== id) return;
+        if (id < 0 || !e.target?.hasPointerCapture?.(id)) {
+          draggingPointerId.current = null;
+        }
       }}
     >
       {fillW > 0 && (

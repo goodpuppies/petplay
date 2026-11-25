@@ -107,6 +107,7 @@ export function DisplaySettingsPanel({
       radius={RADIUS.shell}
       pixelSize={pixelSize}
       pointerEventsType={pointerEventsType}
+      pointerEventsOrder={20}
       showGuides={showGuides}
     >
       {/* Row 0: Feed (Screens / Windows tabs + pagination when > 4 items) */}
