@@ -14,7 +14,7 @@ PetPlay's projection overlays previously suffered from pose/image desync and fra
 1. **Pose and texture are read in separate snapshots.** `PushUpdatesToScenegraph` reads the projection matrix under one shared-memory guard, while `ComputeSystemLayerParams` reads the 5-entry texture ring under a later guard (0.24–2.13 ms apart).
 2. **`TextureType_OpenGL` (and `TextureType_Vulkan`) copy on every submit.** `SetOverlayTexture` blits into SteamVR's internal Vulkan ring and queues an asynchronous GPU copy whose completion semaphore is not awaited by the compositor's final draw pass.
 
-The workaround—suggested as *"keep 2 overlays, bind the texture once, update the backing memory in place, and flip visibility"*—turns out to be **architecturally exact** against `vrcompositor`'s internals on Linux when backed by **`TextureType_SharedTextureHandle` (8, DMA-BUF)**:
+The workaround—originally discovered by [SafariMonkey](https://github.com/SafariMonkey) (*"keep multiple overlays, bind each shared texture once, update the hidden backing memory, and flip visibility"*)—turns out to be **architecturally exact** against `vrcompositor`'s internals on Linux when backed by **`TextureType_SharedTextureHandle` (8, DMA-BUF)**:
 
 - `vrcompositor` caches imported DMA-BUF textures in `CGraphicsDevice::m_overlayTextures[128][5]` and **never evicts them on `HideOverlay`** (only on overlay destruction).
 - `DrawProjectionOverlay` samples the cached imported texture directly every frame—**zero `SetOverlayTexture` calls and zero re-imports** after initial setup.
@@ -170,3 +170,9 @@ Composited proof frames (`--present-proof`) were visually inspected to verify up
 4. **Windows Backend (Not Yet Implemented):**
    - Windows does not have DMA-BUF; the equivalent zero-copy path is **`TextureType_DXGISharedHandle` (5)** backed by D3D11 shared textures (`D3D11_RESOURCE_MISC_SHARED` / `IDXGIResource::GetSharedHandle`) imported into Raylib's WGL context via **`WGL_NV_DX_interop2`** (`wglDXOpenDeviceNV`, `wglDXRegisterObjectNV`, `wglDXLockObjectsNV` / `wglDXUnlockObjectsNV`).
    - Until implemented, non-Linux platforms default to `dmabufBanks = 0` (legacy GL path).
+
+---
+
+## 9. Follow-Up Addendum
+
+See [dmabuf-bank-pacing-and-pipelining.md](dmabuf-bank-pacing-and-pipelining.md) for the stereo-panorama bank-flip extension, Linux decoupled default, `vsync-locked` + 1-frame async GPU fence pipelining under VRChat GPU contention (zero `sudo`), GC churn reductions, and a detailed review against [SafariMonkey](https://github.com/SafariMonkey)'s visibility-swap and symmetric-frustum findings.
