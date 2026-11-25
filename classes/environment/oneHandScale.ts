@@ -170,6 +170,7 @@ export function consumeOneHandScaleEnd(target: object): boolean {
  */
 const smoothPrevPos = new THREE.Vector3();
 const smoothPrevQuat = new THREE.Quaternion();
+const smoothLastMs = new WeakMap<THREE.Object3D, number>();
 
 function applyWithOptionalLaserSmoothing<T>(
   state: HandleState<unknown>,
@@ -178,15 +179,28 @@ function applyWithOptionalLaserSmoothing<T>(
   smoothingAmount: number,
 ): T {
   const active = smoothingAmount > 0;
-  target.userData.laserGrabSmoothed = active;
+  target.userData.laserGrabSmoothing = active ? smoothingAmount : 0;
+  target.userData.laserGrabSmoothingApplied = false;
+  const now = performance.now();
+  const prevMs = smoothLastMs.get(target);
+  smoothLastMs.set(target, now);
   if (!active || state.first) {
     return apply(state, target);
   }
   smoothPrevPos.copy(target.position);
   smoothPrevQuat.copy(target.quaternion);
   const result = apply(state, target);
-  const dt = state.delta?.time ?? 1 / 72;
-  applyLaserGrabSmoothing(target, smoothPrevPos, smoothPrevQuat, smoothingAmount, dt);
+  if (target.userData.laserGrabSmoothingApplied) {
+    return result;
+  }
+  // HandleState.delta.time is in milliseconds; fall back to wall-clock delta in seconds.
+  const rawMs = state.delta?.time;
+  const dtSeconds = typeof rawMs === "number" && rawMs > 0
+    ? rawMs / 1000
+    : prevMs != null
+    ? (now - prevMs) / 1000
+    : 1 / 72;
+  applyLaserGrabSmoothing(target, smoothPrevPos, smoothPrevQuat, smoothingAmount, dtSeconds);
   return result;
 }
 
@@ -226,23 +240,26 @@ export function withOneHandScale<T>(
       sessions.delete(target);
       const follow = target.userData.renderTrackingFollow as CarryFollow | undefined;
       if (state.last && follow != null) {
-        delete target.userData.laserGrabSmoothed;
+        delete target.userData.laserGrabSmoothing;
+        delete target.userData.laserGrabSmoothingApplied;
         releaseCarried(state, target, follow, apply);
         return undefined;
       }
-      const wasSmoothed = target.userData.laserGrabSmoothed === true;
+      const prevSmoothing = Number(target.userData.laserGrabSmoothing) || 0;
       setRenderFollow(target, undefined);
-      if (state.last && wasSmoothed) {
+      if (state.last && prevSmoothing > 0) {
         const result = applyWithOptionalLaserSmoothing(
           state,
           target,
           apply,
-          getSetting("grabSmoothing"),
+          prevSmoothing,
         );
-        delete target.userData.laserGrabSmoothed;
+        delete target.userData.laserGrabSmoothing;
+        delete target.userData.laserGrabSmoothingApplied;
         return result;
       }
-      delete target.userData.laserGrabSmoothed;
+      delete target.userData.laserGrabSmoothing;
+      delete target.userData.laserGrabSmoothingApplied;
       return apply(state, target);
     }
     let session = sessions.get(target);
@@ -277,7 +294,8 @@ export function withOneHandScale<T>(
     if (active == null) {
       return applyWithOptionalLaserSmoothing(state, target, apply, smoothAmount);
     }
-    delete target.userData.laserGrabSmoothed;
+    delete target.userData.laserGrabSmoothing;
+    delete target.userData.laserGrabSmoothingApplied;
     if (!down) {
       session.active = undefined;
       resizedTargets.add(target);

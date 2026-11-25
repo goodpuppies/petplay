@@ -64,6 +64,7 @@ import { useHingedOneHandScaleMaxGrabOffset } from "./spatialManipulationMode.ts
 import { GrabBox, type GrabBoxManipulationOptions } from "./grabbox.tsx";
 import { SnapSlotMarkers } from "./snapSlotMarkers.tsx";
 import { setJoystickYReader } from "./oneHandScale.ts";
+import { laserGrabSmoothingAlpha } from "./grabSmoothing.ts";
 import { pushPullGrab } from "./pushPull.ts";
 import { consumeOneHandScaleEnd } from "./oneHandScale.ts";
 import {
@@ -479,15 +480,30 @@ function applyDampedHandleState(
   state: HandleState<unknown>,
   target: import("three").Object3D,
 ): void {
-  const dt = Math.max(0, Math.min(0.1, state.delta?.time ?? 1 / 72));
+  // HandleState.delta.time is in milliseconds.
+  const rawMs = state.delta?.time;
+  const dt = Math.max(0, Math.min(0.1, typeof rawMs === "number" && rawMs > 0 ? rawMs / 1000 : 1 / 72));
+  const laserSmoothing = Number(target.userData.laserGrabSmoothing) || 0;
   // A window the renderer carries with the controller (`renderTrackingFollow`) stays rigid to it:
   // damping by irregular worker frame times makes its offset from the hand wobble, which the
   // fresh controller pose would then show against the steady hand.
   const rigid = target.userData.renderTrackingFollow != null ||
     target.userData.renderTrackingRelease === true ||
-    target.userData.laserGrabSmoothed === true;
-  const positionAlpha = rigid ? 1 : Math.min(1, dt * HANDLE_POSITION_DAMPENING);
-  const rotationAlpha = rigid ? 1 : Math.min(1, dt * HANDLE_ROTATION_DAMPENING);
+    (laserSmoothing > 0 && state.first);
+  let positionAlpha: number;
+  let rotationAlpha: number;
+  if (rigid) {
+    positionAlpha = 1;
+    rotationAlpha = 1;
+  } else if (laserSmoothing > 0) {
+    const alphas = laserGrabSmoothingAlpha(laserSmoothing, dt);
+    positionAlpha = alphas.position;
+    rotationAlpha = alphas.rotation;
+    target.userData.laserGrabSmoothingApplied = true;
+  } else {
+    positionAlpha = Math.min(1, dt * HANDLE_POSITION_DAMPENING);
+    rotationAlpha = Math.min(1, dt * HANDLE_ROTATION_DAMPENING);
+  }
   const object = target as unknown as THREE.Object3D;
   const position = state.current.position;
   object.position.set(
