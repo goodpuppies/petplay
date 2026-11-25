@@ -10,15 +10,18 @@ try {
   console.log("Created iwer version.ts stub");
 }
 
-const setterSrc = new URL("./preconf/setter.ts", import.meta.url);
-const setterDst = new URL(
-  "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/flex/setter.ts",
+const uikitFlexDir = new URL(
+  "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/flex/",
   import.meta.url,
 );
 
-try {
-  await Deno.stat(setterDst);
-} catch {
-  await Deno.copyFile(setterSrc, setterDst);
-  console.log("Copied setter.ts to uikit flex/setter.ts");
+for (const file of ["setter.ts", "schema.ts"]) {
+  const src = new URL(`./preconf/${file}`, import.meta.url);
+  const dst = new URL(file, uikitFlexDir);
+  try {
+    await Deno.stat(dst);
+  } catch {
+    await Deno.copyFile(src, dst);
+    console.log(`Copied ${file} to uikit flex/${file}`);
+  }
 }

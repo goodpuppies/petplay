@@ -69,5 +69,5 @@
     "*.ts",
     "*.tsx"
   ],
-  "exclude": ["node_modules", "dist", "tmp", "_scratch", "research", "submodules"]
+  "exclude": ["node_modules", "dist", "tmp", "_scratch", "research", "submodules", "utils/preconf"]
 }
