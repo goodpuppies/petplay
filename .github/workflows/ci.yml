@@ -164,7 +164,7 @@ jobs:
             pkgs+=(pkg-config clang libpipewire-0.3-dev libdbus-1-dev libva-dev libgbm-dev libasound2-dev libopus-dev)
           fi
           if [[ "${{ runner.arch }}" == "X64" ]]; then
-            pkgs+=(libgl-dev)
+            pkgs+=(libgl-dev libvulkan-dev)
           fi
           if [[ "${{ runner.arch }}" == "ARM64" ]]; then
             pkgs+=(xvfb xauth libgl1-mesa-dri)
