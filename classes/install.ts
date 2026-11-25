@@ -243,7 +243,7 @@ function findOnPath(program: string): string | null {
  * Puts `source` at `target` without ever leaving a half-written executable. On Windows a running
  * executable cannot be replaced, only renamed, so the old one is moved aside first.
  */
-function replaceExecutable(source: string, target: string): void {
+export function replaceExecutable(source: string, target: string): void {
   const incoming = `${target}.new`;
   Deno.copyFileSync(source, incoming);
   if (!windows) {

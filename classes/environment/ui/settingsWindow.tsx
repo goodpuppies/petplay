@@ -27,6 +27,12 @@ import {
 import { describeBuild, getBuildInfo } from "../../buildInfo.ts";
 import { installState } from "../../install.ts";
 import { logsDir } from "../../appPaths.ts";
+import { copyTextToClipboard } from "../../clipboard.ts";
+import {
+  checkForUpdate,
+  downloadAndApplyUpdate,
+  type UpdateCheckResult,
+} from "../../updater.ts";
 import { resetPlayspace } from "../../playspaceMover.ts";
 import {
   addWorkspaceLayoutOutput,
@@ -845,8 +851,13 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   const [, refresh] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [copiedLogs, setCopiedLogs] = useState(false);
   const real = installState();
   const build = getBuildInfo();
+  const logsPath = logsDir();
 
   const defaultStatus = !real.canInstall
     ? "Source checkout · deno task steamvr:register"
@@ -887,14 +898,98 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
     }
   };
 
+  const handleCheckUpdates = async () => {
+    if (updateBusy) return;
+    setUpdateBusy(true);
+    setUpdateMessage("Checking GitHub Releases…");
+    try {
+      const result = await checkForUpdate();
+      setUpdateCheck(result);
+      const summary = result.updateAvailable
+        ? result.canApply
+          ? `${result.latestVersion} available`
+          : `${result.latestVersion} available (use git pull in checkout)`
+        : `Up to date (latest ${result.latestVersion})`;
+      setUpdateMessage(summary);
+      pushToast({ source: "Updater", title: summary, tone: "info" });
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setUpdateMessage(text);
+      pushToast({ source: "Updater", title: text, tone: "warning" });
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const handleApplyUpdate = async () => {
+    if (updateBusy || !updateCheck?.updateAvailable || !updateCheck.canApply) return;
+    setUpdateBusy(true);
+    setUpdateMessage(`Downloading ${updateCheck.latestVersion}…`);
+    try {
+      const applied = await downloadAndApplyUpdate(updateCheck, (p) => {
+        if (p.phase === "downloading") {
+          const pct = p.totalBytes
+            ? ` ${Math.min(100, Math.round((p.receivedBytes / p.totalBytes) * 100))}%`
+            : "";
+          setUpdateMessage(`Downloading ${updateCheck.latestVersion}…${pct}`);
+        } else if (p.phase === "verifying") {
+          setUpdateMessage("Verifying SHA-256 checksum…");
+        } else {
+          setUpdateMessage("Installing update…");
+        }
+      });
+      const summary = `Updated to ${applied.updatedTo} — restart PetPlay`;
+      setUpdateMessage(summary);
+      setUpdateCheck({ ...updateCheck, updateAvailable: false });
+      pushToast({ source: "Updater", title: summary, tone: "info" });
+      refresh((n) => n + 1);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setUpdateMessage(text);
+      pushToast({ source: "Updater", title: text, tone: "warning" });
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const handleCopyLogsDir = async () => {
+    const ok = await copyTextToClipboard(logsPath);
+    if (ok) {
+      setCopiedLogs(true);
+      setTimeout(() => setCopiedLogs(false), 2000);
+      pushToast({ source: "Logs", title: "Copied logs directory path", tone: "info" });
+    } else {
+      pushToast({ source: "Logs", title: "Clipboard copy unavailable", tone: "warning" });
+    }
+  };
+
   const showInstallBtn = !real.installed || (!real.runningInstalled && !real.upToDate);
 
   return (
-    <Grid cols={1} rows={4} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
       <SettingRow row={0} title="Version" description={describeBuild()}>
         <Text color={COLOR.accent} fontSize={22}>{build.version}</Text>
       </SettingRow>
-      <SettingRow row={1} title="SteamVR Registration" description={message ?? defaultStatus}>
+      <SettingRow
+        row={1}
+        title="Updates"
+        description={updateMessage ?? "Pull latest release from GitHub (goodpuppies/petplay)"}
+      >
+        {updateCheck?.updateAvailable && updateCheck.canApply && (
+          <ActionButton
+            label={updateBusy ? "UPDATING…" : `INSTALL ${updateCheck.latestVersion}`}
+            tone="accent"
+            disabled={updateBusy}
+            onClick={() => void handleApplyUpdate()}
+          />
+        )}
+        <ActionButton
+          label={updateBusy ? "CHECKING…" : "CHECK"}
+          disabled={updateBusy}
+          onClick={() => void handleCheckUpdates()}
+        />
+      </SettingRow>
+      <SettingRow row={2} title="SteamVR Registration" description={message ?? defaultStatus}>
         {showInstallBtn && (
           <ActionButton
             label={busy ? "WORKING…" : real.installed ? "UPDATE" : "INSTALL"}
@@ -913,7 +1008,7 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
         )}
       </SettingRow>
       <SettingRow
-        row={2}
+        row={3}
         title="Start with SteamVR"
         description={real.installed ? real.installedPath : "Registers PetPlay as a SteamVR startup overlay"}
       >
@@ -926,10 +1021,12 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
           }}
         />
       </SettingRow>
-      <SettingRow row={3} title="Logs Directory" description={logsDir()}>
-        <Text color={COLOR.inkDim} fontSize={15}>
-          {real.canInstall ? (real.runningInstalled ? "Installed" : "Portable") : "Dev checkout"}
-        </Text>
+      <SettingRow row={4} title="Logs Directory" description={logsPath}>
+        <ActionButton
+          label={copiedLogs ? "COPIED" : "COPY PATH"}
+          tone={copiedLogs ? "accent" : "outline"}
+          onClick={() => void handleCopyLogsDir()}
+        />
       </SettingRow>
     </Grid>
   );
