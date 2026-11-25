@@ -23,6 +23,7 @@ const LISTENER_START_TIMEOUT_MS = 5_000;
 export class FrameReceiver {
   #worker: Worker;
   #frame: CapturedFrame | null = null;
+  #handedOut = new WeakSet<CapturedFrame>();
   #received = false;
   #connected = false;
   #waiters: Array<(frame: CapturedFrame | null) => void> = [];
@@ -31,8 +32,27 @@ export class FrameReceiver {
   #statsSince = performance.now();
   #disposed = false;
 
+  #recycleBuffer(frame: CapturedFrame | null): void {
+    if (!frame || this.#disposed) return;
+    const buf = frame.data.buffer;
+    if (buf instanceof ArrayBuffer && buf.byteLength > 0) {
+      try {
+        this.#worker.postMessage({ type: "recycle", buffer: buf }, [buf]);
+      } catch {
+        // Worker already terminated or buffer already detached.
+      }
+    }
+  }
+
   private constructor(worker: Worker, readonly port: number, options: FrameReceiverOptions) {
     this.#worker = worker;
+    worker.onerror = (event) => {
+      event.preventDefault();
+      console.error(`[FrameReceiver] Worker error on port ${port}:`, event.message);
+      this.#connected = false;
+      for (const finish of this.#waiters.splice(0)) finish(null);
+      options.onDisconnect?.();
+    };
     worker.onmessage = (event: MessageEvent) => {
       const { type, data, width, height, receiveTime } = event.data;
       if (type === "connected") this.#connected = true;
@@ -40,9 +60,19 @@ export class FrameReceiver {
         this.#connected = false;
         options.onDisconnect?.();
       } else if (type === "frame") {
-        this.#frame = { data, width, height, receiveTime };
+        const replaced = this.#frame;
+        const next: CapturedFrame = { data, width, height, receiveTime };
+        this.#frame = next;
+        // Recycle any superseded frame that was never handed out to a consumer.
+        if (replaced && !this.#handedOut.has(replaced)) {
+          this.#recycleBuffer(replaced);
+        }
         this.#received = true;
-        for (const finish of this.#waiters.splice(0)) finish(this.#frame);
+        const waiters = this.#waiters.splice(0);
+        if (waiters.length > 0) {
+          this.#handedOut.add(next);
+          for (const finish of waiters) finish(next);
+        }
         this.#count++;
         this.#receiveTime += receiveTime;
         if (this.#count % 30 === 0) {
@@ -114,13 +144,20 @@ export class FrameReceiver {
   }
 
   latestFrame(): CapturedFrame | null {
+    if (this.#frame) this.#handedOut.add(this.#frame);
     return this.#frame;
   }
 
   /** A frame newer than `previous`, or null after `timeoutMs` (or on dispose). */
   nextFrame(previous: CapturedFrame | null, timeoutMs = 1_000): Promise<CapturedFrame | null> {
     if (this.#disposed) return Promise.resolve(null);
-    if (this.#frame && this.#frame !== previous) return Promise.resolve(this.#frame);
+    if (previous && previous !== this.#frame && this.#handedOut.delete(previous)) {
+      this.#recycleBuffer(previous);
+    }
+    if (this.#frame && this.#frame !== previous) {
+      this.#handedOut.add(this.#frame);
+      return Promise.resolve(this.#frame);
+    }
     return new Promise((resolve) => {
       let settled = false;
       const finish = (frame: CapturedFrame | null) => {
@@ -129,6 +166,9 @@ export class FrameReceiver {
         clearTimeout(timer);
         const index = this.#waiters.indexOf(finish);
         if (index >= 0) this.#waiters.splice(index, 1);
+        if (previous && frame && previous !== frame && this.#handedOut.delete(previous)) {
+          this.#recycleBuffer(previous);
+        }
         resolve(frame);
       };
       const timer = setTimeout(() => finish(null), timeoutMs);

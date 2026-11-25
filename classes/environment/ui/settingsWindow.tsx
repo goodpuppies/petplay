@@ -16,6 +16,14 @@ import { Icon, type IconName } from "./icons.tsx";
 import { Cell, Grid } from "./grid.tsx";
 import { COLOR, GAP, INNER_GAP, RADIUS, UNIT, unitSpan } from "./tokens.ts";
 import { setSetting, type SettingKey, useSetting, VRC_CAMERA_RESOLUTIONS } from "../../settings.ts";
+import {
+  baseEyeSize,
+  MAX_EYE_SIZE,
+  RENDER_SCALE_STEPS,
+  scaledEyeSize,
+  setRenderScale,
+  useRenderResolution,
+} from "../../renderResolution.ts";
 import { describeBuild, getBuildInfo } from "../../buildInfo.ts";
 import { installState } from "../../install.ts";
 import { logsDir } from "../../appPaths.ts";
@@ -429,36 +437,81 @@ function OverlayModeRow({ row }: { row: number }) {
   );
 }
 
+function RenderResolutionRow({ row }: { row: number }) {
+  const { key, scale, eye } = useRenderResolution();
+  const base = baseEyeSize();
+  const currentIdx = Math.max(
+    0,
+    RENDER_SCALE_STEPS.findIndex((step) => Math.abs(step - scale) < 1e-3),
+  );
+  const maxStepIdx = base == null
+    ? RENDER_SCALE_STEPS.length - 1
+    : Math.max(
+      0,
+      RENDER_SCALE_STEPS.reduce(
+        (last, step, i) => (i === 0 || scaledEyeSize(base, step) > scaledEyeSize(base, RENDER_SCALE_STEPS[last]!) ? i : last),
+        0,
+      ),
+    );
+  const clampedIdx = Math.min(currentIdx, maxStepIdx);
+  const description = key != null && eye != null
+    ? `SteamVR ${key} → ${eye}×${eye} per eye (max ${MAX_EYE_SIZE})`
+    : "Scale PetPlay eye target relative to SteamVR resolution (waiting for headset)";
+  return (
+    <SettingRow
+      row={row}
+      title="Overlay Resolution"
+      description={description}
+    >
+      <StepperControl
+        label={`${Math.round(scale * 100)}%`}
+        fraction={maxStepIdx > 0 ? clampedIdx / maxStepIdx : 0}
+        onDecrement={() => {
+          if (key == null) return;
+          const next = RENDER_SCALE_STEPS[Math.max(0, clampedIdx - 1)]!;
+          setRenderScale(next);
+        }}
+        onIncrement={() => {
+          if (key == null) return;
+          const next = RENDER_SCALE_STEPS[Math.min(maxStepIdx, clampedIdx + 1)]!;
+          setRenderScale(next);
+        }}
+      />
+    </SettingRow>
+  );
+}
+
 function GeneralPage({ showGuides }: { showGuides: boolean }) {
   return (
-    <Grid cols={1} rows={7} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={8} gap={GAP} padding={0} showGuides={showGuides}>
       <OverlayModeRow row={0} />
+      <RenderResolutionRow row={1} />
       <BooleanSettingRow
-        row={1}
+        row={2}
         title="Controller Lasers"
         description="Draw aiming beams from both controllers"
         setting="controllerLaser"
       />
       <BooleanSettingRow
-        row={2}
+        row={3}
         title="Haptic Feedback"
         description="Subtle vibration on hover and click"
         setting="haptics"
       />
       <BooleanSettingRow
-        row={3}
+        row={4}
         title="Desktop Notifications"
         description="Forward Linux desktop alerts as VR toasts"
         setting="desktopNotifications"
       />
       <BooleanSettingRow
-        row={4}
+        row={5}
         title="Grab-Box Outlines"
         description="Show wireframe frames around spatial windows"
         setting="grabboxOutline"
       />
-      <GrabThresholdRow row={5} />
-      <PeerNetworkingRow row={6} />
+      <GrabThresholdRow row={6} />
+      <PeerNetworkingRow row={7} />
     </Grid>
   );
 }

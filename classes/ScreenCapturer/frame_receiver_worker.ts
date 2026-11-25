@@ -1,9 +1,35 @@
-import { wait } from "../utils.ts";
-
 // Frame receiver worker
 let conn: Deno.Conn | null = null;
 let listener: Deno.Listener | null = null;
 let isConnected = false;
+
+const MAX_FRAME_DIMENSION = 16_384;
+const MAX_FRAME_BYTES = 128 * 1024 * 1024; // 128 MiB (e.g. 8192x4096x4)
+const MAX_FRAME_CHUNKS = 65_536;
+const MAX_POOL_BUFFERS = 3;
+
+const bufferPool: ArrayBuffer[] = [];
+
+function acquireFrameBuffer(size: number): Uint8Array<ArrayBuffer> | null {
+  while (bufferPool.length > 0) {
+    const recycled = bufferPool.pop()!;
+    if (recycled.byteLength === size) {
+      return new Uint8Array(recycled);
+    }
+  }
+  try {
+    return new Uint8Array(size);
+  } catch (err) {
+    console.error(`[frame_receiver_worker] Failed to allocate ${size} byte frame buffer:`, err);
+    return null;
+  }
+}
+
+function returnToPool(buffer: ArrayBuffer): void {
+  if (buffer.byteLength <= 0 || buffer.byteLength > MAX_FRAME_BYTES) return;
+  if (bufferPool.length >= MAX_POOL_BUFFERS) return;
+  bufferPool.push(buffer);
+}
 
 const worker = self as unknown as Worker;
 
@@ -73,21 +99,44 @@ async function receiveFrame(): Promise<{ data: Uint8Array; width: number; height
   const totalSize = new DataView(metadata.buffer).getUint32(8, true);
   const numChunks = new DataView(metadata.buffer).getUint32(12, true);
 
-  // Allocate frame buffer
-  const frameData = new Uint8Array(totalSize);
+  const expectedSize = width * height * 4;
+  if (
+    width === 0 || height === 0 ||
+    width > MAX_FRAME_DIMENSION || height > MAX_FRAME_DIMENSION ||
+    totalSize === 0 || totalSize > MAX_FRAME_BYTES || totalSize !== expectedSize ||
+    numChunks === 0 || numChunks > MAX_FRAME_CHUNKS
+  ) {
+    console.error(
+      `[frame_receiver_worker] Rejecting invalid frame header: ${width}x${height}, totalSize=${totalSize}, numChunks=${numChunks}`,
+    );
+    return null;
+  }
+
+  // Acquire (recycled or newly allocated) frame buffer without letting OOM kill the listener.
+  const frameData = acquireFrameBuffer(totalSize);
+  if (!frameData) return null;
   let offset = 0;
 
   // Read all chunks
   for (let i = 0; i < numChunks; i++) {
     // Read chunk size
     const chunkSizeData = await readExactly(4);
-    if (!chunkSizeData) return null;
+    if (!chunkSizeData) {
+      returnToPool(frameData.buffer);
+      return null;
+    }
     const chunkSize = new DataView(chunkSizeData.buffer).getUint32(0, true);
 
     // Read straight into the final frame. The old path allocated a chunk and
     // copied it into this buffer for every protocol chunk.
-    if (offset + chunkSize > frameData.length) return null;
-    if (!await readExactlyInto(frameData, offset, chunkSize)) return null;
+    if (offset + chunkSize > frameData.length) {
+      returnToPool(frameData.buffer);
+      return null;
+    }
+    if (!await readExactlyInto(frameData, offset, chunkSize)) {
+      returnToPool(frameData.buffer);
+      return null;
+    }
     offset += chunkSize;
   }
 
@@ -131,7 +180,15 @@ async function acceptConnections(reaccept: boolean): Promise<void> {
     }
     isConnected = true;
     worker.postMessage({ type: "connected" });
-    await startReceiving();
+    try {
+      await startReceiving();
+    } catch (err) {
+      console.error("[frame_receiver_worker] Unexpected receive loop error:", err);
+      if (isConnected) {
+        isConnected = false;
+        worker.postMessage({ type: "disconnected" });
+      }
+    }
     try {
       conn?.close();
     } catch {
@@ -143,6 +200,14 @@ async function acceptConnections(reaccept: boolean): Promise<void> {
 
 worker.onmessage = async (e: MessageEvent) => {
   const { type, port } = e.data;
+
+  if (type === "recycle") {
+    const buf = e.data.buffer;
+    if (buf instanceof ArrayBuffer) {
+      returnToPool(buf);
+    }
+    return;
+  }
 
   if (type === "connect") {
     try {

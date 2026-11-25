@@ -71,6 +71,7 @@ const state = actorState({
   running: false,
   stopRequested: false,
   webxrTarget: null as string | null,
+  eyeSize: null as number | null,
   error: null as string | null,
   sceneVersion: 0,
   renderFrameId: 0,
@@ -230,6 +231,7 @@ new PostMan(
     STARTOVERLAYRENDERER: (options: Start) => {
       if (loop) throw new Error("Renderer already started; stop it before reconfiguration");
       state.webxrTarget = options.webxrTarget ?? null;
+      state.eyeSize = options.eyeSize ?? null;
       state.presentMode = options.presentMode ?? "projection";
       if (options.dmabufBanks != null) state.dmabufBanks = options.dmabufBanks;
       state.stopRequested = false;
@@ -266,6 +268,13 @@ new PostMan(
         throw new Error(`Unknown present mode ${mode}`);
       }
       state.presentMode = mode;
+      return health();
+    },
+    SETEYESIZE: (eyeSize: number) => {
+      if (!Number.isInteger(eyeSize) || eyeSize < 64 || eyeSize > 4096) {
+        throw new Error(`Invalid eye size ${eyeSize}`);
+      }
+      state.eyeSize = eyeSize;
       return health();
     },
     GETPANORAMAPHASE: () => panoramaPhase.slice(),
@@ -588,6 +597,7 @@ async function run(options: Start) {
     panorama = new OpenVrOverlayTexture(Deno.UnsafePointer.value(pointers.overlay!));
     let panoramaReady = false;
     let activeMode: PresentMode | null = null;
+    let activeEyeSize: number | null = state.eyeSize;
     const leftEye = trackingMatrix34(system.GetEyeToHeadTransform(OpenVR.Eye.Eye_Left).m);
     const rightEye = trackingMatrix34(system.GetEyeToHeadTransform(OpenVR.Eye.Eye_Right).m);
     state.eyeToHead = { left: leftEye.toArray(), right: rightEye.toArray() };
@@ -652,8 +662,17 @@ async function run(options: Start) {
         activeEpoch = payload.delivery.epoch;
       }
       const desiredDmabufBanks: DmabufBankCount = state.dmabufBanks;
-      if (activeMode !== state.presentMode || activeDmabufBanks !== desiredDmabufBanks) {
+      const eyeSizeChanged = state.eyeSize != null && state.eyeSize !== activeEyeSize;
+      if (
+        activeMode !== state.presentMode ||
+        activeDmabufBanks !== desiredDmabufBanks ||
+        eyeSizeChanged
+      ) {
         teardownDmabufBanks();
+        if (eyeSizeChanged && state.eyeSize != null) {
+          renderer.setRequestedEyeSize(state.eyeSize);
+          activeEyeSize = state.eyeSize;
+        }
         if (state.presentMode === "panorama") {
           overlays.cleanup();
           panorama.cleanup();
@@ -685,7 +704,8 @@ async function run(options: Start) {
                     widthInMeters: options.overlayWidthInMeters,
                     distance: options.overlayDistance,
                     mode: "stereo-panorama",
-                    sortOrder: 20,
+                    // Above desktop quad overlays (0), below SteamVR dashboard.
+                    sortOrder: 1,
                     attachToHmd: true,
                     // OpenGL FBO is bottom-up while Vulkan/DMA-BUF samples top-down.
                     flipVertical: true,
@@ -756,7 +776,7 @@ async function run(options: Start) {
                   bankOv.initialize({
                     key: `${overlayKey}.bank${b}`,
                     name: `${overlayName} bank ${b}`,
-                    sortOrder: 20,
+                    sortOrder: 0,
                   });
                   bankOv.applyTextureBounds(true);
                   const [lh, rh] = bankOv.getHandles();
@@ -795,7 +815,7 @@ async function run(options: Start) {
             state.transport = "OpenGL baseline (compositor image reuse is not resolved)";
           }
           if (!bankReady) {
-            overlays.initialize({ key: overlayKey, name: overlayName, sortOrder: 20 });
+            overlays.initialize({ key: overlayKey, name: overlayName, sortOrder: 0 });
           }
         }
         shownLeft = 0;
@@ -1105,7 +1125,7 @@ async function run(options: Start) {
               widthInMeters: options.overlayWidthInMeters,
               distance: options.overlayDistance,
               mode: "stereo-panorama",
-              sortOrder: 20,
+              sortOrder: 1,
               attachToHmd: true,
               flipVertical: false,
             });

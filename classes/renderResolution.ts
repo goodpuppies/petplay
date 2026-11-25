@@ -13,7 +13,7 @@ import { useSyncExternalStore } from "react";
 import { getSetting, setSetting, subscribeSettings } from "./settings.ts";
 
 /** The steps the Settings page cycles through. */
-export const RENDER_SCALE_STEPS = [1, 1.25, 1.5, 1.75, 2] as const;
+export const RENDER_SCALE_STEPS = [0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 /** Largest eye target, in pixels per side: VRAM grows with the square of it. */
 export const MAX_EYE_SIZE = 4096;
 

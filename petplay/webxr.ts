@@ -1732,7 +1732,23 @@ function recoverRaylibOverlayTargets(reason: string): boolean {
 let appliedRenderScale = getRenderScale();
 let renderScaleDirty = false;
 subscribeRenderResolution(() => {
-  if (getRenderScale() !== appliedRenderScale) renderScaleDirty = true;
+  if (getRenderScale() === appliedRenderScale) return;
+  if (state.renderOwner) {
+    appliedRenderScale = getRenderScale();
+    renderScaleDirty = false;
+    const eyeSize = getRaylibNativeEyeSize();
+    LogChannel.log(
+      "webxrv2",
+      `[webxr] render resolution ${Math.round(appliedRenderScale * 100)}%: eye ${eyeSize}`,
+    );
+    PostMan.PostMessage({
+      target: state.renderOwner,
+      type: "SETEYESIZE",
+      payload: eyeSize,
+    });
+  } else {
+    renderScaleDirty = true;
+  }
 });
 
 /**
@@ -3190,7 +3206,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
-      sortOrder: 10,
+      sortOrder: 1,
       attachToHmd: true,
       staleKeys: staleOverlayKeys,
     };
@@ -3209,7 +3225,7 @@ async function initializeOverlay(payload: StartWebXRPayload | null) {
       overlayWidthInMeters: payload.overlayWidthInMeters,
       overlayDistance: payload.overlayDistance,
       overlayMode: "stereo-panorama",
-      sortOrder: 20,
+      sortOrder: 1,
       attachToHmd: true,
       staleKeys: staleOverlayKeys,
     };

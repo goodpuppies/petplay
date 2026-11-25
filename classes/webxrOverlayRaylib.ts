@@ -209,13 +209,27 @@ export class WebXROverlayRaylib {
   /** Result of the last {@link requestEyeDiagnostics} sample; read over the agent REPL. */
   lastEyeDiagnostics: unknown = null;
 
-  constructor(private readonly requestedEyeSize?: number) {
+  constructor(private requestedEyeSize?: number) {
     if (
       requestedEyeSize != null &&
       (!Number.isInteger(requestedEyeSize) || requestedEyeSize < 64 || requestedEyeSize > 4096)
     ) {
       throw new Error("Eye size must be 64..4096");
     }
+  }
+
+  /**
+   * Update the requested per-eye size at runtime (used by the decoupled overlay renderer when
+   * Render Resolution changes in Settings) and drop existing FBOs so the next frame rebuilds them.
+   */
+  setRequestedEyeSize(eyeSize: number): void {
+    if (!Number.isInteger(eyeSize) || eyeSize < 64 || eyeSize > 4096) {
+      throw new Error("Eye size must be 64..4096");
+    }
+    if (this.requestedEyeSize === eyeSize && this.resolvedEyeSize === eyeSize) return;
+    this.requestedEyeSize = eyeSize;
+    this.resolvedEyeSize = null;
+    this.invalidateRenderTargets();
   }
 
   /**
