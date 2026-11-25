@@ -116,6 +116,12 @@ export const SETTINGS_SCHEMA = {
     label: "Controller vibration on button hover and click",
     valid: isBoolean,
   } satisfies SettingSpec<boolean>,
+  grabSmoothing: {
+    default: 0.3 as number,
+    label: "Laser grab smoothing amount (0 off to 1 maximum)",
+    valid: (value: unknown): value is number =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1,
+  } satisfies SettingSpec<number>,
   wristMenuHand: {
     default: "right" as "left" | "right",
     label: "Controller that wears the wrist menu; the other hand points at it",

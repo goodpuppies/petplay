@@ -484,7 +484,8 @@ function applyDampedHandleState(
   // damping by irregular worker frame times makes its offset from the hand wobble, which the
   // fresh controller pose would then show against the steady hand.
   const rigid = target.userData.renderTrackingFollow != null ||
-    target.userData.renderTrackingRelease === true;
+    target.userData.renderTrackingRelease === true ||
+    target.userData.laserGrabSmoothed === true;
   const positionAlpha = rigid ? 1 : Math.min(1, dt * HANDLE_POSITION_DAMPENING);
   const rotationAlpha = rigid ? 1 : Math.min(1, dt * HANDLE_ROTATION_DAMPENING);
   const object = target as unknown as THREE.Object3D;

@@ -18,6 +18,8 @@ import type { HandleState, HandleStore } from "@pmndrs/handle";
 import type { Pointer } from "@pmndrs/pointer-events";
 import { getHandOriginWorldMatrix } from "./trackedOrigins.ts";
 import { pulseHand } from "./haptics.ts";
+import { getSetting } from "../settings.ts";
+import { applyLaserGrabSmoothing } from "./grabSmoothing.ts";
 import {
   followFrame,
   type FollowPair,
@@ -166,6 +168,28 @@ export function consumeOneHandScaleEnd(target: object): boolean {
  * While resizing, the store is rebased (`save`) every frame, so the hand's travel moves nothing,
  * and when the trigger comes up the grab carries on from where the window is.
  */
+const smoothPrevPos = new THREE.Vector3();
+const smoothPrevQuat = new THREE.Quaternion();
+
+function applyWithOptionalLaserSmoothing<T>(
+  state: HandleState<unknown>,
+  target: THREE.Object3D,
+  apply: (state: HandleState<unknown>, target: THREE.Object3D) => T,
+  smoothingAmount: number,
+): T {
+  const active = smoothingAmount > 0;
+  target.userData.laserGrabSmoothed = active;
+  if (!active || state.first) {
+    return apply(state, target);
+  }
+  smoothPrevPos.copy(target.position);
+  smoothPrevQuat.copy(target.quaternion);
+  const result = apply(state, target);
+  const dt = state.delta?.time ?? 1 / 72;
+  applyLaserGrabSmoothing(target, smoothPrevPos, smoothPrevQuat, smoothingAmount, dt);
+  return result;
+}
+
 export function withOneHandScale<T>(
   apply: (state: HandleState<unknown>, target: THREE.Object3D) => T,
   stores: Map<string, HandleStore<unknown>>,
@@ -184,13 +208,17 @@ export function withOneHandScale<T>(
       // spanning both grab points, so a second hand joining or leaving does not jump it.
       sessions.delete(target);
       const [first, second] = store.inputState.keys();
+      const firstGrabber = grabPointers.get(first);
+      const secondGrabber = grabPointers.get(second);
+      const isLaser = firstGrabber?.space === "ray" || secondGrabber?.space === "ray";
+      const smoothAmount = isLaser ? getSetting("grabSmoothing") : 0;
       setRenderFollow(
         target,
-        renderFollow ? grabPointers.get(first) : undefined,
+        renderFollow && smoothAmount <= 0 ? firstGrabber : undefined,
         store.inputState.get(first),
-        { grabber: grabPointers.get(second), input: store.inputState.get(second) },
+        { grabber: secondGrabber, input: store.inputState.get(second) },
       );
-      return apply(state, target);
+      return applyWithOptionalLaserSmoothing(state, target, apply, smoothAmount);
     }
     const pointerId = store?.inputState.keys().next().value;
     const grabber = pointerId == null ? undefined : grabPointers.get(pointerId);
@@ -198,10 +226,23 @@ export function withOneHandScale<T>(
       sessions.delete(target);
       const follow = target.userData.renderTrackingFollow as CarryFollow | undefined;
       if (state.last && follow != null) {
+        delete target.userData.laserGrabSmoothed;
         releaseCarried(state, target, follow, apply);
         return undefined;
       }
+      const wasSmoothed = target.userData.laserGrabSmoothed === true;
       setRenderFollow(target, undefined);
+      if (state.last && wasSmoothed) {
+        const result = applyWithOptionalLaserSmoothing(
+          state,
+          target,
+          apply,
+          getSetting("grabSmoothing"),
+        );
+        delete target.userData.laserGrabSmoothed;
+        return result;
+      }
+      delete target.userData.laserGrabSmoothed;
       return apply(state, target);
     }
     let session = sessions.get(target);
@@ -225,13 +266,18 @@ export function withOneHandScale<T>(
       }
     }
     const active = session.active;
+    const smoothAmount = grabber.space === "ray" ? getSetting("grabSmoothing") : 0;
     // While resizing the window holds still as the hand moves, so it must not follow the hand.
+    // While laser-smoothed, let the smoothed world pose drive presentation instead of rigid carry.
     setRenderFollow(
       target,
-      renderFollow && active == null ? grabber : undefined,
+      renderFollow && active == null && smoothAmount <= 0 ? grabber : undefined,
       store.inputState.get(pointerId),
     );
-    if (active == null) return apply(state, target);
+    if (active == null) {
+      return applyWithOptionalLaserSmoothing(state, target, apply, smoothAmount);
+    }
+    delete target.userData.laserGrabSmoothed;
     if (!down) {
       session.active = undefined;
       resizedTargets.add(target);

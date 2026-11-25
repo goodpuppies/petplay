@@ -422,6 +422,25 @@ function GrabThresholdRow({ row }: { row: number }) {
   );
 }
 
+function GrabSmoothingRow({ row }: { row: number }) {
+  const smoothing = useSetting("grabSmoothing");
+  const clamp = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 10) / 10;
+  return (
+    <SettingRow
+      row={row}
+      title="Laser Grab Smoothing"
+      description="Dampen hand tremor when moving windows with a laser (OFF to 100%)"
+    >
+      <StepperControl
+        label={smoothing <= 0 ? "OFF" : `${Math.round(smoothing * 100)}%`}
+        fraction={smoothing}
+        onDecrement={() => setSetting("grabSmoothing", clamp(smoothing - 0.1))}
+        onIncrement={() => setSetting("grabSmoothing", clamp(smoothing + 0.1))}
+      />
+    </SettingRow>
+  );
+}
+
 function OverlayModeRow({ row }: { row: number }) {
   const mode = useSetting("overlayPresentMode");
   return (
@@ -489,7 +508,7 @@ function RenderResolutionRow({ row }: { row: number }) {
 
 function GeneralPage({ showGuides }: { showGuides: boolean }) {
   return (
-    <Grid cols={1} rows={8} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={9} gap={GAP} padding={0} showGuides={showGuides}>
       <OverlayModeRow row={0} />
       <RenderResolutionRow row={1} />
       <BooleanSettingRow
@@ -517,7 +536,8 @@ function GeneralPage({ showGuides }: { showGuides: boolean }) {
         setting="grabboxOutline"
       />
       <GrabThresholdRow row={6} />
-      <PeerNetworkingRow row={7} />
+      <GrabSmoothingRow row={7} />
+      <PeerNetworkingRow row={8} />
     </Grid>
   );
 }
