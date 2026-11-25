@@ -14,6 +14,7 @@ import { irohWebCarrier, type IrohWebModule } from "../../classes/irohWebCarrier
 import { startDevRelay } from "./relay.ts";
 
 const wasm = await import(
+  // @ts-ignore — built on demand by link-web/build.sh (not present in clean CI checkouts)
   "../../submodules/petplay_mediatransport/link-web/pkg-deno/petplay_link_web.js"
 ) as unknown as IrohWebModule;
 
