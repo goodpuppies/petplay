@@ -6,6 +6,7 @@ import { installNativeCrashTrace } from "../classes/nativeCrashTrace.ts";
 import { runLogParent, shouldRunLogParent } from "../classes/runLog.ts";
 import { runCliCommand } from "../classes/cli.ts";
 import { migrateLegacyWindowsConfig } from "../classes/appPaths.ts";
+import { reopenInOwnConsoleWindow } from "../classes/windowsOwnConsole.ts";
 
 installNativeCrashTrace();
 initializeLinuxScheduling();
@@ -28,6 +29,9 @@ if (await dispatchChildModule(Deno.args) == null) {
   const cliExit = await runCliCommand(Deno.args);
   if (cliExit != null) Deno.exit(cliExit);
   migrateLegacyWindowsConfig();
+  // Double-clicked on Windows 11, the console went to Windows Terminal, whose taskbar button is
+  // the terminal's; PetPlay reopens in its own console window, which shows PetPlay's icon.
+  if (reopenInOwnConsoleWindow(Deno.args)) Deno.exit(0);
   // A release run while a different build is installed asks whether to update it, and stops.
   if (Deno.build.standalone) {
     const { offerUpdate } = await import("../classes/install.ts");
