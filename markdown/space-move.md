@@ -7,8 +7,12 @@ Status: working on Touch in the headset (2026-11-12) and on Index (2026-11-24). 
 
 ## Decisions (from the user)
 
-- Binding: **left thumbstick click/hold** (unbound in PetPlay today); on Index (`knuckles`), the
-  chord **left grip + left trackpad touch**. Don't run WayVR's space drag
+- Binding: **left thumbstick click/hold** (unbound in PetPlay today). On Index (`knuckles`)
+  **no default** (since 2026-11-26): the first default, the chord left grip + left trackpad touch,
+  fired on any light touch of the trackpad, because holding an Index controller already counts as
+  grip click. It also clashed with VRChat's trackpad mirror/camera binds and OVR Advanced
+  Settings' right-trackpad space drag. Index users bind `SpaceDrag` themselves in SteamVR's
+  binding UI. Don't run WayVR's (or OVR Advanced Settings') space drag on the same input
   alongside it: both would rewrite the same standing zero pose.
 - Overlays **travel with you**: only the game world moves; PetPlay's displays and menus stay put
   relative to your body.
@@ -69,7 +73,8 @@ Changes:
   learn of them.
 - Index got its first PetPlay default binding (`resources/bindings_knuckles.json`); SteamVR was
   remapping another controller's. Left grab is masked while space drag is held, since a chord
-  still fires its grip. Not yet tried on Index hardware.
+  still fires its grip (still useful if a user binds a chord). The default `SpaceDrag` chord was
+  removed on 2026-11-26 (see Decisions).
 - Run-directory binding copies are now refreshed when they differ (`classes/utils.ts`): a reboot
   keeps the process's `tmp/run-<pid>`, and the stale copies left `SpaceDrag` unbound.
 - Live-verified on Touch (Steam Link), 2026-11-12: drag works and RESET SPACE appears.

@@ -119,7 +119,7 @@ Deno.test("runtime staging repairs missing bindings beside an existing binding",
   }
 });
 
-Deno.test("every default binding drags the playspace from the left hand", () => {
+Deno.test("default bindings drag the playspace from the left stick click, Index leaves it unbound", () => {
   assert(
     manifest.actions.some((action: { name: string; type: string }) =>
       action.name === "/actions/main/in/SpaceDrag" && action.type === "boolean"
@@ -136,16 +136,11 @@ Deno.test("every default binding drags the playspace from the left hand", () => 
     const chords = ((main.chords ?? []) as { output: string; inputs: string[][] }[])
       .filter((c) => c.output === "/actions/main/in/SpaceDrag");
     if (binding.controller_type === "knuckles") {
-      // Index: left grip + left trackpad touch; the stick click stays free.
+      // Index: nothing by default. Holding the controller already counts as grip click, so a
+      // grip + trackpad touch chord fired on any brush of the trackpad and fought the trackpad
+      // binds of VRChat and OVR Advanced Settings. Users can bind SpaceDrag in SteamVR.
       assertEquals(clicks.length, 0, binding_url);
-      assertEquals(chords.length, 1, binding_url);
-      assertEquals(chords[0].inputs, [
-        ["/user/hand/left/input/grip", "click"],
-        ["/user/hand/left/input/trackpad", "touch"],
-      ]);
-      for (const [path] of chords[0].inputs) {
-        assert(sources.some((s) => s.path === path), `${binding_url}: chord needs ${path}`);
-      }
+      assertEquals(chords.length, 0, binding_url);
       continue;
     }
     assertEquals(clicks.length, 1, binding_url);
