@@ -34,6 +34,7 @@ import {
 } from "../classes/overlaySceneWire.ts";
 import { wait } from "../classes/utils.ts";
 import { setCurrentThreadNice } from "../classes/linuxScheduling.ts";
+import { acquireWindowsHighResTimer } from "../classes/windowsTimer.ts";
 import { OverlayWristMotionProbe } from "../classes/overlayWristMotionProbe.ts";
 import { motionProbeFrame, OverlayMotionProbe } from "../classes/overlayMotionProbe.ts";
 import { OverlaySceneInbox } from "../classes/overlaySceneDelivery.ts";
@@ -560,6 +561,7 @@ async function run(options: Start) {
     ipcResourceManagerPointer = ptr;
     return ptr;
   };
+  const releaseWinTimer = acquireWindowsHighResTimer();
   try {
     const pointers = runtime.initialize({
       system: "required",
@@ -1502,5 +1504,6 @@ async function run(options: Start) {
     renderer?.cleanup();
     // This child owns all native dependants; avoid the known Linux library-teardown race.
     runtime.deferReleaseToProcessExit();
+    releaseWinTimer();
   }
 }

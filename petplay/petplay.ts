@@ -1,4 +1,5 @@
 import { initializeLinuxScheduling } from "../classes/linuxScheduling.ts";
+import { acquireWindowsHighResTimer } from "../classes/windowsTimer.ts";
 import { dispatchChildModule } from "../classes/childModule.ts";
 import { startPetplayServer } from "./petplayServer.ts";
 import { installNativeCrashTrace } from "../classes/nativeCrashTrace.ts";
@@ -8,6 +9,7 @@ import { migrateLegacyWindowsConfig } from "../classes/appPaths.ts";
 
 installNativeCrashTrace();
 initializeLinuxScheduling();
+acquireWindowsHighResTimer();
 // IPC render workers inherit environment, rather than the server's command-line arguments.
 const textRenderer = Deno.args.find((arg) => arg.startsWith("--text-renderer="))?.split("=")[1];
 if (textRenderer != null) Deno.env.set("PETPLAY_TEXT_RENDERER", textRenderer);
