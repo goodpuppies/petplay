@@ -74,3 +74,29 @@ Deno.test("callbacks requested before a frame share it", () => {
   time.tick(10);
   assertEquals(ran, [["a", 1004], ["b", 1004]]);
 });
+
+Deno.test("vsync frameIndex reset after standby does not freeze rAF", () => {
+  using time = new FakeTime(1000);
+  let frameIndex = 50_000n;
+  let msSinceVsync = 2;
+  const schedule = vsyncLockedScheduler(
+    {
+      periodMs: 10,
+      phaseMs: 4,
+      sample: () => ({ frameIndex, msSinceVsync }),
+    },
+    16,
+  );
+  const starts: number[] = [];
+  schedule(() => {
+    starts.push(time.now);
+    // Simulate Steam Link standby reset: frameIndex drops back to 1n and msSinceVsync goes negative.
+    frameIndex = 1n;
+    msSinceVsync = -500;
+    schedule(() => {
+      starts.push(time.now);
+    });
+  });
+  time.tick(30);
+  assertEquals(starts.length, 2);
+});

@@ -599,22 +599,62 @@ async function run(options: Start) {
     const isValidSyncPhase = (phase: { msSinceVsync: number } | null | undefined): boolean =>
       phase != null && phase.msSinceVsync >= 0 && phase.msSinceVsync <= displayPeriodMs * 2;
     let nextFallbackFrameAt = 0;
+    let lastFallbackWakeAt = 0;
     let lastSyncPhaseValid = true;
+    // Steam Link (`vrlink`) oscillates `msSinceVsync` across 0 (-17 ms .. +12 ms). Without
+    // hysteresis, `lastSyncPhaseValid` flips every few frames, thrashing between pipelined and
+    // serial banks (calling `clearPendingBanks()`, dropping ~17% of frames, and jumping hand
+    // prediction by 12 ms). Require a sustained streak of valid samples before re-enabling
+    // vsync-phase pacing after any invalid sample.
+    let validSyncStreak = 0;
+    const VALID_SYNC_STREAK_REQUIRED = 120;
     const waitVsyncLocked = async () => {
       for (;;) {
         const phase = fastPacer.sampleVsyncPhase();
         if (!isValidSyncPhase(phase)) {
+          validSyncStreak = 0;
           lastSyncPhaseValid = false;
-          // Steam Link (negative msSinceVsync) and null drivers cannot pace via vsync phase,
-          // and WaitFrameSync on Steam Link stalls at the game's frame rate (~20 FPS in VRChat).
-          // Keep a monotonic HMD displayPeriodMs deadline so overlays stay at full refresh rate.
+        } else if (!lastSyncPhaseValid) {
+          validSyncStreak++;
+          if (validSyncStreak >= VALID_SYNC_STREAK_REQUIRED) {
+            lastSyncPhaseValid = true;
+            lastLockedVsync = null;
+          }
+        }
+        if (!lastSyncPhaseValid) {
+          // Steam Link (`vrlink`) reports negative `msSinceVsync` by 1–2 display periods, while
+          // its modulo `displayPeriodMs` phase still tracks the true HMD vsync. Lock to that
+          // wrapped phase (at most once per display period) so we stay at exact HMD refresh rate
+          // without 68 Hz vs 72 Hz beat-frequency judder.
           const now = performance.now();
-          const sleepMs = nextFallbackFrameAt > now ? Math.min(displayPeriodMs, nextFallbackFrameAt - now) : 0;
-          if (sleepMs > 0.5) await wait(sleepMs);
-          nextFallbackFrameAt = Math.max(performance.now(), nextFallbackFrameAt) + displayPeriodMs;
+          if (phase != null && Number.isFinite(phase.msSinceVsync)) {
+            const wrappedMs = ((phase.msSinceVsync % displayPeriodMs) + displayPeriodMs) %
+              displayPeriodMs;
+            let untilPhase = VSYNC_LOCKED_PHASE_MS - wrappedMs;
+            if (untilPhase < -0.5) untilPhase += displayPeriodMs;
+            const sinceLastWake = lastFallbackWakeAt > 0 ? now - lastFallbackWakeAt : displayPeriodMs;
+            if (sinceLastWake + untilPhase < displayPeriodMs * 0.65) {
+              untilPhase += displayPeriodMs;
+            }
+            if (untilPhase > 0.5) {
+              await wait(Math.min(displayPeriodMs * 1.5, untilPhase));
+            }
+            lastFallbackWakeAt = performance.now();
+            return;
+          }
+          // Null driver fallback: drift-free monotonic deadline.
+          if (nextFallbackFrameAt <= 0 || now - nextFallbackFrameAt > displayPeriodMs * 2) {
+            nextFallbackFrameAt = now + displayPeriodMs;
+          }
+          const sleepMs = nextFallbackFrameAt - now;
+          if (sleepMs > 0.5) await wait(Math.min(displayPeriodMs, sleepMs));
+          nextFallbackFrameAt += displayPeriodMs;
+          lastFallbackWakeAt = performance.now();
           return;
         }
-        lastSyncPhaseValid = true;
+        if (lastLockedVsync !== null && lastLockedVsync - phase!.frameIndex > 2n) {
+          lastLockedVsync = null;
+        }
         if (lastLockedVsync === null || phase!.frameIndex > lastLockedVsync) {
           const untilPhase = VSYNC_LOCKED_PHASE_MS - phase!.msSinceVsync;
           if (untilPhase > 0.5) {
@@ -1150,11 +1190,12 @@ async function run(options: Start) {
               if (unlockErr !== 0) {
                 throw new Error(`Failed to unlock shared panorama bank ${ready.bank}: ${unlockErr}`);
               }
-              if (isValidSyncPhase(syncPhase) && state.panoramaPresentMinMs > 0) {
-                const effectivePhaseMs = (syncPhase!.msSinceVsync % displayPeriodMs) +
-                  (performance.now() - sampleMs);
+              if (lastSyncPhaseValid && syncPhase != null && Number.isFinite(syncPhase.msSinceVsync) && state.panoramaPresentMinMs > 0) {
+                const wrappedSyncMs = ((syncPhase.msSinceVsync % displayPeriodMs) + displayPeriodMs) %
+                  displayPeriodMs;
+                const effectivePhaseMs = wrappedSyncMs + (performance.now() - sampleMs);
                 const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
-                if (remainingMs > 0) {
+                if (remainingMs > 0 && remainingMs <= displayPeriodMs) {
                   await wait(remainingMs);
                 }
               }
@@ -1189,11 +1230,12 @@ async function run(options: Start) {
               if (unlockErr !== 0) {
                 throw new Error(`Failed to unlock shared panorama bank ${nextBank}: ${unlockErr}`);
               }
-              if (isValidSyncPhase(syncPhase) && state.panoramaPresentMinMs > 0) {
-                const effectivePhaseMs = (syncPhase!.msSinceVsync % displayPeriodMs) +
-                  (performance.now() - sampleMs);
+              if (lastSyncPhaseValid && syncPhase != null && Number.isFinite(syncPhase.msSinceVsync) && state.panoramaPresentMinMs > 0) {
+                const wrappedSyncMs = ((syncPhase.msSinceVsync % displayPeriodMs) + displayPeriodMs) %
+                  displayPeriodMs;
+                const effectivePhaseMs = wrappedSyncMs + (performance.now() - sampleMs);
                 const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
-                if (remainingMs > 0) {
+                if (remainingMs > 0 && remainingMs <= displayPeriodMs) {
                   await wait(remainingMs);
                 }
               }

@@ -97,9 +97,17 @@ export function vsyncLockedScheduler(
   let fired: bigint | null = null;
   return (run) => {
     const now = clock.sample();
-    if (!now) return setTimeout(run, fallbackMs) as unknown as number;
+    if (!now || !Number.isFinite(now.msSinceVsync)) {
+      return setTimeout(run, fallbackMs) as unknown as number;
+    }
+    // Steam Link / OpenVR can reset `frameIndex` backwards across standby/reconnect; reset `fired`
+    // instead of sleeping for `(fired - vsync) * periodMs` (minutes/hours).
+    if (fired !== null && fired - now.frameIndex > 2n) {
+      fired = null;
+    }
+    const msSinceVsync = Math.max(0, Math.min(clock.periodMs * 2, now.msSinceVsync));
     let vsync = now.frameIndex;
-    let delay = clock.phaseMs - now.msSinceVsync;
+    let delay = clock.phaseMs - msSinceVsync;
     if (delay < 0) {
       vsync++;
       delay += clock.periodMs;
@@ -108,10 +116,11 @@ export function vsyncLockedScheduler(
       delay += Number(fired + 1n - vsync) * clock.periodMs;
       vsync = fired + 1n;
     }
+    const clampedDelay = Math.max(0, Math.min(clock.periodMs * 2, delay));
     return setTimeout(() => {
       if (fired === null || vsync > fired) fired = vsync;
       run();
-    }, Math.max(0, delay)) as unknown as number;
+    }, clampedDelay) as unknown as number;
   };
 }
 

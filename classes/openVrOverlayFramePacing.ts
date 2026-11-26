@@ -583,11 +583,11 @@ export class OpenVrOverlayFramePacer {
 
     const frameDuration = 1.0 / this.displayHzCache;
     const vsyncToPhotons = this.secondsVsyncToPhotonsCache;
-    // Wrap `secondsSinceLastVsync` into one display period so an app-limited Steam Link
-    // scene app (where `secondsSinceLastVsync` grows to 25–35 ms) doesn't collapse pose
-    // prediction and cause headswim.
-    const phaseInFrame = secondsSinceLastVsync >= 0
-      ? secondsSinceLastVsync % frameDuration
+    // Wrap `secondsSinceLastVsync` into `[0, frameDuration)` with positive modulo: on Steam Link,
+    // `secondsSinceLastVsync` can be negative by 1–2 display periods (or > 1 period when the scene
+    // app is app-limited), while its modulo phase still tracks the true HMD vsync.
+    const phaseInFrame = Number.isFinite(secondsSinceLastVsync)
+      ? ((secondsSinceLastVsync % frameDuration) + frameDuration) % frameDuration
       : 0;
     const predictedSecondsFromNow = Math.max(
       0,
