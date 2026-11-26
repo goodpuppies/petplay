@@ -9,13 +9,14 @@
  *   - cols 2..7, row 0     (6×1): Active category header + Close button
  *   - cols 2..7, rows 1..4 (6×4): Category content cards (toggles, mode pickers, steppers, actions)
  */
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Text } from "./text.tsx";
 import { Icon, type IconName } from "./icons.tsx";
 import { Cell, Grid } from "./grid.tsx";
 import { COLOR, GAP, INNER_GAP, RADIUS, UNIT, unitSpan } from "./tokens.ts";
 import { setSetting, type SettingKey, useSetting, VRC_CAMERA_RESOLUTIONS } from "../../settings.ts";
+import { getAgentReplBaseUrl } from "../../utils.ts";
 import {
   baseEyeSize,
   MAX_EYE_SIZE,
@@ -58,6 +59,7 @@ export type SettingsCategoryId =
   | "keyboard"
   | "text"
   | "camera"
+  | "osc"
   | "install";
 
 const CATEGORIES: ReadonlyArray<{
@@ -107,6 +109,12 @@ const CATEGORIES: ReadonlyArray<{
     label: "Camera",
     subtitle: "VRC camera stream, calibration, and layer",
     icon: "videogame_asset",
+  },
+  {
+    id: "osc",
+    label: "OSC",
+    subtitle: "VRChat OSCQuery, world origin, and avatar parameters",
+    icon: "wifi",
   },
   {
     id: "install",
@@ -867,6 +875,282 @@ function CameraPage({ showGuides }: { showGuides: boolean }) {
   );
 }
 
+type CameraOriginHealth = {
+  driverRunning?: boolean;
+  oscPort?: number | null;
+  oscQueryRequests?: number;
+  hasLatestCameraPose?: boolean;
+  hasPositionEstimate?: boolean;
+  positionSampleCount?: number;
+  cameraOrbitRunning?: boolean;
+  assignedWebxr?: boolean;
+  lastDebugPostAt?: number;
+};
+
+type VrcOriginHealth = {
+  running?: boolean;
+  hasOrigin?: boolean;
+  originSource?: string | null;
+  worldPose?: {
+    source?: string;
+    position?: [number, number, number];
+    yawRad?: number;
+  } | null;
+  lockMode?: string;
+  lockErrorMeters?: number;
+  lockBreakCount?: number;
+  originChangeCount?: number;
+  assignedVrc?: boolean;
+  assignedHmd?: boolean;
+};
+
+type OscLiveSnapshot = {
+  camera: CameraOriginHealth | null;
+  origin: VrcOriginHealth | null;
+  params: Record<string, number> | null;
+  error: string | null;
+  updatedAt: number;
+};
+
+function StatusPill({
+  label,
+  tone = "muted",
+}: {
+  label: string;
+  tone?: "accent" | "danger" | "muted";
+}) {
+  const bg = tone === "accent"
+    ? COLOR.accent
+    : tone === "danger"
+    ? COLOR.danger
+    : COLOR.ground;
+  const ink = tone === "accent"
+    ? COLOR.onAccent
+    : tone === "danger"
+    ? COLOR.onDanger
+    : COLOR.inkDim;
+  return (
+    <Container
+      paddingX={16}
+      height={38}
+      borderRadius={19}
+      alignItems="center"
+      justifyContent="center"
+      backgroundColor={bg}
+      backgroundOpacity={1}
+    >
+      <Text color={ink} fontSize={14}>{label}</Text>
+    </Container>
+  );
+}
+
+function OscPage({ showGuides }: { showGuides: boolean }) {
+  const [snap, setSnap] = useState<OscLiveSnapshot>({
+    camera: null,
+    origin: null,
+    params: null,
+    error: null,
+    updatedAt: 0,
+  });
+  const [busy, setBusy] = useState<"reannounce" | "reload" | null>(null);
+
+  const poll = useCallback(async (signal?: AbortSignal) => {
+    const base = getAgentReplBaseUrl();
+    try {
+      const [camRes, origRes, paramsRes] = await Promise.all([
+        fetch(`${base}/health/actor?actor=cameraOrigin`, { signal }).then((r) => r.json()).catch(() => null),
+        fetch(`${base}/health/actor?actor=origin`, { signal }).then((r) => r.json()).catch(() => null),
+        fetch(`${base}/message`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            target: "cameraOrigin",
+            type: "GETCUSTOMOBJECTSYNCCOORDINATE",
+            reply: true,
+            timeoutMs: 1500,
+          }),
+          signal,
+        }).then((r) => r.json()).catch(() => null),
+      ]);
+      if (signal?.aborted) return;
+      const camera = camRes?.ok ? (camRes.health?.details as CameraOriginHealth ?? null) : null;
+      const origin = origRes?.ok ? (origRes.health?.details as VrcOriginHealth ?? null) : null;
+      const params = paramsRes?.ok && paramsRes.result && typeof paramsRes.result === "object"
+        ? (paramsRes.result as Record<string, number>)
+        : null;
+      const error = camera == null && origin == null ? "Control endpoint unavailable" : null;
+      setSnap({ camera, origin, params, error, updatedAt: Date.now() });
+    } catch (err) {
+      if (signal?.aborted) return;
+      setSnap((prev) => ({
+        ...prev,
+        error: err instanceof Error ? err.message : String(err),
+        updatedAt: Date.now(),
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    void poll(ac.signal);
+    const id = setInterval(() => {
+      void poll(ac.signal);
+    }, 1000);
+    return () => {
+      ac.abort();
+      clearInterval(id);
+    };
+  }, [poll]);
+
+  const handleReannounce = async () => {
+    if (busy) return;
+    setBusy("reannounce");
+    const base = getAgentReplBaseUrl();
+    try {
+      await fetch(`${base}/message`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target: "cameraOrigin", type: "STOPCAMERAORIGIN", reply: true, timeoutMs: 3000 }),
+      });
+      await fetch(`${base}/message`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target: "cameraOrigin", type: "STARTCAMERAORIGIN", reply: false }),
+      });
+      pushToast({ source: "OSC", title: "Re-announced OSCQuery to VRChat", tone: "info" });
+    } catch (err) {
+      pushToast({
+        source: "OSC",
+        title: `Re-announce failed: ${err instanceof Error ? err.message : String(err)}`,
+        tone: "warning",
+      });
+    } finally {
+      setBusy(null);
+      setTimeout(() => void poll(), 400);
+    }
+  };
+
+  const handleReloadOsc = async () => {
+    if (busy) return;
+    setBusy("reload");
+    const base = getAgentReplBaseUrl();
+    try {
+      const res = await fetch(`${base}/reload`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actor: "cameraOrigin" }),
+      }).then((r) => r.json());
+      if (res?.ok) {
+        pushToast({ source: "OSC", title: "Reloaded OSCQuery actor", tone: "info" });
+      } else {
+        pushToast({ source: "OSC", title: `Reload failed: ${res?.error ?? "unknown"}`, tone: "warning" });
+      }
+    } catch (err) {
+      pushToast({
+        source: "OSC",
+        title: `Reload failed: ${err instanceof Error ? err.message : String(err)}`,
+        tone: "warning",
+      });
+    } finally {
+      setBusy(null);
+      setTimeout(() => void poll(), 600);
+    }
+  };
+
+  const cam = snap.camera;
+  const orig = snap.origin;
+  const paramKeys = snap.params ? Object.keys(snap.params) : [];
+  const driverRunning = cam?.driverRunning ?? false;
+  const oscRequests = cam?.oscQueryRequests ?? 0;
+  const oscPort = cam?.oscPort;
+
+  const driverTone = !driverRunning ? "danger" : oscRequests > 0 ? "accent" : "muted";
+  const driverBadge = !driverRunning ? "OFFLINE" : oscRequests > 0 ? "CONNECTED" : "WAITING";
+  const driverDesc = snap.error
+    ? snap.error
+    : driverRunning
+    ? `UDP :${oscPort ?? "?"} · ${oscRequests} VRChat request${oscRequests === 1 ? "" : "s"}${
+      oscRequests === 0 ? " (toggle OSC in VRChat)" : ""
+    }`
+    : "Driver stopped — press Re-announce or Reload";
+
+  const hasOrigin = orig?.hasOrigin ?? false;
+  const pos = orig?.worldPose?.position;
+  const yawRad = orig?.worldPose?.yawRad;
+  const yawDeg = typeof yawRad === "number" ? Math.round((yawRad * 180) / Math.PI) : null;
+  const originDesc = hasOrigin && pos
+    ? `${orig?.originSource ?? "origin"} · (${pos[0].toFixed(2)}, ${pos[1].toFixed(2)}, ${pos[2].toFixed(2)})${
+      yawDeg != null ? ` · yaw ${yawDeg}°` : ""
+    }`
+    : orig
+    ? "Waiting for avatar origin parameters from VRChat"
+    : "Origin actor not attached";
+
+  const lockMode = orig?.lockMode ?? "none";
+  const lockErrCm = typeof orig?.lockErrorMeters === "number"
+    ? (orig.lockErrorMeters * 100).toFixed(1)
+    : "0.0";
+  const lockDesc = orig
+    ? `${orig.originChangeCount ?? 0} updates · ${orig.lockBreakCount ?? 0} breaks · err ${lockErrCm}cm`
+    : "No live origin tracking data";
+  const lockTone = lockMode === "locked" ? "accent" : "muted";
+
+  const hasPetPlayParams = paramKeys.some((k) => k.includes("/PetPlay/Origin/"));
+  const hasCustomSyncParams = paramKeys.some((k) => k.includes("/CustomObjectSync/"));
+  const paramSource = hasPetPlayParams
+    ? "PetPlay/Origin"
+    : hasCustomSyncParams
+    ? "CustomObjectSync"
+    : "None received";
+  const paramDesc = paramKeys.length > 0
+    ? `Active namespace: ${paramSource}`
+    : "No avatar origin OSC packets received yet";
+
+  const cameraDesc = cam
+    ? `Pose: ${cam.hasLatestCameraPose ? "receiving" : "none"} · ${cam.positionSampleCount ?? 0} samples · ${
+      cam.assignedWebxr ? "webxr linked" : "unlinked"
+    }`
+    : "Camera OSC actor unavailable";
+
+  return (
+    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
+      <SettingRow row={0} title="OSCQuery Driver" description={driverDesc}>
+        <StatusPill label={driverBadge} tone={driverTone} />
+        <ActionButton
+          label={busy === "reannounce" ? "WORKING…" : "RE-ANNOUNCE"}
+          disabled={busy != null}
+          onClick={() => void handleReannounce()}
+        />
+      </SettingRow>
+      <SettingRow row={1} title="VRC World Origin" description={originDesc}>
+        <StatusPill label={hasOrigin ? "TRACKING" : "NO FIX"} tone={hasOrigin ? "accent" : "muted"} />
+      </SettingRow>
+      <SettingRow row={2} title="Origin Lock" description={lockDesc}>
+        <StatusPill label={lockMode.toUpperCase()} tone={lockTone} />
+      </SettingRow>
+      <SettingRow row={3} title="Avatar OSC Params" description={paramDesc}>
+        <StatusPill
+          label={`${paramKeys.length} KEYS`}
+          tone={paramKeys.length > 0 ? "accent" : "muted"}
+        />
+      </SettingRow>
+      <SettingRow row={4} title="Camera & Recovery" description={cameraDesc}>
+        <ActionButton
+          label="REFRESH"
+          disabled={busy != null}
+          onClick={() => void poll()}
+        />
+        <ActionButton
+          label={busy === "reload" ? "RELOADING…" : "RELOAD OSC"}
+          tone="danger"
+          disabled={busy != null}
+          onClick={() => void handleReloadOsc()}
+        />
+      </SettingRow>
+    </Grid>
+  );
+}
+
 function InstallPage({ showGuides }: { showGuides: boolean }) {
   const [, refresh] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -1126,6 +1410,7 @@ export function SettingsWindow({
         {category === "keyboard" && <KeyboardPage showGuides={showGuides} />}
         {category === "text" && <TextPage showGuides={showGuides} />}
         {category === "camera" && <CameraPage showGuides={showGuides} />}
+        {category === "osc" && <OscPage showGuides={showGuides} />}
         {category === "install" && <InstallPage showGuides={showGuides} />}
       </Cell>
     </Grid>
