@@ -599,24 +599,22 @@ async function run(options: Start) {
     const isValidSyncPhase = (phase: { msSinceVsync: number } | null | undefined): boolean =>
       phase != null && phase.msSinceVsync >= 0 && phase.msSinceVsync <= displayPeriodMs * 2;
     let nextFallbackFrameAt = 0;
+    let lastSyncPhaseValid = true;
     const waitVsyncLocked = async () => {
       for (;;) {
         const phase = fastPacer.sampleVsyncPhase();
         if (!isValidSyncPhase(phase)) {
-          // Steam Link and null drivers can report negative or out-of-range msSinceVsync.
-          // Pace on IVROverlay::WaitFrameSync when available, else keep a monotonic period
-          // deadline instead of sleeping a full displayPeriodMs on top of render work.
-          const waitErr = overlayInterface.WaitFrameSync(100);
-          if (waitErr === OpenVR.OverlayError.VROverlayError_None) {
-            nextFallbackFrameAt = performance.now() + displayPeriodMs;
-            return;
-          }
+          lastSyncPhaseValid = false;
+          // Steam Link (negative msSinceVsync) and null drivers cannot pace via vsync phase,
+          // and WaitFrameSync on Steam Link stalls at the game's frame rate (~20 FPS in VRChat).
+          // Keep a monotonic HMD displayPeriodMs deadline so overlays stay at full refresh rate.
           const now = performance.now();
           const sleepMs = nextFallbackFrameAt > now ? Math.min(displayPeriodMs, nextFallbackFrameAt - now) : 0;
           if (sleepMs > 0.5) await wait(sleepMs);
-          nextFallbackFrameAt = Math.max(now, nextFallbackFrameAt) + displayPeriodMs;
+          nextFallbackFrameAt = Math.max(performance.now(), nextFallbackFrameAt) + displayPeriodMs;
           return;
         }
+        lastSyncPhaseValid = true;
         if (lastLockedVsync === null || phase!.frameIndex > lastLockedVsync) {
           const untilPhase = VSYNC_LOCKED_PHASE_MS - phase!.msSinceVsync;
           if (untilPhase > 0.5) {
@@ -918,9 +916,11 @@ async function run(options: Start) {
       // frames start right after the previous presentation's wait.
       const vsyncPaced = panoramaMode && state.panoramaPacing === "vsync";
       const vsyncLocked = panoramaMode && state.panoramaPacing === "vsync-locked";
-      const usePipelinedPanorama = vsyncLocked && bankPool !== null &&
+      // Only pipeline 1 frame ahead when hardware vsync phase is valid; on Steam Link
+      // (negative msSinceVsync), serial 3-bank flips immediately with zero extra frame latency.
+      const usePipelinedPanorama = vsyncLocked && lastSyncPhaseValid && bankPool !== null &&
         panoramaBankOverlays.length >= 3 && (presenter?.hasAsyncFence ?? false);
-      const usePipelinedProjection = !panoramaMode && bankPool !== null &&
+      const usePipelinedProjection = !panoramaMode && lastSyncPhaseValid && bankPool !== null &&
         bankOverlays.length >= 3 && (presenter?.hasAsyncFence ?? false);
       if (!usePipelinedPanorama && pendingPanorama) clearPendingBanks();
       if (!usePipelinedProjection && pendingProjection) clearPendingBanks();
@@ -1116,11 +1116,11 @@ async function run(options: Start) {
         const texture = renderer.getTextureHandle();
         const presenterPaced = state.panoramaPacing === "presenter";
         let published = true;
-        if (vsyncPaced && syncPhase) {
+        if (vsyncPaced && isValidSyncPhase(syncPhase)) {
           for (;;) {
             const now = pacer.sampleVsyncPhase();
-            if (!now || now.frameIndex !== syncPhase.frameIndex) break;
-            const remainingMs = state.panoramaPresentMinMs - now.msSinceVsync;
+            if (!isValidSyncPhase(now) || now!.frameIndex !== syncPhase!.frameIndex) break;
+            const remainingMs = state.panoramaPresentMinMs - now!.msSinceVsync;
             if (remainingMs <= 0) break;
             await wait(remainingMs > 1.5 ? remainingMs - 1 : 0);
           }
