@@ -19,6 +19,7 @@ const result = await new Deno.Command(Deno.env.get("ZIG") ?? "zig", {
   args: [
     "build",
     "-Doptimize=ReleaseFast",
+    "-Dcpu=baseline",
     ...(targetArg ? [`-Dtarget=${targetArg}`] : []),
   ],
   stdout: "inherit",
