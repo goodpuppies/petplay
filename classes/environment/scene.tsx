@@ -114,6 +114,8 @@ import {
 } from "./spatialGraph.ts";
 import {
   discoverRemoteDisplayFeeds,
+  getSharedRemotePoses,
+  pushRemoteDisplayPose,
   resolveDisplayFeedProvider,
   setSharedScreens,
 } from "./remoteDisplayFeeds.ts";
@@ -894,6 +896,19 @@ function WindowLayer({
   }, [sharedScreens]);
   // Follow a remote sharer's VRChat world pose while this viewer's display is anchored to VRC World.
   const appliedRemotePoseAtRef = React.useRef(new Map<string, number>());
+  const appliedRemotePoseKeyRef = React.useRef(new Map<string, string>());
+  const lastPushedViewerPoseKeyRef = React.useRef(new Map<string, string>());
+  const roundPoseTuple = (t: [number, number, number]): [number, number, number] => [
+    Math.round(t[0] * 10_000) / 10_000,
+    Math.round(t[1] * 10_000) / 10_000,
+    Math.round(t[2] * 10_000) / 10_000,
+  ];
+  const poseSignature = (t: SpatialTransform) =>
+    JSON.stringify([
+      roundPoseTuple(t.position),
+      roundPoseTuple(t.rotation),
+      roundPoseTuple(t.scale),
+    ]);
   React.useEffect(() => {
     if (!isVRCOriginKnown()) return;
     const updates: Array<{ id: string; transform: SpatialTransform; updatedAt: number }> = [];
@@ -918,7 +933,12 @@ function WindowLayer({
       });
     }
     if (updates.length === 0) return;
-    for (const u of updates) appliedRemotePoseAtRef.current.set(u.id, u.updatedAt);
+    for (const u of updates) {
+      appliedRemotePoseAtRef.current.set(u.id, u.updatedAt);
+      const sig = poseSignature(u.transform);
+      appliedRemotePoseKeyRef.current.set(u.id, sig);
+      lastPushedViewerPoseKeyRef.current.set(u.id, sig);
+    }
     setGraph((current) => {
       let next = current;
       for (const u of updates) {
@@ -929,6 +949,98 @@ function WindowLayer({
       return next;
     });
   }, [remoteOutputs]);
+  // Two-way pose sync (Viewer -> Sharer): when a viewer moves a VRC-World-anchored remote display,
+  // push the new VRChat world pose back to the sharer's displayShare.
+  React.useEffect(() => {
+    if (!isVRCOriginKnown()) return;
+    for (const node of Object.values(graph.nodes)) {
+      if (
+        node.kind !== "display" || node.parentId !== null ||
+        node.originId !== VRC_WORLD_ORIGIN_ID || !node.workspaceOutputId
+      ) continue;
+      const remote = remoteOutputs.find((o) => o.id === node.workspaceOutputId);
+      if (!remote?.household || remote.local === true) continue;
+      const sig = poseSignature(node.localTransform);
+      if (
+        sig === appliedRemotePoseKeyRef.current.get(node.id) ||
+        sig === lastPushedViewerPoseKeyRef.current.get(node.id)
+      ) continue;
+      lastPushedViewerPoseKeyRef.current.set(node.id, sig);
+      const now = Date.now();
+      appliedRemotePoseAtRef.current.set(node.id, now);
+      void pushRemoteDisplayPose(remote.household.provider, remote.household.desktop, {
+        position: roundPoseTuple(node.localTransform.position),
+        rotation: roundPoseTuple(node.localTransform.rotation),
+        scale: roundPoseTuple(node.localTransform.scale),
+        updatedAt: now,
+      });
+    }
+  }, [graph, remoteOutputs]);
+  // Two-way pose sync (Sharer <- Viewer): poll viewer-pushed poses on our local displayShare and
+  // move our shared display to match in VRChat world space.
+  const appliedSharerRemoteAtRef = React.useRef(new Map<string, number>());
+  const hasSharedLocalDisplay = Object.values(graph.nodes).some((n) => n.kind === "display" && n.shared);
+  React.useEffect(() => {
+    if (!hasSharedLocalDisplay) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pollRemotePoses = async () => {
+      try {
+        if (isVRCOriginKnown()) {
+          const entries = await getSharedRemotePoses();
+          if (!cancelled && entries.length > 0) {
+            const allLocalOutputs = [
+              ...localWorkspaceOutputs,
+              ...remoteOutputs.filter((o) => o.local === true),
+            ];
+            const updates: Array<{ id: string; transform: SpatialTransform; updatedAt: number }> = [];
+            for (const node of Object.values(graphRef.current.nodes)) {
+              if (node.kind !== "display" || !node.shared || node.parentId !== null) continue;
+              const output = allLocalOutputs.find((o) => o.id === node.workspaceOutputId);
+              if (!output) continue;
+              const match = entries.find((e) =>
+                output.kind === "window" && output.windowId
+                  ? e.kind === "window" && e.windowId === output.windowId
+                  : e.kind !== "window" && e.name === output.name
+              );
+              if (!match) continue;
+              const lastAt = appliedSharerRemoteAtRef.current.get(node.id) ?? 0;
+              if (match.worldPose.updatedAt <= lastAt) continue;
+              updates.push({
+                id: node.id,
+                transform: {
+                  position: [...match.worldPose.position],
+                  rotation: [...match.worldPose.rotation],
+                  scale: [...match.worldPose.scale],
+                },
+                updatedAt: match.worldPose.updatedAt,
+              });
+            }
+            if (updates.length > 0) {
+              for (const u of updates) appliedSharerRemoteAtRef.current.set(u.id, u.updatedAt);
+              setGraph((current) => {
+                let next = current;
+                for (const u of updates) {
+                  const node = next.nodes[u.id];
+                  if (!node || node.parentId !== null) continue;
+                  next = node.originId === VRC_WORLD_ORIGIN_ID
+                    ? commitNodeTransform(next, u.id, u.transform)
+                    : setSpatialRootOrigin(next, u.id, VRC_WORLD_ORIGIN_ID, u.transform);
+                }
+                return next;
+              });
+            }
+          }
+        }
+      } catch { /* ignore transient poll failure */ }
+      if (!cancelled) timer = setTimeout(() => void pollRemotePoses(), 1000);
+    };
+    void pollRemotePoses();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasSharedLocalDisplay, localWorkspaceOutputs, remoteOutputs]);
   const workspaceOutputs = React.useMemo(() => [...localWorkspaceOutputs, ...remoteOutputs], [
     localWorkspaceOutputs,
     remoteOutputs,

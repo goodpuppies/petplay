@@ -693,7 +693,9 @@ class OscQueryMdnsAdvertiser {
     const run = async () => {
       while (!this.stopped) {
         await new Promise((resolve) => setTimeout(resolve, OscQueryMdnsAdvertiser.REBROADCAST_MS));
-        if (!this.stopped) await this.broadcast();
+        if (!this.stopped) {
+          await this.broadcast().catch(() => {});
+        }
       }
     };
     run();
@@ -705,7 +707,7 @@ class OscQueryMdnsAdvertiser {
       .map((networkInterface) => networkInterface.address)
       .filter((address) => address !== "127.0.0.1" && !address.startsWith("169.254."));
 
-    await Promise.all(addresses.map((address) => this.broadcastOnInterface(address)));
+    await Promise.allSettled(addresses.map((address) => this.broadcastOnInterface(address)));
   }
 
   private async broadcastOnInterface(address: string): Promise<void> {

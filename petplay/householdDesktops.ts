@@ -692,6 +692,27 @@ new PostMan(
       if (desktop.holders.size === 0) desktop.releaseAt = Date.now() + RELEASE_GRACE_MS;
       return true;
     },
+    /** Push a viewer's updated VRChat world pose back to the sharer (two-way pose sync). */
+    SETPOSE: async (payload: { desktop: string; worldPose: SharedDisplayWorldPose }) => {
+      const desktop = desktops.get(payload?.desktop);
+      if (!desktop || !payload?.worldPose) return false;
+      desktop.worldPose = payload.worldPose;
+      try {
+        return await request<boolean>(
+          desktop.source,
+          "SETPOSE",
+          {
+            kind: desktop.kind,
+            ...(desktop.windowId ? { windowId: desktop.windowId } : {}),
+            ...(desktop.monitor != null ? { monitor: desktop.monitor } : {}),
+            worldPose: payload.worldPose,
+          },
+          3_000,
+        );
+      } catch {
+        return false;
+      }
+    },
     /**
      * The input target for a shown desktop: its desktopInput, the proof it takes, and for a
      * monitor the region of the virtual desktop its positions map into.

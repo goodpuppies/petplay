@@ -102,3 +102,29 @@ export async function setSharedScreens(
   await request(share.actorId, "SETSHARED", { screens });
   return true;
 }
+
+export type SharedRemotePoseEntry = {
+  kind: "monitor" | "window";
+  windowId?: string;
+  name: string;
+  worldPose: SharedDisplayWorldPose;
+};
+
+/** Latest viewer-pushed world poses recorded on this machine's displayShare. */
+export async function getSharedRemotePoses(): Promise<SharedRemotePoseEntry[]> {
+  const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
+  const share = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith("displayShare@"));
+  if (!share) return [];
+  const res = await request<SharedRemotePoseEntry[]>(share.actorId, "GETREMOTEPOSES").catch(() => []);
+  return Array.isArray(res) ? res : [];
+}
+
+/** Push a viewer's updated VRChat world pose back to the sharer via householdDesktops. */
+export async function pushRemoteDisplayPose(
+  provider: string,
+  desktop: string,
+  worldPose: SharedDisplayWorldPose,
+): Promise<boolean> {
+  return await request<boolean>(provider as ActorId, "SETPOSE", { desktop, worldPose })
+    .catch(() => false);
+}

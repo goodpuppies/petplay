@@ -71,6 +71,21 @@ const guard = new HouseholdGuard();
 const peerTokens = new Map<string, string>();
 let peerRejected = 0;
 
+/** Latest pose pushed by a remote viewer (`window:<id>` or `monitor:<name>`). */
+const remotePoses = new Map<
+  string,
+  { kind: "monitor" | "window"; windowId?: string; name: string; worldPose: SharedDisplayWorldPose }
+>();
+
+function sharedKey(s: Pick<SharedScreen, "kind" | "windowId" | "name">): string {
+  return s.kind === "window" && s.windowId ? `window:${s.windowId}` : `monitor:${s.name}`;
+}
+
+function validTuple3(v: unknown): v is [number, number, number] {
+  return Array.isArray(v) && v.length === 3 &&
+    v.every((n) => typeof n === "number" && Number.isFinite(n));
+}
+
 function sameToken(a: unknown, b: string): boolean {
   if (typeof a !== "string" || a.length !== b.length) return false;
   let diff = 0;
@@ -306,6 +321,47 @@ const guardedHandlers: Record<string, (payload: unknown) => unknown> = {
     PostMan.PostMessage({ target: state.input as ActorId, type: "INPUT", payload: event });
     return true;
   },
+  SETPOSE: (payload) => {
+    const req = payload as {
+      kind?: "monitor" | "window";
+      windowId?: string;
+      name?: string;
+      monitor?: number;
+      worldPose?: SharedDisplayWorldPose;
+    } | null;
+    const pose = req?.worldPose;
+    if (
+      !pose || !validTuple3(pose.position) || !validTuple3(pose.rotation) ||
+      !validTuple3(pose.scale)
+    ) {
+      return false;
+    }
+    const target = req?.kind === "window" && typeof req.windowId === "string"
+      ? sharedAsWindow(req.windowId)
+      : typeof req?.name === "string"
+      ? sharedAs(req.name)
+      : typeof req?.monitor === "number" && screens
+      ? (() => {
+        const sc = screens.find((s) => s.index === req.monitor);
+        return sc ? sharedAs(sc.name) : null;
+      })()
+      : sharedMonitors()[0] ?? null;
+    if (!target) return false;
+    const nextPose: SharedDisplayWorldPose = {
+      position: [...pose.position],
+      rotation: [...pose.rotation],
+      scale: [...pose.scale],
+      updatedAt: Date.now(),
+    };
+    target.worldPose = nextPose;
+    remotePoses.set(sharedKey(target), {
+      kind: target.kind === "window" ? "window" : "monitor",
+      ...(target.windowId ? { windowId: target.windowId } : {}),
+      name: target.name,
+      worldPose: nextPose,
+    });
+    return true;
+  },
 };
 
 const householdGuarded = guardedDispatch(guard, guardedHandlers);
@@ -396,6 +452,8 @@ new PostMan(
       }
       return true;
     },
+    /** Latest viewer-pushed world poses, for two-way shared display sync. */
+    GETREMOTEPOSES: () => [...remotePoses.values()],
     /** Share every screen, with input (`--share-all-displays`). */
     SHAREALL: () => {
       state.all = true;
