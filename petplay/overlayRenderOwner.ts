@@ -596,23 +596,37 @@ async function run(options: Start) {
     // 2 ms of N+1), run it immediately instead of skipping N+1 and sleeping a full 13.3 ms.
     let lastLockedVsync: bigint | null = null;
     const VSYNC_LOCKED_PHASE_MS = 1.5;
+    const isValidSyncPhase = (phase: { msSinceVsync: number } | null | undefined): boolean =>
+      phase != null && phase.msSinceVsync >= 0 && phase.msSinceVsync <= displayPeriodMs * 2;
+    let nextFallbackFrameAt = 0;
     const waitVsyncLocked = async () => {
       for (;;) {
         const phase = fastPacer.sampleVsyncPhase();
-        if (!phase || phase.msSinceVsync < 0 || phase.msSinceVsync > displayPeriodMs * 2) {
-          await wait(displayPeriodMs);
+        if (!isValidSyncPhase(phase)) {
+          // Steam Link and null drivers can report negative or out-of-range msSinceVsync.
+          // Pace on IVROverlay::WaitFrameSync when available, else keep a monotonic period
+          // deadline instead of sleeping a full displayPeriodMs on top of render work.
+          const waitErr = overlayInterface.WaitFrameSync(100);
+          if (waitErr === OpenVR.OverlayError.VROverlayError_None) {
+            nextFallbackFrameAt = performance.now() + displayPeriodMs;
+            return;
+          }
+          const now = performance.now();
+          const sleepMs = nextFallbackFrameAt > now ? Math.min(displayPeriodMs, nextFallbackFrameAt - now) : 0;
+          if (sleepMs > 0.5) await wait(sleepMs);
+          nextFallbackFrameAt = Math.max(now, nextFallbackFrameAt) + displayPeriodMs;
           return;
         }
-        if (lastLockedVsync === null || phase.frameIndex > lastLockedVsync) {
-          const untilPhase = VSYNC_LOCKED_PHASE_MS - phase.msSinceVsync;
+        if (lastLockedVsync === null || phase!.frameIndex > lastLockedVsync) {
+          const untilPhase = VSYNC_LOCKED_PHASE_MS - phase!.msSinceVsync;
           if (untilPhase > 0.5) {
             await wait(untilPhase);
             continue;
           }
-          lastLockedVsync = phase.frameIndex;
+          lastLockedVsync = phase!.frameIndex;
           return;
         }
-        const untilNext = displayPeriodMs - phase.msSinceVsync + VSYNC_LOCKED_PHASE_MS;
+        const untilNext = displayPeriodMs - phase!.msSinceVsync + VSYNC_LOCKED_PHASE_MS;
         await wait(Math.max(1, Math.min(displayPeriodMs, untilNext)));
       }
     };
@@ -1136,8 +1150,8 @@ async function run(options: Start) {
               if (unlockErr !== 0) {
                 throw new Error(`Failed to unlock shared panorama bank ${ready.bank}: ${unlockErr}`);
               }
-              if (syncPhase && state.panoramaPresentMinMs > 0) {
-                const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
+              if (isValidSyncPhase(syncPhase) && state.panoramaPresentMinMs > 0) {
+                const effectivePhaseMs = (syncPhase!.msSinceVsync % displayPeriodMs) +
                   (performance.now() - sampleMs);
                 const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
                 if (remainingMs > 0) {
@@ -1175,8 +1189,8 @@ async function run(options: Start) {
               if (unlockErr !== 0) {
                 throw new Error(`Failed to unlock shared panorama bank ${nextBank}: ${unlockErr}`);
               }
-              if (syncPhase && state.panoramaPresentMinMs > 0) {
-                const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
+              if (isValidSyncPhase(syncPhase) && state.panoramaPresentMinMs > 0) {
+                const effectivePhaseMs = (syncPhase!.msSinceVsync % displayPeriodMs) +
                   (performance.now() - sampleMs);
                 const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
                 if (remainingMs > 0) {
@@ -1297,8 +1311,8 @@ async function run(options: Start) {
             if (unlockErr !== 0) {
               throw new Error(`Failed to unlock shared projection bank ${ready.bank}: ${unlockErr}`);
             }
-            if (syncPhase && state.panoramaPresentMinMs > 0) {
-              const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
+            if (isValidSyncPhase(syncPhase) && state.panoramaPresentMinMs > 0) {
+              const effectivePhaseMs = (syncPhase!.msSinceVsync % displayPeriodMs) +
                 (performance.now() - sampleMs);
               const remainingMs = state.panoramaPresentMinMs - effectivePhaseMs;
               if (remainingMs > 0) {
