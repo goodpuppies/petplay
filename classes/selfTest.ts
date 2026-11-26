@@ -81,7 +81,7 @@ export async function runSelfTest(args: readonly string[]): Promise<number> {
       `--agent-repl-port=${port}`,
       "--no-update-check",
       "--no-log-file",
-      ...(novr ? ["--novr"] : ["--openvr-reattach"]),
+      ...(novr ? ["--novr"] : ["--openvr-reattach", "--dev-start-desktop-overlay"]),
     ]
     : [
       "run",
@@ -94,7 +94,7 @@ export async function runSelfTest(args: readonly string[]): Promise<number> {
       `--agent-repl-port=${port}`,
       "--no-update-check",
       "--no-log-file",
-      ...(novr ? ["--novr"] : ["--openvr-reattach"]),
+      ...(novr ? ["--novr"] : ["--openvr-reattach", "--dev-start-desktop-overlay"]),
     ];
 
   const logLines: string[] = [];
