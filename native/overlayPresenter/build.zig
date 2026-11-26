@@ -14,6 +14,8 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("../../submodules/petplay_ovrdriver/vendor/vulkan"));
     if (target.result.os.tag == .linux) {
         mod.linkSystemLibrary("GL", .{});
+    } else if (target.result.os.tag == .windows) {
+        mod.linkSystemLibrary("opengl32", .{});
     }
 
     const lib = b.addLibrary(.{

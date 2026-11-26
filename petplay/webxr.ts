@@ -666,7 +666,7 @@ new PostMan(
           ? false
           : Deno.args.some((arg) =>
               arg === "--webxr-decoupled-renderer" || arg === "--webxr-decoupled-renderer=1"
-            ) || Deno.build.os === "linux"
+            ) || Deno.build.os === "linux" || Deno.build.os === "windows"
       );
       state.desktopViewControlAllowed = payload?.desktopViewControlEnabled ??
         false;

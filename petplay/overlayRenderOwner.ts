@@ -49,7 +49,7 @@ export type DmabufBankCount = 0 | 2 | 3;
 type PanoramaPacing = "vsync" | "vsync-locked" | "frame-sync" | "presenter";
 
 function defaultDmabufBanks(): DmabufBankCount {
-  if (Deno.build.os !== "linux") return 0;
+  if (Deno.build.os !== "linux" && Deno.build.os !== "windows") return 0;
   const raw = Deno.env.get("PETPLAY_DMABUF_BANKS");
   if (raw === "0") return 0;
   if (raw === "2") return 2;
@@ -174,11 +174,18 @@ function mark(kind: string, ...fields: unknown[]) {
 }
 /** Render thread's cumulative [on-CPU ns, runqueue-wait ns, timeslices] from schedstat. */
 function schedstat(): number[] {
+  if (Deno.build.os !== "linux") return [];
   return Deno.readTextFileSync("/proc/thread-self/schedstat").trim().split(" ").map(Number);
 }
 // Open only for the native-controller diagnostic; shared with Vulkan capture's
 // CLOCK_MONOTONIC domain. Ordinary rendering keeps no extra FFI clock calls.
 function createProbeClock() {
+  if (Deno.build.os !== "linux") {
+    return {
+      close: () => {},
+      now: () => performance.now() / 1000,
+    };
+  }
   const library = Deno.dlopen(
     "libc.so.6",
     {
@@ -520,10 +527,12 @@ async function run(options: Start) {
   const clearPendingBanks = () => {
     if (pendingPanorama) {
       presenter?.deleteGpuFence(pendingPanorama.fence);
+      bankPool?.unlockBank(pendingPanorama.bank);
       pendingPanorama = null;
     }
     if (pendingProjection) {
       presenter?.deleteGpuFence(pendingProjection.fence);
+      bankPool?.unlockBank(pendingProjection.bank);
       pendingProjection = null;
     }
   };
@@ -708,12 +717,18 @@ async function run(options: Start) {
           presenter?.resetVisibility();
           let bankReady = false;
           if (desiredDmabufBanks === 2 || desiredDmabufBanks === 3) {
+            const isWin = Deno.build.os === "windows";
+            const bankLabel = isWin ? "DXGI" : "DMA-BUF";
             const native = tryNativePresenter();
-            const ipcPtr = native?.hasDmabufBanks ? acquireIpcResourceManager() : null;
+            const bankContextPtr = !native?.hasDmabufBanks
+              ? null
+              : isWin
+              ? pointers.system
+              : acquireIpcResourceManager();
             const outSize = renderer.getPreferredOutputSize();
-            const pool = native && ipcPtr
+            const pool = native && (isWin || bankContextPtr)
               ? native.createDmabufBankPool(
-                ipcPtr,
+                bankContextPtr,
                 outSize.width,
                 outSize.height,
                 desiredDmabufBanks,
@@ -735,7 +750,7 @@ async function run(options: Start) {
                     // Above desktop quad overlays (0), below SteamVR dashboard.
                     sortOrder: dashboardVisible ? 0 : 1,
                     attachToHmd: true,
-                    // OpenGL FBO is bottom-up while Vulkan/DMA-BUF samples top-down.
+                    // OpenGL FBO is bottom-up while Vulkan/DMA-BUF and D3D11/DXGI sample top-down.
                     flipVertical: true,
                     skipInitialTextureAndShow: true,
                   });
@@ -751,11 +766,11 @@ async function run(options: Start) {
                 bankPool = pool;
                 renderer.setExternalOutputBanks(pool.slots, outSize.width, outSize.height);
                 state.transport =
-                  `DMA-BUF ${desiredDmabufBanks}-bank panorama flip (${outSize.width}x${outSize.height})`;
+                  `${bankLabel} ${desiredDmabufBanks}-bank panorama flip (${outSize.width}x${outSize.height})`;
                 bankReady = true;
               } catch (err) {
                 console.warn(
-                  "[overlay_renderer] DMA-BUF panorama bank setup failed, falling back to GL:",
+                  `[overlay_renderer] ${bankLabel} panorama bank setup failed, falling back to GL:`,
                   err,
                 );
                 for (const bank of panoramaBankOverlays) bank.cleanup();
@@ -767,12 +782,12 @@ async function run(options: Start) {
               const reason = !native
                 ? (presenterLoadError || "native presenter unavailable")
                 : !native.hasDmabufBanks
-                ? "native library lacks DMA-BUF bank symbols"
-                : !ipcPtr
+                ? "native library lacks shared bank symbols"
+                : !isWin && !bankContextPtr
                 ? "IVRIPCResourceManagerClient_003 unavailable"
                 : (native.getDmabufBankLastError() || "pool creation failed");
               console.warn(
-                `[overlay_renderer] DMA-BUF panorama banks unavailable (${reason}); using GL`,
+                `[overlay_renderer] ${bankLabel} panorama banks unavailable (${reason}); using GL`,
               );
               state.transport = `OpenGL panorama fallback (${reason})`;
             }
@@ -787,11 +802,23 @@ async function run(options: Start) {
           presenter?.resetVisibility();
           let bankReady = false;
           if (desiredDmabufBanks === 2 || desiredDmabufBanks === 3) {
+            const isWin = Deno.build.os === "windows";
+            const bankLabel = isWin ? "DXGI" : "DMA-BUF";
             const native = tryNativePresenter();
-            const ipcPtr = native?.hasDmabufBanks ? acquireIpcResourceManager() : null;
+            const bankContextPtr = !native?.hasDmabufBanks
+              ? null
+              : isWin
+              ? pointers.system
+              : acquireIpcResourceManager();
             const eyeSize = renderer.getPreferredEyeSize();
-            const pool = native && ipcPtr
-              ? native.createDmabufBankPool(ipcPtr, eyeSize, eyeSize, desiredDmabufBanks, 2)
+            const pool = native && (isWin || bankContextPtr)
+              ? native.createDmabufBankPool(
+                bankContextPtr,
+                eyeSize,
+                eyeSize,
+                desiredDmabufBanks,
+                2,
+              )
               : null;
             if (pool && native) {
               try {
@@ -823,10 +850,13 @@ async function run(options: Start) {
                 bankPool = pool;
                 renderer.setExternalEyeBanks(extBanks, eyeSize, eyeSize);
                 state.transport =
-                  `DMA-BUF ${desiredDmabufBanks}-bank visibility flip (${eyeSize}x${eyeSize})`;
+                  `${bankLabel} ${desiredDmabufBanks}-bank visibility flip (${eyeSize}x${eyeSize})`;
                 bankReady = true;
               } catch (err) {
-                console.warn("[overlay_renderer] DMA-BUF bank setup failed, falling back to GL:", err);
+                console.warn(
+                  `[overlay_renderer] ${bankLabel} bank setup failed, falling back to GL:`,
+                  err,
+                );
                 for (const bank of bankOverlays) bank.cleanup();
                 bankOverlays = [];
                 pool.destroy();
@@ -836,11 +866,11 @@ async function run(options: Start) {
               const reason = !native
                 ? (presenterLoadError || "native presenter unavailable")
                 : !native.hasDmabufBanks
-                ? "native library lacks DMA-BUF bank symbols"
-                : !ipcPtr
+                ? "native library lacks shared bank symbols"
+                : !isWin && !bankContextPtr
                 ? "IVRIPCResourceManagerClient_003 unavailable"
                 : (native.getDmabufBankLastError() || "pool creation failed");
-              console.warn(`[overlay_renderer] DMA-BUF banks unavailable (${reason}); using GL`);
+              console.warn(`[overlay_renderer] ${bankLabel} banks unavailable (${reason}); using GL`);
               state.transport = `OpenGL fallback (${reason})`;
             }
           } else {
@@ -998,7 +1028,7 @@ async function run(options: Start) {
       const nextBank: number = bankCount >= 2 ? (lastRenderedBank + 1) % bankCount : -1;
       if (useDmabufProjection) {
         if (!renderer.selectExternalEyeBank(nextBank)) {
-          throw new Error(`Invalid DMA-BUF bank index ${nextBank}`);
+          throw new Error(`Invalid shared eye bank index ${nextBank}`);
         }
       } else {
         if (!renderer.useEyeTargetsOtherThan([shownLeft])) {
@@ -1007,13 +1037,19 @@ async function run(options: Start) {
       }
       if (useDmabufPanorama) {
         if (!renderer.selectExternalOutputBank(nextBank)) {
-          throw new Error(`Invalid DMA-BUF panorama bank index ${nextBank}`);
+          throw new Error(`Invalid shared panorama bank index ${nextBank}`);
         }
       } else if (
         panoramaMode && state.panoramaTextureRotation &&
         !renderer.useOutputTargetOtherThan([shownPanorama])
       ) {
         throw new Error("No eligible panorama output targets");
+      }
+      if ((useDmabufProjection || useDmabufPanorama) && bankPool && nextBank >= 0) {
+        const lockErr = bankPool.lockBank(nextBank);
+        if (lockErr !== 0) {
+          throw new Error(`Failed to lock shared bank ${nextBank}: ${lockErr}`);
+        }
       }
       const wristMarker = wrist?.marker(payload, { ...cameras, ...headsetProjections });
       const restoreWristTag = wrist?.append(payload, head);
@@ -1091,7 +1127,12 @@ async function run(options: Start) {
             } else {
               const fin = native.waitGpuFence(ready.fence);
               if (fin.error) {
-                throw new Error(`Panorama DMA-BUF async fence wait failed: ${JSON.stringify(fin)}`);
+                bankPool?.unlockBank(ready.bank);
+                throw new Error(`Panorama shared-bank async fence wait failed: ${JSON.stringify(fin)}`);
+              }
+              const unlockErr = bankPool?.unlockBank(ready.bank) ?? 0;
+              if (unlockErr !== 0) {
+                throw new Error(`Failed to unlock shared panorama bank ${ready.bank}: ${unlockErr}`);
               }
               if (syncPhase && state.panoramaPresentMinMs > 0) {
                 const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
@@ -1125,7 +1166,12 @@ async function run(options: Start) {
               // flip immediately instead of adding hold time on top of GPU latency.
               const fin = native.finishGpuFence();
               if (fin.error) {
-                throw new Error(`Panorama DMA-BUF fence wait failed: ${JSON.stringify(fin)}`);
+                bankPool?.unlockBank(nextBank);
+                throw new Error(`Panorama shared-bank fence wait failed: ${JSON.stringify(fin)}`);
+              }
+              const unlockErr = bankPool?.unlockBank(nextBank) ?? 0;
+              if (unlockErr !== 0) {
+                throw new Error(`Failed to unlock shared panorama bank ${nextBank}: ${unlockErr}`);
               }
               if (syncPhase && state.panoramaPresentMinMs > 0) {
                 const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
@@ -1146,6 +1192,9 @@ async function run(options: Start) {
                 activeBank !== nextBank ? hideHandle : null,
                 presenterPaced,
                 onTime,
+                () => {
+                  bankPool?.unlockBank(nextBank);
+                },
               );
             }
             state.lastPresent = { mode: "panorama-dmabuf-bank", bank: nextBank, ...result };
@@ -1239,7 +1288,12 @@ async function run(options: Start) {
           } else {
             const fin = native.waitGpuFence(ready.fence);
             if (fin.error) {
-              throw new Error(`Projection DMA-BUF async fence wait failed: ${JSON.stringify(fin)}`);
+              bankPool?.unlockBank(ready.bank);
+              throw new Error(`Projection shared-bank async fence wait failed: ${JSON.stringify(fin)}`);
+            }
+            const unlockErr = bankPool?.unlockBank(ready.bank) ?? 0;
+            if (unlockErr !== 0) {
+              throw new Error(`Failed to unlock shared projection bank ${ready.bank}: ${unlockErr}`);
             }
             if (syncPhase && state.panoramaPresentMinMs > 0) {
               const effectivePhaseMs = (syncPhase.msSinceVsync % displayPeriodMs) +
@@ -1291,7 +1345,15 @@ async function run(options: Start) {
           const hideHandles = activeBank >= 0 && activeBank !== nextBank
             ? bankOverlays[activeBank].getHandles()
             : null;
-          const result = native.presentProjectionBank(showHandles, hideHandles, cameras, onTime);
+          const result = native.presentProjectionBank(
+            showHandles,
+            hideHandles,
+            cameras,
+            onTime,
+            () => {
+              bankPool?.unlockBank(nextBank);
+            },
+          );
           state.lastPresent = { mode: "projection-dmabuf-bank", bank: nextBank, ...result };
           const dropped = "dropped" in result && result.dropped;
           if (dropped) state.droppedLateFrames++;

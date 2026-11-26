@@ -1,7 +1,54 @@
 import { IVROverlay_Version } from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
-import { fromFileUrl } from "@std/path";
+import { fromFileUrl, join } from "@std/path";
 import { writeEyeFromTracking, writeProjectionTangents } from "./openVrProjectionOverlays.ts";
 import { playspaceFrame } from "./playspaceFrame.ts";
+import { tempDir } from "./appPaths.ts";
+
+let extractedPresenterLibPath: string | null = null;
+
+/**
+ * Resolves the native Zig overlay presenter library path.
+ * In a compiled standalone build (`Deno.build.standalone`), extracts the embedded library from the
+ * virtual snapshot into `tempDir()` so `Deno.dlopen` / `LoadLibrary` can map it from disk.
+ */
+export function resolveOverlayPresenterLibraryPath(): string {
+  const override = Deno.env.get("PETPLAY_OVERLAY_PRESENTER_LIBRARY");
+  if (override) return override;
+  const libName = Deno.build.os === "windows"
+    ? "petplay_overlay_presenter.dll"
+    : "libpetplay_overlay_presenter.so";
+  const url = new URL(`../resources/${libName}`, import.meta.url);
+  if (!Deno.build.standalone) return fromFileUrl(url);
+  if (extractedPresenterLibPath) {
+    try {
+      if (Deno.statSync(extractedPresenterLibPath).isFile) return extractedPresenterLibPath;
+    } catch {
+      extractedPresenterLibPath = null;
+    }
+  }
+  const bytes = Deno.readFileSync(url);
+  const dir = tempDir();
+  Deno.mkdirSync(dir, { recursive: true });
+  const target = join(dir, libName);
+  let sameSize = false;
+  try {
+    sameSize = Deno.statSync(target).size === bytes.byteLength;
+  } catch {
+    sameSize = false;
+  }
+  if (!sameSize) {
+    const staged = `${target}.${Deno.pid}.new`;
+    Deno.writeFileSync(staged, bytes);
+    if (Deno.build.os !== "windows") Deno.chmodSync(staged, 0o755);
+    try {
+      Deno.renameSync(staged, target);
+    } catch {
+      // Another worker may already have mapped the DLL on Windows; load our staged copy instead.
+      return (extractedPresenterLibPath = staged);
+    }
+  }
+  return (extractedPresenterLibPath = target);
+}
 export type RenderCameras = {
   leftEyeViewMatrix: Float32Array;
   rightEyeViewMatrix: Float32Array;
@@ -60,6 +107,8 @@ const symbols = {
     result: "i32",
     optional: true,
   },
+  pp_bank_lock: { parameters: ["pointer", "u32"], result: "i32", optional: true },
+  pp_bank_unlock: { parameters: ["pointer", "u32"], result: "i32", optional: true },
   pp_overlay_fence_finish: { parameters: ["buffer"], result: "i32", optional: true },
   pp_overlay_fence_create: { parameters: [], result: "pointer", optional: true },
   pp_overlay_fence_wait: { parameters: ["pointer", "buffer"], result: "i32", optional: true },
@@ -89,6 +138,8 @@ export type DmabufBankPool = {
   readonly bankCount: 2 | 3;
   readonly eyeCount: 1 | 2;
   readonly slots: readonly DmabufBankSlot[];
+  lockBank(bankIndex: number): number;
+  unlockBank(bankIndex: number): number;
   destroy(): void;
 };
 const WAIT_TIMEOUT_MS = 100;
@@ -106,8 +157,7 @@ export class OverlayPresenterNative {
     if (IVROverlay_Version !== "FnTable:IVROverlay_027") {
       throw new Error("Native presenter requires FnTable:IVROverlay_027");
     }
-    const path = Deno.env.get("PETPLAY_OVERLAY_PRESENTER_LIBRARY") ??
-      fromFileUrl(new URL("../resources/libpetplay_overlay_presenter.so", import.meta.url));
+    const path = resolveOverlayPresenterLibraryPath();
     this.library = Deno.dlopen(path, symbols);
     if (this.library.symbols.pp_overlay_abi() !== 27) {
       this.library.close();
@@ -197,20 +247,21 @@ export class OverlayPresenterNative {
     return ptr ? new Deno.UnsafePointerView(ptr).getCString() : "";
   }
   createDmabufBankPool(
-    ipcClientPtr: Deno.PointerValue,
+    contextPtr: Deno.PointerValue,
     width: number,
     height: number,
     bankCount: 2 | 3,
     eyeCount: 1 | 2,
   ): DmabufBankPool | null {
-    if (!this.hasDmabufBanks || !ipcClientPtr) return null;
+    if (!this.hasDmabufBanks) return null;
+    if (Deno.build.os !== "windows" && !contextPtr) return null;
     const total = bankCount * eyeCount;
     const fbos = new Uint32Array(total);
     const colorTextures = new Uint32Array(total);
     const depthRbos = new Uint32Array(total);
     const sharedHandles = new BigUint64Array(total);
     const ptr = this.library.symbols.pp_dmabuf_bank_create!(
-      ipcClientPtr,
+      contextPtr,
       width,
       height,
       bankCount,
@@ -232,12 +283,16 @@ export class OverlayPresenterNative {
     }
     let destroyed = false;
     const destroyFn = this.library.symbols.pp_dmabuf_bank_destroy!;
+    const lockFn = this.library.symbols.pp_bank_lock;
+    const unlockFn = this.library.symbols.pp_bank_unlock;
     return {
       width,
       height,
       bankCount,
       eyeCount,
       slots,
+      lockBank: (bankIndex: number) => (destroyed || !lockFn ? 0 : lockFn(ptr, bankIndex)),
+      unlockBank: (bankIndex: number) => (destroyed || !unlockFn ? 0 : unlockFn(ptr, bankIndex)),
       destroy: () => {
         if (destroyed) return;
         destroyed = true;
@@ -266,6 +321,7 @@ export class OverlayPresenterNative {
     hideHandles: readonly [bigint, bigint] | null,
     cameras: RenderCameras,
     beforePublish?: () => boolean,
+    afterFence?: () => void,
   ) {
     const s = this.library.symbols;
     writeEyeFromTracking(cameras.leftEyeViewMatrix, this.views.subarray(0, 12));
@@ -279,6 +335,7 @@ export class OverlayPresenterNative {
     writeProjectionTangents(cameras.rightEyeProjectionMatrix, true, this.frusta.subarray(4));
 
     let error = s.pp_overlay_fence_finish!(this.stats);
+    if (!error) afterFence?.();
     if (!error) {
       error = s.pp_overlay_set_projection!(
         this.table,
@@ -409,9 +466,11 @@ export class OverlayPresenterNative {
     hideHandle: bigint | null,
     waitForSync: boolean,
     beforePublish?: () => boolean,
+    afterFence?: () => void,
   ) {
     const s = this.library.symbols;
     let error = s.pp_overlay_fence_finish!(this.stats);
+    if (!error) afterFence?.();
     if (!error && waitForSync) {
       const start = performance.now();
       const wait = s.pp_overlay_wait_blocking!(this.table, WAIT_TIMEOUT_MS);

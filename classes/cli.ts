@@ -27,6 +27,10 @@ export async function runCliCommand(args: readonly string[]): Promise<number | n
     return 0;
   }
   if (args.includes("--reset")) return await reset(args.includes("--yes"));
+  if (args.includes("--test")) {
+    const { runSelfTest } = await import("./selfTest.ts");
+    return await runSelfTest(args);
+  }
   if (args.includes("--install") || args.includes("--uninstall")) {
     const { installSelf, uninstallSelf } = await import("./install.ts");
     try {
@@ -46,6 +50,7 @@ const HELP = `PetPlay: desktop, keyboard and spatial UI overlay for SteamVR
 Run with no arguments to start PetPlay.
 
   --version     print the version and exit
+  --test        run built-in self-test (boot, WebXR, OpenVR, renderer, capture) and exit
   --logs        print where the logs are and exit
   --reset       reset settings, layouts and the screen-capture permission, and exit
                 (asks first; add --yes to skip the question)

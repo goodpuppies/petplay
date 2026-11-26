@@ -186,13 +186,13 @@ jobs:
         with:
           version: 0.13.0
       - uses: mlugg/setup-zig@v2
-        if: runner.os == 'Linux' && runner.arch == 'X64'
+        if: (runner.os == 'Linux' && runner.arch == 'X64') || runner.os == 'Windows'
         with:
           version: 0.16.0
       - run: deno task preconf
       - run: deno install --allow-import
-      - name: Build native overlay presenter (Linux x64)
-        if: runner.os == 'Linux' && runner.arch == 'X64'
+      - name: Build native overlay presenter
+        if: (runner.os == 'Linux' && runner.arch == 'X64') || runner.os == 'Windows'
         run: deno task overlay:presenter:build
       - name: Build test-only GLFW 3.4 (matching Frame's required API)
         if: runner.arch == 'ARM64' && steps.arm64-raylib.outputs.cache-hit != 'true'

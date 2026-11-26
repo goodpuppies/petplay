@@ -1,7 +1,8 @@
-// Single-FFI-call OpenGL batch submitter for Glyph (Slug) text rendering on Linux.
+// Single-FFI-call OpenGL batch submitter for Glyph (Slug) text rendering (Linux + Windows).
 // Eliminates ~20-30 per-root Deno UnsafeFnPointer FFI crossings per eye.
 const std = @import("std");
 const builtin = @import("builtin");
+const dxgi_banks = @import("dxgi_banks.zig");
 
 const GL_TRIANGLES: u32 = 0x0004;
 const GL_DEPTH_TEST: u32 = 0x0B71;
@@ -10,49 +11,58 @@ const GL_TEXTURE0: u32 = 0x84C0;
 const GL_ARRAY_BUFFER: u32 = 0x8892;
 const GL_STREAM_DRAW: u32 = 0x88E0;
 
+const GlCallConv: std.builtin.CallingConvention = if (builtin.os.tag == .windows) .winapi else .c;
+
 const GlProcs = struct {
-    glUseProgram: *const fn (u32) callconv(.c) void,
-    glUniform1f: *const fn (i32, f32) callconv(.c) void,
-    glUniform2f: *const fn (i32, f32, f32) callconv(.c) void,
-    glBindVertexArray: *const fn (u32) callconv(.c) void,
-    glDisable: *const fn (u32) callconv(.c) void,
-    glEnable: *const fn (u32) callconv(.c) void,
-    glDepthMask: *const fn (u8) callconv(.c) void,
-    glBindBuffer: *const fn (u32, u32) callconv(.c) void,
-    glBufferData: *const fn (u32, isize, ?*const anyopaque, u32) callconv(.c) void,
-    glActiveTexture: *const fn (u32) callconv(.c) void,
-    glBindTexture: *const fn (u32, u32) callconv(.c) void,
-    glDrawArraysInstancedBaseInstance: *const fn (u32, i32, i32, i32, u32) callconv(.c) void,
+    glUseProgram: *const fn (u32) callconv(GlCallConv) void,
+    glUniform1f: *const fn (i32, f32) callconv(GlCallConv) void,
+    glUniform2f: *const fn (i32, f32, f32) callconv(GlCallConv) void,
+    glBindVertexArray: *const fn (u32) callconv(GlCallConv) void,
+    glDisable: *const fn (u32) callconv(GlCallConv) void,
+    glEnable: *const fn (u32) callconv(GlCallConv) void,
+    glDepthMask: *const fn (u8) callconv(GlCallConv) void,
+    glBindBuffer: *const fn (u32, u32) callconv(GlCallConv) void,
+    glBufferData: *const fn (u32, isize, ?*const anyopaque, u32) callconv(GlCallConv) void,
+    glActiveTexture: *const fn (u32) callconv(GlCallConv) void,
+    glBindTexture: *const fn (u32, u32) callconv(GlCallConv) void,
+    glDrawArraysInstancedBaseInstance: *const fn (u32, i32, i32, i32, u32) callconv(GlCallConv) void,
 };
 
-extern fn glXGetProcAddressARB(procName: [*:0]const u8) ?*const anyopaque;
+const LinuxGlx = if (builtin.os.tag == .linux) struct {
+    extern fn glXGetProcAddressARB(procName: [*:0]const u8) ?*const anyopaque;
+} else struct {};
 
 var cached_procs: ?GlProcs = null;
 var tried_load: bool = false;
 
-fn getProc(comptime T: type, name: [*:0]const u8) ?T {
-    const p = glXGetProcAddressARB(name) orelse return null;
-    return @ptrCast(@alignCast(p));
+fn getProc(comptime T: type, comptime name: [:0]const u8) ?T {
+    if (builtin.os.tag == .linux) {
+        const p = LinuxGlx.glXGetProcAddressARB(name) orelse return null;
+        return @ptrCast(@alignCast(p));
+    } else if (builtin.os.tag == .windows) {
+        return dxgi_banks.loadWglProc(T, name);
+    }
+    return null;
 }
 
 fn ensureProcs() ?*const GlProcs {
-    if (builtin.os.tag != .linux) return null;
+    if (builtin.os.tag != .linux and builtin.os.tag != .windows) return null;
     if (cached_procs != null) return &cached_procs.?;
     if (tried_load) return null;
     tried_load = true;
     cached_procs = .{
-        .glUseProgram = getProc(*const fn (u32) callconv(.c) void, "glUseProgram") orelse return null,
-        .glUniform1f = getProc(*const fn (i32, f32) callconv(.c) void, "glUniform1f") orelse return null,
-        .glUniform2f = getProc(*const fn (i32, f32, f32) callconv(.c) void, "glUniform2f") orelse return null,
-        .glBindVertexArray = getProc(*const fn (u32) callconv(.c) void, "glBindVertexArray") orelse return null,
-        .glDisable = getProc(*const fn (u32) callconv(.c) void, "glDisable") orelse return null,
-        .glEnable = getProc(*const fn (u32) callconv(.c) void, "glEnable") orelse return null,
-        .glDepthMask = getProc(*const fn (u8) callconv(.c) void, "glDepthMask") orelse return null,
-        .glBindBuffer = getProc(*const fn (u32, u32) callconv(.c) void, "glBindBuffer") orelse return null,
-        .glBufferData = getProc(*const fn (u32, isize, ?*const anyopaque, u32) callconv(.c) void, "glBufferData") orelse return null,
-        .glActiveTexture = getProc(*const fn (u32) callconv(.c) void, "glActiveTexture") orelse return null,
-        .glBindTexture = getProc(*const fn (u32, u32) callconv(.c) void, "glBindTexture") orelse return null,
-        .glDrawArraysInstancedBaseInstance = getProc(*const fn (u32, i32, i32, i32, u32) callconv(.c) void, "glDrawArraysInstancedBaseInstance") orelse return null,
+        .glUseProgram = getProc(*const fn (u32) callconv(GlCallConv) void, "glUseProgram") orelse return null,
+        .glUniform1f = getProc(*const fn (i32, f32) callconv(GlCallConv) void, "glUniform1f") orelse return null,
+        .glUniform2f = getProc(*const fn (i32, f32, f32) callconv(GlCallConv) void, "glUniform2f") orelse return null,
+        .glBindVertexArray = getProc(*const fn (u32) callconv(GlCallConv) void, "glBindVertexArray") orelse return null,
+        .glDisable = getProc(*const fn (u32) callconv(GlCallConv) void, "glDisable") orelse return null,
+        .glEnable = getProc(*const fn (u32) callconv(GlCallConv) void, "glEnable") orelse return null,
+        .glDepthMask = getProc(*const fn (u8) callconv(GlCallConv) void, "glDepthMask") orelse return null,
+        .glBindBuffer = getProc(*const fn (u32, u32) callconv(GlCallConv) void, "glBindBuffer") orelse return null,
+        .glBufferData = getProc(*const fn (u32, isize, ?*const anyopaque, u32) callconv(GlCallConv) void, "glBufferData") orelse return null,
+        .glActiveTexture = getProc(*const fn (u32) callconv(GlCallConv) void, "glActiveTexture") orelse return null,
+        .glBindTexture = getProc(*const fn (u32, u32) callconv(GlCallConv) void, "glBindTexture") orelse return null,
+        .glDrawArraysInstancedBaseInstance = getProc(*const fn (u32, i32, i32, i32, u32) callconv(GlCallConv) void, "glDrawArraysInstancedBaseInstance") orelse return null,
     };
     return &cached_procs.?;
 }

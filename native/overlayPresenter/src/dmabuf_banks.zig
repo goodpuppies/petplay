@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const presenter = @import("presenter.zig");
+const dxgi_banks = @import("dxgi_banks.zig");
 const c = presenter.c;
 
 const vk = if (builtin.os.tag == .linux) @cImport({
@@ -81,6 +82,14 @@ pub export fn pp_dmabuf_bank_bind_overlay(
     const api = api_ptr orelse return -1;
     if (overlay_handle == 0 or shared_handle == 0) return -1;
     const set_tex = api.SetOverlayTexture orelse return -1;
+    if (builtin.os.tag == .windows) {
+        var texture = c.Texture_t{
+            .handle = @ptrFromInt(@as(usize, shared_handle)),
+            .eType = c.ETextureType_TextureType_DXGISharedHandle,
+            .eColorSpace = c.EColorSpace_ColorSpace_Auto,
+        };
+        return @intCast(set_tex(overlay_handle, &texture));
+    }
     var handle_copy: u64 = shared_handle;
     var texture = c.Texture_t{
         .handle = @ptrCast(&handle_copy),
@@ -88,6 +97,16 @@ pub export fn pp_dmabuf_bank_bind_overlay(
         .eColorSpace = c.EColorSpace_ColorSpace_Auto,
     };
     return @intCast(set_tex(overlay_handle, &texture));
+}
+
+pub export fn pp_bank_lock(pool_ptr: ?*anyopaque, bank_index: u32) i32 {
+    if (builtin.os.tag == .windows) return dxgi_banks.lockBank(pool_ptr, bank_index);
+    return 0;
+}
+
+pub export fn pp_bank_unlock(pool_ptr: ?*anyopaque, bank_index: u32) i32 {
+    if (builtin.os.tag == .windows) return dxgi_banks.unlockBank(pool_ptr, bank_index);
+    return 0;
 }
 
 pub export fn pp_overlay_set_projection(
@@ -156,6 +175,7 @@ pub export fn pp_overlay_flip_banks(
 }
 
 pub export fn pp_overlay_fence_create() ?*anyopaque {
+    if (builtin.os.tag == .windows) return dxgi_banks.fenceCreate();
     if (builtin.os.tag != .linux) return null;
     if (vk.glGetString(vk.GL_VERSION) == null) return null;
     const pFence = loadGlProc(vk.PFNGLFENCESYNCPROC, "glFenceSync");
@@ -171,6 +191,7 @@ pub export fn pp_overlay_fence_create() ?*anyopaque {
 
 pub export fn pp_overlay_fence_wait(sync_ptr: ?*anyopaque, stats_ptr: ?[*]f64) i32 {
     const stats = stats_ptr orelse return -1;
+    if (builtin.os.tag == .windows) return dxgi_banks.fenceWait(sync_ptr, stats);
     @memset(stats[0..6], 0.0);
     if (builtin.os.tag != .linux) return 0;
     if (vk.glGetString(vk.GL_VERSION) == null) {
@@ -195,6 +216,10 @@ pub export fn pp_overlay_fence_wait(sync_ptr: ?*anyopaque, stats_ptr: ?[*]f64) i
 }
 
 pub export fn pp_overlay_fence_delete(sync_ptr: ?*anyopaque) void {
+    if (builtin.os.tag == .windows) {
+        dxgi_banks.fenceDelete(sync_ptr);
+        return;
+    }
     if (builtin.os.tag != .linux or sync_ptr == null) return;
     if (vk.glGetString(vk.GL_VERSION) == null) return;
     const pDel = loadGlProc(vk.PFNGLDELETESYNCPROC, "glDeleteSync");
@@ -206,6 +231,7 @@ pub export fn pp_overlay_fence_delete(sync_ptr: ?*anyopaque) void {
 
 pub export fn pp_overlay_fence_finish(stats_ptr: ?[*]f64) i32 {
     const stats = stats_ptr orelse return -1;
+    if (builtin.os.tag == .windows) return dxgi_banks.fenceFinish(stats);
     @memset(stats[0..6], 0.0);
     if (builtin.os.tag != .linux) return 0;
 
@@ -445,23 +471,36 @@ pub export fn pp_dmabuf_bank_create(
     out_shared_handles_ptr: ?[*]u64,
 ) ?*anyopaque {
     g_last_error[0] = 0;
+    const out_fbos = out_fbos_ptr orelse return null;
+    const out_color_textures = out_color_textures_ptr orelse return null;
+    const out_depth_rbos = out_depth_rbos_ptr orelse return null;
+    const out_shared_handles = out_shared_handles_ptr orelse return null;
+    if (width == 0 or height == 0 or bank_count < 2 or bank_count > 4 or eye_count < 1 or eye_count > 2) {
+        setError("Invalid bank/eye/dimension parameters");
+        return null;
+    }
+    if (builtin.os.tag == .windows) {
+        return dxgi_banks.createPool(
+            ipc_client_ptr,
+            width,
+            height,
+            bank_count,
+            eye_count,
+            out_fbos,
+            out_color_textures,
+            out_depth_rbos,
+            out_shared_handles,
+            setError,
+        );
+    }
     if (builtin.os.tag != .linux) {
-        setError("DMA-BUF banks are supported on Linux only");
+        setError("Shared banks are supported on Linux and Windows only");
         return null;
     }
     const ipc_raw = ipc_client_ptr orelse {
         setError("Null IVRIPCResourceManagerClient pointer");
         return null;
     };
-    const out_fbos = out_fbos_ptr orelse return null;
-    const out_color_textures = out_color_textures_ptr orelse return null;
-    const out_depth_rbos = out_depth_rbos_ptr orelse return null;
-    const out_shared_handles = out_shared_handles_ptr orelse return null;
-
-    if (width == 0 or height == 0 or bank_count < 2 or bank_count > 4 or eye_count < 1 or eye_count > 2) {
-        setError("Invalid bank/eye/dimension parameters");
-        return null;
-    }
     if (vk.glGetString(vk.GL_VERSION) == null) {
         setError("No current OpenGL context");
         return null;
@@ -785,6 +824,11 @@ pub export fn pp_dmabuf_bank_create(
 }
 
 pub export fn pp_dmabuf_bank_destroy(pool_ptr: ?*anyopaque) void {
+    if (builtin.os.tag == .windows) {
+        dxgi_banks.destroyPool(pool_ptr);
+        return;
+    }
+    if (builtin.os.tag != .linux) return;
     const raw = pool_ptr orelse return;
     const pool: *DmabufBankPool = @ptrCast(@alignCast(raw));
     pool.destroy();

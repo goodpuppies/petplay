@@ -10,16 +10,33 @@ pub const c = @cImport({
     }
 });
 
+const WinGl = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.winapi) i32;
+    extern "kernel32" fn QueryPerformanceFrequency(lpFrequency: *i64) callconv(.winapi) i32;
+    extern "opengl32" fn glGetString(name: u32) callconv(.winapi) ?[*:0]const u8;
+    extern "opengl32" fn glFinish() callconv(.winapi) void;
+} else struct {};
+
 pub const dmabuf_banks = @import("dmabuf_banks.zig");
+pub const dxgi_banks = @import("dxgi_banks.zig");
 pub const glyph_gl = @import("glyph_gl.zig");
 
 comptime {
-    // Force export of all DMA-BUF bank and GL batch helper symbols in the shared library.
+    // Force export of all shared bank and GL batch helper symbols in the shared library.
     _ = dmabuf_banks;
+    _ = dxgi_banks;
     _ = glyph_gl;
 }
 
 pub fn nowMs() f64 {
+    if (builtin.os.tag == .windows) {
+        var freq: i64 = 0;
+        var count: i64 = 0;
+        _ = WinGl.QueryPerformanceFrequency(&freq);
+        _ = WinGl.QueryPerformanceCounter(&count);
+        if (freq <= 0) return 0.0;
+        return (@as(f64, @floatFromInt(count)) * 1000.0) / @as(f64, @floatFromInt(freq));
+    }
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
@@ -51,6 +68,15 @@ pub export fn pp_overlay_finish(stats_ptr: ?[*]f64) i32 {
         }
         const t = nowMs();
         c.glFinish();
+        stats[0] = nowMs() - t;
+        return 0;
+    } else if (builtin.os.tag == .windows) {
+        if (WinGl.glGetString(0x1F02) == null) {
+            stats[4] = -2.0;
+            return -2;
+        }
+        const t = nowMs();
+        WinGl.glFinish();
         stats[0] = nowMs() - t;
         return 0;
     }

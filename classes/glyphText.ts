@@ -57,12 +57,14 @@ type NativeGlyphDrawFn = (
 let nativeGlyphDrawTried = false;
 let nativeGlyphDrawCached: NativeGlyphDrawFn | null = null;
 
+import { resolveOverlayPresenterLibraryPath } from "./overlayPresenterNative.ts";
+
 function loadNativeGlyphDraw(): NativeGlyphDrawFn | null {
   if (nativeGlyphDrawTried) return nativeGlyphDrawCached;
   nativeGlyphDrawTried = true;
-  if (Deno.build.os !== "linux") return null;
+  if (Deno.build.os !== "linux" && Deno.build.os !== "windows") return null;
   try {
-    const path = fromFileUrl(new URL("../resources/libpetplay_overlay_presenter.so", import.meta.url));
+    const path = resolveOverlayPresenterLibraryPath();
     const lib = Deno.dlopen(path, {
       pp_glyph_draw_fast: {
         parameters: ["buffer", "buffer", "buffer", "buffer", "usize"],
