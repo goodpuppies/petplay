@@ -113,6 +113,13 @@ async function main(options: Options): Promise<void> {
   const target = options.target ?? remote.build.target;
   if (!target) throw new Error(`${probe.peer}'s PetPlay does not report its target; pass --target`);
   console.log(`${probe.peer} runs ${remote.build.version} (${target}, ${remote.build.mode})`);
+  if (remote.build.deno && remote.build.deno !== Deno.version.deno) {
+    console.warn(
+      `warning: ${probe.peer}'s build has Deno ${remote.build.deno}'s runtime and this machine has ` +
+        `${Deno.version.deno}; the runtime (~100 MB) differs and goes over whole. ` +
+        `\`deno upgrade ${remote.build.deno}\` here makes the delta a few MB.`,
+    );
+  }
   if (remote.build.mode === "checkout") {
     throw new Error(`${probe.peer} runs a checkout: they pull your branch and restart instead`);
   }

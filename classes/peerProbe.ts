@@ -200,7 +200,15 @@ export function comparePeers(local: PeerProbe, remote: PeerProbe): Check[] {
   const checks: Check[] = [];
   checks.push(
     sameCommit(local.build.commit, remote.build.commit)
-      ? { name: "same build", status: "pass", detail: `${local.build.version} on both` }
+      ? local.build.version === remote.build.version
+        ? { name: "same build", status: "pass", detail: `${local.build.version} on both` }
+        : {
+          name: "same build",
+          status: "warn",
+          detail:
+            `same commit, but here ${local.build.version}, ${name} ${remote.build.version}: ` +
+            `local edits (-dirty) reach the peer only with peer-patch or peer-build`,
+        }
       : {
         name: "same build",
         status: "warn",

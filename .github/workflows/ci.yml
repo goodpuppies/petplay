@@ -20,7 +20,7 @@ jobs:
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.7
+          deno-version: v2.9.8
       - id: webxr-commit
         shell: bash
         run: |
@@ -95,7 +95,7 @@ jobs:
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.7
+          deno-version: v2.9.8
       # Native helpers and the WebXR bundle only change with their submodules, so hits skip Rust/Node.
       - id: submodules
         shell: bash

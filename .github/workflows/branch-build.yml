@@ -46,7 +46,7 @@ jobs:
           merge-multiple: true
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.7
+          deno-version: v2.9.8
       - name: Index and hash
         run: |
           chmod +x dist/petplay dist/petplay-aarch64
@@ -75,7 +75,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.7
+          deno-version: v2.9.8
       - env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.event.ref }}

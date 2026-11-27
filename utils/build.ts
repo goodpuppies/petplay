@@ -59,6 +59,8 @@ await Deno.writeTextFile(
     built: new Date().toISOString(),
     mode,
     channel: ciChannel(),
+    // The runtime embedded in the executable; peer builds compare it (utils/peer-build.ts).
+    deno: Deno.version.deno,
   }) +
     "\n",
 );
@@ -130,6 +132,51 @@ const args = [
   "--output",
   output,
 ];
+
+for (const path of localOnlyPaths()) args.push("--exclude", path);
+
+/**
+ * What a working checkout has and CI's clean one does not: agent scratch, earlier build outputs,
+ * Rust `target/` dirs and `node_modules` other than the root one (submodules' dev installs). The
+ * compiler embeds those when they sit under an included directory or next to a package.json, and
+ * they made a local build 1.4 GB instead of CI's ~420 MB, and different enough from it that a
+ * peer build (utils/peer-build.ts) had to send nearly all of it.
+ */
+function localOnlyPaths(): string[] {
+  const found = ["./_scratch", "./dist/peer"];
+  const walk = (dir: string) => {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = [...Deno.readDirSync(dir)];
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory) continue;
+      const path = `${dir}/${entry.name}`;
+      // The compiler takes `--exclude` of a whole node_modules dir, not of a dir holding one, so
+      // _scratch is walked as well.
+      if (path === "./node_modules" || path === "./dist") continue;
+      if (entry.name === ".git") continue;
+      if (entry.name === "node_modules" || entry.name === "target") found.push(path);
+      else walk(path);
+    }
+  };
+  walk(".");
+  // Native npm packages for the building machine's OS that nothing at runtime imports: the
+  // iroh Node binding (the link runs in petplay-media) and the tsrs type checker. They are a
+  // tenth of the binary, and differ between a cross build and the target OS's own build.
+  try {
+    for (const entry of Deno.readDirSync("./node_modules/.deno")) {
+      if (/^@number0\+iroh-|^@tsrs\+/.test(entry.name)) {
+        found.push(`./node_modules/.deno/${entry.name}`);
+      }
+    }
+  } catch {
+    // No node_modules yet.
+  }
+  return found;
+}
 
 if (Deno.build.os === "windows" && !target) {
   args.push("--icon", "resources/petplay.ico");

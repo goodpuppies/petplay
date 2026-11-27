@@ -19,6 +19,8 @@ export type BuildInfo = {
   channel?: string | null;
   /** The Rust-style target triple it was built for (`x86_64-pc-windows-msvc`, …). */
   target?: string;
+  /** The Deno version that compiled it (its embedded runtime). */
+  deno?: string;
 };
 
 /**
@@ -44,6 +46,7 @@ export function getBuildInfo(): BuildInfo {
         mode: info.mode ?? "unknown",
         channel: info.channel ?? null,
         target: info.target ?? Deno.build.target,
+        deno: info.deno ?? Deno.version.deno,
       };
     } catch {
       cached = {

@@ -32,7 +32,7 @@ jobs:
           name: petplay-linux-arm64-experimental
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.9.7
+          deno-version: v2.9.8
       - name: Build Unity origin package
         run: deno run -A --no-config utils/build-unity-origin-package.ts
       # Chunk indexes for delta updates (classes/updateChunks.ts), then SHA256SUMS over everything.
