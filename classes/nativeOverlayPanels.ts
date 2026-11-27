@@ -18,7 +18,17 @@ import type {
   WebXRRaythreeUiSurfaceSnapshot,
 } from "./webxrRaythreeUi.ts";
 
-export type NativeOverlayDevice = { index: number; pose: ArrayLike<number> };
+export type NativeOverlayDevice = {
+  index: number;
+  pose: ArrayLike<number>;
+  /**
+   * Optional static column-major 4×4 transform from `anchor.space` into raw tracked-device space
+   * (e.g. controller tip / grip offset). When present (or omitted for identity spaces like `head`),
+   * `nativePanelAttachment` composes `anchorToDevice * anchor.localMatrix` directly without
+   * inverting the moving `pose`, keeping device-relative transforms bit-stable across frames.
+   */
+  anchorToDevice?: ArrayLike<number>;
+};
 
 export type NativePanelCamera = {
   viewMatrix: Float32Array;
@@ -42,6 +52,10 @@ const axisZ = new THREE.Vector3();
 const origin = new THREE.Vector3();
 const attachDevice = new THREE.Matrix4();
 const attachRelative = new THREE.Matrix4();
+const attachX = new THREE.Vector3();
+const attachY = new THREE.Vector3();
+const attachZ = new THREE.Vector3();
+const attachOrigin = new THREE.Vector3();
 
 /** Quantize texture dimensions into steps (64 up to 2048, 128 above) to maximize target reuse. */
 export function nativeTextureSize(texels: number, max = 4096): number {
@@ -105,6 +119,9 @@ export function nativePanelCamera(
 /**
  * Compute device-relative attachment for a surface riding a single tracked device (head, hand,
  * one-handed grab). Returns `null` for world-placed, two-handed, or grab-frozen surfaces.
+ *
+ * Composes `anchorToDevice * rigid(anchor.localMatrix)` directly when possible so the resulting
+ * device-relative transform never depends on the moving `device.pose` and stays bit-stable.
  */
 export function nativePanelAttachment(
   anchor: RenderAnchor | undefined,
@@ -116,6 +133,28 @@ export function nativePanelAttachment(
   if (anchor.follow && heldFollows?.has(followKey(anchor.space))) return null;
   const device = devices?.[anchor.space];
   if (!device) return null;
+
+  // Prefer direct device-local composition: strips root scale from `anchor.localMatrix` (same
+  // orthonormal basis as `nativePanelCamera`), then applies static `anchorToDevice` if any.
+  const lm = anchor.localMatrix;
+  attachX.set(Number(lm[0]), Number(lm[1]), Number(lm[2]));
+  attachY.set(Number(lm[4]), Number(lm[5]), Number(lm[6]));
+  attachZ.crossVectors(attachX, attachY);
+  const area = attachZ.length();
+  if (area > 1e-12) {
+    attachZ.divideScalar(area);
+    attachX.normalize();
+    attachY.crossVectors(attachZ, attachX).normalize();
+    attachOrigin.set(Number(lm[12]), Number(lm[13]), Number(lm[14]));
+    attachRelative.makeBasis(attachX, attachY, attachZ).setPosition(attachOrigin);
+    if (device.anchorToDevice) {
+      attachDevice.fromArray(device.anchorToDevice as number[]);
+      attachRelative.premultiply(attachDevice);
+    }
+    return { index: device.index, relative: new Float64Array(attachRelative.elements) };
+  }
+
+  // Fallback for degenerate local matrices: derive from world poses.
   attachDevice.fromArray(device.pose as number[]);
   if (!(Math.abs(attachDevice.determinant()) > 1e-9)) return null;
   attachRelative.fromArray(pose as number[]).premultiply(attachDevice.invert());

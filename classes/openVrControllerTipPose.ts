@@ -153,21 +153,39 @@ export class OpenVrControllerTipPoseResolver {
   }
 
   resolve(index: number, trackedDevicePose: OpenVrHmdEmulationPose): OpenVrHmdEmulationPose {
+    const offset = this.#resolveTipRows(index);
+    return composeTrackedDeviceTipPose(trackedDevicePose, offset);
+  }
+
+  /**
+   * Column-major 4×4 transform from tracked device space to target-ray space (cached per device).
+   * Lets device-attached overlays compose `anchorToDevice * localMatrix` directly without
+   * round-tripping through world space.
+   */
+  getTipOffsetMatrix(index: number): Float32Array {
+    const rows = this.#resolveTipRows(index);
+    return new Float32Array([
+      rows[0]![0]!, rows[1]![0]!, rows[2]![0]!, 0,
+      rows[0]![1]!, rows[1]![1]!, rows[2]![1]!, 0,
+      rows[0]![2]!, rows[1]![2]!, rows[2]![2]!, 0,
+      rows[0]![3]!, rows[1]![3]!, rows[2]![3]!, 1,
+    ]);
+  }
+
+  #resolveTipRows(index: number): Matrix34Rows {
     const renderModel = this.#strings.get(
       index,
       OpenVR.TrackedDeviceProperty.Prop_RenderModelName_String,
     );
     this.#renderModelByIndex.set(index, renderModel);
-    if (!renderModel) {
-      return composeTrackedDeviceTipPose(trackedDevicePose, LEGACY_TARGET_RAY_OFFSET);
-    }
+    if (!renderModel) return LEGACY_TARGET_RAY_OFFSET;
     let tip = this.#tipByRenderModel.get(renderModel);
     if (tip === undefined) {
       tip = this.#readTip(renderModel);
       this.#tipByRenderModel.set(renderModel, tip);
       this.onResolved?.(index, renderModel, tip != null);
     }
-    return composeTrackedDeviceTipPose(trackedDevicePose, tip ?? LEGACY_TARGET_RAY_OFFSET);
+    return tip ?? LEGACY_TARGET_RAY_OFFSET;
   }
 
   /** The render model {@link resolve} last read for a device, e.g. to key per-controller settings. */

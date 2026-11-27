@@ -183,11 +183,8 @@ These are pre-existing issues in `main` that PR #11 directly depends on, duplica
 - [x] **The grab-box outline is 12 separate box meshes.** *fixed 2026-11-27 in `classes/environment/grabbox.tsx`*
   - `GrabBoxFrame` now builds one merged `THREE.BufferGeometry` (1 mesh, 1 draw call, exact box `boundingBox`/`boundingSphere`, origin at box center).
 
-- [ ] **Device-attached poses take a round trip through world space.** *checked*
-  - Hand anchors have the controller tip and grip offsets baked in. To attach a quad to a controller,
-    the PR resolves to world space and then inverts the raw device pose. That adds float noise, which
-    forced a 2e-5 change threshold and the anchor-local-matrix hack in the hash.
-  - *Fix:* keep device-local placement through to the renderer.
+- [x] **Device-attached poses take a round trip through world space.** *fixed 2026-11-27*
+  - `OpenVrControllerTipPoseResolver.getTipOffsetMatrix()` + `NativeOverlayDevice.anchorToDevice` let `nativePanelAttachment` compose `anchorToDevice * rigid(anchor.localMatrix)` directly, staying bit-identical across frames regardless of tracked pose motion (tightened `setDeviceTransform` threshold back to `1e-6`).
 
 ### Rendering
 
@@ -227,10 +224,8 @@ These are pre-existing issues in `main` that PR #11 directly depends on, duplica
 - [ ] **A spare slot that turns out to have a size no panel uses** (for example 5960×5960, from an old
   eye overlay) occupies a spare until trimmed, and destroying it hands the same bad slot back to the
   next `CreateOverlay`. *checked*
-- [ ] **The display's rear logo is opted out with `nativePanel: false`** because its backplate is a mesh
-  and its logo a separate transparent UI root. Making the rear face one surface would remove the
-  opt-out, but a quad facing away still needs a tested rule for staying hidden from the front.
-  *checked*
+- [x] **The display's rear logo is opted out with `nativePanel: false`** *fixed 2026-11-27 in `classes/environment/displayInstance/ui.tsx`*
+  - Unified the rear backplate and PetPlay logo into one opaque black uikit `<Container backgroundColor="#000000">` at `z = -depth / 2 - 0.001`, removing the split Three.js plane and the `nativeOverlay: false` opt-out.
 
 ---
 

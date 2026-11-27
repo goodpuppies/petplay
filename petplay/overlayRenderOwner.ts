@@ -1064,12 +1064,25 @@ async function run(options: Start) {
           const index = system.GetTrackedDeviceIndexForControllerRole(role);
           const pose = pacer.getCachedTrackedDevicePose(index);
           if (pose) {
-            nativeDevices[`${hand}-hand`] = nativeDevices[`${hand}-ray`] = {
+            const tipOffset = tip.getTipOffsetMatrix(index);
+            const gripOffset = payload.renderGripOffsets?.[hand];
+            const handOffset = gripOffset
+              ? new THREE.Matrix4().fromArray(tipOffset).multiply(
+                new THREE.Matrix4().fromArray(gripOffset),
+              ).elements
+              : tipOffset;
+            nativeDevices[`${hand}-ray`] = {
               index,
               pose: pose.matrix,
+              anchorToDevice: tipOffset,
+            };
+            nativeDevices[`${hand}-hand`] = {
+              index,
+              pose: pose.matrix,
+              anchorToDevice: handOffset,
             };
             const resolved = tip.resolve(index, pose);
-            setRenderHandAnchors(anchors, hand, resolved.matrix, payload.renderGripOffsets?.[hand]);
+            setRenderHandAnchors(anchors, hand, resolved.matrix, gripOffset);
           }
         }
       }

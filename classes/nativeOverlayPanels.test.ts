@@ -34,25 +34,35 @@ Deno.test("nativePanelCamera: frames a rotated/scaled root rectangle with overfl
   assertEquals(cam!.textureHeight % 64, 0);
 });
 
-Deno.test("nativePanelAttachment: attaches single-device anchors and skips world/two-hand/frozen", () => {
-  const handPose = new THREE.Matrix4().makeTranslation(0.2, 1.1, -0.4);
-  const panelPose = new THREE.Matrix4().makeTranslation(0.2, 1.2, -0.4);
-  const devices = { "left-hand": { index: 3, pose: handPose.elements } };
-
-  const attached = nativePanelAttachment(
-    { space: "left-hand", localMatrix: new Float64Array(16) },
-    panelPose.elements,
-    devices,
+Deno.test("nativePanelAttachment: composes device-local placement directly without pose noise", () => {
+  const localMat = new THREE.Matrix4().compose(
+    new THREE.Vector3(0, 0.1, 0),
+    new THREE.Quaternion(),
+    new THREE.Vector3(0.3, 0.2, 1), // root scale must be stripped
   );
-  assertEquals(attached?.index, 3);
-  assertAlmostEquals(attached!.relative[13]!, 0.1, 1e-6);
+  const tipOffset = new THREE.Matrix4().makeTranslation(0, 0, -0.05);
+  const handPoseA = new THREE.Matrix4().makeTranslation(0.2, 1.1, -0.4);
+  const handPoseB = new THREE.Matrix4().makeTranslation(5.7, -2.3, 9.1);
+  const anchor = { space: "left-hand" as const, localMatrix: new Float64Array(localMat.elements) };
+
+  const attachedA = nativePanelAttachment(anchor, new Float32Array(16), {
+    "left-hand": { index: 3, pose: handPoseA.elements, anchorToDevice: tipOffset.elements },
+  });
+  const attachedB = nativePanelAttachment(anchor, new Float32Array(16), {
+    "left-hand": { index: 3, pose: handPoseB.elements, anchorToDevice: tipOffset.elements },
+  });
+  assertEquals(attachedA?.index, 3);
+  assertAlmostEquals(attachedA!.relative[13]!, 0.1, 1e-6);
+  assertAlmostEquals(attachedA!.relative[14]!, -0.05, 1e-6);
+  // Bit-identical regardless of where the tracked device moved in world space!
+  assertEquals(Array.from(attachedA!.relative), Array.from(attachedB!.relative));
 
   // Frozen grab must not attach to the moving controller.
   assertEquals(
     nativePanelAttachment(
-      { space: "left-hand", follow: true, localMatrix: new Float64Array(16) },
-      panelPose.elements,
-      devices,
+      { space: "left-hand", follow: true, localMatrix: new Float64Array(localMat.elements) },
+      new Float32Array(16),
+      { "left-hand": { index: 3, pose: handPoseA.elements, anchorToDevice: tipOffset.elements } },
       new Set(["left-hand"]),
     ),
     null,

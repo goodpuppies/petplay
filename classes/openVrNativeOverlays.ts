@@ -471,7 +471,7 @@ export class OpenVrNativeOverlays {
     }
     let changed = !entry.hasTransform || entry.device !== device;
     for (let i = 0; i < 12 && !changed; i++) {
-      if (Math.abs(rows[i]! - entry.transform[i]!) > 2e-5) changed = true;
+      if (Math.abs(rows[i]! - entry.transform[i]!) > 1e-6) changed = true;
     }
     if (!changed) return;
     entry.transform.set(rows);
