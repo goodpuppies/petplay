@@ -937,10 +937,14 @@ function WindowLayer({
           ...localOutputsRef.current,
           ...remoteOutputsRef.current.filter((o) => o.local === true),
         ];
-        // A. Push live Three.js pose for shared local displays AND grabbed remote displays.
+        // A. Push live Three.js pose for shared local displays AND grabbed remote displays, only
+        // while this machine is moving them. Otherwise each machine's own VRC-origin estimate
+        // re-expresses a resting display slightly differently, and both sides keep overwriting
+        // each other with their own reading: the display jumps between two poses.
         if (head) {
           for (const node of Object.values(graphRef.current.nodes)) {
             if (node.kind !== "display" || !node.workspaceOutputId) continue;
+            if (!movedFromCommitted(scene, head, node)) continue;
             const live = anchoredRootTransform(scene, head, node.id, VRC_WORLD_ORIGIN_ID);
             if (!live || live === "untracked") continue;
             const sig = poseSignature(live);
@@ -1538,6 +1542,30 @@ function holdsAnythingUnder(
  * `originId`, so re-anchoring never makes it jump. "untracked" when that space has no pose right
  * now; null when the root isn't in the scene.
  */
+/**
+ * A root node whose scene object sits away from its committed `localTransform` (in its own
+ * origin's space) is being moved right now: grabs move the object and commit only on release.
+ */
+function movedFromCommitted(
+  scene: THREE.Object3D,
+  head: THREE.Object3D,
+  node: { id: string; parentId: string | null; originId: string; localTransform: SpatialTransform },
+): boolean {
+  if (node.parentId !== null) return false;
+  const live = anchoredRootTransform(scene, head, node.id, node.originId as SpatialOriginId);
+  if (!live || live === "untracked") return false;
+  const c = node.localTransform;
+  const dPos = Math.hypot(
+    live.position[0] - c.position[0],
+    live.position[1] - c.position[1],
+    live.position[2] - c.position[2],
+  );
+  const qLive = new THREE.Quaternion().setFromEuler(new THREE.Euler(...live.rotation, "XYZ"));
+  const qCommitted = new THREE.Quaternion().setFromEuler(new THREE.Euler(...c.rotation, "XYZ"));
+  const dScale = Math.abs(live.scale[0] - c.scale[0]);
+  return dPos > 0.002 || qLive.angleTo(qCommitted) > 0.004 || dScale > 0.002;
+}
+
 export function anchoredRootTransform(
   scene: THREE.Object3D,
   head: THREE.Object3D,
