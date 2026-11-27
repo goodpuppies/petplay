@@ -224,7 +224,12 @@ export async function startPetplayServer(
 
   PostalService.performanceLoggingActive = false;
 
-  let activeIroh: { stop(): Promise<void> } | null = null;
+  let activeIroh:
+    | {
+      stop(): Promise<void>;
+      connections(): import("../classes/irohCarrier.ts").IrohConnectionInfo[];
+    }
+    | null = null;
   let networkingEnabled = false;
 
   async function enableStageforgeNetworking(): Promise<boolean> {
@@ -254,6 +259,8 @@ export async function startPetplayServer(
 
   postalservice.functions = {
     ...postalservice.functions,
+    /** Each iroh link connection and its network path (direct or relay), for peer probes. */
+    IROH_CONNECTIONS: () => activeIroh?.connections() ?? null,
     SETNETWORKING: async (
       payload: { enabled?: boolean } | null,
     ): Promise<{ enabled: boolean }> => {

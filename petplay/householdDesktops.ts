@@ -672,6 +672,17 @@ new PostMan(
       return existed;
     },
     LIST: () => outputs(),
+    /** Each shown desktop with its sharer and pose, for peer probes (classes/peerProbe.ts). */
+    DESCRIBEPOSES: () =>
+      [...desktops.values()].map((d) => ({
+        key: d.key,
+        name: d.name,
+        kind: d.kind,
+        source: String(d.source),
+        ...(d.monitor != null ? { monitor: d.monitor } : {}),
+        ...(d.windowId ? { windowId: d.windowId } : {}),
+        worldPose: d.worldPose,
+      })),
     /** Lightweight real-time pose snapshot for the scene's 20 Hz pose loop. */
     GETPOSES: () =>
       [...desktops.values()]

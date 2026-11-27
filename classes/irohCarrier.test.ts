@@ -41,3 +41,34 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "a direct-tier link reports its network path, and its offer carries IP candidates",
+  ignore: !hasPetplayMediaBinary({ forLink: true }),
+  sanitizeResources: false,
+  sanitizeOps: false,
+  async fn() {
+    const a = irohCarrier({ local: true });
+    const b = irohCarrier({ local: true });
+    try {
+      await a.listen(() => {});
+      await b.listen(() => {});
+      const offer = await a.directEndpoint();
+      assert((offer.addrs ?? []).length > 0, `direct offer without addresses: ${JSON.stringify(offer)}`);
+      a.allowDirect((await b.directEndpoint()).id);
+      await b.connectDirect(offer);
+      let path = null;
+      for (let i = 0; i < 50 && path == null; i++) {
+        path = b.connections().find((c) => c.tier === "direct")?.path ?? null;
+        if (path == null) await new Promise((r) => setTimeout(r, 100));
+      }
+      assert(path, "no path event within 5 s");
+      assertEquals(path.path, "direct");
+      assert(path.remote.startsWith("ip:127.0.0.1:"), path.remote);
+      assert(path.open.includes(path.remote), path.open.join(" "));
+    } finally {
+      await a.stop();
+      await b.stop();
+    }
+  },
+});

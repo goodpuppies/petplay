@@ -63,6 +63,7 @@
     "playtest": "deno run -A utils/playtest-run.ts",
     "vrlab": "deno run -A --no-check utils/vrlab.ts",
     "peer-patch": "deno run -A --no-check utils/peer-patch.ts",
+    "coop:verify": "deno run -A --no-check utils/coop-verify.ts",
     "xrclient": "deno run -A utils/xr-client-bridge.ts",
     "scene-stream:build": "deno bundle --platform browser --minify -o dist/scene-stream/viewer.js web/scene-stream/viewer.ts",
     "rdp:build": "deno run -A rdp/build.ts",

@@ -31,12 +31,22 @@ import {
 } from "../classes/vrc/identity.ts";
 import {
   type PeerPatchActorResult,
+  peerPatchesAccepted,
   type PeerPatchReply,
   type PeerPatchRequest,
-  peerPatchesAccepted,
   resolvePatchModules,
   summarizePeerPatch,
 } from "../classes/peerPatch.ts";
+import {
+  type PeerProbe,
+  type PeerProbeReply,
+  type ProbeSharedDisplay,
+  type ProbeViewedDisplay,
+  recentLogErrors,
+} from "../classes/peerProbe.ts";
+import { getBuildInfo } from "../classes/buildInfo.ts";
+import { getSettingsPath, parseSettings } from "../classes/settings.ts";
+import type { IrohConnectionInfo } from "../classes/irohCarrier.ts";
 
 export const VRC_PEERS_ACTOR_NAME = "vrcPeers";
 const DEFAULT_POLL_MS = 1000;
@@ -843,36 +853,84 @@ export const api = {
       results,
     };
   },
+  /**
+   * A trusted peer's coop dev check (`deno task coop:verify`): a read-only snapshot of this
+   * PetPlay, when Peer Code Patches is on (the same opt-in as live patches).
+   */
+  PEERPROBE: async (): Promise<PeerProbeReply> => {
+    const sender = PostMan.sender;
+    const peer = sender ? peers.get(sender) : undefined;
+    if (!peer || peer.trust !== "trusted") return { ok: false, error: "not a trusted peer" };
+    if (!peerPatchesAccepted()) {
+      return {
+        ok: false,
+        error: `${
+          state.self?.displayName ?? "this peer"
+        } has Settings → Install → Peer Code Patches off`,
+      };
+    }
+    return { ok: true, probe: await localProbe() };
+  },
+  /** Local only: probe this machine and every trusted peer in the instance (utils/coop-verify.ts). */
+  SENDPEERPROBE: async (
+    request: { peer?: string } | null,
+  ): Promise<
+    { local: PeerProbe; peers: Array<{ peer: string; actorId: ActorId; reply: PeerProbeReply }> }
+  > => {
+    const [local, replies] = await Promise.all([
+      localProbe(),
+      Promise.all(
+        trustedInInstance(request?.peer).map(async (info) => {
+          try {
+            const reply = await timeout(
+              PostMan.PostMessage(
+                { target: info.actorId, type: "PEERPROBE", payload: null },
+                true,
+              ) as Promise<
+                PeerProbeReply
+              >,
+              20_000,
+            );
+            return { peer: info.displayName, actorId: info.actorId, reply };
+          } catch (error) {
+            return {
+              peer: info.displayName,
+              actorId: info.actorId,
+              reply: {
+                ok: false as const,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            };
+          }
+        }),
+      ),
+    ]);
+    return { local, peers: replies };
+  },
   /** Local only: send a code patch to every trusted peer in the instance (`utils/peer-patch.ts`). */
   SENDPEERPATCH: async (
     request: (PeerPatchRequest & { peer?: string }) | null,
   ): Promise<Array<{ peer: string; reply: PeerPatchReply }>> => {
-    const filter = request?.peer?.toLowerCase();
-    const latest = new Map<string, VrcPeerInfo>();
-    for (const info of peers.values()) {
-      if (info.trust !== "trusted" || !info.inInstance) continue;
-      if (filter && !info.displayName.toLowerCase().includes(filter)) continue;
-      const prev = latest.get(info.vrcUserId);
-      if (!prev || prev.verifiedAt < info.verifiedAt) latest.set(info.vrcUserId, info);
-    }
-    return await Promise.all([...latest.values()].map(async (info) => {
-      try {
-        const reply = await timeout(
-          PostMan.PostMessage({
-            target: info.actorId,
-            type: "PEERPATCH",
-            payload: { modules: request?.modules ?? [], label: state.self?.displayName },
-          }, true) as Promise<PeerPatchReply>,
-          30_000,
-        );
-        return { peer: info.displayName, reply };
-      } catch (error) {
-        return {
-          peer: info.displayName,
-          reply: { ok: false, error: error instanceof Error ? error.message : String(error) },
-        };
-      }
-    }));
+    return await Promise.all(
+      trustedInInstance(request?.peer).map(async (info) => {
+        try {
+          const reply = await timeout(
+            PostMan.PostMessage({
+              target: info.actorId,
+              type: "PEERPATCH",
+              payload: { modules: request?.modules ?? [], label: state.self?.displayName },
+            }, true) as Promise<PeerPatchReply>,
+            30_000,
+          );
+          return { peer: info.displayName, reply };
+        } catch (error) {
+          return {
+            peer: info.displayName,
+            reply: { ok: false, error: error instanceof Error ? error.message : String(error) },
+          };
+        }
+      }),
+    );
   },
   REMOVECONTACT: (contactId: ActorId) => {
     state.addressBook.delete(contactId);
@@ -917,6 +975,70 @@ async function hotPatchLocalActors(
       };
     }
   }));
+}
+
+/** The latest trusted, in-instance record per VRChat user, optionally filtered by display name. */
+function trustedInInstance(filter?: string): VrcPeerInfo[] {
+  const lower = filter?.toLowerCase();
+  const latest = new Map<string, VrcPeerInfo>();
+  for (const info of peers.values()) {
+    if (info.trust !== "trusted" || !info.inInstance) continue;
+    if (lower && !info.displayName.toLowerCase().includes(lower)) continue;
+    const prev = latest.get(info.vrcUserId);
+    if (!prev || prev.verifiedAt < info.verifiedAt) latest.set(info.vrcUserId, info);
+  }
+  return [...latest.values()];
+}
+
+async function ask<T>(target: ActorId | typeof System, type: string, ms = 3000): Promise<T | null> {
+  try {
+    return await timeout(
+      PostMan.PostMessage({ target, type, payload: null }, true) as Promise<T>,
+      ms,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** This machine's side of a coop dev check (classes/peerProbe.ts). */
+async function localProbe(): Promise<PeerProbe> {
+  let settings;
+  try {
+    settings = parseSettings(Deno.readTextFileSync(getSettingsPath())).settings;
+  } catch {
+    settings = parseSettings("{}").settings;
+  }
+  const build = getBuildInfo();
+  const [links, direct, sharing, viewing] = await Promise.all([
+    ask<IrohConnectionInfo[] | null>(System, "IROH_CONNECTIONS"),
+    ask<IrohEndpoint | null>(System, "DIRECT_ENDPOINT", 15_000),
+    displayShareActor
+      ? ask<{ shared?: ProbeSharedDisplay[] }>(displayShareActor, "HEALTH")
+      : Promise.resolve(null),
+    householdDesktopsActor
+      ? ask<ProbeViewedDisplay[]>(householdDesktopsActor, "DESCRIBEPOSES")
+      : Promise.resolve(null),
+  ]);
+  return {
+    at: Date.now(),
+    displayName: state.self?.displayName ?? null,
+    vrcUserId: state.self?.userId ?? null,
+    build,
+    updateChannel: settings.updateChannel ?? build.channel ?? "stable",
+    acceptPeerPatches: settings.acceptPeerPatches === true,
+    directId: direct?.id ?? null,
+    links,
+    peers: [...peers.values()].map((p) => ({
+      displayName: p.displayName,
+      actorId: p.actorId,
+      trust: p.trust,
+      inInstance: p.inInstance,
+    })),
+    sharing: sharing ? { actor: displayShareActor, shared: sharing.shared ?? [] } : null,
+    viewing,
+    logErrors: recentLogErrors(),
+  };
 }
 
 function timeout<T>(promise: Promise<T>, ms: number): Promise<T> {

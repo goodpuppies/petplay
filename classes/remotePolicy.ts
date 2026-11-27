@@ -38,6 +38,7 @@ const LOCAL_ONLY_BY_ACTOR: Record<string, ReadonlySet<string>> = {
     "ASSIGNSHARING",
     "ASSIGNWEBXR",
     "SENDPEERPATCH",
+    "SENDPEERPROBE",
   ]),
   displayShare: new Set([
     "SETUP",

@@ -22,6 +22,24 @@ import { petplayMediaPath } from "./petplayMediaPath.ts";
 
 export type IrohEndpoint = { id: string; relay?: string | null; addrs?: string[] };
 
+/** The network path a link connection currently uses (link.rs `path` events). */
+export type IrohPath = {
+  /** `direct`: UDP between the two machines (holepunched or LAN); `relay`: through the relay. */
+  path: "direct" | "relay";
+  remote: string;
+  rttMs: number;
+  /** Every open path (`ip:<addr>` or `relay:<url>`, as is `remote`). */
+  open: string[];
+  since: number;
+};
+
+export type IrohConnectionInfo = {
+  conn: number;
+  peer: string;
+  tier: CarrierTier;
+  path: IrohPath | null;
+};
+
 export type IrohCarrierOptions = {
   /** `petplay-media` built with `--features iroh`. Default: PETPLAY_LINK_BINARY, else the release build. */
   binary?: string;
@@ -37,6 +55,14 @@ type Event =
   | { ev: "failed"; req: number; error: string }
   | { ev: "incoming"; conn: number; peer: string; tier?: CarrierTier }
   | { ev: "data"; conn: number; data: string }
+  | {
+    ev: "path";
+    conn: number;
+    path: "direct" | "relay";
+    remote: string;
+    rtt_ms: number;
+    open: string[];
+  }
   | { ev: "closed"; conn: number; reason: string };
 
 class IrohCarrier implements Carrier {
@@ -44,6 +70,7 @@ class IrohCarrier implements Carrier {
   #onmessage: ((data: unknown) => void) | null = null;
   #queue: unknown[] = [];
   #closed = false;
+  path: IrohPath | null = null;
   constructor(
     private readonly daemon: LinkDaemon,
     readonly conn: number,
@@ -135,6 +162,15 @@ class LinkDaemon {
 
   forget(conn: number): void {
     this.#carriers.delete(conn);
+  }
+
+  connections(): IrohConnectionInfo[] {
+    return [...this.#carriers.values()].map((carrier) => ({
+      conn: carrier.conn,
+      peer: carrier.peer,
+      tier: carrier.tier,
+      path: carrier.path,
+    }));
   }
 
   connect(endpoint: IrohEndpoint, tier: CarrierTier = "discovery"): Promise<IrohCarrier> {
@@ -233,6 +269,26 @@ class LinkDaemon {
       case "data":
         this.#carriers.get(event.conn)?.receive(event.data);
         return;
+      case "path": {
+        const carrier = this.#carriers.get(event.conn);
+        if (!carrier) return;
+        const previous = carrier.path?.path;
+        carrier.path = {
+          path: event.path,
+          remote: event.remote,
+          rttMs: event.rtt_ms,
+          open: event.open,
+          since: Date.now(),
+        };
+        if (previous !== event.path) {
+          console.log(
+            `[iroh] ${carrier.tier} link to ${
+              carrier.peer.slice(0, 10)
+            } is ${event.path} via ${event.remote} (rtt ${event.rtt_ms} ms)`,
+          );
+        }
+        return;
+      }
       case "closed":
         this.#carriers.get(event.conn)?.ended(event.reason);
         this.#carriers.delete(event.conn);
@@ -252,6 +308,7 @@ export function irohCarrier(
   stop(): Promise<void>;
   endpoint(): Promise<IrohEndpoint>;
   directEndpoint(): Promise<IrohEndpoint>;
+  connections(): IrohConnectionInfo[];
   allowDirect(peerId: string): void;
   revokeDirect(peerId: string): void;
   connectDirect(endpoint: IrohEndpoint): Promise<Carrier>;
@@ -287,7 +344,13 @@ export function irohCarrier(
       const running = start();
       await running.ready;
       const endpoint = await running.directEndpoint();
-      return publishableEndpoint(endpoint);
+      // Only trusted peers get this, over the encrypted discovery link, so it carries the IP
+      // candidates holepunching starts from (the discovery endpoint stays address-free).
+      return {
+        id: endpoint.id,
+        relay: options.local ? undefined : endpoint.relay,
+        addrs: (endpoint.addrs ?? []).filter((addr) => !/^\[fe80:/i.test(addr)),
+      };
     },
     allowDirect(peerId: string) {
       start().allowDirect(peerId);
@@ -301,6 +364,8 @@ export function irohCarrier(
       return await running.connect(endpoint as IrohEndpoint, "direct");
     },
     endpoint: () => start().ready,
+    /** Each open link connection and the network path it uses, for diagnostics. */
+    connections: () => daemon?.connections() ?? [],
     async stop() {
       const running = daemon;
       daemon = null;

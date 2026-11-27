@@ -1,6 +1,7 @@
 # AGENTS.md
 
-- `docs/`: settled docs, starting with `docs/ARCHITECTURE.md`.
+- `docs/`: settled docs, starting with `docs/ARCHITECTURE.md`. Two-machine coop development
+  (peer patches, branch builds, `deno task coop:verify`) is `docs/COOP-DEV.md`.
 - Submodules follow this root `AGENTS.md` and do not require a separate copy.
 - `submodules/petplay_mediatransport/`: native media ingestion, encoding, MoQ/Iroh transport,
   and the browser receiver; start with its `README.md`.
