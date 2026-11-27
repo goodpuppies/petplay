@@ -247,6 +247,9 @@ export class WebXROverlayRaylib {
     this.requestedEyeSize = eyeSize;
     this.resolvedEyeSize = null;
     this.invalidateRenderTargets();
+    if (this.windowInitialized) {
+      this.ensureTexture(eyeSize, eyeSize, eyeSize, eyeSize);
+    }
   }
 
   /**
@@ -375,6 +378,10 @@ export class WebXROverlayRaylib {
    * on first use, up to three in all.
    */
   useEyeTargetsOtherThan(busyLeftTextures: readonly number[]): boolean {
+    if ((!this.leftEyeTarget || !this.rightEyeTarget) && this.windowInitialized) {
+      const eye = this.requestedEyeSize ?? getRaylibNativeEyeSize();
+      this.ensureTexture(eye, eye, eye, eye);
+    }
     if (!this.leftEyeTarget || !this.rightEyeTarget) {
       return false;
     }
@@ -407,6 +414,10 @@ export class WebXROverlayRaylib {
 
   /** Diagnostic parity with projection's source rotation; not a compositor retirement guarantee. */
   useOutputTargetOtherThan(busyTextures: readonly number[]): boolean {
+    if (!this.outputTarget && this.windowInitialized) {
+      const eye = this.requestedEyeSize ?? getRaylibNativeEyeSize();
+      this.ensureTexture(eye, eye, eye, eye);
+    }
     if (!this.outputTarget) return false;
     if (!busyTextures.includes(this.outputTarget.texture.id)) return true;
     let index = this.spareOutputTargets.findIndex((target) =>
