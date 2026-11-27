@@ -69,6 +69,10 @@ export class VrcCharacterSim {
   /** Remaining 1st-order OSC offset to bleed smoothly into `pos` / `yaw`. */
   private pendingPos: Vec3 = [0, 0, 0];
   private pendingYaw = 0;
+  /** Slew-limited XZ correction velocity (m/s) so error corrections can never jerk or bounce. */
+  private corrVelXZ: [number, number] = [0, 0];
+  /** Slew-limited yaw correction rate (rad/s) during stick turns. */
+  private corrYawRate = 0;
 
   private started = false;
   private lastT = 0;
@@ -136,6 +140,8 @@ export class VrcCharacterSim {
     this.grounded = true;
     this.pendingPos = [0, 0, 0];
     this.pendingYaw = 0;
+    this.corrVelXZ = [0, 0];
+    this.corrYawRate = 0;
     this.velAir = [0, 0, 0];
     this.velCur = [0, 0, 0];
     this.yawRateCur = 0;
@@ -203,10 +209,13 @@ export class VrcCharacterSim {
       this.moveReleasedAt = t;
       const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
       if (vSpd > 0.2) this.lastMoveDir = [this.velCur[0] / vSpd, this.velCur[2] / vSpd];
-      // Drop stale pre-stop XZ residual so a delayed pre-stop OSC burst cannot pull backwards
-      // right before the final post-stop OSC sample arrives.
-      this.pendingPos[0] = 0;
-      this.pendingPos[2] = 0;
+      // On grounded stop (not a jump takeoff), drop stale pre-stop XZ residual so a delayed
+      // pre-stop OSC burst cannot pull backwards right before the final post-stop OSC arrives.
+      if (this.grounded && !jump) {
+        this.pendingPos[0] = 0;
+        this.pendingPos[2] = 0;
+        this.corrVelXZ = [0, 0];
+      }
     }
     if (Math.hypot(move[0] - this.move[0], move[1] - this.move[1]) > 0.12 || (!prevActive && nextActive)) {
       this.wallBlocked = false;
@@ -295,39 +304,59 @@ export class VrcCharacterSim {
       this.velCur = [...this.velAir];
     }
 
-    // 4. Bleed 1st-order OSC offset smoothly into pos & yaw (critically damped, zero steps/bounce).
-    // Arrival-time jitter is purely parallel to velocity, so bleed `along` gently (`posTauMs`)
-    // while bleeding `perp` (head-turn curves) and `Y` (stairs/ramps) crisply.
-    // After a stop, settle backward overshoot gently (150 ms) so short nudges never recoil,
-    // while forward undershoot finishes cleanly (75 ms).
-    const stopped = !moveActive || this.wallBlocked;
+    // 4. Bleed 1st-order OSC offset smoothly into pos & yaw with physically-plausible rate caps
+    // and low-passed correction velocity so error corrections can never jerk, snap, or oscillate
+    // faster than human/VRChat motion.
+    const stopped = this.grounded && (!moveActive || this.wallBlocked);
     const isStopRecoil = stopped &&
       (this.pendingPos[0] * this.lastMoveDir[0] + this.pendingPos[2] * this.lastMoveDir[1]) < -0.005;
-    const stopTau = isStopRecoil ? 150 : 75;
-    const alongTau = stopped ? Math.min(this.posTauMs, stopTau) : this.posTauMs;
-    const perpTau = stopped ? Math.min(this.posTauMs, stopTau) : 45;
+    const stopTau = isStopRecoil ? 160 : 75;
+    const alongTauSec = (stopped ? Math.min(this.posTauMs, stopTau) : this.posTauMs) / 1000;
+    const perpTauSec = (stopped ? Math.min(this.posTauMs, stopTau) : 55) / 1000;
     const yTau = this.grounded ? 35 : Math.min(this.posTauMs, 80);
-    const aAlong = 1 - Math.exp(-dtMs / alongTau);
-    const aPerp = 1 - Math.exp(-dtMs / perpTau);
-    const aY = 1 - Math.exp(-dtMs / yTau);
-    const aYaw = 1 - Math.exp(-dtMs / this.yawTauMs);
+    const yawTauSec = this.yawTauMs / 1000;
 
     const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
-    let dxC: number, dzC: number;
-    if (vSpd > 0.3) {
+    const remXZ = Math.hypot(this.pendingPos[0], this.pendingPos[2]);
+    let targetCvx: number, targetCvz: number;
+    if (!stopped && vSpd > 0.3) {
       const ux = this.velCur[0] / vSpd, uz = this.velCur[2] / vSpd;
       const pAlong = this.pendingPos[0] * ux + this.pendingPos[2] * uz;
       const pPerp = -this.pendingPos[0] * uz + this.pendingPos[2] * ux;
-      const dAlong = pAlong * aAlong;
-      const dPerp = pPerp * aPerp;
-      dxC = dAlong * ux - dPerp * uz;
-      dzC = dAlong * uz + dPerp * ux;
+      const vAlong = Math.max(-0.6, Math.min(0.6, pAlong / alongTauSec));
+      const vPerp = Math.max(-0.65, Math.min(0.65, pPerp / perpTauSec));
+      targetCvx = vAlong * ux - vPerp * uz;
+      targetCvz = vAlong * uz + vPerp * ux;
     } else {
-      dxC = this.pendingPos[0] * aAlong;
-      dzC = this.pendingPos[2] * aAlong;
+      // Cap small stop/nudge corrections gently so bounces are impossible; allow faster recovery
+      // for large wall collisions / desyncs (> 15 cm).
+      const maxStopSpd = this.wallBlocked ? 4.0 : remXZ > 0.15 ? 1.5 : (isStopRecoil ? 0.18 : 0.45);
+      const rawVx = this.pendingPos[0] / alongTauSec;
+      const rawVz = this.pendingPos[2] / alongTauSec;
+      const rawSpd = Math.hypot(rawVx, rawVz);
+      const scale = rawSpd > maxStopSpd ? maxStopSpd / rawSpd : 1;
+      targetCvx = rawVx * scale;
+      targetCvz = rawVz * scale;
     }
-    const dyC = this.pendingPos[1] * aY;
-    const dyawC = this.pendingYaw * aYaw;
+    // Smooth the correction velocity itself (35 ms tau) so rapid sign flips / bounces are impossible.
+    const aCorr = 1 - Math.exp(-dtMs / 35);
+    this.corrVelXZ[0] += (targetCvx - this.corrVelXZ[0]) * aCorr;
+    this.corrVelXZ[1] += (targetCvz - this.corrVelXZ[1]) * aCorr;
+    // Never overshoot past the remaining pendingPos on either axis.
+    const clampStep = (step: number, rem: number) =>
+      rem >= 0 ? Math.max(0, Math.min(rem, step)) : Math.min(0, Math.max(rem, step));
+    const dxC = clampStep(this.corrVelXZ[0] * dt, this.pendingPos[0]);
+    const dzC = clampStep(this.corrVelXZ[1] * dt, this.pendingPos[2]);
+    const dyC = this.pendingPos[1] * (1 - Math.exp(-dtMs / yTau));
+
+    const maxYawCorrRate = (45 * Math.PI) / 180;
+    const targetYawRate = Math.max(
+      -maxYawCorrRate,
+      Math.min(maxYawCorrRate, this.pendingYaw / yawTauSec),
+    );
+    this.corrYawRate += (targetYawRate - this.corrYawRate) * aCorr;
+    const dyawC = clampStep(this.corrYawRate * dt, this.pendingYaw);
+
     this.pendingPos[0] -= dxC;
     this.pendingPos[1] -= dyC;
     this.pendingPos[2] -= dzC;
@@ -522,6 +551,7 @@ export class VrcCharacterSim {
         // Teleport: snap cleanly.
         this.pos = [...pose.position];
         this.pendingPos = [0, 0, 0];
+        this.corrVelXZ = [0, 0];
         this.velAir = [0, 0, 0];
         this.grounded = true;
         this.groundY = pose.position[1];
@@ -572,41 +602,24 @@ export class VrcCharacterSim {
 
   evaluate(t: number, source: VrcOriginWorldPose["source"], jumpParams?: VrcJumpParams): VrcCharacterSimState {
     this.stepTo(t, jumpParams);
-    const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
-    const stopped = !moveActive || this.wallBlocked;
-    const isStopRecoil = stopped &&
-      (this.pendingPos[0] * this.lastMoveDir[0] + this.pendingPos[2] * this.lastMoveDir[1]) < -0.005;
-    const stopTau = isStopRecoil ? 150 : 75;
-    const alongTauSec = (stopped ? Math.min(this.posTauMs, stopTau) : this.posTauMs) / 1000;
-    const perpTauSec = (stopped ? Math.min(this.posTauMs, stopTau) : 45) / 1000;
     const yTauSec = (this.grounded ? 35 : Math.min(this.posTauMs, 80)) / 1000;
-    const yawTauSec = this.yawTauMs / 1000;
-    const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
-    let bvx: number, bvz: number;
-    if (vSpd > 0.3) {
-      const ux = this.velCur[0] / vSpd, uz = this.velCur[2] / vSpd;
-      const vAlong = (this.pendingPos[0] * ux + this.pendingPos[2] * uz) / alongTauSec;
-      const vPerp = (-this.pendingPos[0] * uz + this.pendingPos[2] * ux) / perpTauSec;
-      bvx = vAlong * ux - vPerp * uz;
-      bvz = vAlong * uz + vPerp * ux;
-    } else {
-      bvx = this.pendingPos[0] / alongTauSec;
-      bvz = this.pendingPos[2] / alongTauSec;
-    }
+    const bvx = Math.abs(this.pendingPos[0]) > 1e-4 ? this.corrVelXZ[0] : 0;
+    const bvz = Math.abs(this.pendingPos[2]) > 1e-4 ? this.corrVelXZ[1] : 0;
+    const byaw = Math.abs(this.pendingYaw) > 1e-5 ? this.corrYawRate : 0;
     return {
       pose: {
         source,
         position: [this.pos[0], this.pos[1], this.pos[2]],
         yawRad: normalizeAngleRad(this.yaw),
       },
-      // Include the 1st-order observer bleed rate so webxr's 90 Hz extrapolation matches `pos`'s
-      // exact trajectory without a 60 Hz sawtooth between ORIGINUPDATE polls.
+      // Include the exact slew-limited observer bleed rate so webxr's 90 Hz extrapolation matches
+      // `pos`'s trajectory without a 60 Hz sawtooth between ORIGINUPDATE polls.
       velocity: [
         this.velCur[0] + bvx,
         this.velCur[1] + this.pendingPos[1] / yTauSec,
         this.velCur[2] + bvz,
       ],
-      yawRate: this.yawRateCur + this.pendingYaw / yawTauSec,
+      yawRate: this.yawRateCur + byaw,
     };
   }
 }
