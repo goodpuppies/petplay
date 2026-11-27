@@ -1,9 +1,8 @@
 name: CI
 
+# Pushes run CI through branch-build.yml (which also publishes the build for the updater) and tags
+# through release.yml; this file runs on its own for pull requests and by hand.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**/*.md", "markdown/**", "docs/**"]
   pull_request:
     paths-ignore: ["**/*.md", "markdown/**", "docs/**"]
   workflow_dispatch:

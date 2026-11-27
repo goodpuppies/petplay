@@ -1,0 +1,79 @@
+name: Branch build
+
+# Every push to a branch runs CI and, when it passes, publishes the binaries as a prerelease that
+# PetPlay's updater offers as the channel `<owner>/<repo>#<branch>` (classes/updater.ts). This runs
+# in forks too once their owner enables Actions, so a contributor's branch is installable from
+# Settings → Install → Update Channel without a release. Deleting a branch deletes its builds.
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**/*.md", "markdown/**", "docs/**"]
+  delete:
+
+# A newer push to the same branch supersedes a build still in progress.
+concurrency:
+  group: branch-build-${{ github.event_name == 'delete' && github.event.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: ci
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            classes/branchBuild.ts
+            classes/updateChunks.ts
+            utils/release-assets.ts
+            utils/publish-branch-build.ts
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: petplay-*
+          merge-multiple: true
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.7
+      - name: Index and hash
+        run: |
+          chmod +x dist/petplay dist/petplay-aarch64
+          deno run -A --no-config utils/release-assets.ts dist petplay petplay.exe petplay-aarch64
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          deno run -A --no-config utils/publish-branch-build.ts publish dist
+          petplay petplay.exe petplay-aarch64
+          petplay.chunks.json petplay.exe.chunks.json petplay-aarch64.chunks.json SHA256SUMS
+
+  cleanup:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            classes/branchBuild.ts
+            utils/publish-branch-build.ts
+          sparse-checkout-cone-mode: false
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.ref }}
+        run: deno run -A --no-config utils/publish-branch-build.ts delete-branch "$BRANCH"

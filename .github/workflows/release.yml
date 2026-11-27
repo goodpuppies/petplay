@@ -35,10 +35,11 @@ jobs:
           deno-version: v2.9.7
       - name: Build Unity origin package
         run: deno run -A --no-config utils/build-unity-origin-package.ts
-      - name: Hash release executables
-        run: |
-          cd dist
-          sha256sum petplay petplay.exe petplay-aarch64 PetPlay-VRCOrigin.unitypackage > SHA256SUMS
+      # Chunk indexes for delta updates (classes/updateChunks.ts), then SHA256SUMS over everything.
+      - name: Index and hash release files
+        run: >-
+          deno run -A --no-config utils/release-assets.ts dist
+          petplay petplay.exe petplay-aarch64 PetPlay-VRCOrigin.unitypackage
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -48,6 +49,9 @@ jobs:
             dist/petplay.exe
             dist/petplay-aarch64
             dist/PetPlay-VRCOrigin.unitypackage
+            dist/petplay.chunks.json
+            dist/petplay.exe.chunks.json
+            dist/petplay-aarch64.chunks.json
             dist/SHA256SUMS
             resources/licenses/raylib.txt
             resources/licenses/scap.txt
