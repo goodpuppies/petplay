@@ -89,6 +89,9 @@ export function recentLogLines(max = 200, grep?: string, width = 2000): string[]
 }
 
 function currentLogPath(): string | null {
+  // A checkout peer node logs to its own file (classes/peerNode.ts), not the checkout's logs/.
+  const override = Deno.env.get("PETPLAY_PROBE_LOG");
+  if (override) return override;
   const root = checkoutRoot();
   if (root == null) return join(logsDir(), "current.log");
   let newest: { path: string; mtime: number } | null = null;

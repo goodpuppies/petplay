@@ -72,6 +72,9 @@ Run with no arguments to start PetPlay.
                 (all --update commands take --json for one JSON object per line)
   --install-file=PATH [--sha256=HEX]
                 install that PetPlay executable (a local build) in place of this one
+  --peer-node=NAME --peer-with=OTHER[,…] [--peer-instance=WORD] [--agent-repl-port=N]
+                coop networking and the agent REPL only, without VR, in a synthesized
+                VRChat instance, for testing coop tools against a real second machine
   --install     install this PetPlay and start it with SteamVR
   --uninstall   remove the installed PetPlay and its SteamVR entry
   --help        this text`;

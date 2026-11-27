@@ -72,6 +72,29 @@ trust check sees a trusted sender. `eval` (`EVALJS` from a peer) runs only while
 Code Patches on; with it off, a trusted peer can still call ordinary actor functions but not run
 arbitrary code.
 
+## Testing without VR: peer nodes
+
+`petplay --peer-node=NAME --peer-with=OTHER` runs only PetPlay's coop networking (real iroh, the
+real topic server, `vrcPeers`, the remote policy) and the agent REPL: no SteamVR, GPU or window, so
+it runs from SSH. VRChat is synthesized: two nodes started with each other's names are in the same
+private test instance (`--peer-instance=WORD` picks a fresh one). Its identity, trust store,
+settings (Peer Code Patches on) and VRChat log live in `<state dir>/peer-node/NAME`.
+
+```sh
+# machine A (checkout)                     # machine B (a release build, e.g. over SSH)
+deno run -A petplay/petplay.ts \           petplay --peer-node=b --peer-with=a --peer-instance=t1
+  --peer-node=a --peer-with=b --peer-instance=t1 --agent-repl-port=3991
+curl -XPOST 127.0.0.1:3991/message -d '{"target":"vrcPeers","type":"TRUST","payload":{"displayName":"b"},"reply":true}'
+# …and the same on B with "a"; then every tool above works with --repl-port 3991:
+deno task peer --repl-port 3991 b status
+deno task peer-build --repl-port 3991 --peer b
+```
+
+A compiled node logs and restarts like a release run, so `peer-build` to it installs over the
+executable it runs from and the node comes back as the new build. Run B with `LOCALAPPDATA`
+(Windows) or `XDG_STATE_HOME` (Linux) pointing at a scratch folder to keep it away from that
+machine's real PetPlay.
+
 ## What `coop:verify` checks
 
 It asks this machine's `vrcPeers` (through the agent REPL on port 3987) for a probe of itself and of

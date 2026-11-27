@@ -1140,7 +1140,8 @@ async function localProbe(): Promise<PeerProbe> {
     viewing,
     actors: (inspected ?? [])
       .filter((a) => a.ownership !== "external")
-      .map((a) => ({ name: a.actorname ?? a.actorId.split("@")[0]!, actorId: a.actorId })),
+      // The id is `<name>@<uuid>`; actorname can be the module path the actor was added by.
+      .map((a) => ({ name: a.actorId.split("@")[0]!, actorId: a.actorId })),
     logErrors: recentLogErrors(),
   };
 }

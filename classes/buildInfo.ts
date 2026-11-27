@@ -46,7 +46,13 @@ export function getBuildInfo(): BuildInfo {
         target: info.target ?? Deno.build.target,
       };
     } catch {
-      cached = { version: "unknown", commit: null, built: null, mode: "unknown" };
+      cached = {
+        version: "unknown",
+        commit: null,
+        built: null,
+        mode: "unknown",
+        target: Deno.build.target,
+      };
     }
     return cached;
   }

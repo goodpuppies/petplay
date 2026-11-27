@@ -7,6 +7,7 @@ import { runLogParent, shouldRunLogParent } from "../classes/runLog.ts";
 import { runCliCommand } from "../classes/cli.ts";
 import { migrateLegacyWindowsConfig } from "../classes/appPaths.ts";
 import { reopenInOwnConsoleWindow } from "../classes/windowsOwnConsole.ts";
+import { parsePeerNodeArgs, runPeerNode } from "../classes/peerNode.ts";
 
 installNativeCrashTrace();
 initializeLinuxScheduling();
@@ -29,16 +30,19 @@ if (await dispatchChildModule(Deno.args) == null) {
   const cliExit = await runCliCommand(Deno.args);
   if (cliExit != null) Deno.exit(cliExit);
   migrateLegacyWindowsConfig();
+  // `--peer-node`: coop networking only, no VR, usually from SSH (classes/peerNode.ts).
+  const peerNode = parsePeerNodeArgs(Deno.args);
   // Double-clicked on Windows 11, the console went to Windows Terminal, whose taskbar button is
   // the terminal's; PetPlay reopens in its own console window, which shows PetPlay's icon.
-  if (reopenInOwnConsoleWindow(Deno.args)) Deno.exit(0);
+  if (!peerNode && reopenInOwnConsoleWindow(Deno.args)) Deno.exit(0);
   // A release run while a different build is installed asks whether to update it, and stops.
-  if (Deno.build.standalone) {
+  if (Deno.build.standalone && !peerNode) {
     const { offerUpdate } = await import("../classes/installer.ts");
     const updateExit = await offerUpdate(Deno.args);
     if (updateExit != null) Deno.exit(updateExit);
   }
   // The compiled release logs each run to a file through a thin parent; see runLog.
   if (shouldRunLogParent(Deno.args)) Deno.exit(await runLogParent());
+  if (peerNode) Deno.exit(await runPeerNode(peerNode));
   await startPetplayServer({ interactive: import.meta.main });
 }
