@@ -165,6 +165,25 @@ export interface VrcOriginSolverOptions {
   publishPositionEpsilonMeters?: number;
   /** Minimum yaw change (rad) to flag `changed = true` (default 0.05°). */
   publishYawEpsilonRad?: number;
+  /**
+   * `follow` (default): the avatar root turns with the head (VRChat in VR, both rigs, measured
+   * 2026-11-27), so HMD yaw + root yaw is the playspace yaw, steady while standing. It is
+   * low-passed over `followTauMs` to remove the swing from the root arriving later than the HMD
+   * pose. `hold`: the older model where the root ignores head look-around.
+   */
+  yawModel?: "follow" | "hold";
+  /** Low-pass time constant (ms) for the `follow` yaw model (default 500). */
+  followTauMs?: number;
+  /** In `follow`, a raw yaw change this large (rad) is a snap turn or teleport: no smoothing. */
+  followSnapRad?: number;
+  /**
+   * In `follow`, how far ahead (s) of the OpenVR pose VRChat's avatar root follows the head:
+   * VRChat poses the avatar with the HMD pose predicted for display (measured ~50 ms).
+   */
+  headLeadSeconds?: number;
+  /** In `follow`, head yaw rates (rad/s) from which the raw yaw is trusted less, down to not at
+   * all: fast head turns leave a few degrees of timing error in HMD yaw + root yaw. */
+  followHeadRateRad?: [number, number];
 }
 
 export interface VrcOriginSolverResult {
@@ -194,12 +213,24 @@ export class VrcOriginSolver {
   private prevWorldYawRad: number | null = null;
   private prevRawYawRad: number | null = null;
   private lastPublished: VrcWorldToStandingTransform | null = null;
+  private readonly yawModel: "follow" | "hold";
+  private readonly followTauMs: number;
+  private readonly followSnap: number;
+  private lastUpdateMs: number | null = null;
+  private readonly headLead: number;
+  private readonly followHeadRate: [number, number];
 
   constructor(options: VrcOriginSolverOptions = {}) {
     this.avatarYawEps = options.avatarYawEpsilonRad ?? 0.002;
     this.maxHeadBodyOffset = options.maxHeadBodyOffsetRad ?? (60 * Math.PI) / 180;
     this.publishPosEps = options.publishPositionEpsilonMeters ?? 0.0005;
     this.publishYawEps = options.publishYawEpsilonRad ?? (0.05 * Math.PI) / 180;
+    this.yawModel = options.yawModel ?? "follow";
+    this.followTauMs = options.followTauMs ?? 500;
+    this.followSnap = options.followSnapRad ?? (15 * Math.PI) / 180;
+    this.headLead = options.headLeadSeconds ?? 0.05;
+    this.followHeadRate = options.followHeadRateRad ??
+      [(45 * Math.PI) / 180, (120 * Math.PI) / 180];
   }
 
   reset(): void {
@@ -207,6 +238,7 @@ export class VrcOriginSolver {
     this.prevWorldYawRad = null;
     this.prevRawYawRad = null;
     this.lastPublished = null;
+    this.lastUpdateMs = null;
   }
 
   setScale(scale: number): void {
@@ -223,13 +255,35 @@ export class VrcOriginSolver {
     worldPose: VrcOriginWorldPose,
     hmdMatrix: Matrix34Tuple,
     stickTurning = false,
+    nowMs = performance.now(),
+    hmdYawRateRad = 0,
   ): VrcOriginSolverResult {
     const hmdPos: Vec3 = [hmdMatrix[0][3], hmdMatrix[1][3], hmdMatrix[2][3]];
     const hmdYaw = hmdYawRightHandedRad(hmdMatrix);
     const rawYaw = normalizeAngleRad(hmdYaw + worldPose.yawRad);
 
+    const dtMs = this.lastUpdateMs === null ? 0 : Math.max(0, nowMs - this.lastUpdateMs);
+    this.lastUpdateMs = nowMs;
     if (this.yawRad === null || this.prevWorldYawRad === null || this.prevRawYawRad === null) {
       this.yawRad = rawYaw;
+    } else if (this.yawModel === "follow") {
+      // Pair the root with the head pose VRChat used for it (predicted ahead for display).
+      const followYaw = normalizeAngleRad(rawYaw + hmdYawRateRad * this.headLead);
+      const err = angleDiffRad(followYaw, this.yawRad);
+      const rate = Math.abs(hmdYawRateRad);
+      const [slow, fast] = this.followHeadRate;
+      const trust = rate <= slow ? 1 : rate >= fast ? 0 : (fast - rate) / (fast - slow);
+      if (stickTurning) {
+        // The turn stick turns the playspace: follow the root at once, no smoothing lag.
+        this.yawRad = normalizeAngleRad(
+          this.yawRad + angleDiffRad(worldPose.yawRad, this.prevWorldYawRad),
+        );
+      } else if (Math.abs(err) > this.followSnap && trust === 1) {
+        this.yawRad = followYaw;
+      } else {
+        const k = (1 - Math.exp(-dtMs / this.followTauMs)) * trust;
+        this.yawRad = normalizeAngleRad(this.yawRad + err * k);
+      }
     } else {
       const dAvatarYaw = angleDiffRad(worldPose.yawRad, this.prevWorldYawRad);
       const prevErr = Math.abs(angleDiffRad(this.prevRawYawRad, this.yawRad));
@@ -1033,10 +1087,15 @@ export class VrcRootPredictor {
     const { pose, t } = sample;
     this.source = pose.source;
     const prev = this.lastPose;
-    // Per axis: VRChat sometimes freezes one axis's contacts while another keeps moving, and an
-    // unchanged axis in a moving sample is stale, not a measurement.
-    const freshAxes = pose.position.map((v, k) => !prev || v !== prev.position[k]);
-    const positionChanged = freshAxes.some((fresh) => fresh);
+    // Per axis: with the v1 proximity rig VRChat sometimes freezes one axis's contacts while
+    // another keeps moving, so an unchanged axis in a moving sample is stale, not a measurement.
+    // v2 reports each axis exactly: an unchanged axis is level (walking flat after a step), and
+    // skipping it would let the velocity learned on the step run on unchecked.
+    const changedAxes = pose.position.map((v, k) => !prev || v !== prev.position[k]);
+    const positionChanged = changedAxes.some((changed) => changed);
+    const freshAxes = pose.source === "petplay-origin-v2"
+      ? changedAxes.map(() => true)
+      : changedAxes;
     const yawChanged = !prev || pose.yawRad !== prev.yawRad;
     this.lastPose = pose;
 

@@ -374,7 +374,15 @@ async function pollOriginOnce(): Promise<boolean> {
   if (!hmdPose?.bPoseIsValid) return false;
   const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
 
-  const raw = solver.update(worldPose, hmdMatrix, predictor.isStickTurning());
+  // OpenVR's angular velocity is in tracking space: +Y is counter-clockwise, as yaw RH.
+  const hmdYawRate = hmdPose.vAngularVelocity?.v?.[1] ?? 0;
+  const raw = solver.update(
+    worldPose,
+    hmdMatrix,
+    predictor.isStickTurning(),
+    performance.now(),
+    hmdYawRate,
+  );
   const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
   lastHeadYawRate = Math.abs(hmdPose.vAngularVelocity?.v?.[1] ?? 0);
   hmdTrace.push([

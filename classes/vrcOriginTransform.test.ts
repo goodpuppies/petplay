@@ -106,9 +106,9 @@ Deno.test("room-scale walking keeps VRChat world origin invariant at arbitrary p
   }
 });
 
-Deno.test("head-only look-around does not drift playspace yaw, and body catch-up keeps it locked", () => {
+Deno.test("hold model: head-only look-around does not drift playspace yaw, and body catch-up keeps it locked", () => {
   const trueYaw = 0.5;
-  const solver = new VrcOriginSolver();
+  const solver = new VrcOriginSolver({ yawModel: "hold" });
 
   // Initial aligned state.
   let res = solver.update(makeWorldPose([1, 0, 2], trueYaw), makeHmdMatrix([0, 1.6, 0], 0));
@@ -127,9 +127,9 @@ Deno.test("head-only look-around does not drift playspace yaw, and body catch-up
   assertAlmostEquals(res.transform.yawRad, trueYaw, 1e-6);
 });
 
-Deno.test("joystick snap-turn and smooth-turn update playspace yaw accurately even with head offset", () => {
+Deno.test("hold model: joystick snap-turn and smooth-turn update playspace yaw accurately even with head offset", () => {
   const trueYaw = 0.2;
-  const solver = new VrcOriginSolver();
+  const solver = new VrcOriginSolver({ yawModel: "hold" });
 
   // Start aligned.
   solver.update(makeWorldPose([0, 0, 0], trueYaw), makeHmdMatrix([0, 1.6, 0], 0));
@@ -200,8 +200,8 @@ function lockStep(
   return lock.update(raw.transform, world, hmdPos, hmdSpeed, now);
 }
 
-Deno.test("room lock: head motion against a stale avatar root leaves the output frozen", () => {
-  const solver = new VrcOriginSolver();
+Deno.test("hold model: room lock: head motion against a stale avatar root leaves the output frozen", () => {
+  const solver = new VrcOriginSolver({ yawModel: "hold" });
   const lock = new VrcOriginRoomLock();
   const world = makeWorldPose([12, 0.6, -22], 0.1);
   let t = 0;
@@ -518,8 +518,8 @@ Deno.test("stick turning: yaw follows the stick, stops on release, ignores the l
   }
 });
 
-Deno.test("solver: while the stick turns, avatar yaw changes apply 1:1 even toward the old yaw", () => {
-  const solver = new VrcOriginSolver();
+Deno.test("hold model: solver: while the stick turns, avatar yaw changes apply 1:1 even toward the old yaw", () => {
+  const solver = new VrcOriginSolver({ yawModel: "hold" });
   solver.update(makeWorldPose([0, 0, 0], 0.5), makeHmdMatrix([0, 1.6, 0], 0));
   // Head turned 30° earlier (body didn't follow): playspace yaw stays 0.5.
   const head = (30 * Math.PI) / 180;
@@ -531,4 +531,61 @@ Deno.test("solver: while the stick turns, avatar yaw changes apply 1:1 even towa
     true,
   );
   assertAlmostEquals(r.transform.yawRad, 0.5 - (10 * Math.PI) / 180, 1e-9);
+});
+
+Deno.test("follow model: standing look-around with the root turning late keeps the room lock", () => {
+  // VRChat in VR turns the avatar root with the head pose it predicts for display, ~50 ms ahead
+  // of the OpenVR pose PetPlay reads (measured 2026-11-27).
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  const playspace = -0.9;
+  const world = (rootYaw: number) => makeWorldPose([9, 0.2, -4], rootYaw);
+  // +-8.6 deg look-around, then a hard head shake (+-40 deg at ~300 deg/s).
+  const headAt = (t: number) =>
+    t < 4000 ? 0.6 + 0.15 * Math.sin(t / 300) : 0.6 + 0.7 * Math.sin((t - 4000) / 130);
+  let res = null;
+  let lockedYaw: number | null = null;
+  let breaks = 0;
+  for (let t = 0; t < 8000; t += 11) {
+    const rootYaw = playspace - headAt(t + 50);
+    const rate = (headAt(t + 1) - headAt(t - 1)) / 0.002;
+    const raw = solver.update(
+      world(rootYaw),
+      makeHmdMatrix([0.4, 1.6, -0.4], headAt(t)),
+      false,
+      t,
+      rate,
+    );
+    const prevMode = res?.mode;
+    res = lock.update(raw.transform, world(rootYaw), [0.4, 1.6, -0.4], 0.05, t);
+    if (prevMode === "locked" && res.mode === "moving") breaks++;
+    if (res.mode === "locked") lockedYaw ??= res.transform.yawRad;
+  }
+  assertEquals(breaks, 0);
+  assert(lockedYaw !== null);
+  assertAlmostEquals(angleDiffRad(lockedYaw, playspace), 0, (1 * Math.PI) / 180);
+});
+
+Deno.test("follow model: snap turns pass at once, stick turns apply 1:1", () => {
+  const solver = new VrcOriginSolver();
+  let t = 0;
+  solver.update(makeWorldPose([0, 0, 0], 0.2), makeHmdMatrix([0, 1.6, 0], 0), false, t);
+  const snap = (45 * Math.PI) / 180;
+  let r = solver.update(
+    makeWorldPose([0, 0, 0], 0.2 + snap),
+    makeHmdMatrix([0, 1.6, 0], 0),
+    false,
+    t += 11,
+  );
+  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + snap), 0, 1e-9);
+  const step = (2 * Math.PI) / 180;
+  for (let i = 1; i <= 5; i++) {
+    r = solver.update(
+      makeWorldPose([0, 0, 0], 0.2 + snap + i * step),
+      makeHmdMatrix([0, 1.6, 0], 0),
+      true,
+      t += 11,
+    );
+  }
+  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + snap + 5 * step), 0, 1e-9);
 });
