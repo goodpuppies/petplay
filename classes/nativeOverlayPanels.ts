@@ -8,7 +8,8 @@
  * - Caps panel redraws per frame so large windows (Settings) do not hitch the render loop.
  */
 import * as THREE from "three";
-import { OpenVrNativeOverlays } from "./openVrNativeOverlays.ts";
+import { type NativeOverlayTextureInput, OpenVrNativeOverlays } from "./openVrNativeOverlays.ts";
+import type { DmabufBankPool } from "./overlayPresenterNative.ts";
 import { followKey, type RenderAnchor, type RenderAnchorSpace } from "./overlayRenderTracking.ts";
 import type { WebXROverlayRaylib } from "./webxrOverlayRaylib.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
@@ -199,8 +200,25 @@ export function stripReadyNativePanels(
 
 const NONE: ReadonlySet<string> = new Set();
 
+export type NativeSharedTextureBackend = {
+  createPool(width: number, height: number): DmabufBankPool | null;
+  bindOverlay(overlayHandle: bigint, sharedHandle: bigint): number;
+  finishFence(): number;
+};
+
+const SHARED_POOL_MAX_BYTES = 128 * 1024 * 1024;
+const SHARED_RETIRE_FRAMES = 4;
+
 export class NativePanelOverlayLayer {
   private readonly overlays: OpenVrNativeOverlays;
+  private readonly sharedBackend?: NativeSharedTextureBackend;
+  /** Active 2-slot zero-copy shared pools keyed by `surfaceId`. */
+  private readonly sharedActive = new Map<string, { pool: DmabufBankPool; next: number }>();
+  /** Retired shared pools waiting a few frames before returning to `sharedIdle`. */
+  private sharedRetired: Array<{ pool: DmabufBankPool; frames: number }> = [];
+  /** Idle shared pools reusable by size, bounded by `SHARED_POOL_MAX_BYTES`. */
+  private sharedIdle: Array<{ size: string; bytes: number; pool: DmabufBankPool }> = [];
+  private sharedIdleBytes = 0;
   /** Last rendered `(contentRevision, textureWidth, textureHeight)` per `surfaceId`. */
   private readonly drawn = new Map<string, { rev: number; w: number; h: number }>();
   private targetGeneration = -1;
@@ -210,10 +228,23 @@ export class NativePanelOverlayLayer {
     panels: 0,
     panelRedraws: 0,
     frames: 0,
+    transport: "gl" as "shared" | "gl",
   };
 
-  constructor(overlayPointer: Deno.PointerValue, keyPrefix: string, namePrefix: string) {
-    this.overlays = new OpenVrNativeOverlays(overlayPointer, keyPrefix, namePrefix);
+  constructor(
+    overlayPointer: Deno.PointerValue,
+    keyPrefix: string,
+    namePrefix: string,
+    sharedBackend?: NativeSharedTextureBackend,
+  ) {
+    this.sharedBackend = sharedBackend;
+    this.stats.transport = sharedBackend ? "shared" : "gl";
+    this.overlays = new OpenVrNativeOverlays(
+      overlayPointer,
+      keyPrefix,
+      namePrefix,
+      sharedBackend ? (h, sh) => sharedBackend.bindOverlay(h, sh) : undefined,
+    );
   }
 
   /** Surfaces whose SteamVR quads are live and safe to omit from the eye image. */
@@ -313,7 +344,7 @@ export class NativePanelOverlayLayer {
         prev.w !== camera.textureWidth ||
         prev.h !== camera.textureHeight;
 
-      let texture: { id: number; width: number; height: number } | undefined;
+      let texture: NativeOverlayTextureInput | undefined;
       if (needsDraw && redrawsThisFrame < MAX_PANEL_REDRAWS_PER_FRAME) {
         ensureGrouped();
         const rootUi: WebXRRaythreeUiSnapshot = {
@@ -326,11 +357,7 @@ export class NativePanelOverlayLayer {
           keep.delete(surface.surfaceId);
           continue;
         }
-        texture = {
-          id: renderer.renderNativePanel(surface.surfaceId, rootUi, camera),
-          width: camera.textureWidth,
-          height: camera.textureHeight,
-        };
+        texture = this.renderPanelTexture(surface.surfaceId, rootUi, camera, renderer);
         this.drawn.set(surface.surfaceId, {
           rev: surface.contentRevision,
           w: camera.textureWidth,
@@ -361,10 +388,112 @@ export class NativePanelOverlayLayer {
     this.stats.frames++;
   }
 
+  private renderPanelTexture(
+    key: string,
+    rootUi: WebXRRaythreeUiSnapshot,
+    camera: NativePanelCamera,
+    renderer: WebXROverlayRaylib,
+  ): NativeOverlayTextureInput {
+    const backend = this.sharedBackend;
+    if (backend) {
+      const entry = this.acquireSharedPool(key, camera.textureWidth, camera.textureHeight, backend);
+      if (entry) {
+        const slotIdx = entry.next;
+        entry.next ^= 1;
+        const slot = entry.pool.slots[slotIdx]!;
+        const lockErr = entry.pool.lockBank(slotIdx);
+        if (lockErr !== 0) throw new Error(`Shared native panel lockBank failed: ${lockErr}`);
+        try {
+          renderer.renderNativePanelIntoFbo(
+            slot,
+            camera.textureWidth,
+            camera.textureHeight,
+            rootUi,
+            camera,
+          );
+          backend.finishFence();
+        } finally {
+          entry.pool.unlockBank(slotIdx);
+        }
+        this.stats.transport = "shared";
+        return {
+          sharedHandle: slot.sharedHandle,
+          width: camera.textureWidth,
+          height: camera.textureHeight,
+        };
+      }
+    }
+    this.stats.transport = "gl";
+    return {
+      id: renderer.renderNativePanel(key, rootUi, camera),
+      width: camera.textureWidth,
+      height: camera.textureHeight,
+    };
+  }
+
+  private acquireSharedPool(
+    key: string,
+    width: number,
+    height: number,
+    backend: NativeSharedTextureBackend,
+  ): { pool: DmabufBankPool; next: number } | null {
+    let entry = this.sharedActive.get(key);
+    if (entry && (entry.pool.width !== width || entry.pool.height !== height)) {
+      this.sharedRetired.push({ pool: entry.pool, frames: SHARED_RETIRE_FRAMES });
+      this.sharedActive.delete(key);
+      entry = undefined;
+    }
+    if (!entry) {
+      const size = `${width}x${height}`;
+      let pool: DmabufBankPool | null = null;
+      for (let i = this.sharedIdle.length - 1; i >= 0; i--) {
+        const idle = this.sharedIdle[i]!;
+        if (idle.size === size) {
+          this.sharedIdle.splice(i, 1);
+          this.sharedIdleBytes -= idle.bytes;
+          pool = idle.pool;
+          break;
+        }
+      }
+      pool ??= backend.createPool(width, height);
+      if (!pool) return null;
+      entry = { pool, next: 0 };
+      this.sharedActive.set(key, entry);
+    }
+    return entry;
+  }
+
+  private poolSharedPool(pool: DmabufBankPool): void {
+    const bytes = pool.width * pool.height * 8 * pool.bankCount;
+    if (bytes > SHARED_POOL_MAX_BYTES) {
+      pool.destroy();
+      return;
+    }
+    this.sharedIdle.push({ size: `${pool.width}x${pool.height}`, bytes, pool });
+    this.sharedIdleBytes += bytes;
+    while (this.sharedIdleBytes > SHARED_POOL_MAX_BYTES && this.sharedIdle.length > 0) {
+      const oldest = this.sharedIdle.shift()!;
+      this.sharedIdleBytes -= oldest.bytes;
+      oldest.pool.destroy();
+    }
+  }
+
   private retain(keep: ReadonlySet<string>, renderer: WebXROverlayRaylib): void {
     this.overlays.retain(keep);
     const held = this.overlays.keys();
     renderer.retainNativeTargets(held);
+    for (const [key, entry] of this.sharedActive) {
+      if (held.has(key)) continue;
+      this.sharedRetired.push({ pool: entry.pool, frames: SHARED_RETIRE_FRAMES });
+      this.sharedActive.delete(key);
+    }
+    if (this.sharedRetired.length > 0) {
+      this.sharedRetired = this.sharedRetired.filter((retired) => {
+        if (--retired.frames > 0) return true;
+        this.poolSharedPool(retired.pool);
+        return false;
+      });
+    }
     for (const key of this.drawn.keys()) if (!held.has(key)) this.drawn.delete(key);
   }
 
@@ -375,6 +504,13 @@ export class NativePanelOverlayLayer {
       console.warn("[native-overlays] cleanup:", error);
     }
     this.drawn.clear();
+    for (const entry of this.sharedActive.values()) entry.pool.destroy();
+    this.sharedActive.clear();
+    for (const retired of this.sharedRetired) retired.pool.destroy();
+    this.sharedRetired = [];
+    for (const idle of this.sharedIdle) idle.pool.destroy();
+    this.sharedIdle = [];
+    this.sharedIdleBytes = 0;
     try {
       renderer?.clearNativeTargets();
     } catch (error) {

@@ -308,6 +308,11 @@ export class OverlayPresenterNative {
       sharedHandle,
     );
   }
+  /** Wait for all prior OpenGL commands on the current context to complete on the GPU. */
+  finishFence(): number {
+    if (!this.library.symbols.pp_overlay_fence_finish) return 0;
+    return this.library.symbols.pp_overlay_fence_finish(this.stats);
+  }
   /**
    * Bank-flipped projection present:
    * 1. Wait for producer GPU fence on the hidden bank's DMA-BUFs.

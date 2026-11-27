@@ -19,6 +19,10 @@ import {
 import { withOverlayFlipY } from "./overlayTextureFlip.ts";
 import { playspaceFrame } from "./playspaceFrame.ts";
 
+export type NativeOverlayTextureInput =
+  | { id: number; sharedHandle?: undefined; width: number; height: number }
+  | { sharedHandle: bigint; id?: undefined; width: number; height: number };
+
 export type NativeOverlayFrame = {
   key: string;
   /** Centre of the quad in PetPlay's frame, column-major rigid 4×4: +Z faces the viewer. */
@@ -27,8 +31,8 @@ export type NativeOverlayFrame = {
   device?: { index: number; relative: ArrayLike<number> };
   widthMeters: number;
   texelAspect?: number;
-  /** GL texture holding a new picture; omit while unchanged. */
-  texture?: { id: number; width: number; height: number };
+  /** GL texture or zero-copy DMA-BUF/DXGI shared handle holding a new picture; omit while unchanged. */
+  texture?: NativeOverlayTextureInput;
   sortOrder?: number;
 };
 
@@ -79,8 +83,13 @@ export class OpenVrNativeOverlays {
   private created = 0;
   private readonly universePose = new Float32Array(12);
   private readonly heldSize = new Uint32Array(2);
-  private readonly bounds = createStruct<OpenVR.TextureBounds>(
+  private readonly glBounds = createStruct<OpenVR.TextureBounds>(
     withOverlayFlipY({ uMin: 0, uMax: 1, vMin: 0, vMax: 1 }),
+    OpenVR.TextureBoundsStruct,
+  );
+  // OpenGL FBO is bottom-up while Vulkan/DMA-BUF and D3D11/DXGI sample top-down.
+  private readonly sharedBounds = createStruct<OpenVR.TextureBounds>(
+    withOverlayFlipY({ uMin: 0, uMax: 1, vMin: 1, vMax: 0 }),
     OpenVR.TextureBoundsStruct,
   );
   private readonly textures = new Map<
@@ -94,6 +103,7 @@ export class OpenVrNativeOverlays {
     overlayPointer: Deno.PointerValue,
     private readonly keyPrefix: string,
     private readonly namePrefix: string,
+    private readonly bindSharedOverlay?: (handle: bigint, sharedHandle: bigint) => number,
   ) {
     if (!overlayPointer) throw new Error("Invalid IVROverlay pointer");
     this.overlay = new OpenVR.IVROverlay(overlayPointer);
@@ -134,24 +144,21 @@ export class OpenVrNativeOverlays {
           this.evictOneSpareOrHidden();
         }
         if (this.entries.size >= MAX_TOTAL_OVERLAYS) return false;
-        const quad = this.acquire(size, texture.id, frame.key);
+        const quad = this.acquire(size, texture, frame.key);
         textured = true;
         entry = this.createEntry(quad);
         this.entries.set(frame.key, entry);
       } else if (entry.quad.size !== size) {
-        // Try updating in place first (works natively on Linux SteamVR 2.18.4); only swap
-        // overlays if SteamVR reports it locked the slot to the old size (Windows vrclient).
-        this.check(
-          this.overlay.SetOverlayTexture(entry.quad.handle, this.textureStruct(texture.id)),
-          "SetOverlayTexture",
-        );
-        const held = this.sizeHeld(entry.quad.handle);
+        // Try updating in place first (works natively on Linux SteamVR 2.18.4 & shared textures);
+        // only swap overlays if SteamVR reports it locked the slot to the old size (Windows GL).
+        this.applyTexture(entry.quad.handle, texture);
+        const held = texture.sharedHandle !== undefined ? size : this.sizeHeld(entry.quad.handle);
         if (held == null || held === size) {
           entry.quad.size = size;
           textured = true;
         } else {
           this.mismatches++;
-          const quad = this.acquire(size, texture.id, frame.key);
+          const quad = this.acquire(size, texture, frame.key);
           textured = true;
           replaced = entry.quad;
           entry.quad = quad;
@@ -193,10 +200,7 @@ export class OpenVrNativeOverlays {
       }
       if (texture) {
         if (!textured) {
-          this.check(
-            this.overlay.SetOverlayTexture(handle, this.textureStruct(texture.id)),
-            "SetOverlayTexture",
-          );
+          this.applyTexture(handle, texture);
         }
         entry.presents++;
       }
@@ -326,19 +330,37 @@ export class OpenVrNativeOverlays {
     }
   }
 
-  private acquire(size: string, texture: number, key: string): Quad {
-    const struct = this.textureStruct(texture);
+  private applyTexture(handle: OpenVR.OverlayHandle, texture: NativeOverlayTextureInput): void {
+    const bounds = texture.sharedHandle !== undefined ? this.sharedBounds[0] : this.glBounds[0];
+    this.check(this.overlay.SetOverlayTextureBounds(handle, bounds), "SetOverlayTextureBounds");
+    if (texture.sharedHandle !== undefined) {
+      if (!this.bindSharedOverlay) {
+        throw new Error("Shared-texture native overlay submitted without bindSharedOverlay");
+      }
+      const err = this.bindSharedOverlay(handle, texture.sharedHandle);
+      if (err !== 0) {
+        throw new Error(`bindDmabufOverlay failed: ${OpenVR.OverlayError[err] ?? err}`);
+      }
+    } else {
+      this.check(
+        this.overlay.SetOverlayTexture(handle, this.textureStruct(texture.id)),
+        "SetOverlayTexture",
+      );
+    }
+  }
+
+  private acquire(size: string, texture: NativeOverlayTextureInput, key: string): Quad {
     const mismatched: Quad[] = [];
     try {
       for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
         const quad = this.unpark(size) ?? this.create();
         try {
-          this.check(this.overlay.SetOverlayTexture(quad.handle, struct), "SetOverlayTexture");
+          this.applyTexture(quad.handle, texture);
         } catch (error) {
           releaseAndDestroyOpenVrOverlay(this.overlay, quad.handle);
           throw error;
         }
-        const held = this.sizeHeld(quad.handle);
+        const held = texture.sharedHandle !== undefined ? size : this.sizeHeld(quad.handle);
         if (held == null || held === size) {
           quad.size = size;
           this.overlay.SetOverlayName(quad.handle, `${this.namePrefix} (${key})`);
@@ -409,7 +431,7 @@ export class OpenVrNativeOverlays {
     const handle = createOpenVrOverlayWithCleanup(this.overlay, overlayKey, this.namePrefix);
     try {
       this.check(
-        this.overlay.SetOverlayTextureBounds(handle, this.bounds[0]),
+        this.overlay.SetOverlayTextureBounds(handle, this.glBounds[0]),
         "SetOverlayTextureBounds",
       );
       this.check(

@@ -1576,11 +1576,30 @@ async function run(options: Start) {
       // Run native panel updates AFTER panorama submission so panel redraws never stall panorama.
       if (wantNativePanels) {
         try {
-          nativeLayer ??= new NativePanelOverlayLayer(
-            pointers.overlay,
-            `${overlayKey}.native`,
-            overlayName,
-          );
+          if (!nativeLayer) {
+            const isWin = Deno.build.os === "windows";
+            const native = desiredDmabufBanks > 0 ? tryNativePresenter() : null;
+            const bankContextPtr = !native?.hasDmabufBanks
+              ? null
+              : isWin
+              ? pointers.system
+              : acquireIpcResourceManager();
+            const sharedBackend = native && (isWin || bankContextPtr)
+              ? {
+                createPool: (w: number, h: number) =>
+                  native.createDmabufBankPool(bankContextPtr, w, h, 2, 1),
+                bindOverlay: (handle: bigint, sharedHandle: bigint) =>
+                  native.bindDmabufOverlay(handle, sharedHandle),
+                finishFence: () => native.finishFence(),
+              }
+              : undefined;
+            nativeLayer = new NativePanelOverlayLayer(
+              pointers.overlay,
+              `${overlayKey}.native`,
+              overlayName,
+              sharedBackend,
+            );
+          }
           nativeLayer.texelsPerPixel = state.nativeTexelsPerPixel;
           nativeLayer.present(payload, renderer, {
             devices: nativeDevices,

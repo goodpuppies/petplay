@@ -271,8 +271,8 @@ The aim is for PR #11 to *delete* workarounds rather than bring them into `main`
 
 ## 5. Related generic issues (tracked in `markdown/issues/`)
 
-- [native-panel-overlays-use-gl-submit-instead-of-shared-textures](issues/native-panel-overlays-use-gl-submit-instead-of-shared-textures/README.md):
-  upgrade native panel quad submission from `TextureType_OpenGL` to zero-copy DMA-BUF / DXGI shared textures.
+- [FIXED-native-panel-overlays-use-gl-submit-instead-of-shared-textures](issues/FIXED-native-panel-overlays-use-gl-submit-instead-of-shared-textures/README.md):
+  upgraded native panel quad submission to zero-copy DMA-BUF / DXGI shared textures (verified in `vrlab` with `transport: "shared"`).
 - [overlay-pose-prediction-and-pacing-latency](issues/overlay-pose-prediction-and-pacing-latency/README.md):
   a possible one-frame pose prediction mismatch and late-start pacing in PANO and PROJ.
 - [projection-mode-sorts-behind-desktop-quads](issues/projection-mode-sorts-behind-desktop-quads/README.md):

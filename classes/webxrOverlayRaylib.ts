@@ -996,6 +996,47 @@ export class WebXROverlayRaylib {
     return target;
   }
 
+  /** Draw a native UI panel head-on into an externally owned shared FBO (DMA-BUF / DXGI). */
+  renderNativePanelIntoFbo(
+    slot: { fbo: number; colorTexture: number; depthRbo: number },
+    width: number,
+    height: number,
+    ui: WebXRRaythreeRenderPayload["ui"],
+    camera: {
+      viewMatrix: Float32Array;
+      projectionMatrix: Float32Array;
+      textureWidth: number;
+      textureHeight: number;
+    },
+  ): void {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target: raylib.RenderTexture2D = {
+      id: slot.fbo,
+      texture: {
+        id: slot.colorTexture,
+        width,
+        height,
+        mipmaps: 1,
+        format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+      },
+      depth: {
+        id: slot.depthRbo,
+        width,
+        height,
+        mipmaps: 1,
+        format: 19,
+      },
+    };
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      sceneRenderer.renderUiOnly(ui, camera, { width, height });
+    } finally {
+      raylib.H.EndTextureMode();
+    }
+  }
+
   /** Draw a native UI panel head-on into its own double-buffered GL texture. */
   renderNativePanel(
     key: string,

@@ -70,14 +70,15 @@ a slot-size mismatch (Windows).
 
 ## Current scope & future work
 
+- **Zero-copy shared-texture submission (DMA-BUF / DXGI):** Native panel quads use the same
+  2-slot `DmabufBankPool` (`OverlayPresenterNative.createDmabufBankPool` + `bindDmabufOverlay`)
+  used by the panorama banks — DMA-BUF / Vulkan on Linux and DXGI shared handles on Windows — with
+  automatic fallback to `TextureType_OpenGL` when shared banks are disabled (`dmabufBanks = 0`).
+  Shared textures bypass `vrclient`'s GL copy path and invert V (`vMin: 1, vMax: 0`) for top-down
+  Vulkan/D3D11 sampling.
 - **Flat UI panels only (v1):** Grab-box outlines (now a single merged mesh in
   `classes/environment/grabbox.tsx`) and pointer lasers/dots remain in the eye image for v1 so
   beam and hit-dot stay locked to one pose sample and depth-test against panels.
-- **Shared-texture submission (DMA-BUF / DXGI):** Native panel quads currently submit via
-  `TextureType_OpenGL` (zero per-frame cost while panels are static, since `SetOverlayTexture` is
-  only called on `contentRevision` changes). Moving active panel updates onto the zero-copy
-  DMA-BUF (Linux) / DXGI shared-handle (Windows) path used by the panorama banks is the next
-  performance upgrade — and should also eliminate Windows's GL slot-size lock entirely.
 
 ## Code
 

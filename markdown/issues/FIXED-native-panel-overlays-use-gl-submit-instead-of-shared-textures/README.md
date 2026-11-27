@@ -1,6 +1,6 @@
 # Native UI panel overlays submit via OpenGL instead of zero-copy shared textures
 
-Status: open
+Status: fixed 2026-11-27 (`classes/nativeOverlayPanels.ts`, `classes/openVrNativeOverlays.ts`, `petplay/overlayRenderOwner.ts`)
 
 ## What happens
 
