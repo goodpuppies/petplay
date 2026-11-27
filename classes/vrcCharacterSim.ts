@@ -130,7 +130,7 @@ export class VrcCharacterSim {
     this.latencyMs = options.latencyMs ?? 15;
     this.posTauMs = options.posCorrectionTauMs ?? 240;
     this.yawTauMs = options.yawCorrectionTauMs ?? 20;
-    this.turnGain = options.turnGainRadPerSec ?? 2.53;
+    this.turnGain = options.turnGainRadPerSec ?? Math.PI;
   }
 
   get isStarted(): boolean {
@@ -247,7 +247,8 @@ export class VrcCharacterSim {
     if (prevTurn && !nextTurn) {
       this.turnReleasedAt = t;
       this.turnAnchor = null;
-      // Drop stale pre-stop yaw residual so a delayed OSC burst cannot twist backwards on release.
+      // Drop stale pre-stop yaw rate/residual so a delayed OSC burst cannot coast past stop.
+      this.oscYawRate = 0;
       this.pendingYaw = 0;
       this.corrYawRate = 0;
     }
@@ -282,11 +283,12 @@ export class VrcCharacterSim {
     this.yawRateCur = turnEff !== 0 ? this.turnGain * turnEff - this.hmdYawRate : effOscYawRate;
     this.yaw += this.yawRateCur * dt;
 
-    // 2. Wall-silence check: holding stick for >180 ms with zero OSC position updates -> blocked.
+    // 2. Wall-silence check: holding stick for >350 ms with zero OSC position updates -> blocked.
+    // Normal VRChat OSC burst gaps can reach ~220 ms while running, so keep the threshold above that.
     const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
     if (
       this.grounded && moveActive &&
-      t - this.movePressedAt >= 180 && t - this.lastPosOscT >= 180
+      t - this.movePressedAt >= 350 && t - this.lastPosOscT >= 350
     ) {
       this.wallBlocked = true;
     }
@@ -377,15 +379,16 @@ export class VrcCharacterSim {
     const dyC = this.pendingPos[1] * (1 - Math.exp(-dtMs / yTau));
 
     // Cap yaw correction rate so rotation never twists backwards faster than physically plausible:
-    // active turns can shed gain mismatch smoothly (60°/s, never reversing turn direction), while
-    // post-release recoil settles gently (25°/s) before the solver re-locks playspace yaw.
+    // active turns can shed gain mismatch smoothly (120°/s, never reversing turn direction),
+    // post-release forward catch-up settles at up to 90°/s before solver re-lock, and backward
+    // recoil stays gentle (25°/s).
     const isYawStopRecoil = turnEff === 0 && this.lastTurnDir !== 0 &&
       this.pendingYaw * this.lastTurnDir < -0.002;
     const maxYawCorrRate = turnEff !== 0
-      ? (60 * Math.PI) / 180
+      ? (120 * Math.PI) / 180
       : isYawStopRecoil
       ? (25 * Math.PI) / 180
-      : (35 * Math.PI) / 180;
+      : (90 * Math.PI) / 180;
     const yawCorrTauSec = isYawStopRecoil ? 0.12 : yawTauSec;
     let targetYawRate = Math.max(
       -maxYawCorrRate,
@@ -587,11 +590,18 @@ export class VrcCharacterSim {
       this.lastPosOscT = t;
     }
     if (yawChanged) {
-      const dtY = (t - this.lastYawOscT) / 1000;
-      if (dtY > 0.008 && dtY < 0.12) {
-        const instRate = angleDiffRad(pose.yawRad, this.lastOscYaw) / dtY;
-        if (Math.abs(instRate) < 12) {
-          this.oscYawRate += (instRate - this.oscYawRate) * 0.6;
+      const stickTurning = Math.abs(this.turn) > TURN_STICK_DEADZONE || t - this.turnReleasedAt < 220;
+      if (stickTurning) {
+        // oscYawRate is only for HMD head-turn extrapolation when the turn stick is idle;
+        // never let stick-turn OSC bursts coast yaw past stick release.
+        this.oscYawRate = 0;
+      } else {
+        const dtY = (t - this.lastYawOscT) / 1000;
+        if (dtY > 0.008 && dtY < 0.12) {
+          const instRate = angleDiffRad(pose.yawRad, this.lastOscYaw) / dtY;
+          if (Math.abs(instRate) < 12) {
+            this.oscYawRate += (instRate - this.oscYawRate) * 0.6;
+          }
         }
       }
       this.lastOscYaw = pose.yawRad;
@@ -639,7 +649,11 @@ export class VrcCharacterSim {
     }
     if (yawChanged) {
       const stickTurning = Math.abs(this.turn) > TURN_STICK_DEADZONE || t - this.turnReleasedAt < 220;
-      const ryaw = angleDiffRad(pose.yawRad, this.yaw);
+      // OSC HeadFwd/Fwd trails VRChat smooth turns by ~60 ms; compare against simAt(t - 60 ms)
+      // during stick turns (and their release tail) so lagged bursts do not yank yaw backwards
+      // mid-turn and leave a ~15-20° undershoot jump when the final post-release burst arrives.
+      const yawRef = stickTurning ? (this.simAt(t - 60) ?? ref) : { yaw: this.yaw };
+      const ryaw = angleDiffRad(pose.yawRad, yawRef.yaw);
       if (stickTurning) {
         // During stick turns (and the brief release tail), bleed yaw residuals smoothly so OSC
         // bursts never snap or pull the overlay backwards on release.
