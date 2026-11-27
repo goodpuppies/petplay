@@ -411,7 +411,18 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
            * grab hull and screen proxy own pointer input.
            */
         }
-        <group position={[0, 0, -depth / 2 - 0.001]} rotation={[0, Math.PI, 0]}>
+        {
+          /*
+           * Never a native overlay (docs/NATIVE_OVERLAYS.md): this logo relies on its culled
+           * backface to stay hidden from the front, where the screen is, and it lies in the
+           * plane of the screen's own quad.
+           */
+        }
+        <group
+          position={[0, 0, -depth / 2 - 0.001]}
+          rotation={[0, Math.PI, 0]}
+          userData={{ nativePanel: false }}
+        >
           <mesh {...({ pointerEvents: "none" } as Record<string, unknown>)}>
             <planeGeometry args={[width, height]} />
             <meshBasicNodeMaterial colorNode={TSL.color(0x000000)} side={THREE.FrontSide} />

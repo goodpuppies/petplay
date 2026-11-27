@@ -124,6 +124,10 @@ import {
   subscribeSettings,
 } from "../classes/settings.ts";
 import { pushToast, type ToastInput } from "../classes/environment/toastStore.ts";
+import {
+  getNativeOverlayStatus,
+  reportNativeOverlayStatus,
+} from "../classes/environment/nativeOverlayStatusStore.ts";
 import { batteryStore } from "../classes/environment/batteryStore.ts";
 import { readOpenVrBatteries } from "../classes/openVrBattery.ts";
 import {
@@ -336,6 +340,10 @@ const state = actorState({
   webGpuOverlay: null as OpenVrOverlayTexture | null,
   webGpuOverlayGl: null as WebXROverlayGl | null,
   raylibOverlay: null as OpenVrOverlayTexture | null,
+  /** The decoupled renderer shows marked UI panels as SteamVR quads (`overlayPresentMode: "native"`). */
+  nativePanelsEnabled: false,
+  /** The stereo quad sizing the decoupled renderer was last told (`nativeStereoSizing` setting). */
+  nativeStereoSizing: "halved" as "halved" | "full",
   /** The per-eye projection overlays, while `raylibProjectionOverlayEnabled`. */
   raylibProjectionOverlays: null as OpenVrProjectionOverlays | null,
   raylibProjectionOverlayEnabled: raylibProjectionOverlayDefault,
@@ -1257,6 +1265,14 @@ new PostMan(
     OVERLAYRENDERSTATUS: (payload: { actorId: string; status: unknown }) => {
       if (payload.actorId === state.renderOwner) {
         state.renderOwnerStatus = payload.status;
+        if (reportNativeOverlayStatus(payload.status)) {
+          pushToast({
+            title: "Native overlays turned off",
+            content: getNativeOverlayStatus().error ?? "",
+            source: "PetPlay",
+            tone: "warning",
+          });
+        }
         const mode = (payload.status as { presentMode?: string } | null)?.presentMode;
         const shouldSuppress = mode === "projection";
         if (state.displayOverlayHostActor && state.desktopSuppressedForProjection !== shouldSuppress) {
@@ -3114,6 +3130,7 @@ async function startRenderOwner() {
     ? "projection"
     : "panorama";
   state.raylibProjectionOverlayEnabled = initialPresentMode === "projection";
+  state.nativePanelsEnabled = getSettings().overlayPresentMode === "native";
   await PostMan.PostMessage({
     target: state.renderOwner,
     type: "STARTOVERLAYRENDERER",
@@ -3123,6 +3140,8 @@ async function startRenderOwner() {
       overlayName: config?.overlayName,
       eyeSize: getRaylibNativeEyeSize(),
       presentMode: initialPresentMode,
+      nativePanels: state.nativePanelsEnabled,
+      nativeStereoSizing: state.nativeStereoSizing = getSettings().nativeStereoSizing,
       overlayWidthInMeters: config?.overlayWidthInMeters,
       overlayDistance: config?.overlayDistance,
       playspaceAnchor: playspaceFrame.active ? Array.from(playspaceFrame.petplayToRaw) : null,
@@ -3141,6 +3160,29 @@ playspaceFrame.onAnchorChange((anchor) => {
 
 subscribeSettings(() => {
   const mode = getSettings().overlayPresentMode;
+  // `native` is the panorama plus UI panels as SteamVR quads (docs/NATIVE_OVERLAYS.md).
+  const wantNative = mode === "native";
+  if (state.nativePanelsEnabled !== wantNative) {
+    state.nativePanelsEnabled = wantNative;
+    if (state.renderOwner) {
+      PostMan.PostMessage({
+        target: state.renderOwner,
+        type: "SETNATIVEPANELS",
+        payload: wantNative,
+      });
+    }
+  }
+  const sizing = getSettings().nativeStereoSizing;
+  if (state.nativeStereoSizing !== sizing) {
+    state.nativeStereoSizing = sizing;
+    if (state.renderOwner) {
+      PostMan.PostMessage({
+        target: state.renderOwner,
+        type: "SETRENDERERDEBUG",
+        payload: { nativeStereoSizing: sizing },
+      });
+    }
+  }
   const wantProjection = mode === "projection";
   if (state.raylibProjectionOverlayEnabled === wantProjection) return;
   state.raylibProjectionOverlayEnabled = wantProjection;
@@ -3148,7 +3190,7 @@ subscribeSettings(() => {
     PostMan.PostMessage({
       target: state.renderOwner,
       type: "SETPRESENTMODE",
-      payload: mode,
+      payload: wantProjection ? "projection" : "panorama",
     });
   }
 });

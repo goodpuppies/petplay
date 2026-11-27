@@ -50,6 +50,7 @@ import { Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import { useToolEditMode } from "./toolEditMode.ts";
 import { GrabBox } from "./grabbox.tsx";
 import { readPointerHandedness } from "./wristMenu/pointerFilter.ts";
+import type { NativeQuadUserData } from "../nativeOverlayContent.ts";
 import { defaultApply, type HandleState, type HandleStore } from "@pmndrs/handle";
 import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
 // Not re-exported by the package index; the same module instance the XR root provides.
@@ -82,6 +83,23 @@ const PETPLAY_RAY_DEFAULTS: Pick<
   color: 0x5ec8ff,
   renderOrder: 9999,
 };
+
+/**
+ * In the `native` present mode the renderer shows each beam and cursor dot as a SteamVR quad of
+ * its own instead of drawing it into the head-locked image (docs/NATIVE_OVERLAYS.md): a beam
+ * rides its controller, a dot stays where it was put. Each needs a name of its own.
+ */
+let nextPointerQuadId = 0;
+const UNIT_BOX_EXTENT: [number, number, number] = [0.5, 0.5, 0.5];
+
+function usePointerQuad(name: string, shape: NativeQuadUserData["shape"]): NativeQuadUserData {
+  return useMemo(() => ({
+    key: `${name}-${++nextPointerQuadId}`,
+    shape,
+    // A unit box along the beam, or a circle of radius 1.
+    extent: shape === "beam" ? UNIT_BOX_EXTENT : [1, 1, 0],
+  }), [name, shape]);
+}
 
 type AimSegmentObject = {
   visible: boolean;
@@ -155,6 +173,7 @@ const HudPointerRayModel = forwardRef<Object3D, HudRayModelOptions & { pointer: 
       [],
     );
     const internalRef = useRef<Mesh>(null);
+    const nativeQuad = usePointerQuad("laser", "beam");
     useImperativeHandle(ref, () => internalRef.current!);
     useFrame(() => {
       if (internalRef.current != null) {
@@ -172,7 +191,7 @@ const HudPointerRayModel = forwardRef<Object3D, HudRayModelOptions & { pointer: 
         renderOrder={props.renderOrder ?? 2}
         ref={internalRef}
         material={material as never}
-        userData={{ raythreeHudOverUi: true }}
+        userData={{ raythreeHudOverUi: true, nativeQuad }}
         {...({ pointerEvents: "none" } as Record<string, unknown>)}
       >
         <boxGeometry />
@@ -213,6 +232,7 @@ function HudPointerCursorModel(
     [color],
   );
   const ref = useRef<Mesh>(null);
+  const nativeQuad = usePointerQuad("cursor", "flat");
   useFrame(() => {
     const mesh = ref.current;
     if (mesh == null) return;
@@ -238,7 +258,7 @@ function HudPointerCursorModel(
       renderOrder={renderOrder}
       ref={ref}
       material={material as never}
-      userData={{ raythreeHudOverUi: true, renderTrackingAnchor: "world" }}
+      userData={{ raythreeHudOverUi: true, renderTrackingAnchor: "world", nativeQuad }}
       {...({ pointerEvents: "none" } as Record<string, unknown>)}
     >
       <circleGeometry args={[1, 20]} />
@@ -399,6 +419,7 @@ function LaserOffsetHandle() {
   const state = useXRInputSourceStateContext();
   const hand = state.inputSource.handedness;
   const editing = useToolEditMode();
+  const guideQuad = usePointerQuad("laser-guide", "beam");
   const targetRef = useRef<Object3D>(null);
   const storeRef = useRef<HandleStore<unknown> | null>(null);
   const options = useMemo(() => ({
@@ -461,7 +482,7 @@ function LaserOffsetHandle() {
         <mesh
           position={[0, 0, -LASER_GUIDE_LENGTH / 2]}
           scale={[0.003, 0.003, LASER_GUIDE_LENGTH]}
-          userData={{ raythreeHudOverUi: true }}
+          userData={{ raythreeHudOverUi: true, nativeQuad: guideQuad }}
           {...({ pointerEvents: "none" } as Record<string, unknown>)}
         >
           <boxGeometry />

@@ -15,7 +15,20 @@ import { Text } from "./text.tsx";
 import { Icon, type IconName } from "./icons.tsx";
 import { Cell, Grid } from "./grid.tsx";
 import { COLOR, GAP, INNER_GAP, RADIUS, UNIT, unitSpan } from "./tokens.ts";
-import { setSetting, type SettingKey, useSetting, VRC_CAMERA_RESOLUTIONS } from "../../settings.ts";
+import {
+  type OverlayPresentMode,
+  setSetting,
+  type SettingKey,
+  useSetting,
+  VRC_CAMERA_RESOLUTIONS,
+} from "../../settings.ts";
+import {
+  type DebugCubeMode,
+  placeDebugCubes,
+  setDebugCubeMode,
+  useDebugCube,
+} from "../debugCubeStore.ts";
+import { useNativeOverlayStatus } from "../nativeOverlayStatusStore.ts";
 import { getAgentReplBaseUrl } from "../../utils.ts";
 import {
   baseEyeSize,
@@ -60,7 +73,8 @@ export type SettingsCategoryId =
   | "text"
   | "camera"
   | "osc"
-  | "install";
+  | "install"
+  | "debug";
 
 const CATEGORIES: ReadonlyArray<{
   id: SettingsCategoryId;
@@ -121,6 +135,12 @@ const CATEGORIES: ReadonlyArray<{
     label: "Install",
     subtitle: "PetPlay version, SteamVR registration, and logs",
     icon: "save",
+  },
+  {
+    id: "debug",
+    label: "Debug",
+    subtitle: "Native SteamVR overlays and 3D test cubes",
+    icon: "more_horiz",
   },
 ];
 
@@ -238,7 +258,9 @@ function SegmentedControl<T extends string>({
             borderRadius={999}
             alignItems="center"
             justifyContent="center"
-            backgroundColor={COLOR.accent}
+            // As ToggleControl: an unselected item's opacity of 0 does not reach the panel, so it
+            // must not carry the accent colour or every option reads as selected.
+            backgroundColor={selected ? COLOR.accent : COLOR.tile}
             backgroundOpacity={selected ? 1 : 0}
             onClick={() => onChange(opt.value)}
           >
@@ -455,14 +477,15 @@ function OverlayModeRow({ row }: { row: number }) {
     <SettingRow
       row={row}
       title="Overlay Mode"
-      description="Panorama (default, native displays) or Projection (lower VRAM, head reprojection)"
+      description="PANO default, PROJ reprojected, NATIVE SteamVR quads"
     >
       <SegmentedControl
         value={mode}
-        onChange={(next) => setSetting("overlayPresentMode", next as "panorama" | "projection")}
+        onChange={(next) => setSetting("overlayPresentMode", next as OverlayPresentMode)}
         options={[
           { value: "panorama", label: "PANO" },
           { value: "projection", label: "PROJ" },
+          { value: "native", label: "NATIVE" },
         ]}
         itemWidth={92}
       />
@@ -1336,6 +1359,97 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   );
 }
 
+function DebugCubeRow({ row }: { row: number }) {
+  const { mode } = useDebugCube();
+  return (
+    <SettingRow
+      row={row}
+      title="Test Cube"
+      description="Orange: eye image. Teal: stereo SteamVR quad"
+    >
+      <SegmentedControl
+        value={mode}
+        onChange={(next) => setDebugCubeMode(next as DebugCubeMode)}
+        options={[
+          { value: "off", label: "OFF" },
+          { value: "layer", label: "LAYER" },
+          { value: "native", label: "NATIVE" },
+          { value: "both", label: "BOTH" },
+        ]}
+        itemWidth={84}
+      />
+    </SettingRow>
+  );
+}
+
+/**
+ * SteamVR cannot be asked how tall it draws a stereo quad, so this is judged by eye: with the
+ * wrong choice the teal test cube and the window outlines come out half or twice as tall.
+ */
+function StereoShapeRow({ row }: { row: number }) {
+  const sizing = useSetting("nativeStereoSizing");
+  return (
+    <SettingRow
+      row={row}
+      title="Stereo Quad Shape"
+      description="Switch if the teal cube or outlines look squashed or stretched"
+    >
+      <SegmentedControl
+        value={sizing}
+        onChange={(next) => setSetting("nativeStereoSizing", next as "halved" | "full")}
+        options={[
+          { value: "halved", label: "A" },
+          { value: "full", label: "B" },
+        ]}
+        itemWidth={72}
+      />
+    </SettingRow>
+  );
+}
+
+function DebugPage({ showGuides }: { showGuides: boolean }) {
+  const { mode } = useDebugCube();
+  const native = useNativeOverlayStatus();
+  const presentMode = useSetting("overlayPresentMode");
+  const state = native.error
+    ? "FAILED"
+    : native.panels + native.stereo > 0
+    ? "ACTIVE"
+    : presentMode === "native"
+    ? "WAITING"
+    : "OFF";
+  const detail = native.error
+    ? (native.error.length > 70 ? `${native.error.slice(0, 67)}...` : native.error)
+    // No redraw count here: showing it would itself redraw this window's quad on every report.
+    : `${native.panels} panel quad${native.panels === 1 ? "" : "s"}, ${native.stereo} stereo quad${
+      native.stereo === 1 ? "" : "s"
+    }`;
+  return (
+    <Grid cols={1} rows={9} gap={GAP} padding={0} showGuides={showGuides}>
+      <OverlayModeRow row={0} />
+      <SettingRow row={1} title="Native Overlays" description={detail}>
+        <StatusPill
+          label={state}
+          tone={state === "ACTIVE" ? "accent" : state === "FAILED" ? "danger" : "muted"}
+        />
+      </SettingRow>
+      <DebugCubeRow row={2} />
+      <StereoShapeRow row={4} />
+      <SettingRow
+        row={3}
+        title="Place Cubes"
+        description="Bring the test cubes back in front of you"
+      >
+        <ActionButton
+          label="PLACE HERE"
+          disabled={mode === "off"}
+          onClick={() => placeDebugCubes()}
+        />
+      </SettingRow>
+    </Grid>
+  );
+}
+
 export function SettingsWindow({
   initialCategory = "general",
   pixelSize = 1,
@@ -1412,6 +1526,7 @@ export function SettingsWindow({
         {category === "camera" && <CameraPage showGuides={showGuides} />}
         {category === "osc" && <OscPage showGuides={showGuides} />}
         {category === "install" && <InstallPage showGuides={showGuides} />}
+        {category === "debug" && <DebugPage showGuides={showGuides} />}
       </Cell>
     </Grid>
   );

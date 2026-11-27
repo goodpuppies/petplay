@@ -38,6 +38,8 @@ import { acquireWindowsHighResTimer } from "../classes/windowsTimer.ts";
 import { OverlayWristMotionProbe } from "../classes/overlayWristMotionProbe.ts";
 import { motionProbeFrame, OverlayMotionProbe } from "../classes/overlayMotionProbe.ts";
 import { OverlaySceneInbox } from "../classes/overlaySceneDelivery.ts";
+import { type NativeOverlayDevice, NativeOverlayLayer } from "../classes/nativeOverlayLayer.ts";
+import { planNativeContent } from "../classes/nativeOverlayMath.ts";
 
 /**
  * `projection`: per-eye projection overlays, reprojected by SteamVR, but SteamVR draws them
@@ -64,6 +66,9 @@ type Start = {
   overlayName?: string;
   eyeSize?: number;
   presentMode?: PresentMode;
+  /** Show marked UI panels as their own SteamVR quads (see docs/NATIVE_OVERLAYS.md). */
+  nativePanels?: boolean;
+  nativeStereoSizing?: "halved" | "full";
   dmabufBanks?: DmabufBankCount;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
@@ -109,6 +114,24 @@ const state = actorState({
   // This chooses optical parameters only; render eye views remain independent of IR-time poses.
   projectionMode: "scene-compatible" as "headset" | "scene-compatible",
   presentMode: "projection" as PresentMode,
+  /**
+   * Take UI panels marked `userData.nativePanel` out of the eye image and show each as its own
+   * world-placed quad overlay, which SteamVR holds still at display rate. Mesh groups marked
+   * `userData.nativeStereo` become stereo quads whether or not this is set.
+   */
+  nativePanels: false,
+  /** Why native overlays turned themselves off (everything is drawn in the eyes again). */
+  nativeError: null as string | null,
+  /** Texture texels per uikit pixel of a native panel. */
+  nativeTexelsPerPixel: 2,
+  /** Per-eye texture size of a native stereo group. */
+  nativeStereoEyeSize: 1024,
+  /** How SteamVR is taken to size side-by-side quads; see `StereoSizing` in openVrNativeOverlays.ts. */
+  nativeStereoSizing: "halved" as "halved" | "full",
+  /** Forced texel aspect of stereo quads, whatever the sizing says; null leaves it to that. */
+  nativeStereoTexelAspect: null as number | null,
+  /** Counts and per-quad state of the native overlays, refreshed with each status report. */
+  native: null as unknown,
   /**
    * Linux projection mode: number of pre-bound DMA-BUF overlay banks (2 or 3) flipped via
    * ShowOverlay/HideOverlay with zero per-frame SetOverlayTexture calls. 0 = legacy GL submit.
@@ -243,6 +266,9 @@ new PostMan(
       state.webxrTarget = options.webxrTarget ?? null;
       state.eyeSize = options.eyeSize ?? null;
       state.presentMode = options.presentMode ?? "projection";
+      state.nativePanels = options.nativePanels === true;
+      state.nativeStereoSizing = options.nativeStereoSizing === "full" ? "full" : "halved";
+      state.nativeError = null;
       playspaceFrame.setAnchor(options.playspaceAnchor ?? null);
       if (options.dmabufBanks != null) state.dmabufBanks = options.dmabufBanks;
       state.stopRequested = false;
@@ -279,6 +305,12 @@ new PostMan(
         throw new Error(`Unknown present mode ${mode}`);
       }
       state.presentMode = mode;
+      return health();
+    },
+    SETNATIVEPANELS: (enabled: boolean) => {
+      state.nativePanels = enabled === true;
+      // Switching it on again is also the way to retry after a failure.
+      if (state.nativePanels) state.nativeError = null;
       return health();
     },
     SETEYESIZE: (eyeSize: number) => {
@@ -368,7 +400,33 @@ new PostMan(
       renderThreadNice?: number;
       projectionMode?: "headset" | "scene-compatible";
       dmabufBanks?: DmabufBankCount;
+      nativeTexelsPerPixel?: number;
+      nativeStereoEyeSize?: number;
+      nativeStereoTexelAspect?: number | null;
+      nativeStereoSizing?: "halved" | "full";
     }) => {
+      if (value.nativeStereoSizing != null) {
+        if (value.nativeStereoSizing !== "halved" && value.nativeStereoSizing !== "full") {
+          throw new Error("nativeStereoSizing must be halved or full");
+        }
+        state.nativeStereoSizing = value.nativeStereoSizing;
+      }
+      if (value.nativeTexelsPerPixel != null) {
+        if (!(value.nativeTexelsPerPixel >= 0.5 && value.nativeTexelsPerPixel <= 4)) {
+          throw new Error("nativeTexelsPerPixel must be 0.5..4");
+        }
+        state.nativeTexelsPerPixel = value.nativeTexelsPerPixel;
+      }
+      if (value.nativeStereoEyeSize != null) {
+        if (
+          !Number.isInteger(value.nativeStereoEyeSize) || value.nativeStereoEyeSize < 64 ||
+          value.nativeStereoEyeSize > 2048
+        ) throw new Error("nativeStereoEyeSize must be 64..2048");
+        state.nativeStereoEyeSize = value.nativeStereoEyeSize;
+      }
+      if (value.nativeStereoTexelAspect !== undefined) {
+        state.nativeStereoTexelAspect = value.nativeStereoTexelAspect;
+      }
       state.panoramaExtraPredictionFrames = value.panoramaExtraPredictionFrames ??
         state.panoramaExtraPredictionFrames;
       state.panoramaPresentMinMs = value.panoramaPresentMinMs ?? state.panoramaPresentMinMs;
@@ -525,6 +583,7 @@ async function run(options: Start) {
   };
   let panorama: OpenVrOverlayTexture | null = null;
   let panoramaBankOverlays: OpenVrOverlayTexture[] = [];
+  let nativeLayer: NativeOverlayLayer | null = null;
   const clearPendingBanks = () => {
     if (pendingPanorama) {
       presenter?.deleteGpuFence(pendingPanorama.fence);
@@ -1027,6 +1086,10 @@ async function run(options: Start) {
         };
       }
       const anchors: RenderAnchors = probeSample?.anchors ?? { head: hmd.matrix };
+      // The tracked device behind each anchor space, for quads SteamVR carries itself.
+      const nativeDevices: Partial<Record<RenderAnchorSpace, NativeOverlayDevice>> = {
+        head: { index: OpenVR.k_unTrackedDeviceIndex_Hmd, pose: hmd.matrix },
+      };
       if (!probe) {
         for (
           const [hand, role] of [[
@@ -1037,6 +1100,11 @@ async function run(options: Start) {
           const index = system.GetTrackedDeviceIndexForControllerRole(role);
           const pose = pacer.getCachedTrackedDevicePose(index);
           if (pose) {
+            nativeDevices[`${hand}-hand`] = nativeDevices[`${hand}-ray`] = {
+              index,
+              // The pose cache is reused per device; `tip.resolve` below does not write to it.
+              pose: pose.matrix,
+            };
             const resolved = tip.resolve(index, pose);
             setRenderHandAnchors(anchors, hand, resolved.matrix, payload.renderGripOffsets?.[hand]);
           }
@@ -1117,9 +1185,13 @@ async function run(options: Start) {
       );
       const renderStartMs = performance.now();
       const publishedBefore = state.publishedFrames;
+      // Content SteamVR shows as its own quads leaves the eye image; see docs/NATIVE_OVERLAYS.md.
+      const nativePlan = state.nativeError || probe
+        ? null
+        : planNativeContent(payload, { panels: state.nativePanels, stereo: true });
       let renderWork: ReturnType<typeof renderer.renderRaythreeFrame>;
       try {
-        renderWork = renderer.renderRaythreeFrame(payload, {
+        renderWork = renderer.renderRaythreeFrame(nativePlan?.eyePayload ?? payload, {
           skipCombine: !panoramaMode,
           drawDesktopSurfaces: !panoramaMode,
           cameras,
@@ -1129,6 +1201,35 @@ async function run(options: Start) {
         restoreWristTag?.();
       }
       const renderEndMs = performance.now();
+      if (nativePlan || nativeLayer) {
+        try {
+          nativeLayer ??= new NativeOverlayLayer(
+            pointers.overlay,
+            `${overlayKey}.native`,
+            overlayName,
+          );
+          nativeLayer.texelsPerPixel = state.nativeTexelsPerPixel;
+          nativeLayer.stereoEyeSize = state.nativeStereoEyeSize;
+          nativeLayer.stereoSizing = state.nativeStereoSizing;
+          nativeLayer.stereoTexelAspect = state.nativeStereoTexelAspect;
+          // With the dashboard open the head-locked image steps back among the quads; so do these.
+          nativeLayer.pointerSortOrder = dashboardVisible ? 0 : 2;
+          nativeLayer.present(nativePlan, renderer, {
+            head: head.elements,
+            leftEyeViewMatrix: cameras.leftEyeViewMatrix,
+            rightEyeViewMatrix: cameras.rightEyeViewMatrix,
+            devices: nativeDevices,
+            heldFollows: state.followFreeze,
+            assetVersion: scene?.assetVersion,
+          });
+        } catch (error) {
+          // Never leave the UI missing: from the next frame on the eyes draw everything again.
+          state.nativeError = error instanceof Error ? error.message : String(error);
+          console.error("[overlay_renderer] native overlays disabled:", error);
+          nativeLayer?.clear(renderer);
+        }
+        mark("native", nativeLayer?.stats.panelRedraws ?? 0);
+      }
       // A frame predicted for the vsync after its sample that would only be submitted after the
       // following one shows stale poses; dropping it lets the compositor reproject instead.
       const onTime = state.dropLateFrames
@@ -1526,6 +1627,7 @@ async function run(options: Start) {
       }
       if (state.webxrTarget && performance.now() - lastReportAt > 500) {
         mark("status");
+        state.native = nativeLayer?.status() ?? null;
         PostMan.PostMessage({
           target: state.webxrTarget!,
           type: "OVERLAYRENDERSTATUS",
@@ -1554,6 +1656,7 @@ async function run(options: Start) {
     state.motionProbe = false;
     latest = null;
     teardownDmabufBanks();
+    nativeLayer?.clear(renderer);
     overlays?.cleanup();
     panorama?.cleanup();
     presenter?.close();

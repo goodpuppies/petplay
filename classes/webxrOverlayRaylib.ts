@@ -6,6 +6,7 @@ import { areNativeAssetBatchesIdenticalForSync } from "./raythreeAssetBatchesFor
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import { type DepthOccluder, WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
+import { setRenderViewport } from "./rlViewport.ts";
 import {
   getCurrentContextId,
   getFramebufferStatus,
@@ -192,6 +193,25 @@ export class WebXROverlayRaylib {
   private spareOutputTargets: raylib.RenderTexture2D[] = [];
   private combineShader: raylib.Shader | null = null;
   private sceneRenderer: WebXRRaythreeRaylibRenderer | null = null;
+  /** Textures of native overlays (panels and stereo groups), two per key; see {@link nativeTarget}. */
+  private nativeTargets = new Map<string, {
+    targets: [raylib.RenderTexture2D, raylib.RenderTexture2D];
+    width: number;
+    height: number;
+    next: number;
+  }>();
+  /**
+   * Advances if the native targets' pictures are ever lost: whoever caches them has to draw them
+   * again. Rebuilding the eye targets does not touch them.
+   */
+  nativeTargetGeneration = 0;
+  /**
+   * Native targets no overlay uses any more, by size, to be used again at that size: sizes come
+   * in steps (`nativeTextureSize`), so the next panel or outline of that size is never far.
+   */
+  private nativeTargetPool = new Map<string, raylib.RenderTexture2D[]>();
+  /** Replaced native targets, pooled a few frames after SteamVR was given their successors. */
+  private retiredNativeTargets: { target: raylib.RenderTexture2D; frames: number }[] = [];
   /** Kept across renderer re-creation (`resetSceneAssets`). */
   private depthOccluder: DepthOccluder | null = null;
   private lookRotationLocation = -1;
@@ -901,6 +921,187 @@ export class WebXROverlayRaylib {
     };
   }
 
+  /**
+   * The texture to draw a native overlay's next picture into. Two alternate per key, so the one
+   * SteamVR was given last is never the one being drawn; a size change retires both.
+   */
+  private nativeTarget(key: string, width: number, height: number): raylib.RenderTexture2D {
+    let entry = this.nativeTargets.get(key);
+    if (entry && (entry.width !== width || entry.height !== height)) {
+      for (const target of entry.targets) this.retiredNativeTargets.push({ target, frames: 30 });
+      this.nativeTargets.delete(key);
+      entry = undefined;
+    }
+    if (!entry) {
+      const targets = [this.takeNativeTarget(width, height), this.takeNativeTarget(width, height)];
+      entry = {
+        targets: targets as [raylib.RenderTexture2D, raylib.RenderTexture2D],
+        width,
+        height,
+        next: 0,
+      };
+      this.nativeTargets.set(key, entry);
+    }
+    const target = entry.targets[entry.next]!;
+    entry.next ^= 1;
+    return target;
+  }
+
+  /** A target of exactly this size: one that was used at this size before, or a new one. */
+  private takeNativeTarget(width: number, height: number): raylib.RenderTexture2D {
+    const pooled = this.nativeTargetPool.get(`${width}x${height}`)?.pop();
+    if (pooled) return pooled;
+    const target = raylib.H.LoadRenderTexture(width, height);
+    if (!target || !raylib.H.IsRenderTextureValid(target)) {
+      throw new Error(`Native overlay texture ${width}x${height} failed`);
+    }
+    raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_BILINEAR);
+    return target;
+  }
+
+  private poolNativeTarget(target: raylib.RenderTexture2D): void {
+    const size = `${target.texture.width}x${target.texture.height}`;
+    const pool = this.nativeTargetPool.get(size);
+    // Two serve one quad; more than a few spare of one size are not worth their memory.
+    if (pool && pool.length >= 4) raylib.H.UnloadRenderTexture(target);
+    else if (pool) pool.push(target);
+    else this.nativeTargetPool.set(size, [target]);
+  }
+
+  /** How many native targets exist: in use, and waiting for the next overlay of their size. */
+  getNativeTargetCounts(): { inUse: number; pooled: number } {
+    let pooled = this.retiredNativeTargets.length;
+    for (const pool of this.nativeTargetPool.values()) pooled += pool.length;
+    return { inUse: this.nativeTargets.size * 2, pooled };
+  }
+
+  /**
+   * Draw a native panel's UI head-on into its own texture and return the GL texture id. Call
+   * after {@link renderRaythreeFrame} of the same frame.
+   */
+  renderNativePanel(
+    key: string,
+    ui: WebXRRaythreeRenderPayload["ui"],
+    camera: {
+      viewMatrix: Float32Array;
+      projectionMatrix: Float32Array;
+      textureWidth: number;
+      textureHeight: number;
+    },
+  ): number {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target = this.nativeTarget(key, camera.textureWidth, camera.textureHeight);
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      sceneRenderer.renderUiOnly(ui, camera, {
+        width: camera.textureWidth,
+        height: camera.textureHeight,
+      });
+    } finally {
+      raylib.H.EndTextureMode();
+    }
+    return target.texture.id;
+  }
+
+  /**
+   * Draw a group of mesh instances once per eye, side by side (left eye in the left half), and
+   * return the GL texture id. Call after {@link renderRaythreeFrame} of the same frame: the
+   * eyes' asset sync is what uploads these instances' meshes and materials.
+   */
+  renderNativeStereo(
+    key: string,
+    extraction: WebXRRaythreeRenderPayload["leftEye"],
+    instances: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"],
+    eyes: {
+      left: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+      right: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+    },
+    eyeWidth: number,
+    eyeHeight = eyeWidth,
+    /** UI backgrounds that hide what lies behind them; see `renderInstancesOnly`. */
+    depthPanels?: WebXRRaythreeRenderPayload["ui"]["panels"],
+  ): number {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target = this.nativeTarget(key, eyeWidth * 2, eyeHeight);
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      setRenderViewport(0, 0, eyeWidth, eyeHeight);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, eyes.left, depthPanels);
+      setRenderViewport(eyeWidth, 0, eyeWidth, eyeHeight);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, eyes.right, depthPanels);
+    } finally {
+      setRenderViewport(0, 0, eyeWidth * 2, eyeHeight);
+      raylib.H.EndTextureMode();
+    }
+    return target.texture.id;
+  }
+
+  /**
+   * Draw mesh instances into a texture of their own through one camera (a plain quad's picture,
+   * not one per eye) and return the GL texture id. Call after {@link renderRaythreeFrame} of the
+   * same frame, like {@link renderNativeStereo}.
+   */
+  renderNativeMesh(
+    key: string,
+    extraction: WebXRRaythreeRenderPayload["leftEye"],
+    instances: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"],
+    camera: { viewMatrix: Float32Array; projectionMatrix: Float32Array },
+    width: number,
+    height: number,
+  ): number {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target = this.nativeTarget(key, width, height);
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, camera);
+    } finally {
+      raylib.H.EndTextureMode();
+    }
+    return target.texture.id;
+  }
+
+  /** The picture last drawn for a native overlay, in GL storage order (row zero is the bottom). */
+  readNativeTargetRgba(key: string): { width: number; height: number; data: Uint8Array } {
+    const entry = this.nativeTargets.get(key);
+    if (!entry) throw new Error(`No native overlay texture for "${key}"`);
+    return this.readTextureRgba(entry.targets[entry.next ^ 1]!.texture);
+  }
+
+  /** Once per frame: drop textures of native overlays that are gone (`keep` lists the live keys). */
+  retainNativeTargets(keep: ReadonlySet<string>): void {
+    for (const [key, entry] of this.nativeTargets) {
+      if (keep.has(key)) continue;
+      for (const target of entry.targets) this.retiredNativeTargets.push({ target, frames: 30 });
+      this.nativeTargets.delete(key);
+    }
+    if (this.retiredNativeTargets.length === 0) return;
+    this.retiredNativeTargets = this.retiredNativeTargets.filter((retired) => {
+      if (--retired.frames > 0) return true;
+      this.poolNativeTarget(retired.target);
+      return false;
+    });
+  }
+
+  /** With the renderer itself; rebuilding the eye targets leaves these alone. */
+  private unloadNativeTargets(): void {
+    for (const entry of this.nativeTargets.values()) {
+      for (const target of entry.targets) raylib.H.UnloadRenderTexture(target);
+    }
+    this.nativeTargets.clear();
+    for (const retired of this.retiredNativeTargets) raylib.H.UnloadRenderTexture(retired.target);
+    this.retiredNativeTargets = [];
+    for (const pool of this.nativeTargetPool.values()) {
+      for (const target of pool) raylib.H.UnloadRenderTexture(target);
+    }
+    this.nativeTargetPool.clear();
+  }
+
   /** Varggles: resample both eye targets into the head-locked stereo panorama in `outputTarget`. */
   private combineEyesIntoPanorama(
     frame: { lookRotation: Float32Array; halfFovInRadians: number },
@@ -1105,6 +1306,7 @@ export class WebXROverlayRaylib {
       "[webxr] raylib cleanup: unloading render targets",
     );
     this.unloadTargets();
+    this.unloadNativeTargets();
     LogChannel.log(
       "webxrv2",
       "[webxr] raylib cleanup: disposing scene renderer",
@@ -1146,6 +1348,7 @@ export class WebXROverlayRaylib {
   }
 
   private unloadTargets() {
+    // The native overlays' targets stay: they do not depend on the eye size.
     for (const target of this.spareOutputTargets) raylib.H.UnloadRenderTexture(target);
     this.spareOutputTargets = [];
     for (const pair of this.spareEyeTargets) {
@@ -1347,7 +1550,11 @@ export class WebXROverlayRaylib {
       ? this.rightEyeTarget
       : this.outputTarget;
     if (!target) throw new Error(`Missing ${which} render target`);
-    const image = raylib.H.LoadImageFromTexture(target.texture);
+    return this.readTextureRgba(target.texture);
+  }
+
+  private readTextureRgba(texture: raylib.Texture2D) {
+    const image = raylib.H.LoadImageFromTexture(texture);
     try {
       if (image.format !== 7) throw new Error(`Expected RGBA8 readback, got ${image.format}`);
       const raw = image.data as unknown;

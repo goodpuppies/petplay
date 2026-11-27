@@ -1,6 +1,13 @@
 import * as THREE from "three";
 import { createDefaultLowerers, type RenderLowerer } from "../submodules/raythree/src/lib.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
+import {
+  NATIVE_STEREO_CENTER,
+  type NativeQuadInstance,
+  type NativeStereoInstance,
+  readNativeQuadUserData,
+  readNativeStereoUserData,
+} from "./nativeOverlayContent.ts";
 
 export type RenderAnchorSpace = "head" | "left-hand" | "right-hand" | "left-ray" | "right-ray";
 export type RenderAnchor = {
@@ -268,9 +275,40 @@ export function anchoredLowerers(): RenderLowerer[] {
             ? { desktopSurface: object.userData.desktopSurface }
             : {}),
         });
+        const quad = readNativeQuadUserData(object.userData.nativeQuad);
+        if (quad) {
+          (instance as typeof instance & NativeQuadInstance).nativeQuad = {
+            key: quad.key,
+            shape: quad.shape,
+            extent: [quad.extent[0], quad.extent[1], quad.extent[2]],
+          };
+        }
+        const stereo = readNativeStereoUserData(object.userData.nativeStereo);
+        if (stereo) {
+          (instance as typeof instance & NativeStereoInstance).nativeStereo = {
+            key: stereo.key,
+            radius: stereo.radius,
+            center: nativeStereoCenter(object),
+            ...(stereo.box ? { box: stereo.box } : {}),
+            ...(stereo.withPanels ? { withPanels: true as const } : {}),
+          };
+        }
         return instance;
       }),
   }));
+}
+
+/** World position of the nearest ancestor marked as the group's centre, else the mesh's own. */
+function nativeStereoCenter(object: THREE.Object3D): [number, number, number] {
+  let center = object;
+  for (let node: THREE.Object3D | null = object; node; node = node.parent) {
+    if (node.userData?.[NATIVE_STEREO_CENTER] === true) {
+      center = node;
+      break;
+    }
+  }
+  const e = center.matrixWorld.elements;
+  return [e[12]!, e[13]!, e[14]!];
 }
 
 const resolveOldMatrix = new THREE.Matrix4();
@@ -340,5 +378,7 @@ export function resolveRenderAnchors(
   for (const item of payload.ui.panels) resolve(item);
   for (const item of payload.ui.texts) resolve(item);
   for (const item of payload.ui.images) resolve(item);
+  // A native panel's plane moves with the same tracking as the items drawn on it.
+  if (payload.ui.nativePanels) for (const item of payload.ui.nativePanels) resolve(item);
   return count;
 }
