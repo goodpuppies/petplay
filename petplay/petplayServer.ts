@@ -6,7 +6,6 @@ import { watchLogParent } from "../classes/runLog.ts";
 import { loadSettings } from "../classes/settings.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
 import { releaseWindowsSyntheticKeyboardState } from "../classes/environment/keyboard/win32SystemKeyboard.ts";
-import { householdSecret } from "../rdp/classes/household.ts";
 
 const EXIT_STABILIZE_MS = 3000;
 /** Topic server (submodules/petplayserver), deployed on ldeploy; override with PETPLAY_TOPIC_URL. */
@@ -33,20 +32,15 @@ export async function startPetplayServer(
   console.log("Press Ctrl-C to close");
 
   /**
-   * On with `--stageforge-networking`, `PETPLAY_STAGEFORGE_NETWORKING=1`, the
-   * `stageforgeNetworking` setting in `settings.json`, or by default on a machine with a
-   * household secret (`.secret`). `PETPLAY_STAGEFORGE_NETWORKING=0` forces it off.
+   * On by default (`stageforgeNetworking: true` in `settings.json`). Disable in Settings (Peer
+   * Networking), with `--no-stageforge-networking`, or with `PETPLAY_STAGEFORGE_NETWORKING=0`.
+   * `--stageforge-networking` and `PETPLAY_STAGEFORGE_NETWORKING=1` force it on.
    */
   function isStageforgeNetworkingEnabled(): boolean {
     const env = Deno.env.get("PETPLAY_STAGEFORGE_NETWORKING");
+    if (Deno.args.includes("--no-stageforge-networking") || env === "0") return false;
     if (Deno.args.includes("--stageforge-networking") || env === "1") return true;
-    if (env === "0") return false;
-    if (loadSettings().stageforgeNetworking) return true;
-    try {
-      return householdSecret() !== null;
-    } catch {
-      return false;
-    }
+    return loadSettings().stageforgeNetworking;
   }
 
   let petplayExiting = false;

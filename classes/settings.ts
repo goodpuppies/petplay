@@ -201,7 +201,7 @@ export const SETTINGS_SCHEMA = {
     valid: isLocaleOrNull,
   } satisfies SettingSpec<string | null>,
   stageforgeNetworking: {
-    default: false as boolean,
+    default: true as boolean,
     label: "Enable peer-to-peer networking (iroh + topic server) for VRChat/household sharing",
     valid: isBoolean,
   } satisfies SettingSpec<boolean>,
