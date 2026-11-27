@@ -95,7 +95,6 @@ import {
   setVRCOriginRefresh,
 } from "../classes/webxrShadowScene.ts";
 import { gameInputBlocking } from "../classes/environment/gameInputBlocking.ts";
-import { isHandGrabbing } from "../classes/environment/oneHandScale.ts";
 import {
   evaluateVrcOriginMotion,
   transformToHmdMatrix34,
@@ -550,10 +549,9 @@ function pushSticksToVrcOrigin(): void {
       left: gameInputBlocking.isBlocked("left"),
       right: gameInputBlocking.isBlocked("right"),
     },
-    held: { left: isHandGrabbing("left"), right: isHandGrabbing("right") },
   };
   const key = [...payload.left, ...payload.right].map((x) => Math.round(x * 50)).join() +
-    `${payload.blocked.left}${payload.blocked.right}${payload.held.left}${payload.held.right}`;
+    `${payload.blocked.left}${payload.blocked.right}`;
   if (key === lastSticksKey && payload.t - lastSticksSentAt < 100) return;
   lastSticksKey = key;
   lastSticksSentAt = payload.t;

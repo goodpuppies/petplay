@@ -63,8 +63,6 @@ type SticksPayload = {
   left: [number, number];
   right: [number, number];
   blocked: { left: boolean; right: boolean };
-  /** A hand holds (grabs) a PetPlay overlay. */
-  held?: { left: boolean; right: boolean };
 };
 let latestSticks: SticksPayload | null = null;
 /**
@@ -420,7 +418,6 @@ async function pollOriginOnce(): Promise<boolean> {
     locomotionSpeed,
     stickMoving,
     sticks != null,
-    sticks?.held != null && (sticks.held.left || sticks.held.right),
   );
   if (state.lockMode === "locked" && solved.mode === "moving") state.lockBreakCount++;
   const modeChanged = state.lockMode !== solved.mode;
