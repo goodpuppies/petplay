@@ -95,6 +95,7 @@ export class VrcCharacterSim {
   private jumpQueued = false;
   private movePressedAt = -Infinity;
   private moveReleasedAt = -Infinity;
+  private turnReleasedAt = -Infinity;
   /** Unit XZ direction of the last active walk, so post-stop overshoot settles gently without recoil. */
   private lastMoveDir: [number, number] = [0, 0];
 
@@ -211,6 +212,9 @@ export class VrcCharacterSim {
       this.wallBlocked = false;
       this.wallStallCount = 0;
     }
+    const prevTurn = Math.abs(this.turn) > STICK_DEADZONE;
+    const nextTurn = Math.abs(turn) > STICK_DEADZONE;
+    if (prevTurn && !nextTurn) this.turnReleasedAt = t;
     this.move = [move[0], move[1]];
     this.turn = turn;
     this.hmdYawRate = hmdYawRate;
@@ -545,11 +549,13 @@ export class VrcCharacterSim {
       }
     }
     if (yawChanged) {
-      if (Math.abs(this.turn) > STICK_DEADZONE) {
-        // During stick turns, OSC yaw lags stick input by ~latencyMs; compare against delayed sim.
-        const ryaw = angleDiffRad(pose.yawRad, ref.yaw);
+      const stickTurning = Math.abs(this.turn) > STICK_DEADZONE || t - this.turnReleasedAt < 150;
+      const ryaw = angleDiffRad(pose.yawRad, this.yaw);
+      if (stickTurning) {
+        // During stick turns (and the brief release tail), bleed yaw residuals smoothly so OSC
+        // bursts never snap or pull the overlay backwards on release.
         if (Math.abs(ryaw) > (25 * Math.PI) / 180) {
-          this.yaw = this.yaw + angleDiffRad(pose.yawRad, this.yaw);
+          this.yaw = this.yaw + ryaw;
           this.pendingYaw = 0;
           for (const h of this.history) h.yaw = this.yaw;
         } else {
@@ -557,7 +563,6 @@ export class VrcCharacterSim {
         }
       } else {
         // Head turns have ~0 ms lag in OSC avatar yaw; snap directly so walk heading stays locked.
-        const ryaw = angleDiffRad(pose.yawRad, this.yaw);
         this.yaw = this.yaw + ryaw;
         this.pendingYaw = 0;
         for (const h of this.history) h.yaw = this.yaw;
