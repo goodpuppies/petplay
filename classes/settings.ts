@@ -118,6 +118,11 @@ export const SETTINGS_SCHEMA = {
     label: "Controller vibration on button hover and click",
     valid: isBoolean,
   } satisfies SettingSpec<boolean>,
+  spaceMoveEnabled: {
+    default: false as boolean,
+    label: "Allow playspace drag (Space Move) from the bound controller action",
+    valid: isBoolean,
+  } satisfies SettingSpec<boolean>,
   grabSmoothing: {
     default: 0.3 as number,
     label: "Laser grab smoothing amount (0 off to 1 maximum)",

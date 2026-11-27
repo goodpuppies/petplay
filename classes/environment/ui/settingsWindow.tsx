@@ -696,7 +696,7 @@ function LayoutsPage({ showGuides }: { showGuides: boolean }) {
     3: "Empty slot",
   });
   return (
-    <Grid cols={1} rows={4} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
       {[1, 2, 3].map((slot) => {
         const realSummary = realSlots?.[slot - 1] ?? null;
         const desc = realSlots
@@ -730,7 +730,13 @@ function LayoutsPage({ showGuides }: { showGuides: boolean }) {
           </SettingRow>
         );
       })}
-      <SettingRow row={3} title="Playspace Origin" description="Reset playspace mover offset to zero">
+      <BooleanSettingRow
+        row={3}
+        title="Space Move"
+        description="Allow dragging the playspace with the bound SpaceDrag action"
+        setting="spaceMoveEnabled"
+      />
+      <SettingRow row={4} title="Playspace Origin" description="Reset playspace mover offset to zero">
         <ActionButton
           label="RESET PLAYSPACE"
           tone="danger"

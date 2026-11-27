@@ -448,7 +448,10 @@ export class DirectOpenVrInputSource {
       OpenVR.InputDigitalActionDataStruct.byteSize,
       this.rightHandPathHandle,
     );
-    if (this.spaceDragHandle !== OpenVR.k_ulInvalidActionHandle) {
+    if (
+      getSetting("spaceMoveEnabled") &&
+      this.spaceDragHandle !== OpenVR.k_ulInvalidActionHandle
+    ) {
       this.vrInput.GetDigitalActionData(
         this.spaceDragHandle,
         this.spaceDragLeft[0],
@@ -457,6 +460,8 @@ export class DirectOpenVrInputSource {
       );
       const drag = OpenVR.InputDigitalActionDataStruct.read(this.spaceDragLeft[1]);
       this.spaceDragHeld = Boolean(drag.bActive && drag.bState);
+    } else {
+      this.spaceDragHeld = false;
     }
     this.vrInput.GetAnalogActionData(
       this.joystickLeftHandle,
