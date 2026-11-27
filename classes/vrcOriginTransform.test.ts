@@ -195,8 +195,9 @@ function lockStep(
   hmdYaw: number,
   hmdSpeed: number,
   now: number,
+  stickTurning = false,
 ) {
-  const raw = solver.update(world, makeHmdMatrix(hmdPos, hmdYaw));
+  const raw = solver.update(world, makeHmdMatrix(hmdPos, hmdYaw), stickTurning, now);
   return lock.update(raw.transform, world, hmdPos, hmdSpeed, now);
 }
 
@@ -259,7 +260,17 @@ Deno.test("room lock: a snap turn breaks the lock", () => {
     res = lockStep(solver, lock, makeWorldPose([1, 0, 1], 0.2), [0, 1.6, 0], 0, 0, t);
   }
   assertEquals(res.mode, "locked");
-  res = lockStep(solver, lock, makeWorldPose([1, 0, 1], 0.2 + Math.PI / 4), [0, 1.6, 0], 0, 0, t);
+  // Snap turns come from the turn stick, which the predictor reports as turning.
+  res = lockStep(
+    solver,
+    lock,
+    makeWorldPose([1, 0, 1], 0.2 + Math.PI / 4),
+    [0, 1.6, 0],
+    0,
+    0,
+    t,
+    true,
+  );
   assertEquals(res.mode, "moving");
   assertAlmostEquals(angleDiffRad(res.transform.yawRad, 0.2 + Math.PI / 4), 0, 1e-6);
 });
@@ -566,26 +577,26 @@ Deno.test("follow model: standing look-around with the root turning late keeps t
   assertAlmostEquals(angleDiffRad(lockedYaw, playspace), 0, (1 * Math.PI) / 180);
 });
 
-Deno.test("follow model: snap turns pass at once, stick turns apply 1:1", () => {
+Deno.test("follow model: a lasting yaw jump is taken after 400 ms, a brief one is ignored, sticks apply 1:1", () => {
   const solver = new VrcOriginSolver();
+  const hmd = makeHmdMatrix([0, 1.6, 0], 0);
   let t = 0;
-  solver.update(makeWorldPose([0, 0, 0], 0.2), makeHmdMatrix([0, 1.6, 0], 0), false, t);
-  const snap = (45 * Math.PI) / 180;
-  let r = solver.update(
-    makeWorldPose([0, 0, 0], 0.2 + snap),
-    makeHmdMatrix([0, 1.6, 0], 0),
-    false,
-    t += 11,
-  );
-  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + snap), 0, 1e-9);
+  solver.update(makeWorldPose([0, 0, 0], 0.2), hmd, false, t);
+  const jump = (45 * Math.PI) / 180;
+  // Brief: 200 ms off, then back.
+  for (; t < 200; t += 11) solver.update(makeWorldPose([0, 0, 0], 0.2 + jump), hmd, false, t);
+  let r = solver.update(makeWorldPose([0, 0, 0], 0.2), hmd, false, t += 11);
+  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2), 0, 1e-6);
+  // Lasting (a teleport that turned the player): taken once it has held 400 ms.
+  const start = t;
+  for (; t < start + 450; t += 11) {
+    r = solver.update(makeWorldPose([0, 0, 0], 0.2 + jump), hmd, false, t);
+  }
+  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + jump), 0, 1e-6);
+  // Stick turns: 1:1 at once.
   const step = (2 * Math.PI) / 180;
   for (let i = 1; i <= 5; i++) {
-    r = solver.update(
-      makeWorldPose([0, 0, 0], 0.2 + snap + i * step),
-      makeHmdMatrix([0, 1.6, 0], 0),
-      true,
-      t += 11,
-    );
+    r = solver.update(makeWorldPose([0, 0, 0], 0.2 + jump + i * step), hmd, true, t += 11);
   }
-  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + snap + 5 * step), 0, 1e-9);
+  assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + jump + 5 * step), 0, 1e-9);
 });

@@ -174,8 +174,14 @@ export interface VrcOriginSolverOptions {
   yawModel?: "follow" | "hold";
   /** Low-pass time constant (ms) for the `follow` yaw model (default 500). */
   followTauMs?: number;
-  /** In `follow`, a raw yaw change this large (rad) is a snap turn or teleport: no smoothing. */
+  /**
+   * In `follow`, raw yaw further than this (rad) from the held yaw is an outlier (VRChat swings
+   * the body after hard head turns): ignored unless it lasts `followSnapMs` with a slow head, then
+   * taken at once (a teleport that turned the player). Default 6°.
+   */
   followSnapRad?: number;
+  /** How long (ms) an outlier must last before it is taken (default 400). */
+  followSnapMs?: number;
   /**
    * In `follow`, how far ahead (s) of the OpenVR pose VRChat's avatar root follows the head:
    * VRChat poses the avatar with the HMD pose predicted for display (measured ~50 ms).
@@ -202,6 +208,9 @@ export interface VrcOriginSolverResult {
  * whenever the avatar root yaw is unchanged or is merely catching up to a prior physical head
  * turn, while immediately tracking joystick turns, smooth turns, and teleports.
  */
+/** Decay (ms) of the solver's recent peak head yaw rate. */
+const PEAK_HEAD_RATE_DECAY_MS = 250;
+
 export class VrcOriginSolver {
   private readonly avatarYawEps: number;
   private readonly maxHeadBodyOffset: number;
@@ -219,6 +228,10 @@ export class VrcOriginSolver {
   private lastUpdateMs: number | null = null;
   private readonly headLead: number;
   private readonly followHeadRate: [number, number];
+  /** Recent peak |head yaw rate|, decaying: a shake reverses through rate 0 at every swing end. */
+  private peakHeadRate = 0;
+  private readonly followSnapMs: number;
+  private outlierSince: number | null = null;
 
   constructor(options: VrcOriginSolverOptions = {}) {
     this.avatarYawEps = options.avatarYawEpsilonRad ?? 0.002;
@@ -227,7 +240,8 @@ export class VrcOriginSolver {
     this.publishYawEps = options.publishYawEpsilonRad ?? (0.05 * Math.PI) / 180;
     this.yawModel = options.yawModel ?? "follow";
     this.followTauMs = options.followTauMs ?? 500;
-    this.followSnap = options.followSnapRad ?? (15 * Math.PI) / 180;
+    this.followSnap = options.followSnapRad ?? (6 * Math.PI) / 180;
+    this.followSnapMs = options.followSnapMs ?? 400;
     this.headLead = options.headLeadSeconds ?? 0.05;
     this.followHeadRate = options.followHeadRateRad ??
       [(45 * Math.PI) / 180, (120 * Math.PI) / 180];
@@ -239,6 +253,8 @@ export class VrcOriginSolver {
     this.prevRawYawRad = null;
     this.lastPublished = null;
     this.lastUpdateMs = null;
+    this.peakHeadRate = 0;
+    this.outlierSince = null;
   }
 
   setScale(scale: number): void {
@@ -270,7 +286,11 @@ export class VrcOriginSolver {
       // Pair the root with the head pose VRChat used for it (predicted ahead for display).
       const followYaw = normalizeAngleRad(rawYaw + hmdYawRateRad * this.headLead);
       const err = angleDiffRad(followYaw, this.yawRad);
-      const rate = Math.abs(hmdYawRateRad);
+      this.peakHeadRate = Math.max(
+        Math.abs(hmdYawRateRad),
+        this.peakHeadRate * Math.exp(-dtMs / PEAK_HEAD_RATE_DECAY_MS),
+      );
+      const rate = this.peakHeadRate;
       const [slow, fast] = this.followHeadRate;
       const trust = rate <= slow ? 1 : rate >= fast ? 0 : (fast - rate) / (fast - slow);
       if (stickTurning) {
@@ -278,9 +298,14 @@ export class VrcOriginSolver {
         this.yawRad = normalizeAngleRad(
           this.yawRad + angleDiffRad(worldPose.yawRad, this.prevWorldYawRad),
         );
-      } else if (Math.abs(err) > this.followSnap && trust === 1) {
-        this.yawRad = followYaw;
+      } else if (Math.abs(err) > this.followSnap) {
+        this.outlierSince = trust === 1 ? (this.outlierSince ?? nowMs) : null;
+        if (this.outlierSince !== null && nowMs - this.outlierSince >= this.followSnapMs) {
+          this.yawRad = followYaw;
+          this.outlierSince = null;
+        }
       } else {
+        this.outlierSince = null;
         const k = (1 - Math.exp(-dtMs / this.followTauMs)) * trust;
         this.yawRad = normalizeAngleRad(this.yawRad + err * k);
       }
