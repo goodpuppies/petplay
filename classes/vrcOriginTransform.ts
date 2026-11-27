@@ -224,8 +224,9 @@ export class VrcOriginSolver {
   private scale = 1;
   private prevWorldYawRad: number | null = null;
   private prevRawYawRad: number | null = null;
-  /** Avatar-root yaw when `this.yawRad` was last anchored; unchanged root yaw means physical look-around. */
-  private anchorWorldYaw: number | null = null;
+  /** Last avatar-root yaw that moved >= 1.5° and when it moved (distinguishes teleports from head look-around). */
+  private settledWorldYaw: number | null = null;
+  private lastWorldYawChangedAt = -Infinity;
   private lastPublished: VrcWorldToStandingTransform | null = null;
   private readonly yawModel: "follow" | "hold";
   private readonly followTauMs: number;
@@ -256,7 +257,8 @@ export class VrcOriginSolver {
     this.yawRad = null;
     this.prevWorldYawRad = null;
     this.prevRawYawRad = null;
-    this.anchorWorldYaw = null;
+    this.settledWorldYaw = null;
+    this.lastWorldYawChangedAt = -Infinity;
     this.lastPublished = null;
     this.lastUpdateMs = null;
     this.peakHeadRate = 0;
@@ -291,8 +293,16 @@ export class VrcOriginSolver {
     this.lastUpdateMs = nowMs;
     if (this.yawRad === null || this.prevWorldYawRad === null || this.prevRawYawRad === null) {
       this.yawRad = rawYaw;
-      this.anchorWorldYaw = worldPose.yawRad;
+      this.settledWorldYaw = worldPose.yawRad;
+      this.lastWorldYawChangedAt = nowMs;
     } else if (this.yawModel === "follow") {
+      if (
+        this.settledWorldYaw === null ||
+        Math.abs(angleDiffRad(worldPose.yawRad, this.settledWorldYaw)) >= (1.5 * Math.PI) / 180
+      ) {
+        this.settledWorldYaw = worldPose.yawRad;
+        this.lastWorldYawChangedAt = nowMs;
+      }
       // Pair the root with the head pose VRChat used for it (predicted ahead for display).
       // During known-stick turns, `worldPose.yawRad` already comes from `VrcCharacterSim`
       // (which integrates `-hmdYawRate` at 0 ms lag), so skip raw `hmdYawRate * headLead` jitter.
@@ -308,24 +318,27 @@ export class VrcOriginSolver {
         ? [(10 * Math.PI) / 180, (25 * Math.PI) / 180]
         : this.followHeadRate;
       const trust = rate <= slow ? 1 : rate >= fast ? 0 : (fast - rate) / (fast - slow);
-      const worldYawMoved = this.anchorWorldYaw === null ||
-        Math.abs(angleDiffRad(worldPose.yawRad, this.anchorWorldYaw)) >= 0.01;
       if (stickTurning) {
         // The turn stick turns the playspace: take it at once, no smoothing lag. Not the root's
         // yaw change 1:1: the root also turns with the head, and a head turn during a stick turn
         // would stay in the playspace yaw (measured: 14.5° from a 16° head turn).
         this.yawRad = followYaw;
-        this.anchorWorldYaw = worldPose.yawRad;
-        this.outlierSince = null;
-      } else if (!worldYawMoved && Math.abs(err) > (2 * Math.PI) / 180) {
-        // Avatar root yaw has not moved at all (standing physical head/body look-around while
-        // VRChat keeps the avatar root planted): never drift or teleport-snap playspace yaw.
+        this.settledWorldYaw = worldPose.yawRad;
         this.outlierSince = null;
       } else if (Math.abs(err) > this.followSnap) {
-        this.outlierSince = trust === 1 ? (this.outlierSince ?? nowMs) : null;
+        // Only start a teleport-snap timer if the avatar root itself actually rotated recently
+        // (< 200 ms ago); if the root stayed planted while the HMD turned, it is physical
+        // look-around, never a playspace teleport.
+        if (trust === 1) {
+          if (this.outlierSince === null && nowMs - this.lastWorldYawChangedAt < 200) {
+            this.outlierSince = nowMs;
+          }
+        } else {
+          this.outlierSince = null;
+        }
         if (this.outlierSince !== null && nowMs - this.outlierSince >= this.followSnapMs) {
           this.yawRad = followYaw;
-          this.anchorWorldYaw = worldPose.yawRad;
+          this.settledWorldYaw = worldPose.yawRad;
           this.outlierSince = null;
         }
       } else {
