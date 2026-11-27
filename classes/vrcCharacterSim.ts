@@ -19,7 +19,8 @@ import { DEFAULT_VRC_WALK, type VrcWalkParams } from "./vrcWorldLocomotion.ts";
 
 /** From VRChat SDK `ClientSimPlayerController.RATE_OF_AIR_ACCELERATION`. */
 const RATE_OF_AIR_ACCELERATION = 5.0;
-const STICK_DEADZONE = 0.15;
+/** Unity Input System default `StickDeadzoneProcessor.min` (rescaled to `[0, 1]`). */
+const STICK_DEADZONE = 0.125;
 
 function normalizeAngleRad(angle: number): number {
   let a = (angle + Math.PI) % (2 * Math.PI);
@@ -93,6 +94,9 @@ export class VrcCharacterSim {
   private jumpHeld = false;
   private jumpQueued = false;
   private movePressedAt = -Infinity;
+  private moveReleasedAt = -Infinity;
+  /** Unit XZ direction of the last active walk, so post-stop overshoot settles gently without recoil. */
+  private lastMoveDir: [number, number] = [0, 0];
 
   /** Wall-collision gate: stops forward sim only after sustained zero progress while holding stick. */
   private wallBlocked = false;
@@ -166,13 +170,13 @@ export class VrcCharacterSim {
   }
 
   private desiredMoveXZ(move: [number, number], yaw: number): [number, number] {
-    let sx = move[0], sy = move[1];
-    const mag = Math.hypot(sx, sy);
-    if (mag < STICK_DEADZONE) return [0, 0];
-    if (mag > 1) {
-      sx /= mag;
-      sy /= mag;
-    }
+    const mag = Math.hypot(move[0], move[1]);
+    if (mag <= STICK_DEADZONE) return [0, 0];
+    // Rescale [STICK_DEADZONE, 1] -> [0, 1] matching Unity's StickDeadzoneProcessor so partial-stick
+    // nudges do not overshoot VRChat's actual displacement.
+    const effMag = Math.min(1, (mag - STICK_DEADZONE) / (1 - STICK_DEADZONE));
+    const sx = (move[0] / mag) * effMag;
+    const sy = (move[1] / mag) * effMag;
     const vFwd = sy * this.walk.forwardSpeed;
     const vRgt = sx * this.walk.strafeSpeed;
     // Unity left-handed yaw: forward = [sin(yaw), cos(yaw)], right = [cos(yaw), -sin(yaw)].
@@ -194,6 +198,15 @@ export class VrcCharacterSim {
     const prevActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
     const nextActive = Math.hypot(move[0], move[1]) > STICK_DEADZONE;
     if (nextActive && !prevActive) this.movePressedAt = t;
+    if (prevActive && !nextActive) {
+      this.moveReleasedAt = t;
+      const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
+      if (vSpd > 0.2) this.lastMoveDir = [this.velCur[0] / vSpd, this.velCur[2] / vSpd];
+      // Drop stale pre-stop XZ residual so a delayed pre-stop OSC burst cannot pull backwards
+      // right before the final post-stop OSC sample arrives.
+      this.pendingPos[0] = 0;
+      this.pendingPos[2] = 0;
+    }
     if (Math.hypot(move[0] - this.move[0], move[1] - this.move[1]) > 0.12 || (!prevActive && nextActive)) {
       this.wallBlocked = false;
       this.wallStallCount = 0;
@@ -281,8 +294,14 @@ export class VrcCharacterSim {
     // 4. Bleed 1st-order OSC offset smoothly into pos & yaw (critically damped, zero steps/bounce).
     // Arrival-time jitter is purely parallel to velocity, so bleed `along` gently (`posTauMs`)
     // while bleeding `perp` (head-turn curves) and `Y` (stairs/ramps) crisply.
-    const alongTau = moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65);
-    const perpTau = moveActive && !this.wallBlocked ? 45 : Math.min(this.posTauMs, 65);
+    // After a stop, settle backward overshoot gently (150 ms) so short nudges never recoil,
+    // while forward undershoot finishes cleanly (75 ms).
+    const stopped = !moveActive || this.wallBlocked;
+    const isStopRecoil = stopped &&
+      (this.pendingPos[0] * this.lastMoveDir[0] + this.pendingPos[2] * this.lastMoveDir[1]) < -0.005;
+    const stopTau = isStopRecoil ? 150 : 75;
+    const alongTau = stopped ? Math.min(this.posTauMs, stopTau) : this.posTauMs;
+    const perpTau = stopped ? Math.min(this.posTauMs, stopTau) : 45;
     const yTau = this.grounded ? 35 : Math.min(this.posTauMs, 80);
     const aAlong = 1 - Math.exp(-dtMs / alongTau);
     const aPerp = 1 - Math.exp(-dtMs / perpTau);
@@ -549,8 +568,12 @@ export class VrcCharacterSim {
   evaluate(t: number, source: VrcOriginWorldPose["source"], jumpParams?: VrcJumpParams): VrcCharacterSimState {
     this.stepTo(t, jumpParams);
     const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
-    const alongTauSec = (moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65)) / 1000;
-    const perpTauSec = (moveActive && !this.wallBlocked ? 45 : Math.min(this.posTauMs, 65)) / 1000;
+    const stopped = !moveActive || this.wallBlocked;
+    const isStopRecoil = stopped &&
+      (this.pendingPos[0] * this.lastMoveDir[0] + this.pendingPos[2] * this.lastMoveDir[1]) < -0.005;
+    const stopTau = isStopRecoil ? 150 : 75;
+    const alongTauSec = (stopped ? Math.min(this.posTauMs, stopTau) : this.posTauMs) / 1000;
+    const perpTauSec = (stopped ? Math.min(this.posTauMs, stopTau) : 45) / 1000;
     const yTauSec = (this.grounded ? 35 : Math.min(this.posTauMs, 80)) / 1000;
     const yawTauSec = this.yawTauMs / 1000;
     const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
