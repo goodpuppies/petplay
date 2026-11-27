@@ -471,6 +471,8 @@ export class VrcOriginRoomLock {
   private mode: VrcOriginRoomLockMode = "moving";
   private held: VrcWorldToStandingTransform | null = null;
   private lastOutput: VrcWorldToStandingTransform | null = null;
+  /** The output frozen while an overlay is held. */
+  private visualHold: VrcWorldToStandingTransform | null = null;
   private sustainedSince: number | null = null;
   private settleAnchor: VrcWorldToStandingTransform | null = null;
   private settleAnchorAt = 0;
@@ -513,6 +515,7 @@ export class VrcOriginRoomLock {
     this.mode = "moving";
     this.held = null;
     this.lastOutput = null;
+    this.visualHold = null;
     this.sustainedSince = null;
     this.settleAnchor = null;
     this.blendFrom = null;
@@ -536,8 +539,9 @@ export class VrcOriginRoomLock {
    * @param stickMoving a move or turn stick is held: VRChat is moving now, before samples show it
    * @param sticksKnown the sticks are being read: idle sticks then mean VRChat is not moving the
    *   player, so the lock holds and only a clear, lasting desync re-anchors it (slowly)
-   * @param overlayHeld a hand holds a PetPlay overlay: lock where the output is and stay there
-   *   (no breaks, desync corrections or re-anchors) until it is let go
+   * @param overlayHeld a hand holds a PetPlay overlay: the output (reported as locked) stays
+   *   where it was while the lock goes on tracking VRChat underneath; on release the output is
+   *   the tracked state again, wherever VRChat moved the player meanwhile
    */
   update(
     raw: VrcWorldToStandingTransform,
@@ -550,21 +554,51 @@ export class VrcOriginRoomLock {
     sticksKnown = false,
     overlayHeld = false,
   ): VrcOriginRoomLockResult {
+    const tracked = this.track(
+      raw,
+      worldPose,
+      hmdPos,
+      hmdSpeed,
+      nowMs,
+      locomotionSpeed,
+      stickMoving,
+      sticksKnown,
+    );
+    let output = tracked.transform;
+    let mode = this.mode;
+    if (overlayHeld) {
+      this.visualHold ??= cloneTransform(this.lastOutput ?? output);
+      output = this.visualHold;
+      mode = "locked";
+    } else {
+      this.visualHold = null;
+    }
+    const changed = !this.lastOutput || translationDistance(output, this.lastOutput) > 1e-6 ||
+      Math.abs(angleDiffRad(output.yawRad, this.lastOutput.yawRad)) > 1e-7 ||
+      Math.abs(output.scale - this.lastOutput.scale) > 1e-7;
+    if (changed) this.lastOutput = cloneTransform(output);
+    return {
+      transform: output,
+      matrix: transformToHmdMatrix34(output),
+      mode,
+      changed,
+      errorMeters: tracked.errorMeters,
+    };
+  }
+
+  /** The lock policy proper (`update` without the overlay hold). */
+  private track(
+    raw: VrcWorldToStandingTransform,
+    worldPose: VrcOriginWorldPose,
+    hmdPos: Vec3,
+    hmdSpeed: number,
+    nowMs: number,
+    locomotionSpeed: number,
+    stickMoving: boolean,
+    sticksKnown: boolean,
+  ): { transform: VrcWorldToStandingTransform; errorMeters: number } {
     let errorMeters = 0;
     if (stickMoving) this.lastStickAt = nowMs;
-    if (overlayHeld) {
-      if (this.mode !== "locked" || !this.held) {
-        // Freeze what is shown, so grabbing never moves the room under the hand.
-        this.held = cloneTransform(this.blendOutput(raw, worldPose, nowMs));
-        this.mode = "locked";
-        this.blendFrom = null;
-        this.correction = null;
-      }
-      this.sustainedSince = null;
-      this.desyncSince = null;
-      if (this.held) errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
-      return this.finish(this.lockedOutput(worldPose, nowMs), errorMeters);
-    }
     if (sticksKnown && this.mode === "locked" && this.held && !stickMoving) {
       errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
       const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));
@@ -681,18 +715,8 @@ export class VrcOriginRoomLock {
   private finish(
     output: VrcWorldToStandingTransform,
     errorMeters: number,
-  ): VrcOriginRoomLockResult {
-    const changed = !this.lastOutput || translationDistance(output, this.lastOutput) > 1e-6 ||
-      Math.abs(angleDiffRad(output.yawRad, this.lastOutput.yawRad)) > 1e-7 ||
-      Math.abs(output.scale - this.lastOutput.scale) > 1e-7;
-    if (changed) this.lastOutput = cloneTransform(output);
-    return {
-      transform: output,
-      matrix: transformToHmdMatrix34(output),
-      mode: this.mode,
-      changed,
-      errorMeters,
-    };
+  ): { transform: VrcWorldToStandingTransform; errorMeters: number } {
+    return { transform: output, errorMeters };
   }
 }
 

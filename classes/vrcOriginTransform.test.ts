@@ -533,7 +533,11 @@ Deno.test("stick turning (v2): yaw follows the measurement, not a dead reckoning
   // Gain 180°/s, but VRChat turns at 120°/s: dead reckoning would end 30° ahead after 0.5 s and
   // hold there until a settle. v2 measures yaw without lag, so the estimate tracks it throughout.
   const predictor = new VrcRootPredictor({ turnGainRadPerSec: Math.PI });
-  const v2 = (yaw: number): VrcOriginWorldPose => ({ source: "petplay-origin-v2", position: [0, 0, 0], yawRad: yaw });
+  const v2 = (yaw: number): VrcOriginWorldPose => ({
+    source: "petplay-origin-v2",
+    position: [0, 0, 0],
+    yawRad: yaw,
+  });
   const rate = (120 * Math.PI) / 180;
   let t = 0;
   for (; t <= 300; t += 11) {
@@ -554,7 +558,12 @@ Deno.test("stick turning (v2): yaw follows the measurement, not a dead reckoning
     // Body sway keeps the reading from ever going quiet.
     predictor.add({ t, pose: v2(measured(t) + 0.002 * Math.sin(t / 37)) });
     if (t - turnEnd > 250) {
-      assertAlmostEquals(predictor.predict(t).pose.yawRad, measured(t), 0.02, `at ${t - turnEnd} ms after release`);
+      assertAlmostEquals(
+        predictor.predict(t).pose.yawRad,
+        measured(t),
+        0.02,
+        `at ${t - turnEnd} ms after release`,
+      );
       assert(!predictor.isStickTurning());
     }
   }
@@ -644,9 +653,20 @@ Deno.test("follow model: a head turn during a stick turn does not stay in the pl
     const rootYaw = playspaceAt(t) - headAt(t);
     const rate = (headAt(t + 1) - headAt(t - 1)) / 0.002;
     const turning = t >= 1000 && t < 2150;
-    r = solver.update(makeWorldPose([9, 0.2, -4], rootYaw), makeHmdMatrix(hmdPos, headAt(t)), turning, t, rate);
+    r = solver.update(
+      makeWorldPose([9, 0.2, -4], rootYaw),
+      makeHmdMatrix(hmdPos, headAt(t)),
+      turning,
+      t,
+      rate,
+    );
     if (t >= 2150) {
-      assertAlmostEquals(angleDiffRad(r.transform.yawRad, playspaceAt(t)), 0, (0.5 * Math.PI) / 180, `at ${t} ms`);
+      assertAlmostEquals(
+        angleDiffRad(r.transform.yawRad, playspaceAt(t)),
+        0,
+        (0.5 * Math.PI) / 180,
+        `at ${t} ms`,
+      );
     }
   }
 });
@@ -786,35 +806,44 @@ function translationDelta(a: { translation: Vec3 }, b: { translation: Vec3 }): n
   return Math.hypot(...a.translation.map((v, k) => v - b.translation[k]));
 }
 
-Deno.test("room lock: while an overlay is held the output stays put, then the usual policy resumes", () => {
-  const solver = new VrcOriginSolver();
-  const lock = new VrcOriginRoomLock();
+Deno.test("room lock: while an overlay is held the output stays put; on release it is where VRChat moved", () => {
   const hmdPos: Vec3 = [0.4, 1.6, -0.4];
-  const step = (world: VrcOriginWorldPose, t: number, stick: boolean, held: boolean) => {
-    const raw = solver.update(world, makeHmdMatrix(hmdPos, 0), stick, t);
-    return lock.update(raw.transform, world, hmdPos, 0, t, stick ? 2 : 0, stick, true, held);
+  const run = (holdFrom: number, holdTo: number) => {
+    const solver = new VrcOriginSolver();
+    const lock = new VrcOriginRoomLock();
+    const out = [];
+    for (let t = 0; t < 3000; t += 11) {
+      // Still, then VRChat moves the player (stick) from 0.5 s to 1.5 s, then still again.
+      const stick = t >= 500 && t < 1500;
+      const x = 9 + 2 * Math.min(Math.max(0, t - 500), 1000) / 1000;
+      const world = makeWorldPose([x, 0.2, -4], -1.4);
+      const raw = solver.update(world, makeHmdMatrix(hmdPos, 0), stick, t);
+      const held = t >= holdFrom && t < holdTo;
+      out.push({
+        t,
+        held,
+        res: lock.update(raw.transform, world, hmdPos, 0, t, stick ? 2 : 0, stick, true, held),
+      });
+    }
+    return out;
   };
-  // Moving (stick held) when the grab starts: it locks on what is shown at once.
-  let t = 0;
-  let res = step(makeWorldPose([9, 0.2, -4], -1.4), t, true, false);
-  for (t = 11; t < 200; t += 11) res = step(makeWorldPose([9 + t / 1000, 0.2, -4], -1.4), t, true, false);
-  assertEquals(res.mode, "moving");
-  const shown = res.transform;
-  const grabbed = [];
-  // Held for 3 s while VRChat keeps moving and turning the avatar (a frozen stick): no change.
-  for (let i = 0; t < 3200; t += 11, i++) {
-    const world = makeWorldPose([9.2 + i * 0.01, 0.2, -4], -1.4 + i * 0.01);
-    grabbed.push(step(world, t, true, true));
+  const plain = run(Infinity, Infinity);
+  // Grab before moving, let go while VRChat still moves.
+  const heldRun = run(300, 1200);
+  const frozen = heldRun.find((s) => s.held)!.res.transform;
+  for (const s of heldRun.filter((s) => s.held)) {
+    assertEquals(s.res.mode, "locked");
+    assertVec3AlmostEquals(s.res.transform.translation, frozen.translation, 1e-9);
   }
-  // The first held frame freezes that frame's output: one 11 ms step on from the last shown.
-  const frozen = grabbed[0].transform;
-  assertVec3AlmostEquals(frozen.translation, shown.translation, 0.01);
-  for (const r of grabbed) {
-    assertEquals(r.mode, "locked");
-    assertAlmostEquals(r.transform.yawRad, frozen.yawRad, 1e-9);
-    assertVec3AlmostEquals(r.transform.translation, frozen.translation, 1e-9);
+  // Once let go it shows exactly what the lock tracked without the hold: no jump back.
+  for (const [i, s] of heldRun.entries()) {
+    if (s.t < 1200) continue;
+    assertEquals(s.res.mode, plain[i].res.mode, `mode at ${s.t}`);
+    assertVec3AlmostEquals(
+      s.res.transform.translation,
+      plain[i].res.transform.translation,
+      1e-9,
+      `at ${s.t}`,
+    );
   }
-  // Let go with the stick still moving: the lock breaks as usual.
-  res = step(makeWorldPose([12, 0.2, -4], 1.4), t, true, false);
-  assertEquals(res.mode, "moving");
 });
