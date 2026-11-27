@@ -28,6 +28,7 @@ import { getSetting, setSetting, useSetting } from "../../settings.ts";
 import { defaultApply, type HandleState } from "@pmndrs/handle";
 import { wristOffsetForHand } from "./offset.ts";
 import { WristToastStack } from "../toastOverlay.tsx";
+import { FacingVisibility } from "../facingVisibility.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -301,6 +302,7 @@ export function WristMenuPanel(
           }
           defaultApply(state, target);
           if (!state.last) return;
+          dragging.current = false;
           let offsetPosition = target.position;
           if (resized) {
             const current = getSetting("wristMenuScale");
@@ -384,6 +386,10 @@ export function WristMenuPanel(
   const position = transform?.position ?? CONTROLLER_UI_POSITION;
   const rotation = transform?.rotation ?? CONTROLLER_UI_ROTATION;
   const scale = transform?.scale ?? CONTROLLER_UI_SCALE;
+  const hideAngle = useSetting("wristMenuHideAngle");
+  const outerRef = useRef<THREE.Group>(null);
+  const occluderRef = useRef<THREE.Mesh>(null);
+
   // The mount now carries a trigger resize: drop it from the grab target in the same commit, so the
   // panel never shows both scales or neither for a frame.
   useLayoutEffect(() => {
@@ -394,6 +400,7 @@ export function WristMenuPanel(
 
   return (
     <group
+      ref={outerRef}
       position={position}
       rotation={rotation}
       scale={scale}
@@ -423,77 +430,90 @@ export function WristMenuPanel(
             />
           </mesh>
         )}
-        <group userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}>
-          <GrabBox
-            manipulationTargetRef={attached ? offsetRef : undefined}
-            manipulationOptions={grabOptions}
-            width={WRIST_UI_WIDTH}
-            height={WRIST_UI_HEIGHT}
-            depth={WRIST_UI_DEPTH}
-            visibleChrome={false}
-            shellRayPickable={false}
-            interactionHullFilter={(_id, pointerType, pointerState) =>
-              !isPointerBlockedByHost(pointerType, pointerState, hostHandedness, attached)}
-            grabFilter={(e: PenPointerEvent) =>
-              // The trigger ray presses the menu's controls; only squeeze grabs.
-              e.pointerType !== "ray" &&
-              e.pointerType !== "poker" &&
-              (!e.pointerType.startsWith("screen-") || e.button === 0) &&
-              !isPointerEventFromHostHand(e, hostHandedness, attached)}
-          >
-            <WristMenuUi
-              clock={clockLabel}
-              dateLabel={dateLabel}
-              elapsed={elapsedLabel}
-              layoutActive={buttonState.layoutActive}
-              editActive={buttonState.editActive}
-              onToggle={handleToggle}
-              onRecenter={requestLayoutRecenter}
-              workspaceLayout={workspaceLayout}
-              onAssignOutput={assignWorkspaceLayoutOutput}
-              onAddOutput={addWorkspaceLayoutOutput}
-              onSaveLayout={saveLayoutSlot}
-              onLoadLayout={loadLayoutSlot}
-              onOpenSettingsWindow={toggleSettingsWindow}
-              pointerEventsType={menuPointerType}
-            />
-          </GrabBox>
-        </group>
+        <FacingVisibility
+          enabled={attached}
+          maxAngleDeg={hideAngle}
+          keepVisible={() => dragging.current}
+          onVisibilityChange={(visible) => {
+            if (outerRef.current) outerRef.current.userData.blockGameInput = visible;
+          }}
+          onOpacityChange={(fade) => {
+            if (occluderRef.current) occluderRef.current.visible = fade >= 0.99;
+          }}
+        >
+          <group userData={{ bridge: { kind: "skip" }, wristMenuActor: actorId ?? null }}>
+            <GrabBox
+              manipulationTargetRef={attached ? offsetRef : undefined}
+              manipulationOptions={grabOptions}
+              width={WRIST_UI_WIDTH}
+              height={WRIST_UI_HEIGHT}
+              depth={WRIST_UI_DEPTH}
+              visibleChrome={false}
+              shellRayPickable={false}
+              interactionHullFilter={(_id, pointerType, pointerState) =>
+                !isPointerBlockedByHost(pointerType, pointerState, hostHandedness, attached)}
+              grabFilter={(e: PenPointerEvent) =>
+                // The trigger ray presses the menu's controls; only squeeze grabs.
+                e.pointerType !== "ray" &&
+                e.pointerType !== "poker" &&
+                (!e.pointerType.startsWith("screen-") || e.button === 0) &&
+                !isPointerEventFromHostHand(e, hostHandedness, attached)}
+            >
+              <WristMenuUi
+                clock={clockLabel}
+                dateLabel={dateLabel}
+                elapsed={elapsedLabel}
+                layoutActive={buttonState.layoutActive}
+                editActive={buttonState.editActive}
+                onToggle={handleToggle}
+                onRecenter={requestLayoutRecenter}
+                workspaceLayout={workspaceLayout}
+                onAssignOutput={assignWorkspaceLayoutOutput}
+                onAddOutput={addWorkspaceLayoutOutput}
+                onSaveLayout={saveLayoutSlot}
+                onLoadLayout={loadLayoutSlot}
+                onOpenSettingsWindow={toggleSettingsWindow}
+                pointerEventsType={menuPointerType}
+              />
+            </GrabBox>
+          </group>
+          {
+            /*
+             * Depth-only occluder, the pattern displays and the keyboard use: it paints depth and no
+             * colour, drawn first, so whatever is depth-tested behind the wrist panel — the controller
+             * model, a hand, another object's chrome — is hidden by it. Not pickable: the menu's own
+             * surfaces own pointer input.
+             *
+             * Deliberately a sibling of the `bridge: { kind: "skip" }` group rather than a child of it:
+             * that flag skips an entire subtree from the raylib IR (the menu's visuals travel in the
+             * uikit payload instead), so an occluder inside it would never reach the overlay.
+             *
+             * Left out when the menu is faded, or it would hide what should show through.
+             */
+          }
+          {opacity >= 1 && (
+            <mesh
+              ref={occluderRef}
+              position={[0, 0, -WRIST_UI_DEPTH / 2]}
+              renderOrder={-100}
+              {...({ pointerEvents: "none" } as Record<string, unknown>)}
+            >
+              <planeGeometry args={[WRIST_UI_WIDTH, WRIST_UI_HEIGHT]} />
+              <meshBasicMaterial
+                depthTest
+                depthWrite
+                colorWrite={false}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+          )}
+        </FacingVisibility>
         {attached && hostHandedness != null && (
           <WristToastStack
             hostHandedness={hostHandedness}
             position={[0, WRIST_UI_HEIGHT / 2 + 0.036, 0]}
             pointerEventsType={menuPointerType}
           />
-        )}
-        {
-          /*
-           * Depth-only occluder, the pattern displays and the keyboard use: it paints depth and no
-           * colour, drawn first, so whatever is depth-tested behind the wrist panel — the controller
-           * model, a hand, another object's chrome — is hidden by it. Not pickable: the menu's own
-           * surfaces own pointer input.
-           *
-           * Deliberately a sibling of the `bridge: { kind: "skip" }` group rather than a child of it:
-           * that flag skips an entire subtree from the raylib IR (the menu's visuals travel in the
-           * uikit payload instead), so an occluder inside it would never reach the overlay.
-           *
-           * Left out when the menu is faded, or it would hide what should show through.
-           */
-        }
-        {opacity >= 1 && (
-          <mesh
-            position={[0, 0, -WRIST_UI_DEPTH / 2]}
-            renderOrder={-100}
-            {...({ pointerEvents: "none" } as Record<string, unknown>)}
-          >
-            <planeGeometry args={[WRIST_UI_WIDTH, WRIST_UI_HEIGHT]} />
-            <meshBasicMaterial
-              depthTest
-              depthWrite
-              colorWrite={false}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
         )}
       </group>
     </group>

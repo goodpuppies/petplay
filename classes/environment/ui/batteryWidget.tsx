@@ -62,6 +62,14 @@ export function batteryReadingsToItems(batteries: BatteryReadings): BatteryDevic
       reading: batteries.right,
     });
   }
+  for (const tracker of batteries.trackers ?? []) {
+    items.push({
+      id: tracker.id,
+      label: tracker.label,
+      icon: "battery_full",
+      reading: { percent: tracker.percent, charging: tracker.charging },
+    });
+  }
   return items;
 }
 

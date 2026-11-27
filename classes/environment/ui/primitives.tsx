@@ -23,6 +23,7 @@
  * still holds; only the ellipsis behaviour is missing.
  */
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import { useFacingOpacity } from "../facingVisibility.tsx";
 import type { AllowedPointerEventsType } from "@pmndrs/pointer-events";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { Text } from "./text.tsx";
@@ -395,13 +396,14 @@ export function Shell(
   },
 ) {
   const tooltips = useTooltipStore();
+  const effectiveOpacity = useFacingOpacity(opacity);
   return (
     <TooltipContext.Provider value={tooltips}>
       <Container
         pixelSize={0.001}
         pointerEventsType={pointerEventsType}
         pointerEventsOrder={pointerEventsOrder}
-        opacity={opacity}
+        opacity={effectiveOpacity}
         width={GRID_WIDTH + GAP * 2}
         padding={GAP}
         flexDirection="column"

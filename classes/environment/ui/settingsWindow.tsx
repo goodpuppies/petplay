@@ -554,11 +554,12 @@ function WristPage({ showGuides }: { showGuides: boolean }) {
   const hand = useSetting("wristMenuHand");
   const scale = useSetting("wristMenuScale");
   const opacity = useSetting("wristMenuOpacity");
+  const hideAngle = useSetting("wristMenuHideAngle");
   const toolbarScale = useSetting("contextToolbarScale");
   const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, v)) * 100) / 100;
 
   return (
-    <Grid cols={1} rows={4} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
       <SettingRow row={0} title="Wrist Hand" description="Which controller wears the wrist menu">
         <SegmentedControl
           value={hand}
@@ -585,7 +586,15 @@ function WristPage({ showGuides }: { showGuides: boolean }) {
           onIncrement={() => setSetting("wristMenuOpacity", clamp(opacity + 0.1, 0.2, 1))}
         />
       </SettingRow>
-      <SettingRow row={3} title="Context Toolbar Scale" description="Size of window action bars">
+      <SettingRow row={3} title="Tilt Hide Angle" description="Hide wrist when tilted away from your eyes (OFF to 90°)">
+        <StepperControl
+          label={hideAngle <= 0 ? "OFF" : `${Math.round(hideAngle)}°`}
+          fraction={hideAngle / 90}
+          onDecrement={() => setSetting("wristMenuHideAngle", Math.max(0, Math.round(hideAngle - 5)))}
+          onIncrement={() => setSetting("wristMenuHideAngle", Math.min(90, Math.round(hideAngle + 5)))}
+        />
+      </SettingRow>
+      <SettingRow row={4} title="Context Toolbar Scale" description="Size of window action bars">
         <StepperControl
           label={`${Math.round(toolbarScale * 100)}%`}
           fraction={(toolbarScale - 0.5) / 1.5}

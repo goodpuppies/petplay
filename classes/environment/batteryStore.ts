@@ -11,7 +11,10 @@ import { pushToast, type ToastInput } from "./toastStore.ts";
 
 export type BatteryDevice = "left" | "right" | "hmd";
 export type BatteryReading = { percent: number; charging: boolean };
-export type BatteryReadings = Partial<Record<BatteryDevice, BatteryReading>>;
+export type TrackerBatteryReading = BatteryReading & { id: string; label: string };
+export type BatteryReadings = Partial<Record<BatteryDevice, BatteryReading>> & {
+  trackers?: TrackerBatteryReading[];
+};
 
 export const LOW_BATTERY_PERCENT = 15;
 /** Hysteresis for re-arming the low-battery toast. */
@@ -25,27 +28,38 @@ const DEVICE_LABEL: Record<BatteryDevice, string> = {
 
 export function createBatteryStore(notify: (toast: ToastInput) => unknown = pushToast) {
   let readings: BatteryReadings = {};
-  const warned = new Set<BatteryDevice>();
+  const warned = new Set<string>();
   const listeners = new Set<() => void>();
+
+  const checkLow = (key: string, label: string, reading: BatteryReading | undefined) => {
+    if (reading == null || reading.charging || reading.percent >= REARM_PERCENT) {
+      warned.delete(key);
+      return;
+    }
+    if (reading.percent < LOW_BATTERY_PERCENT && !warned.has(key)) {
+      warned.add(key);
+      notify({
+        title: `${label} battery low`,
+        content: `${Math.round(reading.percent)}%`,
+        tone: "warning",
+        timeoutMs: 6000,
+      });
+    }
+  };
 
   return {
     get: () => readings,
     publish(next: BatteryReadings) {
       for (const device of Object.keys(DEVICE_LABEL) as BatteryDevice[]) {
-        const reading = next[device];
-        if (reading == null || reading.charging || reading.percent >= REARM_PERCENT) {
-          warned.delete(device);
-          continue;
-        }
-        if (reading.percent < LOW_BATTERY_PERCENT && !warned.has(device)) {
-          warned.add(device);
-          notify({
-            title: `${DEVICE_LABEL[device]} battery low`,
-            content: `${Math.round(reading.percent)}%`,
-            tone: "warning",
-            timeoutMs: 6000,
-          });
-        }
+        checkLow(device, DEVICE_LABEL[device], next[device]);
+      }
+      const activeTrackers = new Set<string>();
+      for (const tracker of next.trackers ?? []) {
+        activeTrackers.add(tracker.id);
+        checkLow(tracker.id, tracker.label, tracker);
+      }
+      for (const key of warned) {
+        if (!(key in DEVICE_LABEL) && !activeTrackers.has(key)) warned.delete(key);
       }
       const same = JSON.stringify(next) === JSON.stringify(readings);
       readings = next;

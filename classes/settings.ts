@@ -137,6 +137,12 @@ export const SETTINGS_SCHEMA = {
     label: "Wrist menu opacity (0.2 to 1); below 1 the controller shows through it",
     valid: isWristOpacity,
   } satisfies SettingSpec<number>,
+  wristMenuHideAngle: {
+    default: 0 as number,
+    label: "Hide wrist menu when tilted past this angle from your eyes in degrees (0 = OFF, 5 to 90)",
+    valid: (value: unknown): value is number =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 90,
+  } satisfies SettingSpec<number>,
   contextToolbarScale: {
     default: 1 as number,
     label: "Window side-menu size, relative to the default (0.5 to 2; resized in edit layout mode)",

@@ -255,6 +255,13 @@ export function extractWebXRRaythreeUi(scene: THREE.Scene): WebXRRaythreeUiSnaps
   return extractWebXRRaythreeUiFromCollected(collected);
 }
 
+function isObjectVisibleInTree(object: Object3D): boolean {
+  for (let current: Object3D | null = object; current != null; current = current.parent) {
+    if (!current.visible) return false;
+  }
+  return true;
+}
+
 export function extractWebXRRaythreeUiFromCollected(
   collected: CollectedWebXRRaythreeUi,
 ): WebXRRaythreeUiSnapshot {
@@ -285,7 +292,7 @@ export function extractWebXRRaythreeUiFromCollected(
   }
   for (let i = 0; i < panelMeshes.length; i++) {
     const mesh = panelMeshes[i]!;
-    if (!mesh.visible) {
+    if (!isObjectVisibleInTree(mesh)) {
       continue;
     }
     const rootIndex = resolveRootIndex(mesh, rootIndexFor);
@@ -294,11 +301,17 @@ export function extractWebXRRaythreeUiFromCollected(
 
   for (let i = 0; i < textObjects.length; i++) {
     const object = textObjects[i]!;
+    if (!isObjectVisibleInTree(object)) {
+      continue;
+    }
     const rootIndex = resolveRootIndex(object, rootIndexFor);
     maybeCollectText(object, snapshot.texts, rootIndex);
   }
   for (let i = 0; i < imageObjects.length; i++) {
     const object = imageObjects[i]!;
+    if (!isObjectVisibleInTree(object)) {
+      continue;
+    }
     const rootIndex = resolveRootIndex(object, rootIndexFor);
     maybeCollectImage(object, snapshot.images, rootIndex);
   }
