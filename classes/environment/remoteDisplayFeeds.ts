@@ -83,6 +83,16 @@ export function resolveDisplayFeedProvider(
   };
 }
 
+let cachedLocalDisplayShare: ActorId | null = null;
+let cachedLocalHouseholdDesktops: ActorId | null = null;
+
+async function findLocalActor(prefix: string, cached: ActorId | null): Promise<ActorId | null> {
+  if (cached) return cached;
+  const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
+  const found = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith(prefix));
+  return found?.actorId ?? null;
+}
+
 /**
  * Tell this machine's displayShare (`petplay/displayShare.ts`) which screens the displays share.
  * False when there is none (no share key on this machine).
@@ -96,11 +106,29 @@ export async function setSharedScreens(
     worldPose?: SharedDisplayWorldPose;
   }>,
 ): Promise<boolean> {
-  const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
-  const share = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith("displayShare@"));
+  const share = await findLocalActor("displayShare@", cachedLocalDisplayShare);
   if (!share) return false;
-  await request(share.actorId, "SETSHARED", { screens });
-  return true;
+  cachedLocalDisplayShare = share;
+  try {
+    await request(share, "SETSHARED", { screens });
+    return true;
+  } catch {
+    cachedLocalDisplayShare = null;
+    return false;
+  }
+}
+
+/** Fire-and-forget live pose push from the sharer's scene to local displayShare (20 Hz during drag). */
+export async function pushLocalSharedPose(payload: {
+  kind?: "monitor" | "window";
+  windowId?: string;
+  name: string;
+  worldPose: SharedDisplayWorldPose;
+}): Promise<void> {
+  const share = await findLocalActor("displayShare@", cachedLocalDisplayShare);
+  if (!share) return;
+  cachedLocalDisplayShare = share;
+  PostMan.PostMessage({ target: share, type: "SETLOCALPOSE", payload });
 }
 
 export type SharedRemotePoseEntry = {
@@ -112,11 +140,35 @@ export type SharedRemotePoseEntry = {
 
 /** Latest viewer-pushed world poses recorded on this machine's displayShare. */
 export async function getSharedRemotePoses(): Promise<SharedRemotePoseEntry[]> {
-  const actors = await request<Array<{ actorId: ActorId; ownership?: string }>>(System, "INSPECT");
-  const share = actors.find((a) => a.ownership !== "external" && a.actorId.startsWith("displayShare@"));
+  const share = await findLocalActor("displayShare@", cachedLocalDisplayShare);
   if (!share) return [];
-  const res = await request<SharedRemotePoseEntry[]>(share.actorId, "GETREMOTEPOSES").catch(() => []);
-  return Array.isArray(res) ? res : [];
+  cachedLocalDisplayShare = share;
+  try {
+    const res = await request<SharedRemotePoseEntry[]>(share, "GETREMOTEPOSES");
+    return Array.isArray(res) ? res : [];
+  } catch {
+    cachedLocalDisplayShare = null;
+    return [];
+  }
+}
+
+export type RemoteDisplayPoseSnapshot = {
+  id: string;
+  worldPose: SharedDisplayWorldPose;
+};
+
+/** Lightweight real-time pose snapshot from local householdDesktops (for 20 Hz viewer sync). */
+export async function getRemoteDisplayPoses(): Promise<RemoteDisplayPoseSnapshot[]> {
+  const provider = await findLocalActor("householdDesktops@", cachedLocalHouseholdDesktops);
+  if (!provider) return [];
+  cachedLocalHouseholdDesktops = provider;
+  try {
+    const res = await request<RemoteDisplayPoseSnapshot[]>(provider, "GETPOSES");
+    return Array.isArray(res) ? res : [];
+  } catch {
+    cachedLocalHouseholdDesktops = null;
+    return [];
+  }
 }
 
 /** Push a viewer's updated VRChat world pose back to the sharer via householdDesktops. */

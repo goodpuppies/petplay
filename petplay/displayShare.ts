@@ -268,8 +268,49 @@ function source(): string {
   return state.source;
 }
 
+/** Active viewer `householdDesktops` actors subscribed for instant `POSEUPDATE` pushes. */
+const poseSubscribers = new Map<string, number>();
+const POSE_SUBSCRIBER_TTL_MS = 60_000;
+
+function registerPoseSubscriber(viewer: unknown): void {
+  if (typeof viewer === "string" && viewer.includes("@")) {
+    poseSubscribers.set(viewer, Date.now());
+  }
+}
+
+function broadcastPose(entry: SharedScreen, excludeViewer?: string): void {
+  if (!entry.worldPose || poseSubscribers.size === 0) return;
+  const now = Date.now();
+  const monitor = entry.kind === "window"
+    ? undefined
+    : screens?.find((s) => s.name === entry.name)?.index;
+  const payload = {
+    source: state.id,
+    kind: entry.kind === "window" ? "window" : "monitor",
+    ...(entry.windowId ? { windowId: entry.windowId } : {}),
+    name: entry.name,
+    ...(monitor != null ? { monitor } : {}),
+    worldPose: entry.worldPose,
+  };
+  for (const [viewer, seenAt] of poseSubscribers) {
+    if (now - seenAt > POSE_SUBSCRIBER_TTL_MS) {
+      poseSubscribers.delete(viewer);
+      continue;
+    }
+    if (viewer === excludeViewer) continue;
+    PostMan.PostMessage({ target: viewer as ActorId, type: "POSEUPDATE", payload });
+  }
+}
+
 const guardedHandlers: Record<string, (payload: unknown) => unknown> = {
-  DESCRIBE: () => describe(),
+  DESCRIBE: (payload) => {
+    registerPoseSubscriber((payload as { viewer?: unknown } | null)?.viewer);
+    return describe();
+  },
+  SUBSCRIBEPOSE: (payload) => {
+    registerPoseSubscriber((payload as { viewer?: unknown } | null)?.viewer);
+    return true;
+  },
   START: (payload) => {
     const req = payload as Partial<SourceRequest> | null;
     if (typeof req?.window === "string" && req.window) {
@@ -327,8 +368,10 @@ const guardedHandlers: Record<string, (payload: unknown) => unknown> = {
       windowId?: string;
       name?: string;
       monitor?: number;
+      viewer?: string;
       worldPose?: SharedDisplayWorldPose;
     } | null;
+    registerPoseSubscriber(req?.viewer);
     const pose = req?.worldPose;
     if (
       !pose || !validTuple3(pose.position) || !validTuple3(pose.rotation) ||
@@ -360,6 +403,7 @@ const guardedHandlers: Record<string, (payload: unknown) => unknown> = {
       name: target.name,
       worldPose: nextPose,
     });
+    broadcastPose(target, req?.viewer);
     return true;
   },
 };
@@ -447,10 +491,42 @@ new PostMan(
       const nextSet = JSON.stringify(next.map(keyOf));
       if (JSON.stringify(next) === JSON.stringify(state.shared)) return true;
       state.shared = next;
+      for (const entry of next) {
+        if (entry.worldPose) broadcastPose(entry);
+      }
       if (prevSet !== nextSet) {
         console.log(`[displayShare] sharing ${next.map((s) => s.name).join(", ") || "nothing"}`);
         await settle(prevWindowIds);
       }
+      return true;
+    },
+    /** Fast local real-time pose update from the sharer's scene during a grab (20 Hz). */
+    SETLOCALPOSE: (
+      payload: {
+        kind?: "monitor" | "window";
+        windowId?: string;
+        name: string;
+        worldPose: SharedDisplayWorldPose;
+      },
+    ) => {
+      const pose = payload?.worldPose;
+      if (
+        !pose || !validTuple3(pose.position) || !validTuple3(pose.rotation) ||
+        !validTuple3(pose.scale)
+      ) {
+        return false;
+      }
+      const target = payload.kind === "window" && typeof payload.windowId === "string"
+        ? sharedAsWindow(payload.windowId)
+        : sharedAs(payload.name);
+      if (!target) return false;
+      target.worldPose = {
+        position: [...pose.position],
+        rotation: [...pose.rotation],
+        scale: [...pose.scale],
+        updatedAt: Date.now(),
+      };
+      broadcastPose(target);
       return true;
     },
     /** Latest viewer-pushed world poses, for two-way shared display sync. */

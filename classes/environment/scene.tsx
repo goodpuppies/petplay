@@ -114,7 +114,9 @@ import {
 } from "./spatialGraph.ts";
 import {
   discoverRemoteDisplayFeeds,
+  getRemoteDisplayPoses,
   getSharedRemotePoses,
+  pushLocalSharedPose,
   pushRemoteDisplayPose,
   resolveDisplayFeedProvider,
   setSharedScreens,
@@ -895,13 +897,17 @@ function WindowLayer({
     };
   }, [sharedScreens]);
   // Follow a remote sharer's VRChat world pose while this viewer's display is anchored to VRC World.
-  const appliedRemotePoseAtRef = React.useRef(new Map<string, number>());
   const appliedRemotePoseKeyRef = React.useRef(new Map<string, string>());
   const lastPushedViewerPoseKeyRef = React.useRef(new Map<string, string>());
+  const lastPushedLocalPoseKeyRef = React.useRef(new Map<string, string>());
+  const remoteOutputsRef = React.useRef(remoteOutputs);
+  remoteOutputsRef.current = remoteOutputs;
+  const localOutputsRef = React.useRef(localWorkspaceOutputs);
+  localOutputsRef.current = localWorkspaceOutputs;
   const roundPoseTuple = (t: [number, number, number]): [number, number, number] => [
-    Math.round(t[0] * 10_000) / 10_000,
-    Math.round(t[1] * 10_000) / 10_000,
-    Math.round(t[2] * 10_000) / 10_000,
+    Math.round(t[0] * 1_000) / 1_000,
+    Math.round(t[1] * 1_000) / 1_000,
+    Math.round(t[2] * 1_000) / 1_000,
   ];
   const poseSignature = (t: SpatialTransform) =>
     JSON.stringify([
@@ -909,9 +915,124 @@ function WindowLayer({
       roundPoseTuple(t.rotation),
       roundPoseTuple(t.scale),
     ]);
+  // Real-time 20 Hz two-way pose sync:
+  // 1) Push live Three.js transforms during grabs (both shared local displays and remote displays).
+  // 2) Pull live pushed poses from local householdDesktops (Viewer <- Sharer) without clock-skew issues.
+  const hasSharedLocalDisplay = Object.values(graph.nodes).some((n) => n.kind === "display" && n.shared);
+  const hasRemoteDisplayNode = Object.values(graph.nodes).some(
+    (n) =>
+      n.kind === "display" && n.parentId === null && n.originId === VRC_WORLD_ORIGIN_ID &&
+      remoteOutputs.some((o) => o.id === n.workspaceOutputId && o.household && o.local !== true),
+  );
+  React.useEffect(() => {
+    if (!hasSharedLocalDisplay && !hasRemoteDisplayNode) return;
+    let cancelled = false;
+    let busy = false;
+    const tick = async () => {
+      if (cancelled || busy || !isVRCOriginKnown()) return;
+      busy = true;
+      try {
+        const head = getHeadObject(renderer, camera as unknown as THREE.Camera);
+        const allLocal = [
+          ...localOutputsRef.current,
+          ...remoteOutputsRef.current.filter((o) => o.local === true),
+        ];
+        // A. Push live Three.js pose for shared local displays AND grabbed remote displays.
+        if (head) {
+          for (const node of Object.values(graphRef.current.nodes)) {
+            if (node.kind !== "display" || !node.workspaceOutputId) continue;
+            const live = anchoredRootTransform(scene, head, node.id, VRC_WORLD_ORIGIN_ID);
+            if (!live || live === "untracked") continue;
+            const sig = poseSignature(live);
+            if (node.shared) {
+              const out = allLocal.find((o) => o.id === node.workspaceOutputId);
+              if (out && sig !== lastPushedLocalPoseKeyRef.current.get(node.id)) {
+                lastPushedLocalPoseKeyRef.current.set(node.id, sig);
+                void pushLocalSharedPose({
+                  ...(out.kind ? { kind: out.kind } : {}),
+                  ...(out.windowId ? { windowId: out.windowId } : {}),
+                  name: out.name,
+                  worldPose: {
+                    position: roundPoseTuple(live.position),
+                    rotation: roundPoseTuple(live.rotation),
+                    scale: roundPoseTuple(live.scale),
+                    updatedAt: Date.now(),
+                  },
+                });
+              }
+            }
+            if (node.parentId === null && node.originId === VRC_WORLD_ORIGIN_ID) {
+              const remote = remoteOutputsRef.current.find((o) => o.id === node.workspaceOutputId);
+              if (
+                remote?.household && remote.local !== true &&
+                sig !== appliedRemotePoseKeyRef.current.get(node.id) &&
+                sig !== lastPushedViewerPoseKeyRef.current.get(node.id)
+              ) {
+                lastPushedViewerPoseKeyRef.current.set(node.id, sig);
+                void pushRemoteDisplayPose(remote.household.provider, remote.household.desktop, {
+                  position: roundPoseTuple(live.position),
+                  rotation: roundPoseTuple(live.rotation),
+                  scale: roundPoseTuple(live.scale),
+                  updatedAt: Date.now(),
+                });
+              }
+            }
+          }
+        }
+        // B. Pull live incoming poses from local householdDesktops (Viewer <- Sharer).
+        if (hasRemoteDisplayNode) {
+          const poses = await getRemoteDisplayPoses();
+          if (!cancelled && poses.length > 0) {
+            const updates: Array<{ id: string; transform: SpatialTransform; sig: string }> = [];
+            for (const node of Object.values(graphRef.current.nodes)) {
+              if (
+                node.kind !== "display" || node.parentId !== null ||
+                node.originId !== VRC_WORLD_ORIGIN_ID || !node.workspaceOutputId
+              ) continue;
+              const match = poses.find((p) => p.id === node.workspaceOutputId);
+              if (!match) continue;
+              const transform: SpatialTransform = {
+                position: [...match.worldPose.position],
+                rotation: [...match.worldPose.rotation],
+                scale: [...match.worldPose.scale],
+              };
+              const sig = poseSignature(transform);
+              if (
+                sig === appliedRemotePoseKeyRef.current.get(node.id) ||
+                sig === lastPushedViewerPoseKeyRef.current.get(node.id)
+              ) continue;
+              updates.push({ id: node.id, transform, sig });
+            }
+            if (updates.length > 0) {
+              for (const u of updates) {
+                appliedRemotePoseKeyRef.current.set(u.id, u.sig);
+                lastPushedViewerPoseKeyRef.current.set(u.id, u.sig);
+              }
+              setGraph((current) => {
+                let next = current;
+                for (const u of updates) {
+                  const node = next.nodes[u.id];
+                  if (!node || node.parentId !== null || node.originId !== VRC_WORLD_ORIGIN_ID) continue;
+                  next = commitNodeTransform(next, u.id, u.transform);
+                }
+                return next;
+              });
+            }
+          }
+        }
+      } finally {
+        busy = false;
+      }
+    };
+    const interval = setInterval(() => void tick(), 50);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [hasSharedLocalDisplay, hasRemoteDisplayNode, scene, camera, renderer]);
   React.useEffect(() => {
     if (!isVRCOriginKnown()) return;
-    const updates: Array<{ id: string; transform: SpatialTransform; updatedAt: number }> = [];
+    const updates: Array<{ id: string; transform: SpatialTransform; sig: string }> = [];
     for (const node of Object.values(graphRef.current.nodes)) {
       if (
         node.kind !== "display" || node.parentId !== null ||
@@ -920,24 +1041,22 @@ function WindowLayer({
       const remote = remoteOutputs.find((o) => o.id === node.workspaceOutputId);
       const pose = remote?.worldPose;
       if (!pose) continue;
-      const lastAt = appliedRemotePoseAtRef.current.get(node.id) ?? 0;
-      if (pose.updatedAt <= lastAt) continue;
-      updates.push({
-        id: node.id,
-        transform: {
-          position: [...pose.position],
-          rotation: [...pose.rotation],
-          scale: [...pose.scale],
-        },
-        updatedAt: pose.updatedAt,
-      });
+      const transform: SpatialTransform = {
+        position: [...pose.position],
+        rotation: [...pose.rotation],
+        scale: [...pose.scale],
+      };
+      const sig = poseSignature(transform);
+      if (
+        sig === appliedRemotePoseKeyRef.current.get(node.id) ||
+        sig === lastPushedViewerPoseKeyRef.current.get(node.id)
+      ) continue;
+      updates.push({ id: node.id, transform, sig });
     }
     if (updates.length === 0) return;
     for (const u of updates) {
-      appliedRemotePoseAtRef.current.set(u.id, u.updatedAt);
-      const sig = poseSignature(u.transform);
-      appliedRemotePoseKeyRef.current.set(u.id, sig);
-      lastPushedViewerPoseKeyRef.current.set(u.id, sig);
+      appliedRemotePoseKeyRef.current.set(u.id, u.sig);
+      lastPushedViewerPoseKeyRef.current.set(u.id, u.sig);
     }
     setGraph((current) => {
       let next = current;
@@ -949,8 +1068,7 @@ function WindowLayer({
       return next;
     });
   }, [remoteOutputs]);
-  // Two-way pose sync (Viewer -> Sharer): when a viewer moves a VRC-World-anchored remote display,
-  // push the new VRChat world pose back to the sharer's displayShare.
+  // Two-way pose sync (Viewer -> Sharer): when a viewer commits a VRC-World-anchored remote display.
   React.useEffect(() => {
     if (!isVRCOriginKnown()) return;
     for (const node of Object.values(graph.nodes)) {
@@ -966,20 +1084,16 @@ function WindowLayer({
         sig === lastPushedViewerPoseKeyRef.current.get(node.id)
       ) continue;
       lastPushedViewerPoseKeyRef.current.set(node.id, sig);
-      const now = Date.now();
-      appliedRemotePoseAtRef.current.set(node.id, now);
       void pushRemoteDisplayPose(remote.household.provider, remote.household.desktop, {
         position: roundPoseTuple(node.localTransform.position),
         rotation: roundPoseTuple(node.localTransform.rotation),
         scale: roundPoseTuple(node.localTransform.scale),
-        updatedAt: now,
+        updatedAt: Date.now(),
       });
     }
   }, [graph, remoteOutputs]);
-  // Two-way pose sync (Sharer <- Viewer): poll viewer-pushed poses on our local displayShare and
-  // move our shared display to match in VRChat world space.
+  // Two-way pose sync (Sharer <- Viewer): poll viewer-pushed poses on our local displayShare at ~16 Hz.
   const appliedSharerRemoteAtRef = React.useRef(new Map<string, number>());
-  const hasSharedLocalDisplay = Object.values(graph.nodes).some((n) => n.kind === "display" && n.shared);
   React.useEffect(() => {
     if (!hasSharedLocalDisplay) return;
     let cancelled = false;
@@ -1017,7 +1131,10 @@ function WindowLayer({
               });
             }
             if (updates.length > 0) {
-              for (const u of updates) appliedSharerRemoteAtRef.current.set(u.id, u.updatedAt);
+              for (const u of updates) {
+                appliedSharerRemoteAtRef.current.set(u.id, u.updatedAt);
+                lastPushedLocalPoseKeyRef.current.set(u.id, poseSignature(u.transform));
+              }
               setGraph((current) => {
                 let next = current;
                 for (const u of updates) {
@@ -1033,7 +1150,7 @@ function WindowLayer({
           }
         }
       } catch { /* ignore transient poll failure */ }
-      if (!cancelled) timer = setTimeout(() => void pollRemotePoses(), 1000);
+      if (!cancelled) timer = setTimeout(() => void pollRemotePoses(), 60);
     };
     void pollRemotePoses();
     return () => {

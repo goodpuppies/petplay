@@ -295,7 +295,7 @@ const described = new Map<string, number>();
 /** A sharer's shared screens change as its displays are toggled. */
 const RESCAN_MS = 5000;
 /** Rescan shown sharers faster so shared VRChat world-space display poses stay fresh. */
-const SHOWN_RESCAN_MS = 2000;
+const SHOWN_RESCAN_MS = 1000;
 
 /** Other machines' desktops on the topic (and trusted VRChat peer sources). */
 async function discover(): Promise<void> {
@@ -327,7 +327,7 @@ async function discover(): Promise<void> {
       const description = await request<DesktopDescription>(
         id as ActorId,
         "DESCRIBE",
-        null,
+        { viewer: state.id },
         DESCRIBE_MS,
       );
       described.set(id, Date.now());
@@ -672,6 +672,42 @@ new PostMan(
       return existed;
     },
     LIST: () => outputs(),
+    /** Lightweight real-time pose snapshot for the scene's 20 Hz pose loop. */
+    GETPOSES: () =>
+      [...desktops.values()]
+        .filter((d) => d.worldPose != null)
+        .map((d) => ({ id: `household:${d.key}`, worldPose: d.worldPose! })),
+    /** Real-time pose push from a sharer's displayShare over Iroh (works over relay). */
+    POSEUPDATE: (payload: {
+      source?: string;
+      kind?: "monitor" | "window";
+      windowId?: string;
+      name?: string;
+      monitor?: number;
+      worldPose?: SharedDisplayWorldPose;
+    }) => {
+      const pose = payload?.worldPose;
+      if (!payload?.source || !pose) return false;
+      for (const desktop of desktops.values()) {
+        if (String(desktop.source) !== payload.source) continue;
+        const match = payload.kind === "window"
+          ? desktop.kind === "window" && desktop.windowId === payload.windowId
+          : desktop.kind === "monitor" && (
+            (payload.monitor != null && desktop.monitor === payload.monitor) ||
+            (payload.monitor == null && desktop.monitor == null) ||
+            desktops.size === 1
+          );
+        if (!match) continue;
+        desktop.worldPose = {
+          position: [...pose.position],
+          rotation: [...pose.rotation],
+          scale: [...pose.scale],
+          updatedAt: Date.now(),
+        };
+        return true;
+      }
+      return false;
+    },
     /** A display (spatial node id) shows this desktop. */
     SHOW: (payload: { desktop: string; display: string }) => {
       const desktop = desktops.get(payload?.desktop);
@@ -705,6 +741,7 @@ new PostMan(
             kind: desktop.kind,
             ...(desktop.windowId ? { windowId: desktop.windowId } : {}),
             ...(desktop.monitor != null ? { monitor: desktop.monitor } : {}),
+            viewer: state.id,
             worldPose: payload.worldPose,
           },
           3_000,
