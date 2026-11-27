@@ -107,8 +107,8 @@ export class VrcCharacterSim {
 
   constructor(options: VrcCharacterSimOptions = {}) {
     this.latencyMs = options.latencyMs ?? 15;
-    this.posTauMs = options.posCorrectionTauMs ?? 160;
-    this.yawTauMs = options.yawCorrectionTauMs ?? 70;
+    this.posTauMs = options.posCorrectionTauMs ?? 240;
+    this.yawTauMs = options.yawCorrectionTauMs ?? 90;
     this.turnGain = options.turnGainRadPerSec ?? Math.PI;
   }
 
@@ -407,7 +407,8 @@ export class VrcCharacterSim {
       const rx = pose.position[0] - ref.pos[0];
       const ry = pose.position[1] - ref.pos[1];
       const rz = pose.position[2] - ref.pos[2];
-      if (Math.hypot(rx, ry, rz) > 1.0) {
+      const dist = Math.hypot(rx, ry, rz);
+      if (dist > 1.0) {
         // Teleport: snap cleanly.
         this.pos = [...pose.position];
         this.pendingPos = [0, 0, 0];
@@ -416,7 +417,13 @@ export class VrcCharacterSim {
         this.groundY = pose.position[1];
         this.history = [{ t, pos: [...this.pos], yaw: this.yaw }];
       } else {
-        this.pendingPos = [rx, ry, rz];
+        // Low-pass the residual while moving so ±20 ms OSC arrival-time jitter cancels out
+        // instead of creating a 20 Hz velocity oscillation; stay responsive when stopped or far off.
+        const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
+        const alpha = moveActive && !this.wallBlocked && dist < 0.2 ? 0.2 : 0.65;
+        this.pendingPos[0] += (rx - this.pendingPos[0]) * alpha;
+        this.pendingPos[1] += (ry - this.pendingPos[1]) * 0.5;
+        this.pendingPos[2] += (rz - this.pendingPos[2]) * alpha;
       }
     }
     if (yawChanged) {
@@ -427,7 +434,7 @@ export class VrcCharacterSim {
         this.pendingYaw = 0;
         for (const h of this.history) h.yaw = this.yaw;
       } else {
-        this.pendingYaw = ryaw;
+        this.pendingYaw += (ryaw - this.pendingYaw) * 0.35;
       }
     }
   }
