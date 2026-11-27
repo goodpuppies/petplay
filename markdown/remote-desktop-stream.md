@@ -123,16 +123,13 @@ consequence is that **a share code is a bearer secret**: it is the only way to f
 and all that is needed to watch it. It also contains the source's IP addresses. Restricting a
 source to specific viewer identities is not implemented and is the obvious M4 addition.
 
-The gateway requires an active direct path within 15 seconds, before starting its browser
-WebTransport and HTTP listeners. MoQ track requests are lazy, so while connection setup and
-announcements can traverse a relay, there are no downstream consumers to request config/video
-frames until the direct gate opens. `GATEWAY_DIRECT` precedes `VIEWER_READY` and `GATEWAY_READY`.
-This closes the initial-frame relay window in the first implementation.
-
-The gateway then checks iroh's active route every 100 ms and exits if the direct route is lost.
-This is **fail on observed loss**, not a packet-level guarantee against relay traffic: iroh's
-path detection and polling can lag a transition, leaving a brief fallback window. A strict
-zero-relayed-media guarantee would need enforcement inside the transport's send path.
+The gateway gives holepunching up to 5 seconds before starting its browser WebTransport and
+HTTP listeners, then prints `GATEWAY_DIRECT` or `GATEWAY_RELAYED` (before `VIEWER_READY` and
+`GATEWAY_READY`). Relayed media used to be refused, which left coop streams dead whenever two
+peers could not holepunch (2026-11-27 friend test). It now falls back to the relay: the media
+stays end-to-end encrypted QUIC, and iroh upgrades to a direct path if holepunching succeeds
+later. n0's public relays are rate-limited, so relayed streams may need a lower bitrate or a
+self-hosted relay.
 
 ### Validation
 
