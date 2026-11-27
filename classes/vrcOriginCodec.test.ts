@@ -261,3 +261,17 @@ Deno.test("two-scale v2 rig: fine inside 768 m, coarse beyond, nothing past 8192
   assertAlmostEquals(farPose.yawRad, -2, 1e-4);
   assertEquals(decodePetPlayOriginV2Pose(encodePetPlayOriginV2RigPose([9000, 0, 0], 0)), null);
 });
+
+Deno.test("decodePetPlayOriginV2Pose prefers local 1 m HeadFwd compass yaw when present", () => {
+  const yaw = -1.234;
+  const coords = {
+    ...encodePetPlayOriginV2Pose([10, 0.5, -20], 0.5),
+    "/avatar/parameters/PetPlay/OriginV2/HeadFwd": 1,
+    "/avatar/parameters/PetPlay/OriginV2/HeadFwd_SenderLocalPositionX": Math.sin(yaw),
+    "/avatar/parameters/PetPlay/OriginV2/HeadFwd_SenderLocalPositionY": 0,
+    "/avatar/parameters/PetPlay/OriginV2/HeadFwd_SenderLocalPositionZ": Math.cos(yaw),
+  };
+  const pose = decodePetPlayOriginV2Pose(coords);
+  assert(pose);
+  assertAlmostEquals(pose.yawRad, yaw, 1e-5);
+});

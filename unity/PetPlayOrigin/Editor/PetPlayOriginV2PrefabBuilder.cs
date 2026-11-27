@@ -57,6 +57,8 @@ public static class PetPlayOriginV2PrefabBuilder
     /// F: each SenderFwd sits 2^(F-N) ahead of its Sender (2^F m in world terms).
     public const int FwdOffsetExponent = 3;
     public const string ParamPrefix = "PetPlay/OriginV2/";
+    public const string HeadFwdParam = ParamPrefix + "HeadFwd";
+    public const float HeadCompassRadius = 1.5f;
 
     /// One measuring scale: senders at 2^-N of the anchor's world position, receivers of the
     /// given radius, range radius * 2^N m.
@@ -87,7 +89,9 @@ public static class PetPlayOriginV2PrefabBuilder
     };
 
     static readonly string[] OutputFloatParams =
-        Scales.SelectMany(sc => ReceiverOutputs(sc.posParam).Concat(ReceiverOutputs(sc.fwdParam))).ToArray();
+        Scales.SelectMany(sc => ReceiverOutputs(sc.posParam).Concat(ReceiverOutputs(sc.fwdParam)))
+            .Concat(ReceiverOutputs(HeadFwdParam))
+            .ToArray();
 
     [Serializable]
     class BuildReport
@@ -200,10 +204,12 @@ public static class PetPlayOriginV2PrefabBuilder
     {
         var onClip = PetPlayOriginBuildUtil.CreateOrClearClip(LocalOnClipPath, "PetPlayOriginV2LocalOn");
         onClip.SetCurve("WorldRoot/Measure", typeof(GameObject), "m_IsActive", AnimationCurve.Constant(0f, 1f / 60f, 1f));
+        onClip.SetCurve("Compass", typeof(GameObject), "m_IsActive", AnimationCurve.Constant(0f, 1f / 60f, 1f));
         EditorUtility.SetDirty(onClip);
 
         var offClip = PetPlayOriginBuildUtil.CreateOrClearClip(LocalOffClipPath, "PetPlayOriginV2LocalOff");
         offClip.SetCurve("WorldRoot/Measure", typeof(GameObject), "m_IsActive", AnimationCurve.Constant(0f, 1f / 60f, 0f));
+        offClip.SetCurve("Compass", typeof(GameObject), "m_IsActive", AnimationCurve.Constant(0f, 1f / 60f, 0f));
         EditorUtility.SetDirty(offClip);
 
         var controller = PetPlayOriginBuildUtil.CreateOrClearController(ControllerPath);
@@ -318,6 +324,57 @@ public static class PetPlayOriginV2PrefabBuilder
             measure.SetActive(false);
 
             foreach (var sc in Scales) BuildScale(measure.transform, anchor.transform, sc);
+
+            // Local head-mounted 1 m world compass (independent of WorldRoot Rigidbody/Joint and
+            // distance from world origin): HeadProxy attaches to HumanBodyBones.Head via MA BoneProxy,
+            // Compass stays world-aligned (identity rotation, scale 1) at HeadProxy's position, and
+            // HeadFlat copies HeadProxy's post-IK Y rotation so SenderHeadFwd at (0, 0, 1) reports
+            // (sin(headYaw), 0, cos(headYaw)) directly at full 1 m float32 precision.
+            var headProxy = new GameObject("HeadProxy");
+            headProxy.transform.SetParent(root.transform, false);
+            var boneProxy = headProxy.AddComponent<ModularAvatarBoneProxy>();
+            boneProxy.boneReference = HumanBodyBones.Head;
+            boneProxy.attachmentMode = BoneProxyAttachmentMode.AsChildAtRoot;
+
+            var compass = new GameObject("Compass");
+            compass.transform.SetParent(root.transform, false);
+            compass.SetActive(false);
+
+            var compassPos = compass.AddComponent<VRCPositionConstraint>();
+            compassPos.Sources.Add(new VRCConstraintSource(headProxy.transform, 1f, Vector3.zero, Vector3.zero));
+            compassPos.PositionAtRest = Vector3.zero;
+            compassPos.PositionOffset = Vector3.zero;
+            compassPos.Locked = true;
+            compassPos.IsActive = true;
+
+            var compassRot = compass.AddComponent<VRCRotationConstraint>();
+            compassRot.Sources.Add(new VRCConstraintSource(worldPrefab.transform, 1f, Vector3.zero, Vector3.zero));
+            compassRot.RotationAtRest = Vector3.zero;
+            compassRot.RotationOffset = Vector3.zero;
+            compassRot.Locked = true;
+            compassRot.IsActive = true;
+
+            var compassScale = compass.AddComponent<VRCScaleConstraint>();
+            compassScale.Sources.Add(new VRCConstraintSource(worldPrefab.transform, 1f, Vector3.zero, Vector3.zero));
+            compassScale.Locked = true;
+            compassScale.IsActive = true;
+
+            BuildReceiver(compass.transform, "ReceiverHeadFwd", HeadFwdParam, HeadFwdParam, HeadCompassRadius);
+
+            var headFlat = new GameObject("HeadFlat");
+            headFlat.transform.SetParent(compass.transform, false);
+            var headFlatRot = headFlat.AddComponent<VRCRotationConstraint>();
+            headFlatRot.Sources.Add(new VRCConstraintSource(headProxy.transform, 1f, Vector3.zero, Vector3.zero));
+            headFlatRot.AffectsRotationX = false;
+            headFlatRot.AffectsRotationY = true;
+            headFlatRot.AffectsRotationZ = false;
+            headFlatRot.Locked = true;
+            headFlatRot.IsActive = true;
+
+            var headFwdSender = new GameObject("SenderHeadFwd");
+            headFwdSender.transform.SetParent(headFlat.transform, false);
+            headFwdSender.transform.localPosition = new Vector3(0f, 0f, 1f);
+            AddSender(headFwdSender, HeadFwdParam);
 
             var prefab = PrefabUtility.SaveAsPrefabAsset(root, OriginPrefabPath);
             if (prefab == null) throw new Exception($"Failed to save {OriginPrefabPath}");
@@ -447,15 +504,24 @@ public static class PetPlayOriginV2PrefabBuilder
             report.checks.Add($"{sc.name}: weights 2^-{sc.exponent} / 1 - 2^-{sc.exponent}, forward 2^{FwdOffsetExponent - sc.exponent}, radius {sc.radius} m, range {sc.RangeMeters} m");
         }
 
+        var compassGo = loaded.transform.Find("Compass");
+        if (compassGo == null || compassGo.gameObject.activeSelf) throw new Exception("Compass must exist and start inactive");
+        var headProxyGo = loaded.transform.Find("HeadProxy");
+        if (headProxyGo == null || headProxyGo.GetComponent<ModularAvatarBoneProxy>()?.boneReference != HumanBodyBones.Head)
+        {
+            throw new Exception("HeadProxy must have ModularAvatarBoneProxy targeting Head");
+        }
+        report.checks.Add("Local 1 m Head compass (HeadProxy -> Compass/HeadFlat/SenderHeadFwd) starts inactive");
+
         report.contactSenders = loaded.GetComponentsInChildren<VRCContactSender>(true).Length;
         report.contactReceivers = loaded.GetComponentsInChildren<VRCContactReceiver>(true).Length;
         report.physBones = loaded.GetComponentsInChildren<VRCPhysBone>(true).Length;
         report.vrcConstraints = loaded.GetComponentsInChildren<VRCConstraintBase>(true).Length;
         int n = Scales.Length;
-        if (report.contactSenders != 2 * n) throw new Exception($"Expected {2 * n} ContactSenders, got {report.contactSenders}");
-        if (report.contactReceivers != 2 * n) throw new Exception($"Expected {2 * n} ContactReceivers, got {report.contactReceivers}");
+        if (report.contactSenders != 2 * n + 1) throw new Exception($"Expected {2 * n + 1} ContactSenders, got {report.contactSenders}");
+        if (report.contactReceivers != 2 * n + 1) throw new Exception($"Expected {2 * n + 1} ContactReceivers, got {report.contactReceivers}");
         if (report.physBones != 0) throw new Exception($"Expected 0 PhysBones, got {report.physBones}");
-        if (report.vrcConstraints != 2 + 2 * n) throw new Exception($"Expected {2 + 2 * n} VRCConstraints, got {report.vrcConstraints}");
+        if (report.vrcConstraints != 2 + 2 * n + 4) throw new Exception($"Expected {2 + 2 * n + 4} VRCConstraints, got {report.vrcConstraints}");
 
         foreach (var r in loaded.GetComponentsInChildren<VRCContactReceiver>(true))
         {

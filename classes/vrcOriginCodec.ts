@@ -76,6 +76,14 @@ function v2ScaleParams(pos: string, fwd: string): PetPlayOriginV2ScaleParams {
   };
 }
 
+/** Local 1 m head-mounted world compass (`PetPlay/OriginV2/HeadFwd`), preferred for yaw. */
+export const PETPLAY_ORIGIN_V2_HEAD_FWD_PARAMS = {
+  headFwd: `${PETPLAY_ORIGIN_V2_PREFIX}HeadFwd`,
+  headFwdX: `${PETPLAY_ORIGIN_V2_PREFIX}HeadFwd_SenderLocalPositionX`,
+  headFwdY: `${PETPLAY_ORIGIN_V2_PREFIX}HeadFwd_SenderLocalPositionY`,
+  headFwdZ: `${PETPLAY_ORIGIN_V2_PREFIX}HeadFwd_SenderLocalPositionZ`,
+} as const;
+
 /** The coarse scale (N = 13, 1 m receivers, 8192 m), used outside the fine range. */
 export const PETPLAY_ORIGIN_V2_COARSE_PARAMS = v2ScaleParams("CoarsePos", "CoarseFwd");
 
@@ -219,13 +227,31 @@ export function decodeVrcOriginPose(
 
 /**
  * Decodes the v2 rig. Null until both receivers report their sender inside, or when the forward
- * offset is not a power of two (a torn or foreign reading).
+ * offset is not a power of two (a torn or foreign reading). When the local 1 m head compass
+ * (`HeadFwd`) is present and valid, its yaw overrides the world-origin `Fwd - Pos` yaw.
  */
 export function decodePetPlayOriginV2Pose(
   coords: Readonly<Record<string, number>>,
 ): VrcOriginWorldPose | null {
-  return decodePetPlayOriginV2Scale(coords, PETPLAY_ORIGIN_V2_PARAMS) ??
+  const pose = decodePetPlayOriginV2Scale(coords, PETPLAY_ORIGIN_V2_PARAMS) ??
     decodePetPlayOriginV2Scale(coords, PETPLAY_ORIGIN_V2_COARSE_PARAMS);
+  if (!pose) return null;
+  const headYaw = decodePetPlayOriginV2HeadYaw(coords);
+  if (headYaw !== null) pose.yawRad = headYaw;
+  return pose;
+}
+
+/** Decodes the local 1 m head compass yaw (rad, Unity left-handed), or null if absent/invalid. */
+export function decodePetPlayOriginV2HeadYaw(
+  coords: Readonly<Record<string, number>>,
+): number | null {
+  const H = PETPLAY_ORIGIN_V2_HEAD_FWD_PARAMS;
+  if (!((coords[H.headFwd] ?? 0) > V2_PRESENT_MIN)) return null;
+  const hx = coords[H.headFwdX] ?? 0;
+  const hz = coords[H.headFwdZ] ?? 0;
+  if (!Number.isFinite(hx) || !Number.isFinite(hz)) return null;
+  if (Math.hypot(hx, hz) < 0.5) return null;
+  return Math.atan2(hx, hz);
 }
 
 /** One scale of the v2 rig; null unless both its receivers see their sender. */
