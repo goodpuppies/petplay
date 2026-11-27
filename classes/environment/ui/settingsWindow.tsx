@@ -32,14 +32,21 @@ import {
   useRenderResolution,
 } from "../../renderResolution.ts";
 import { describeBuild, getBuildInfo } from "../../buildInfo.ts";
-import { installState } from "../../install.ts";
+import { installState, previousExecutablePath } from "../../install.ts";
 import { logsDir } from "../../appPaths.ts";
 import { copyTextToClipboard } from "../../clipboard.ts";
 import {
+  type BuildCandidate,
+  buildChannel,
   checkForUpdate,
-  downloadAndApplyUpdate,
+  effectiveChannel,
+  listChannels,
+  STABLE_CHANNEL,
   type UpdateCheckResult,
+  type UpdateProgress,
+  updateTargetPath,
 } from "../../updater.ts";
+import { describeCandidate, describeProgress } from "../../updateCli.ts";
 import { resetPlayspace } from "../../playspaceMover.ts";
 import {
   addWorkspaceLayoutOutput,
@@ -1213,6 +1220,15 @@ function OscPage({ showGuides }: { showGuides: boolean }) {
   );
 }
 
+/** An earlier update kept the build it replaced (`petplay --update-rollback`). */
+function hasPreviousBuild(): boolean {
+  try {
+    return Deno.statSync(previousExecutablePath(updateTargetPath())).isFile;
+  } catch {
+    return false;
+  }
+}
+
 function InstallPage({ showGuides }: { showGuides: boolean }) {
   const [, refresh] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -1220,9 +1236,13 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [channels, setChannels] = useState<BuildCandidate[] | null>(null);
   const [copiedLogs, setCopiedLogs] = useState(false);
   const real = installState();
   const build = getBuildInfo();
+  const channelSetting = useSetting("updateChannel");
+  const updateRepos = useSetting("updateRepos");
+  const channel = effectiveChannel(channelSetting, build);
   const logsPath = logsDir();
 
   const defaultStatus = !real.canInstall
@@ -1267,15 +1287,15 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   const handleCheckUpdates = async () => {
     if (updateBusy) return;
     setUpdateBusy(true);
-    setUpdateMessage("Checking GitHub Releases…");
+    setUpdateMessage(`Checking ${channel}…`);
     try {
-      const result = await checkForUpdate();
+      const result = await checkForUpdate({ channel });
       setUpdateCheck(result);
-      const summary = result.updateAvailable
-        ? result.canApply
-          ? `${result.latestVersion} available`
-          : `${result.latestVersion} available (use git pull in checkout)`
-        : `Up to date (latest ${result.latestVersion})`;
+      const summary = result.candidate == null
+        ? `No build for this platform on ${channel}`
+        : result.status === "up-to-date"
+        ? `Up to date (${result.candidate.version})`
+        : `${result.candidate.version} available${result.canApply ? "" : ` (${result.reason})`}`;
       setUpdateMessage(summary);
       pushToast({ source: "Updater", title: summary, tone: "info" });
     } catch (error) {
@@ -1287,27 +1307,56 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
     }
   };
 
-  const handleApplyUpdate = async () => {
-    if (updateBusy || !updateCheck?.updateAvailable || !updateCheck.canApply) return;
+  /** Runs `petplay --update` (or `--update-rollback`) as its own process and follows its progress. */
+  const runUpdateProcess = async (args: string[], label: string) => {
+    if (updateBusy) return;
     setUpdateBusy(true);
-    setUpdateMessage(`Downloading ${updateCheck.latestVersion}…`);
+    setUpdateMessage(`${label}…`);
     try {
-      const applied = await downloadAndApplyUpdate(updateCheck, (p) => {
-        if (p.phase === "downloading") {
-          const pct = p.totalBytes
-            ? ` ${Math.min(100, Math.round((p.receivedBytes / p.totalBytes) * 100))}%`
-            : "";
-          setUpdateMessage(`Downloading ${updateCheck.latestVersion}…${pct}`);
-        } else if (p.phase === "verifying") {
-          setUpdateMessage("Verifying SHA-256 checksum…");
-        } else {
-          setUpdateMessage("Installing update…");
+      const child = new Deno.Command(Deno.execPath(), {
+        args: [...args, "--json"],
+        stdin: "null",
+        stdout: "piped",
+        stderr: "inherit",
+      }).spawn();
+      let done: Record<string, unknown> | null = null;
+      let failure: string | null = null;
+      let pending = "";
+      const decoder = new TextDecoder();
+      for await (const bytes of child.stdout) {
+        pending += decoder.decode(bytes, { stream: true });
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0, newline).trim();
+          pending = pending.slice(newline + 1);
+          if (!line.startsWith("{")) continue;
+          try {
+            const event = JSON.parse(line) as Record<string, unknown> & { event?: string };
+            if (event.event === "progress") {
+              setUpdateMessage(describeProgress(event as unknown as UpdateProgress));
+            } else if (event.event === "done") done = event;
+            else if (event.event === "error") failure = String(event.message);
+          } catch {
+            // Not one of ours.
+          }
         }
-      });
-      const summary = `Updated to ${applied.updatedTo} — restart PetPlay`;
+      }
+      const status = await child.status;
+      if (failure != null || !status.success) {
+        throw new Error(failure ?? `Updater exited with code ${status.code}`);
+      }
+      const result = done?.result as
+        | { installed: { version: string }; mode: string; downloadedBytes: number }
+        | null
+        | undefined;
+      const summary = result
+        ? `${result.installed.version} installed (${(result.downloadedBytes / 1e6).toFixed(1)} MB ${
+          result.mode === "delta" ? "delta" : "download"
+        }). Restart PetPlay to run it.`
+        : "Already up to date";
       setUpdateMessage(summary);
-      setUpdateCheck({ ...updateCheck, updateAvailable: false });
-      pushToast({ source: "Updater", title: summary, tone: "info" });
+      setUpdateCheck(null);
+      pushToast({ source: "Updater", title: summary, tone: "info", timeoutMs: 10000 });
       refresh((n) => n + 1);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
@@ -1316,6 +1365,49 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
     } finally {
       setUpdateBusy(false);
     }
+  };
+
+  const handleApplyUpdate = () => {
+    if (!updateCheck?.candidate || !updateCheck.canApply) return;
+    void runUpdateProcess(
+      ["--update", `--channel=${updateCheck.channel}`],
+      `Installing ${updateCheck.candidate.version}`,
+    );
+  };
+
+  const cycleChannel = async (step: 1 | -1) => {
+    if (updateBusy) return;
+    let list = channels;
+    if (list == null) {
+      setUpdateBusy(true);
+      setUpdateMessage("Listing channels…");
+      try {
+        const listing = await listChannels({ extraRepos: updateRepos });
+        list = listing.channels;
+        setChannels(list);
+        setUpdateMessage(
+          listing.warnings.length > 0
+            ? `${list.length} channels (could not read ${listing.warnings.length} repos)`
+            : `${list.length} channels`,
+        );
+      } catch (error) {
+        setUpdateMessage(error instanceof Error ? error.message : String(error));
+        return;
+      } finally {
+        setUpdateBusy(false);
+      }
+    }
+    const ids = [
+      STABLE_CHANNEL,
+      ...list.map((c) => c.channel).filter((id) => id !== STABLE_CHANNEL),
+    ];
+    if (!ids.includes(channel)) ids.push(channel);
+    const next = ids[(ids.indexOf(channel) + step + ids.length) % ids.length]!;
+    // Following the build's own channel again stores nothing, so a later branch build keeps its own.
+    setSetting("updateChannel", next === (buildChannel(build) ?? STABLE_CHANNEL) ? null : next);
+    setUpdateCheck(null);
+    const candidate = list.find((c) => c.channel === next);
+    setUpdateMessage(candidate ? describeCandidate(candidate) : next);
   };
 
   const handleCopyLogsDir = async () => {
@@ -1332,30 +1424,55 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   const showInstallBtn = !real.installed || (!real.runningInstalled && !real.upToDate);
 
   return (
-    <Grid cols={1} rows={6} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={7} gap={GAP} padding={0} showGuides={showGuides}>
       <SettingRow row={0} title="Version" description={describeBuild()}>
         <Text color={COLOR.accent} fontSize={22}>{build.version}</Text>
       </SettingRow>
       <SettingRow
         row={1}
         title="Updates"
-        description={updateMessage ?? "Pull latest release from GitHub (goodpuppies/petplay)"}
+        description={updateMessage ?? `Newest build on ${channel}`}
       >
-        {updateCheck?.updateAvailable && updateCheck.canApply && (
+        {updateCheck?.candidate && updateCheck.canApply && updateCheck.status !== "up-to-date" && (
           <ActionButton
-            label={updateBusy ? "UPDATING…" : `INSTALL ${updateCheck.latestVersion}`}
+            label={updateBusy
+              ? "WORKING…"
+              : `${updateCheck.status === "switch" ? "SWITCH TO" : "INSTALL"} ${
+                updateCheck.candidate.version.slice(0, 14)
+              }`}
             tone="accent"
             disabled={updateBusy}
-            onClick={() => void handleApplyUpdate()}
+            onClick={handleApplyUpdate}
           />
         )}
         <ActionButton
-          label={updateBusy ? "CHECKING…" : "CHECK"}
+          label={updateBusy ? "WORKING…" : "CHECK"}
           disabled={updateBusy}
           onClick={() => void handleCheckUpdates()}
         />
+        {real.canInstall && hasPreviousBuild() && (
+          <ActionButton
+            label="ROLL BACK"
+            tone="outline"
+            disabled={updateBusy}
+            onClick={() => void runUpdateProcess(["--update-rollback"], "Rolling back")}
+          />
+        )}
       </SettingRow>
-      <SettingRow row={2} title="SteamVR Registration" description={message ?? defaultStatus}>
+      <SettingRow
+        row={2}
+        title="Update Channel"
+        description={channelSetting == null
+          ? `${channel} (this build's own)`
+          : `${channel} · branch builds run code from that branch's CI`}
+      >
+        <ActionButton label="<" disabled={updateBusy} onClick={() => void cycleChannel(-1)} />
+        <Text color={COLOR.accent} fontSize={18}>
+          {channel === STABLE_CHANNEL ? "stable" : channel.split("#")[1]!.slice(0, 18)}
+        </Text>
+        <ActionButton label=">" disabled={updateBusy} onClick={() => void cycleChannel(1)} />
+      </SettingRow>
+      <SettingRow row={3} title="SteamVR Registration" description={message ?? defaultStatus}>
         {showInstallBtn && (
           <ActionButton
             label={busy ? "WORKING…" : real.installed ? "UPDATE" : "INSTALL"}
@@ -1374,9 +1491,11 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
         )}
       </SettingRow>
       <SettingRow
-        row={3}
+        row={4}
         title="Start with SteamVR"
-        description={real.installed ? real.installedPath : "Registers PetPlay as a SteamVR startup overlay"}
+        description={real.installed
+          ? real.installedPath
+          : "Registers PetPlay as a SteamVR startup overlay"}
       >
         <ToggleControl
           value={real.installed}
@@ -1387,7 +1506,7 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
           }}
         />
       </SettingRow>
-      <SettingRow row={4} title="Logs Directory" description={logsPath}>
+      <SettingRow row={5} title="Logs Directory" description={logsPath}>
         <ActionButton
           label={copiedLogs ? "COPIED" : "COPY PATH"}
           tone={copiedLogs ? "accent" : "outline"}
@@ -1395,7 +1514,7 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
         />
       </SettingRow>
       <BooleanSettingRow
-        row={5}
+        row={6}
         title="Peer Code Patches"
         description="Trusted coop peers may live-patch PetPlay's code while it runs"
         setting="acceptPeerPatches"

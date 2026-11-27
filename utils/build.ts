@@ -38,14 +38,17 @@ const commit = new TextDecoder().decode(
     .output())
     .stdout,
 ).trim();
-// The version shown in the wrist menu and checked by the update prompt (classes/buildInfo.ts).
-const version = new TextDecoder().decode(
-  (await new Deno.Command("git", {
-    args: ["describe", "--tags", "--always", "--dirty"],
-    stdout: "piped",
-    stderr: "null",
-  }).output()).stdout,
-).trim();
+// The version shown in the wrist menu and compared by the updater (classes/buildInfo.ts,
+// classes/updater.ts). "-dirty" only for edits to PetPlay's own tracked files: CI's preconf and
+// install steps touch submodules, which made every release report itself as dirty.
+const git = async (...args: string[]) =>
+  new TextDecoder().decode(
+    (await new Deno.Command("git", { args, stdout: "piped", stderr: "null" }).output()).stdout,
+  ).trim();
+const dirty =
+  (await git("status", "--porcelain", "--ignore-submodules=all", "--untracked-files=no")) !== "";
+const describe = await git("describe", "--tags", "--always");
+const version = describe && dirty ? `${describe}-dirty` : describe;
 await Deno.writeTextFile(
   "dist/build-info.json",
   JSON.stringify({
@@ -54,9 +57,23 @@ await Deno.writeTextFile(
     target: target ?? Deno.build.target,
     built: new Date().toISOString(),
     mode,
+    channel: ciChannel(),
   }) +
     "\n",
 );
+/** The update channel a CI build belongs to (classes/updater.ts); local builds have none. */
+function ciChannel(): string | null {
+  if (Deno.env.get("GITHUB_ACTIONS") !== "true") return null;
+  const refType = Deno.env.get("GITHUB_REF_TYPE");
+  if (refType === "tag") return "stable";
+  const repo = Deno.env.get("GITHUB_REPOSITORY");
+  // A pull request build's ref is the merge ref, not a channel anyone can follow.
+  const branch = Deno.env.get("GITHUB_EVENT_NAME") === "pull_request"
+    ? null
+    : Deno.env.get("GITHUB_REF_NAME");
+  return refType === "branch" && repo && branch ? `${repo}#${branch}` : null;
+}
+
 const resolvedTarget = nativeBuildTarget(target);
 // Both variants ship the optimized capture helper: an unoptimized one manages about 4 fps, and
 // building it would overwrite the dist/native copy that source runs use.

@@ -12,7 +12,7 @@
  * A source checkout cannot install itself (its executable is Deno); `deno task steamvr:register`
  * registers a checkout instead. Both use the same app key, so each replaces the other.
  */
-import { join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { installDir, installedExecutablePath, stateDir, steamVrAppDir } from "./appPaths.ts";
 import { type BuildInfo, describeBuild, getBuildInfo, sameBuild } from "./buildInfo.ts";
 import {
@@ -122,7 +122,14 @@ export async function uninstallSelf(): Promise<string[]> {
       );
     }
   }
-  for (const leftover of [INSTALL_RECORD, `${executableName()}.old`]) {
+  for (
+    const leftover of [
+      INSTALL_RECORD,
+      `${executableName()}.old`,
+      previousExecutablePath(executableName()),
+      ".petplay-update.lock",
+    ]
+  ) {
     try {
       Deno.removeSync(join(installDir(), leftover));
     } catch {
@@ -240,29 +247,76 @@ function findOnPath(program: string): string | null {
 }
 
 /**
- * Puts `source` at `target` without ever leaving a half-written executable. On Windows a running
- * executable cannot be replaced, only renamed, so the old one is moved aside first.
+ * Puts `source` at `target` without ever leaving a half-written executable (copies it next to the
+ * target first, then {@link swapInExecutable}).
  */
 export function replaceExecutable(source: string, target: string): void {
-  const incoming = `${target}.new`;
+  const incoming = windows ? target.replace(/\.exe$/i, "") + ".new.exe" : `${target}.new`;
   Deno.copyFileSync(source, incoming);
+  if (!windows) Deno.chmodSync(incoming, 0o755);
+  swapInExecutable(incoming, target);
+}
+
+/** Where the build an update replaced is kept, for rollback and as delta-update source. */
+export function previousExecutablePath(target: string): string {
+  return windows ? target.replace(/\.exe$/i, "") + ".previous.exe" : `${target}.previous`;
+}
+
+/**
+ * Moves `incoming` (in the same directory) over `target` atomically, keeping the old target as
+ * {@link previousExecutablePath}. Linux keeps it as a hard link (no copy; the running process
+ * keeps its inode either way). Windows cannot replace a running executable, only rename it, so
+ * the old one is renamed aside first.
+ * @returns the kept previous path, or `null` when nothing was replaced.
+ */
+export function swapInExecutable(incoming: string, target: string): string | null {
+  const previous = previousExecutablePath(target);
+  const hadTarget = exists(target);
   if (!windows) {
-    Deno.chmodSync(incoming, 0o755);
+    if (hadTarget) {
+      try {
+        Deno.removeSync(previous);
+      } catch {
+        // None kept yet.
+      }
+      try {
+        Deno.linkSync(target, previous);
+      } catch {
+        // A filesystem without hard links: no rollback copy, the update still goes ahead.
+      }
+    }
     Deno.renameSync(incoming, target);
-    return;
+    return hadTarget && exists(previous) ? previous : null;
   }
-  const aside = `${target}.old`;
-  try {
-    Deno.removeSync(aside);
-  } catch {
-    // None, or still running from an earlier update; renaming over it below fails then too.
+  // Leftovers of earlier updates whose process was still running then.
+  for (const entry of safeReadDir(dirname(target))) {
+    if (entry.endsWith(".stale") || entry === `${basename(target)}.old`) {
+      try {
+        Deno.removeSync(join(dirname(target), entry));
+      } catch {
+        // Still running.
+      }
+    }
   }
   try {
-    Deno.renameSync(target, aside);
+    Deno.removeSync(previous);
   } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    if (!(error instanceof Deno.errors.NotFound)) {
+      // The previous build is running (after a rollback): move it out of the way instead.
+      Deno.renameSync(previous, `${previous}.${Date.now()}.stale`);
+    }
   }
+  if (hadTarget) Deno.renameSync(target, previous);
   Deno.renameSync(incoming, target);
+  return hadTarget ? previous : null;
+}
+
+function safeReadDir(dir: string): string[] {
+  try {
+    return [...Deno.readDirSync(dir)].map((entry) => entry.name);
+  } catch {
+    return [];
+  }
 }
 
 /** The manifest, image and (Linux) launcher SteamVR runs. @returns the manifest path. */

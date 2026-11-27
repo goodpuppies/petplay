@@ -12,6 +12,11 @@ export type BuildInfo = {
   built: string | null;
   /** `production` / `development` for builds, `checkout` for source runs. */
   mode: string;
+  /**
+   * The update channel CI built it for (classes/updater.ts): `stable` for a release tag,
+   * `owner/repo#branch` for a branch build; absent for local builds and older releases.
+   */
+  channel?: string | null;
 };
 
 let cached: BuildInfo | undefined;
@@ -28,6 +33,7 @@ export function getBuildInfo(): BuildInfo {
         commit: info.commit ?? null,
         built: info.built ?? null,
         mode: info.mode ?? "unknown",
+        channel: info.channel ?? null,
       };
     } catch {
       cached = { version: "unknown", commit: null, built: null, mode: "unknown" };

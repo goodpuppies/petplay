@@ -282,6 +282,20 @@ export async function startPetplayServer(
   });
 
   if (isWatchEnabled()) await enableHotReload(postalservice);
+  if (Deno.build.standalone) {
+    const { startUpdateWatcher } = await import("../classes/updateWatcher.ts");
+    startUpdateWatcher(({ title, content }) => {
+      const webxr = [...postalservice.localActors()].find(([, actor]) =>
+        actor.workerUrl?.endsWith("/petplay/webxr.ts")
+      )?.[0];
+      if (webxr == null) return;
+      postalservice.PostMessage({
+        target: webxr,
+        type: "TOAST",
+        payload: { title, content, source: "Updater", tone: "info", timeoutMs: 12000 },
+      });
+    });
+  }
 
   if (options.interactive) {
     while (true) {

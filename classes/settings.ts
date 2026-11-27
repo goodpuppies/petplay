@@ -123,6 +123,25 @@ export const SETTINGS_SCHEMA = {
     label: "Allow playspace drag (Space Move) from the bound controller action",
     valid: isBoolean,
   } satisfies SettingSpec<boolean>,
+  updateChannel: {
+    default: null as string | null,
+    label:
+      "Update channel: stable, owner/repo#branch for a CI branch build; null follows the build's own",
+    valid: (v: unknown): v is string | null =>
+      v === null ||
+      (typeof v === "string" && (v === "stable" || /^[\w.-]+\/[\w.-]+#[^\s~^:?*\[\\]+$/.test(v))),
+  } satisfies SettingSpec<string | null>,
+  updateAutoCheck: {
+    default: true as boolean,
+    label: "Check for updates on the update channel while PetPlay runs (never installs by itself)",
+    valid: isBoolean,
+  } satisfies SettingSpec<boolean>,
+  updateRepos: {
+    default: [] as string[],
+    label: "Extra owner/repo forks whose branch builds the channel list shows",
+    valid: (v: unknown): v is string[] =>
+      Array.isArray(v) && v.every((r) => typeof r === "string" && /^[\w.-]+\/[\w.-]+$/.test(r)),
+  } satisfies SettingSpec<string[]>,
   acceptPeerPatches: {
     default: false as boolean,
     label:
@@ -152,7 +171,8 @@ export const SETTINGS_SCHEMA = {
   } satisfies SettingSpec<number>,
   wristMenuHideAngle: {
     default: 0 as number,
-    label: "Hide wrist menu when tilted past this angle from your eyes in degrees (0 = OFF, 5 to 90)",
+    label:
+      "Hide wrist menu when tilted past this angle from your eyes in degrees (0 = OFF, 5 to 90)",
     valid: (value: unknown): value is number =>
       typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 90,
   } satisfies SettingSpec<number>,

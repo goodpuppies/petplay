@@ -6,10 +6,11 @@
  * - `--reset`: settings, layouts and the screen-capture permission back to defaults
  *
  * - `--install`, `--uninstall` (classes/install.ts, which also asks about updating on start)
+ * - `--update`, `--update-check`, `--update-channels`, `--update-rollback` (classes/updateCli.ts)
  */
 import { join } from "@std/path";
 import { checkoutRoot, configDir, logsDir, tempDir } from "./appPaths.ts";
-import { describeBuild } from "./buildInfo.ts";
+import { describeBuild, getBuildInfo } from "./buildInfo.ts";
 
 /** Runs a command-line action; `null` when the arguments ask for none (start PetPlay). */
 export async function runCliCommand(args: readonly string[]): Promise<number | null> {
@@ -18,8 +19,13 @@ export async function runCliCommand(args: readonly string[]): Promise<number | n
     return 0;
   }
   if (args.includes("--version")) {
-    console.log(describeBuild());
+    // `--json` is what the updater runs on a downloaded build to prove it starts.
+    console.log(args.includes("--json") ? JSON.stringify(getBuildInfo()) : describeBuild());
     return 0;
+  }
+  if (args.some((arg) => arg === "--update" || arg.startsWith("--update-"))) {
+    const { runUpdateCli } = await import("./updateCli.ts");
+    return await runUpdateCli(args);
   }
   if (args.includes("--logs")) {
     console.log(logsDir());
@@ -54,6 +60,16 @@ Run with no arguments to start PetPlay.
   --logs        print where the logs are and exit
   --reset       reset settings, layouts and the screen-capture permission, and exit
                 (asks first; add --yes to skip the question)
+  --update [--channel=C] [--yes]
+                update to the newest build on the channel (default: the one this build
+                came from; "stable", or owner/repo#branch for a branch build)
+  --update-check [--channel=C]
+                print whether an update is available and exit
+  --update-channels
+                list the channels with a build for this platform
+  --update-rollback
+                put back the build the last update replaced
+                (all --update commands take --json for one JSON object per line)
   --install     install this PetPlay and start it with SteamVR
   --uninstall   remove the installed PetPlay and its SteamVR entry
   --help        this text`;
