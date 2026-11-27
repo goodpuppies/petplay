@@ -123,6 +123,12 @@ export const SETTINGS_SCHEMA = {
     label: "Allow playspace drag (Space Move) from the bound controller action",
     valid: isBoolean,
   } satisfies SettingSpec<boolean>,
+  acceptPeerPatches: {
+    default: false as boolean,
+    label:
+      "Let trusted coop peers live-patch PetPlay's code (function edits only, classes/peerPatch.ts)",
+    valid: isBoolean,
+  } satisfies SettingSpec<boolean>,
   grabSmoothing: {
     default: 0.3 as number,
     label: "Laser grab smoothing amount (0 off to 1 maximum)",

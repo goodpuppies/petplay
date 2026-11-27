@@ -12,6 +12,9 @@
  *   Shared P2P compute (`EVALJS`, actor messages, `GUARDED`, etc.) is allowed, while local-only
  *   trust/sharing admin methods on `vrcPeers` and `displayShare` remain local-only so a trusted
  *   peer cannot silently trust third parties or force-share unshared monitors.
+ * - On every remote connection, `HOTPATCH` is rejected: code patches from peers go through
+ *   `vrcPeers`' `PEERPATCH`, which checks the sender's trust and the `acceptPeerPatches` setting
+ *   (`classes/peerPatch.ts`).
  */
 import type { RemoteMessagePolicy } from "../submodules/stageforge/mod.ts";
 
@@ -34,6 +37,7 @@ const LOCAL_ONLY_BY_ACTOR: Record<string, ReadonlySet<string>> = {
     "CLEARSIMULATED",
     "ASSIGNSHARING",
     "ASSIGNWEBXR",
+    "SENDPEERPATCH",
   ]),
   displayShare: new Set([
     "SETUP",
@@ -44,6 +48,9 @@ const LOCAL_ONLY_BY_ACTOR: Record<string, ReadonlySet<string>> = {
     "SHAREALL",
   ]),
 };
+
+/** Rejected for every actor over any remote connection. */
+const REMOTE_DENIED: ReadonlySet<string> = new Set(["HOTPATCH"]);
 
 function actorNameOf(actorId: string): string {
   const at = actorId.indexOf("@");
@@ -61,7 +68,7 @@ export function petplayRemotePolicy(): RemoteMessagePolicy {
     const actorName = actorNameOf(to);
     const baseType = baseTypeOf(message.type);
 
-    if (LOCAL_ONLY_BY_ACTOR[actorName]?.has(baseType)) {
+    if (LOCAL_ONLY_BY_ACTOR[actorName]?.has(baseType) || REMOTE_DENIED.has(baseType)) {
       return false;
     }
 

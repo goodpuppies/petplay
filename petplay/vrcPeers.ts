@@ -29,6 +29,14 @@ import {
   vrcInstanceTopicKey,
   VrcTrustStore,
 } from "../classes/vrc/identity.ts";
+import {
+  type PeerPatchActorResult,
+  type PeerPatchReply,
+  type PeerPatchRequest,
+  peerPatchesAccepted,
+  resolvePatchModules,
+  summarizePeerPatch,
+} from "../classes/peerPatch.ts";
 
 export const VRC_PEERS_ACTOR_NAME = "vrcPeers";
 const DEFAULT_POLL_MS = 1000;
@@ -801,6 +809,71 @@ export const api = {
       void handshakePeer(contactId);
     }
   },
+  /**
+   * A trusted peer's live code patch (`classes/peerPatch.ts`): applied to every local actor that
+   * loaded the modules, when the `acceptPeerPatches` setting is on.
+   */
+  PEERPATCH: async (request: PeerPatchRequest | null): Promise<PeerPatchReply> => {
+    const sender = PostMan.sender;
+    const peer = sender ? peers.get(sender) : undefined;
+    if (!peer || peer.trust !== "trusted") {
+      console.warn(`[peerPatch] rejected a patch from untrusted ${sender ?? "unknown sender"}`);
+      return { ok: false, error: "not a trusted peer" };
+    }
+    if (!peerPatchesAccepted()) {
+      console.warn(`[peerPatch] ${peer.displayName} sent a patch; Peer Code Patches is off`);
+      return {
+        ok: false,
+        error: `${state.self?.displayName ?? "this peer"} has Settings → Install → Peer Code Patches off`,
+      };
+    }
+    let modules;
+    try {
+      modules = resolvePatchModules(request?.modules);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    const paths = (request?.modules ?? []).map((m) => m.path).join(", ");
+    console.log(`[peerPatch] ${peer.displayName} sent ${paths}`);
+    const results = await hotPatchLocalActors(modules);
+    console.log(`[peerPatch] ${peer.displayName}: ${summarizePeerPatch(results)}`);
+    return {
+      ok: true,
+      patched: results.filter((r) => r.status === "patched").map((r) => r.actor),
+      results,
+    };
+  },
+  /** Local only: send a code patch to every trusted peer in the instance (`utils/peer-patch.ts`). */
+  SENDPEERPATCH: async (
+    request: (PeerPatchRequest & { peer?: string }) | null,
+  ): Promise<Array<{ peer: string; reply: PeerPatchReply }>> => {
+    const filter = request?.peer?.toLowerCase();
+    const latest = new Map<string, VrcPeerInfo>();
+    for (const info of peers.values()) {
+      if (info.trust !== "trusted" || !info.inInstance) continue;
+      if (filter && !info.displayName.toLowerCase().includes(filter)) continue;
+      const prev = latest.get(info.vrcUserId);
+      if (!prev || prev.verifiedAt < info.verifiedAt) latest.set(info.vrcUserId, info);
+    }
+    return await Promise.all([...latest.values()].map(async (info) => {
+      try {
+        const reply = await timeout(
+          PostMan.PostMessage({
+            target: info.actorId,
+            type: "PEERPATCH",
+            payload: { modules: request?.modules ?? [], label: state.self?.displayName },
+          }, true) as Promise<PeerPatchReply>,
+          30_000,
+        );
+        return { peer: info.displayName, reply };
+      } catch (error) {
+        return {
+          peer: info.displayName,
+          reply: { ok: false, error: error instanceof Error ? error.message : String(error) },
+        };
+      }
+    }));
+  },
   REMOVECONTACT: (contactId: ActorId) => {
     state.addressBook.delete(contactId);
     const departed = peers.get(contactId);
@@ -813,5 +886,47 @@ export const api = {
     }
   },
 };
+
+/** HOTPATCH every local TypeScript actor; ones that never loaded the modules answer `absent`. */
+async function hotPatchLocalActors(
+  modules: ReturnType<typeof resolvePatchModules>,
+): Promise<PeerPatchActorResult[]> {
+  const actors = await PostMan.PostMessage({ target: System, type: "INSPECT" }, true) as Array<
+    { actorId: string; ownership?: string; actorname?: string }
+  >;
+  const local = actors.filter((a) =>
+    a.ownership !== "external" && /\.tsx?$/.test(a.actorname ?? "")
+  );
+  return await Promise.all(local.map(async (a) => {
+    const actor = a.actorId.slice(0, a.actorId.indexOf("@")) || a.actorId;
+    try {
+      const result = await timeout(
+        PostMan.PostMessage({
+          target: a.actorId as ActorId,
+          type: "HOTPATCH",
+          payload: { modules },
+        }, true) as Promise<PeerPatchActorResult>,
+        15_000,
+      );
+      return { ...result, actor };
+    } catch (error) {
+      return {
+        actor,
+        status: "error" as const,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }));
+}
+
+function timeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 new PostMan(state, api);

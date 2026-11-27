@@ -1332,7 +1332,7 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   const showInstallBtn = !real.installed || (!real.runningInstalled && !real.upToDate);
 
   return (
-    <Grid cols={1} rows={5} gap={GAP} padding={0} showGuides={showGuides}>
+    <Grid cols={1} rows={6} gap={GAP} padding={0} showGuides={showGuides}>
       <SettingRow row={0} title="Version" description={describeBuild()}>
         <Text color={COLOR.accent} fontSize={22}>{build.version}</Text>
       </SettingRow>
@@ -1394,6 +1394,12 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
           onClick={() => void handleCopyLogsDir()}
         />
       </SettingRow>
+      <BooleanSettingRow
+        row={5}
+        title="Peer Code Patches"
+        description="Trusted coop peers may live-patch PetPlay's code while it runs"
+        setting="acceptPeerPatches"
+      />
     </Grid>
   );
 }
