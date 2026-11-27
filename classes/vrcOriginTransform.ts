@@ -536,6 +536,8 @@ export class VrcOriginRoomLock {
    * @param stickMoving a move or turn stick is held: VRChat is moving now, before samples show it
    * @param sticksKnown the sticks are being read: idle sticks then mean VRChat is not moving the
    *   player, so the lock holds and only a clear, lasting desync re-anchors it (slowly)
+   * @param overlayHeld a hand holds a PetPlay overlay: lock where the output is and stay there
+   *   (no breaks, desync corrections or re-anchors) until it is let go
    */
   update(
     raw: VrcWorldToStandingTransform,
@@ -546,9 +548,23 @@ export class VrcOriginRoomLock {
     locomotionSpeed = 0,
     stickMoving = false,
     sticksKnown = false,
+    overlayHeld = false,
   ): VrcOriginRoomLockResult {
     let errorMeters = 0;
     if (stickMoving) this.lastStickAt = nowMs;
+    if (overlayHeld) {
+      if (this.mode !== "locked" || !this.held) {
+        // Freeze what is shown, so grabbing never moves the room under the hand.
+        this.held = cloneTransform(this.blendOutput(raw, worldPose, nowMs));
+        this.mode = "locked";
+        this.blendFrom = null;
+        this.correction = null;
+      }
+      this.sustainedSince = null;
+      this.desyncSince = null;
+      if (this.held) errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
+      return this.finish(this.lockedOutput(worldPose, nowMs), errorMeters);
+    }
     if (sticksKnown && this.mode === "locked" && this.held && !stickMoving) {
       errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
       const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));

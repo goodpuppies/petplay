@@ -785,3 +785,36 @@ Deno.test("room lock, known sticks: a stick unlocks, and release locks again aft
 function translationDelta(a: { translation: Vec3 }, b: { translation: Vec3 }): number {
   return Math.hypot(...a.translation.map((v, k) => v - b.translation[k]));
 }
+
+Deno.test("room lock: while an overlay is held the output stays put, then the usual policy resumes", () => {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  const hmdPos: Vec3 = [0.4, 1.6, -0.4];
+  const step = (world: VrcOriginWorldPose, t: number, stick: boolean, held: boolean) => {
+    const raw = solver.update(world, makeHmdMatrix(hmdPos, 0), stick, t);
+    return lock.update(raw.transform, world, hmdPos, 0, t, stick ? 2 : 0, stick, true, held);
+  };
+  // Moving (stick held) when the grab starts: it locks on what is shown at once.
+  let t = 0;
+  let res = step(makeWorldPose([9, 0.2, -4], -1.4), t, true, false);
+  for (t = 11; t < 200; t += 11) res = step(makeWorldPose([9 + t / 1000, 0.2, -4], -1.4), t, true, false);
+  assertEquals(res.mode, "moving");
+  const shown = res.transform;
+  const grabbed = [];
+  // Held for 3 s while VRChat keeps moving and turning the avatar (a frozen stick): no change.
+  for (let i = 0; t < 3200; t += 11, i++) {
+    const world = makeWorldPose([9.2 + i * 0.01, 0.2, -4], -1.4 + i * 0.01);
+    grabbed.push(step(world, t, true, true));
+  }
+  // The first held frame freezes that frame's output: one 11 ms step on from the last shown.
+  const frozen = grabbed[0].transform;
+  assertVec3AlmostEquals(frozen.translation, shown.translation, 0.01);
+  for (const r of grabbed) {
+    assertEquals(r.mode, "locked");
+    assertAlmostEquals(r.transform.yawRad, frozen.yawRad, 1e-9);
+    assertVec3AlmostEquals(r.transform.translation, frozen.translation, 1e-9);
+  }
+  // Let go with the stick still moving: the lock breaks as usual.
+  res = step(makeWorldPose([12, 0.2, -4], 1.4), t, true, false);
+  assertEquals(res.mode, "moving");
+});
