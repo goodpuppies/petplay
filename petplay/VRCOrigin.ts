@@ -460,7 +460,8 @@ async function pollOriginOnce(): Promise<boolean> {
   const airborne = now < airborneUntil;
   // VRChat is moving the player: a stick, or a jump in progress.
   const stickMoving = sticks != null && (
-    Math.hypot(vrcSticks.left[0], vrcSticks.left[1]) > 0.15 || Math.abs(vrcSticks.right[0]) > 0.15 ||
+    Math.hypot(vrcSticks.left[0], vrcSticks.left[1]) > 0.125 ||
+    Math.abs(vrcSticks.right[0]) > 0.35 ||
     airborne
   );
 

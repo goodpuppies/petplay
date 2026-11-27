@@ -21,6 +21,8 @@ import { DEFAULT_VRC_WALK, type VrcWalkParams } from "./vrcWorldLocomotion.ts";
 const RATE_OF_AIR_ACCELERATION = 5.0;
 /** Unity Input System default `StickDeadzoneProcessor.min` (rescaled to `[0, 1]`). */
 const STICK_DEADZONE = 0.125;
+/** VRChat smooth-turn stick horizontal deadzone (pushing right stick up/down produces ~0.15-0.28 X bleed). */
+const TURN_STICK_DEADZONE = 0.35;
 
 function normalizeAngleRad(angle: number): number {
   let a = (angle + Math.PI) % (2 * Math.PI);
@@ -237,8 +239,8 @@ export class VrcCharacterSim {
       this.wallBlocked = false;
       this.wallStallCount = 0;
     }
-    const prevTurn = Math.abs(this.turn) > STICK_DEADZONE;
-    const nextTurn = Math.abs(turn) > STICK_DEADZONE;
+    const prevTurn = Math.abs(this.turn) > TURN_STICK_DEADZONE;
+    const nextTurn = Math.abs(turn) > TURN_STICK_DEADZONE;
     if (nextTurn) this.lastTurnDir = Math.sign(turn);
     if (prevTurn && !nextTurn) {
       this.turnReleasedAt = t;
@@ -269,7 +271,7 @@ export class VrcCharacterSim {
     // VRChat's avatar yaw leads unpredicted OpenVR HMD yaw by ~45-50 ms (SteamVR display
     // prediction), so integrating lagged `-hmdYawRate` fights head-shake reversals. Use the
     // in-phase OSC yaw rate when the turn stick is idle, and add smooth-turn stick rate when held.
-    const turnEff = Math.abs(this.turn) > STICK_DEADZONE ? vrcSmoothTurnCurve(this.turn) : 0;
+    const turnEff = Math.abs(this.turn) > TURN_STICK_DEADZONE ? vrcSmoothTurnCurve(this.turn) : 0;
     const yawAge = t - this.lastYawOscT;
     const effOscYawRate = yawAge < 40
       ? this.oscYawRate
@@ -487,7 +489,7 @@ export class VrcCharacterSim {
           this.landAt(pose.position[1]);
         }
       }
-      if (yawChanged && Math.abs(this.turn) > STICK_DEADZONE) {
+      if (yawChanged && Math.abs(this.turn) > TURN_STICK_DEADZONE) {
         const turnEff = vrcSmoothTurnCurve(this.turn);
         if (Math.abs(turnEff) > 0.35) {
           const avRate = angleDiffRad(pose.yawRad, this.lastOscYaw) / dt;
@@ -612,7 +614,7 @@ export class VrcCharacterSim {
       }
     }
     if (yawChanged) {
-      const stickTurning = Math.abs(this.turn) > STICK_DEADZONE || t - this.turnReleasedAt < 150;
+      const stickTurning = Math.abs(this.turn) > TURN_STICK_DEADZONE || t - this.turnReleasedAt < 150;
       const ryaw = angleDiffRad(pose.yawRad, this.yaw);
       if (stickTurning) {
         // During stick turns (and the brief release tail), bleed yaw residuals smoothly so OSC

@@ -1123,6 +1123,7 @@ const V2_ARRIVAL_SIGMA_MS = 14;
 const V2_POSITION_MEASUREMENT_VARIANCE = 4e-4;
 const V2_DEFAULT_SMOOTHING_MS = 55;
 const STICK_DEADZONE = 0.15;
+const TURN_STICK_DEADZONE = 0.35;
 const STICK_CHANGE = 0.1;
 
 /**
@@ -1130,7 +1131,7 @@ const STICK_CHANGE = 0.1;
  * ramp up to full stick.
  */
 function vrcSmoothTurnCurve(stickX: number): number {
-  const mag = Math.max(0, (Math.abs(stickX) - 0.35) / 0.65);
+  const mag = Math.max(0, (Math.abs(stickX) - TURN_STICK_DEADZONE) / (1 - TURN_STICK_DEADZONE));
   return Math.sign(stickX) * mag * mag;
 }
 
@@ -1140,6 +1141,8 @@ class StickTracker {
   changedAt = -Infinity;
   private releasedAt = -Infinity;
   private reference: [number, number] = [0, 0];
+
+  constructor(private readonly deadzone = STICK_DEADZONE) {}
 
   clear(): void {
     this.active = false;
@@ -1157,7 +1160,7 @@ class StickTracker {
     value: [number, number],
     extraChange: boolean,
   ): "pressed" | "released" | null {
-    const active = Math.hypot(value[0], value[1]) > STICK_DEADZONE;
+    const active = Math.hypot(value[0], value[1]) > this.deadzone;
     let event: "pressed" | "released" | null = null;
     if (active !== this.active) {
       event = active ? "pressed" : "released";
@@ -1304,7 +1307,7 @@ export class VrcRootPredictor {
   };
   private readonly stickChangeMs: number;
   private readonly move = new StickTracker();
-  private readonly turn = new StickTracker();
+  private readonly turn = new StickTracker(TURN_STICK_DEADZONE);
   private readonly stickTurn: StickTurn;
   /** Time of the newest `setInput`. */
   private inputAt = 0;
