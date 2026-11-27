@@ -1,8 +1,8 @@
 import "../../submodules/threewebxrwebgpudeno/submodules/xr/packages/pointer-events/src/pointer.ts";
 import type { HandleStore } from "@pmndrs/handle";
 import {
-  PetPlayHandleStore,
   type PetPlayHandleOptions as HandleOptions,
+  PetPlayHandleStore,
 } from "./petplayHandleStore.tsx";
 import * as THREE from "three/webgpu";
 import type { PointerEvent as PenPointerEvent } from "@pmndrs/pointer-events";
@@ -282,5 +282,42 @@ Deno.test("a hinge follows the frozen grab point, not the hand's ray", () => {
   assert(
     Math.abs(projected.rotation.y) > 0.05,
     "ray projection is what turned hand translation into hinge rotation",
+  );
+});
+
+Deno.test("a held target stays at the hand while its parent moves and the hand does not", () => {
+  // A window anchored to the VRChat world: its parent follows the room lock every frame.
+  const parent = new THREE.Object3D() as unknown as TransformedObject;
+  const target = transformedObject();
+  (parent as unknown as THREE.Object3D).add(target);
+  target.position.set(0.5, 0, 0);
+  const store = new PetPlayHandleStore(target, () => ({
+    apply: (state, t) => {
+      const object = t as unknown as TransformedObject;
+      object.position.copy(state.current.position);
+      object.quaternion.copy(state.current.quaternion);
+      object.scale.copy(state.current.scale);
+    },
+    scale: false,
+  }));
+  const handle = new THREE.Object3D();
+  store.handlers.onPointerDown(pointerEvent(handle));
+  store.update(1);
+  target.updateWorldMatrix(true, false);
+  const held = new THREE.Vector3().setFromMatrixPosition(target.matrixWorld);
+  // The parent moves 1 m and turns 20°, like VRChat moving the player; no pointer move arrives.
+  parent.position.set(1, 0, -0.3);
+  parent.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.35);
+  (parent as unknown as THREE.Object3D).matrixWorldNeedsUpdate = true;
+  store.update(2);
+  target.updateWorldMatrix(true, false);
+  const now = new THREE.Vector3().setFromMatrixPosition(target.matrixWorld);
+  assert(
+    now.distanceTo(held) < 1e-6,
+    `the target must stay at the hand (moved ${now.distanceTo(held)} m)`,
+  );
+  assert(
+    target.position.distanceTo(new THREE.Vector3(0.5, 0, 0)) > 0.1,
+    "its pose in the parent follows the parent",
   );
 });

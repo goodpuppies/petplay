@@ -13,7 +13,7 @@
  * `GrabBox` builds its stores with {@link PetPlayHandle}.
  */
 import React from "react";
-import { type Object3D, Quaternion, Vector3 } from "three";
+import { Matrix4, type Object3D, Quaternion, Vector3 } from "three";
 import {
   type Axis,
   computeOnePointerHandleTransformState,
@@ -49,6 +49,8 @@ export class PetPlayHandleStore<T> extends HandleStore<T> {
   /** The physical hand each captured `grab` pointer belongs to. */
   readonly capturedPointerGroups = new Map<number, string>();
   declare readonly getOptions: () => PetPlayHandleOptions<T>;
+  /** The target parent's world matrix at the last {@link update}, to notice it moving. */
+  private readonly heldParentWorld = new Matrix4();
 
   constructor(
     target: Object3D | { current?: Object3D | null },
@@ -94,12 +96,28 @@ export class PetPlayHandleStore<T> extends HandleStore<T> {
     return true;
   }
 
-  /** `force` applies even without a new pointer move (after {@link setTargetAxisAngle}). */
+  /**
+   * `force` applies even without a new pointer move (after {@link setTargetAxisAngle}).
+   *
+   * A held target stays with the hand even while its parent moves without the hand moving (a
+   * window anchored to the VRChat world while the room lock adjusts): the parent's world matrix
+   * is refreshed here (three only does that at render, a frame late for this) and a change
+   * recomputes the target, so it is shown at the hand in tracking space while its pose relative
+   * to the parent follows the parent.
+   */
   override update(time: number, force = false): void {
     const target = this.getTarget();
+    if (target == null || this.inputState.size === 0) return;
+    const parent = target.parent;
+    let parentMoved = false;
+    if (parent != null) {
+      parent.updateWorldMatrix(true, false);
+      parentMoved = !this.heldParentWorld.equals(parent.matrixWorld);
+      this.heldParentWorld.copy(parent.matrixWorld);
+    }
     if (
-      target == null || this.inputState.size === 0 ||
-      (!force && this.latestMoveEvent == null && (this.getOptions().alwaysUpdate ?? false) === false)
+      !force && !parentMoved && this.latestMoveEvent == null &&
+      (this.getOptions().alwaysUpdate ?? false) === false
     ) {
       return;
     }
@@ -126,11 +144,18 @@ export class PetPlayHandleStore<T> extends HandleStore<T> {
       };
       if (p2 != null && options.scale !== false) {
         // The rotation stays the first pointer's; the second only contributes the pinch scale.
-        const pinch = computeTwoPointerHandleTransformState(time, p1!, p2, this, parentMatrixWorld, {
-          ...options,
-          translate: false,
-          rotate: false,
-        });
+        const pinch = computeTwoPointerHandleTransformState(
+          time,
+          p1!,
+          p2,
+          this,
+          parentMatrixWorld,
+          {
+            ...options,
+            translate: false,
+            rotate: false,
+          },
+        );
         transformState = { ...transformState, scale: pinch.scale };
       } else if (
         options.oneHandScaleMaxGrabOffset != null &&
