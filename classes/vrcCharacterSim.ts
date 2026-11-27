@@ -100,6 +100,8 @@ export class VrcCharacterSim {
   private movePressedAt = -Infinity;
   private moveReleasedAt = -Infinity;
   private turnReleasedAt = -Infinity;
+  /** Sign of the last active smooth turn (+1/-1), so post-turn overshoot settles without recoil. */
+  private lastTurnDir = 0;
   /** Unit XZ direction of the last active walk, so post-stop overshoot settles gently without recoil. */
   private lastMoveDir: [number, number] = [0, 0];
 
@@ -223,7 +225,13 @@ export class VrcCharacterSim {
     }
     const prevTurn = Math.abs(this.turn) > STICK_DEADZONE;
     const nextTurn = Math.abs(turn) > STICK_DEADZONE;
-    if (prevTurn && !nextTurn) this.turnReleasedAt = t;
+    if (nextTurn) this.lastTurnDir = Math.sign(turn);
+    if (prevTurn && !nextTurn) {
+      this.turnReleasedAt = t;
+      // Drop stale pre-stop yaw residual so a delayed OSC burst cannot twist backwards on release.
+      this.pendingYaw = 0;
+      this.corrYawRate = 0;
+    }
     this.move = [move[0], move[1]];
     this.turn = turn;
     this.hmdYawRate = hmdYawRate;
@@ -349,11 +357,22 @@ export class VrcCharacterSim {
     const dzC = clampStep(this.corrVelXZ[1] * dt, this.pendingPos[2]);
     const dyC = this.pendingPos[1] * (1 - Math.exp(-dtMs / yTau));
 
-    const maxYawCorrRate = (45 * Math.PI) / 180;
-    const targetYawRate = Math.max(
+    // Cap yaw correction rate so rotation never twists backwards faster than physically plausible:
+    // after turn-stick release, backward recoil is capped gently (12°/s) vs active turns (30°/s).
+    const isYawStopRecoil = turnEff === 0 && this.lastTurnDir !== 0 &&
+      this.pendingYaw * this.lastTurnDir < -0.002;
+    const maxYawCorrRate = isYawStopRecoil
+      ? (12 * Math.PI) / 180
+      : (30 * Math.PI) / 180;
+    const yawCorrTauSec = isYawStopRecoil ? 0.16 : yawTauSec;
+    let targetYawRate = Math.max(
       -maxYawCorrRate,
-      Math.min(maxYawCorrRate, this.pendingYaw / yawTauSec),
+      Math.min(maxYawCorrRate, this.pendingYaw / yawCorrTauSec),
     );
+    // While actively holding the turn stick, never let error correction reverse the turn direction.
+    if (turnEff !== 0 && (this.turnGain * turnEff + targetYawRate) * turnEff < 0) {
+      targetYawRate = -this.turnGain * turnEff;
+    }
     this.corrYawRate += (targetYawRate - this.corrYawRate) * aCorr;
     const dyawC = clampStep(this.corrYawRate * dt, this.pendingYaw);
 
