@@ -409,6 +409,7 @@ async function pollOriginOnce(): Promise<boolean> {
     performance.now(),
     locomotionSpeed,
     stickMoving,
+    sticks != null,
   );
   if (state.lockMode === "locked" && solved.mode === "moving") state.lockBreakCount++;
   const modeChanged = state.lockMode !== solved.mode;

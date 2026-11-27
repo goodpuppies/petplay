@@ -600,3 +600,138 @@ Deno.test("follow model: a lasting yaw jump is taken after 400 ms, a brief one i
   }
   assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + jump + 5 * step), 0, 1e-9);
 });
+
+function knownStep(
+  solver: VrcOriginSolver,
+  lock: VrcOriginRoomLock,
+  world: VrcOriginWorldPose,
+  hmdPos: Vec3,
+  hmdYaw: number,
+  hmdSpeed: number,
+  now: number,
+  stick = false,
+) {
+  const raw = solver.update(world, makeHmdMatrix(hmdPos, hmdYaw), stick, now);
+  return lock.update(raw.transform, world, hmdPos, hmdSpeed, now, 2.0, stick, true);
+}
+
+function lockedWithKnownSticks() {
+  const solver = new VrcOriginSolver();
+  const lock = new VrcOriginRoomLock();
+  const world = makeWorldPose([9, 0.2, -4], -1.4);
+  let t = 0;
+  let res = knownStep(solver, lock, world, [0.4, 1.6, -0.4], 0, 0, t);
+  for (; t <= 400; t += 11) res = knownStep(solver, lock, world, [0.4, 1.6, -0.4], 0, 0, t);
+  assertEquals(res.mode, "locked");
+  return { solver, lock, t, held: res.transform };
+}
+
+Deno.test("room lock, known sticks: idle sticks hold the output exactly through head sway", () => {
+  const fixture = lockedWithKnownSticks();
+  const { solver, lock, held } = fixture;
+  let t = fixture.t;
+  for (let i = 0; i < 300; i++, t += 11) {
+    // The root swings under the neck (20 cm) and looks like 2 m/s "locomotion" while shaking.
+    const sway = 0.2 * Math.sin(i / 4);
+    const res = knownStep(
+      solver,
+      lock,
+      makeWorldPose([9 + sway, 0.2, -4], -1.4),
+      [0.4, 1.6, -0.4],
+      0,
+      1.2,
+      t,
+    );
+    assertEquals(res.mode, "locked");
+    assertEquals(res.transform, held);
+  }
+});
+
+Deno.test("room lock, known sticks: a lasting desync re-anchors with a slow animation", () => {
+  const { solver, lock, held } = lockedWithKnownSticks();
+  let t = 500;
+  // The world moved 0.6 m under a still head with no stick (a moving platform, a drift).
+  const moved = makeWorldPose([9.6, 0.2, -4], -1.4);
+  let res = knownStep(solver, lock, moved, [0.4, 1.6, -0.4], 0, 0, t);
+  for (; t < 500 + 990; t += 11) {
+    res = knownStep(solver, lock, moved, [0.4, 1.6, -0.4], 0, 0, t);
+    assertEquals(res.transform, held, `held until the desync has lasted 1 s (at ${t})`);
+  }
+  for (; t < 500 + 1000 + 700; t += 11) {
+    res = knownStep(solver, lock, moved, [0.4, 1.6, -0.4], 0, 0, t);
+  }
+  assertEquals(res.mode, "locked");
+  const mid = translationDelta(res.transform, held);
+  assert(mid > 0.05 && mid < 0.55, `mid-animation offset ${mid}`);
+  for (; t < 500 + 1000 + 1600; t += 11) {
+    res = knownStep(solver, lock, moved, [0.4, 1.6, -0.4], 0, 0, t);
+  }
+  assertAlmostEquals(translationDelta(res.transform, held), 0.6, 0.02);
+});
+
+Deno.test("room lock, known sticks: a teleport re-anchors at once after 300 ms", () => {
+  const { solver, lock, held } = lockedWithKnownSticks();
+  let t = 500;
+  const far = makeWorldPose([40, 3, 12], -1.4);
+  let res = knownStep(solver, lock, far, [0.4, 1.6, -0.4], 0, 0, t);
+  for (; t < 500 + 320; t += 11) res = knownStep(solver, lock, far, [0.4, 1.6, -0.4], 0, 0, t);
+  assert(translationDelta(res.transform, held) > 10);
+  assertEquals(res.mode, "locked");
+});
+
+Deno.test("room lock, known sticks: a stick unlocks, and release locks again after 300 ms", () => {
+  const { solver, lock } = lockedWithKnownSticks();
+  let t = 500;
+  let res = knownStep(
+    solver,
+    lock,
+    makeWorldPose([9, 0.2, -4], -1.4),
+    [0.4, 1.6, -0.4],
+    0,
+    0,
+    t,
+    true,
+  );
+  assertEquals(res.mode, "moving");
+  for (let i = 0; i < 40; i++, t += 11) {
+    res = knownStep(
+      solver,
+      lock,
+      makeWorldPose([9 + i * 0.02, 0.2, -4], -1.4),
+      [0.4, 1.6, -0.4],
+      0,
+      0,
+      t,
+      true,
+    );
+  }
+  const releasedAt = t;
+  for (; t < releasedAt + 290; t += 11) {
+    res = knownStep(
+      solver,
+      lock,
+      makeWorldPose([9.8 + 0.1 * Math.sin(t / 30), 0.2, -4], -1.4),
+      [0.4, 1.6, -0.4],
+      0,
+      1.5,
+      t,
+    );
+    assertEquals(res.mode, "moving");
+  }
+  for (; t < releasedAt + 320; t += 11) {
+    res = knownStep(
+      solver,
+      lock,
+      makeWorldPose([9.8 + 0.1 * Math.sin(t / 30), 0.2, -4], -1.4),
+      [0.4, 1.6, -0.4],
+      0,
+      1.5,
+      t,
+    );
+  }
+  assertEquals(res.mode, "locked");
+});
+
+function translationDelta(a: { translation: Vec3 }, b: { translation: Vec3 }): number {
+  return Math.hypot(...a.translation.map((v, k) => v - b.translation[k]));
+}

@@ -408,6 +408,19 @@ export interface VrcOriginRoomLockOptions {
   jumpYawRad?: number;
   /** A root error (m) this large at the break is a teleport: no blend. */
   jumpDistanceMeters?: number;
+  /**
+   * With known sticks (`sticksKnown`): idle sticks never break the lock. A held error this large
+   * (m, or `desyncYawRad`) for `desyncMs`, taken with a still head, is a desync: the lock is
+   * re-anchored by animating over `correctionMs`.
+   */
+  desyncDistanceMeters?: number;
+  desyncYawRad?: number;
+  desyncMs?: number;
+  correctionMs?: number;
+  /** A desync this large (m, or `teleportYawRad`) for `teleportMs` is a teleport: re-anchor at once. */
+  teleportDistanceMeters?: number;
+  teleportYawRad?: number;
+  teleportMs?: number;
 }
 
 export interface VrcOriginRoomLockResult {
@@ -460,6 +473,17 @@ export class VrcOriginRoomLock {
   private sustainedSince: number | null = null;
   private settleAnchor: VrcWorldToStandingTransform | null = null;
   private settleAnchorAt = 0;
+  private readonly desyncDistance: number;
+  private readonly desyncYaw: number;
+  private readonly desyncMs: number;
+  private readonly correctionMs: number;
+  private readonly teleportDistance: number;
+  private readonly teleportYaw: number;
+  private readonly teleportMs: number;
+  private desyncSince: number | null = null;
+  /** A slow re-anchor in progress (locked): from `from` to `held` since `start`. */
+  private correction: { from: VrcWorldToStandingTransform; start: number } | null = null;
+  private lastStickAt = -Infinity;
 
   constructor(options: VrcOriginRoomLockOptions = {}) {
     this.breakDistance = options.breakDistanceMeters ?? 0.35;
@@ -475,6 +499,13 @@ export class VrcOriginRoomLock {
     this.blendMs = options.blendMs ?? 400;
     this.jumpYaw = options.jumpYawRad ?? (10 * Math.PI) / 180;
     this.jumpDistance = options.jumpDistanceMeters ?? 1.0;
+    this.desyncDistance = options.desyncDistanceMeters ?? 0.25;
+    this.desyncYaw = options.desyncYawRad ?? (4 * Math.PI) / 180;
+    this.desyncMs = options.desyncMs ?? 1000;
+    this.correctionMs = options.correctionMs ?? 1500;
+    this.teleportDistance = options.teleportDistanceMeters ?? 2.0;
+    this.teleportYaw = options.teleportYawRad ?? (30 * Math.PI) / 180;
+    this.teleportMs = options.teleportMs ?? 300;
   }
 
   reset(): void {
@@ -484,6 +515,9 @@ export class VrcOriginRoomLock {
     this.sustainedSince = null;
     this.settleAnchor = null;
     this.blendFrom = null;
+    this.desyncSince = null;
+    this.correction = null;
+    this.lastStickAt = -Infinity;
   }
 
   getMode(): VrcOriginRoomLockMode {
@@ -499,6 +533,8 @@ export class VrcOriginRoomLock {
    * @param locomotionSpeed how fast the avatar root moves in the room relative to the HMD (m/s):
    *   VRChat locomotion, which physical motion does not produce
    * @param stickMoving a move or turn stick is held: VRChat is moving now, before samples show it
+   * @param sticksKnown the sticks are being read: idle sticks then mean VRChat is not moving the
+   *   player, so the lock holds and only a clear, lasting desync re-anchors it (slowly)
    */
   update(
     raw: VrcWorldToStandingTransform,
@@ -508,8 +544,49 @@ export class VrcOriginRoomLock {
     nowMs: number,
     locomotionSpeed = 0,
     stickMoving = false,
+    sticksKnown = false,
   ): VrcOriginRoomLockResult {
     let errorMeters = 0;
+    if (stickMoving) this.lastStickAt = nowMs;
+    if (sticksKnown && this.mode === "locked" && this.held && !stickMoving) {
+      errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
+      const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));
+      const teleport = errorMeters > this.teleportDistance || yawErr > this.teleportYaw;
+      const desync = teleport || errorMeters > this.desyncDistance || yawErr > this.desyncYaw;
+      this.desyncSince = desync ? (this.desyncSince ?? nowMs) : null;
+      const lasted = this.desyncSince === null ? 0 : nowMs - this.desyncSince;
+      if (teleport && lasted >= this.teleportMs) {
+        this.held = cloneTransform(raw);
+        this.correction = null;
+        this.desyncSince = null;
+      } else if (
+        desync && lasted >= this.desyncMs && hmdSpeed < this.stillHeadSpeed && !this.correction
+      ) {
+        this.correction = {
+          from: cloneTransform(this.lockedOutput(worldPose, nowMs)),
+          start: nowMs,
+        };
+        this.held = cloneTransform(raw);
+        this.desyncSince = null;
+      }
+      return this.finish(this.lockedOutput(worldPose, nowMs), errorMeters);
+    }
+    if (
+      sticksKnown && this.mode === "moving" && !stickMoving &&
+      nowMs - this.lastStickAt >= this.settleMs
+    ) {
+      // The sticks have been idle for a moment: VRChat has stopped moving the player. Lock now
+      // rather than wait for the raw estimate to go still, which head motion can prevent.
+      this.mode = "locked";
+      this.held = cloneTransform(raw);
+      this.correction = this.blendFrom
+        ? { from: cloneTransform(this.blendOutput(raw, worldPose, nowMs)), start: nowMs }
+        : null;
+      this.blendFrom = null;
+      this.sustainedSince = null;
+      this.desyncSince = null;
+      return this.finish(this.lockedOutput(worldPose, nowMs), errorMeters);
+    }
     if (this.mode === "locked" && this.held) {
       errorMeters = rootErrorMeters(this.held, worldPose, hmdPos);
       const yawErr = Math.abs(angleDiffRad(raw.yawRad, this.held.yawRad));
@@ -550,12 +627,44 @@ export class VrcOriginRoomLock {
       }
     }
 
-    let output = this.mode === "locked" && this.held ? this.held : raw;
-    if (this.mode === "moving" && this.blendFrom) {
-      const u = (nowMs - this.blendStart) / this.blendMs;
-      if (u >= 1) this.blendFrom = null;
-      else output = blendAroundRoot(this.blendFrom, raw, worldPose, u * u * (3 - 2 * u));
+    if (this.mode === "moving") this.correction = null;
+    const output = this.mode === "locked" && this.held
+      ? this.lockedOutput(worldPose, nowMs)
+      : this.blendOutput(raw, worldPose, nowMs);
+    return this.finish(output, errorMeters);
+  }
+
+  /** The locked output: the held transform, or the slow re-anchor towards it. */
+  private lockedOutput(worldPose: VrcOriginWorldPose, nowMs: number): VrcWorldToStandingTransform {
+    const held = this.held!;
+    if (!this.correction) return held;
+    const u = (nowMs - this.correction.start) / this.correctionMs;
+    if (u >= 1) {
+      this.correction = null;
+      return held;
     }
+    return blendAroundRoot(this.correction.from, held, worldPose, u * u * (3 - 2 * u));
+  }
+
+  /** The moving output: raw, blended in from the held transform just after a break. */
+  private blendOutput(
+    raw: VrcWorldToStandingTransform,
+    worldPose: VrcOriginWorldPose,
+    nowMs: number,
+  ): VrcWorldToStandingTransform {
+    if (!this.blendFrom) return raw;
+    const u = (nowMs - this.blendStart) / this.blendMs;
+    if (u >= 1) {
+      this.blendFrom = null;
+      return raw;
+    }
+    return blendAroundRoot(this.blendFrom, raw, worldPose, u * u * (3 - 2 * u));
+  }
+
+  private finish(
+    output: VrcWorldToStandingTransform,
+    errorMeters: number,
+  ): VrcOriginRoomLockResult {
     const changed = !this.lastOutput || translationDistance(output, this.lastOutput) > 1e-6 ||
       Math.abs(angleDiffRad(output.yawRad, this.lastOutput.yawRad)) > 1e-7 ||
       Math.abs(output.scale - this.lastOutput.scale) > 1e-7;
