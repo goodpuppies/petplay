@@ -1283,7 +1283,13 @@ const WindowLayerContent = React.memo(function WindowLayerContent(
       />
       {fontsLoaded &&
         getSpatialChildren(graph, null).map((node) => (
-          <SpatialRootOrigin key={node.id} originId={node.originId}>
+          <SpatialRootOrigin
+            key={node.id}
+            originId={node.originId}
+            rootId={node.id}
+            handleStores={handleStores}
+            setGraph={props.setGraph}
+          >
             <SpatialNodeView key={node.id} node={node} {...props} />
           </SpatialRootOrigin>
         ))}
@@ -1299,9 +1305,22 @@ const WindowLayerContent = React.memo(function WindowLayerContent(
  *
  * Every root gets one, keyed by the root, so re-anchoring only changes `originId`: moving the
  * window under a different group remounted it, and rebuilding its UI stalled a frame ~0.5 s.
+ *
+ * Anchored to the VRChat world, the window has two poses: in tracking space (what is shown) and
+ * in the VRChat world (the node's transform, under the live VRChat transform). While a hand holds
+ * anything in it the group stays where it was, so the hand moves it in tracking space alone and
+ * no VRChat transform correction shows; the live transform keeps evolving underneath. On release
+ * the tracking-space pose is re-expressed under the live transform and committed: the window
+ * stays put, and its VRChat-world pose has moved with the player.
  */
 function SpatialRootOrigin(
-  { originId, children }: { originId: string; children: React.ReactNode },
+  { originId, rootId, handleStores, setGraph, children }: {
+    originId: string;
+    rootId: string;
+    handleStores: Map<string, HandleStore<unknown>>;
+    setGraph: React.Dispatch<React.SetStateAction<SpatialGraph>>;
+    children: React.ReactNode;
+  },
 ) {
   const ref = React.useRef<THREE.Group>(null);
   const tracked = isTrackedOriginId(originId);
@@ -1314,9 +1333,15 @@ function SpatialRootOrigin(
   const camera = useThree((r3fState) => r3fState.camera);
   const renderer = useThree((r3fState) => r3fState.gl);
   const scratch = React.useMemo(
-    () => ({ world: new THREE.Matrix4(), parent: new THREE.Matrix4() }),
+    () => ({
+      world: new THREE.Matrix4(),
+      parent: new THREE.Matrix4(),
+      live: new THREE.Matrix4(),
+      rebase: new THREE.Matrix4(),
+    }),
     [],
   );
+  const heldRef = React.useRef(false);
   useFrame(() => {
     const group = ref.current;
     if (group == null || !isTrackedOriginId(originId)) return;
@@ -1325,10 +1350,36 @@ function SpatialRootOrigin(
     const parent = group.parent;
     if (parent != null) {
       parent.updateWorldMatrix(true, false);
-      group.matrix.copy(scratch.parent.copy(parent.matrixWorld).invert().multiply(scratch.world));
+      scratch.live.copy(scratch.parent.copy(parent.matrixWorld).invert().multiply(scratch.world));
     } else {
-      group.matrix.copy(scratch.world);
+      scratch.live.copy(scratch.world);
     }
+    if (originId === VRC_WORLD_ORIGIN_ID) {
+      if (holdsAnythingUnder(group, handleStores)) {
+        heldRef.current = true;
+        return;
+      }
+      if (heldRef.current) {
+        heldRef.current = false;
+        // child' = live⁻¹ · held · child: the same tracking-space pose under the live transform.
+        scratch.rebase.copy(scratch.live).invert().multiply(group.matrix);
+        let rootTransform: SpatialTransform | null = null;
+        for (const child of group.children) {
+          child.updateMatrix();
+          child.matrix.premultiply(scratch.rebase);
+          child.matrix.decompose(child.position, child.quaternion, child.scale);
+          child.matrixWorldNeedsUpdate = true;
+          if (child.userData.spatialElementId === rootId) {
+            rootTransform = objectTransform(child as unknown as import("three").Object3D);
+          }
+        }
+        if (rootTransform != null) {
+          const committed = rootTransform;
+          setGraph((current) => commitNodeTransform(current, rootId, committed));
+        }
+      }
+    }
+    group.matrix.copy(scratch.live);
     group.matrixWorldNeedsUpdate = true;
   });
   return (
@@ -1342,6 +1393,23 @@ function SpatialRootOrigin(
       {children}
     </group>
   );
+}
+
+/** Whether a hand holds `group` or anything inside it. */
+function holdsAnythingUnder(
+  group: THREE.Object3D,
+  handleStores: Map<string, HandleStore<unknown>>,
+): boolean {
+  for (const store of handleStores.values()) {
+    const held = (store as Partial<PetPlayHandleStore<unknown>>).heldTarget?.() as
+      | THREE.Object3D
+      | null
+      | undefined;
+    for (let node = held ?? null; node != null; node = node.parent) {
+      if (node === group) return true;
+    }
+  }
+  return false;
 }
 
 /**

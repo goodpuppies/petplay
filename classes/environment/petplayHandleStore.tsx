@@ -59,6 +59,11 @@ export class PetPlayHandleStore<T> extends HandleStore<T> {
     super(target, getOptions);
   }
 
+  /** The target while a pointer holds it, else `null`. */
+  heldTarget(): Object3D | null {
+    return this.inputState.size > 0 ? (this.getTarget() ?? null) : null;
+  }
+
   protected override onPointerDown(event: PointerEvent): void {
     const group = exclusivePointerGroup(event);
     if (group != null && [...this.capturedPointerGroups.values()].includes(group)) return;
