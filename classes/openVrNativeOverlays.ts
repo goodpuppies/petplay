@@ -33,6 +33,8 @@ export type NativeOverlayFrame = {
   texelAspect?: number;
   /** GL texture or zero-copy DMA-BUF/DXGI shared handle holding a new picture; omit while unchanged. */
   texture?: NativeOverlayTextureInput;
+  /** Left eye in left half, right eye in right half (`VROverlayFlags_SideBySide_Parallel`). */
+  stereo?: boolean;
   sortOrder?: number;
 };
 
@@ -63,6 +65,7 @@ type Entry = {
   shown: boolean;
   hiddenAt: number;
   unusedFrames: number;
+  stereo: boolean;
   presents: number;
   transforms: number;
 };
@@ -144,24 +147,28 @@ export class OpenVrNativeOverlays {
           this.evictOneSpareOrHidden();
         }
         if (this.entries.size >= MAX_TOTAL_OVERLAYS) return false;
-        const quad = this.acquire(size, texture, frame.key);
+        const stereo = frame.stereo === true;
+        const quad = this.acquire(size, texture, stereo, frame.key);
         textured = true;
-        entry = this.createEntry(quad);
+        entry = this.createEntry(quad, stereo);
         this.entries.set(frame.key, entry);
-      } else if (entry.quad.size !== size) {
+      } else if (entry.quad.size !== size || entry.stereo !== (frame.stereo === true)) {
+        const stereo = frame.stereo === true;
         // Try updating in place first (works natively on Linux SteamVR 2.18.4 & shared textures);
         // only swap overlays if SteamVR reports it locked the slot to the old size (Windows GL).
-        this.applyTexture(entry.quad.handle, texture);
+        this.applyTexture(entry.quad.handle, texture, stereo);
         const held = texture.sharedHandle !== undefined ? size : this.sizeHeld(entry.quad.handle);
         if (held == null || held === size) {
           entry.quad.size = size;
+          entry.stereo = stereo;
           textured = true;
         } else {
           this.mismatches++;
-          const quad = this.acquire(size, texture, frame.key);
+          const quad = this.acquire(size, texture, stereo, frame.key);
           textured = true;
           replaced = entry.quad;
           entry.quad = quad;
+          entry.stereo = stereo;
           entry.hasTransform = false;
           entry.device = -1;
           entry.width = -1;
@@ -200,7 +207,7 @@ export class OpenVrNativeOverlays {
       }
       if (texture) {
         if (!textured) {
-          this.applyTexture(handle, texture);
+          this.applyTexture(handle, texture, entry.stereo);
         }
         entry.presents++;
       }
@@ -289,7 +296,7 @@ export class OpenVrNativeOverlays {
     return out;
   }
 
-  private createEntry(quad: Quad): Entry {
+  private createEntry(quad: Quad, stereo: boolean): Entry {
     const transform = new Float32Array(12);
     return {
       quad,
@@ -304,6 +311,7 @@ export class OpenVrNativeOverlays {
       shown: false,
       hiddenAt: 0,
       unusedFrames: 0,
+      stereo,
       presents: 0,
       transforms: 0,
     };
@@ -330,7 +338,19 @@ export class OpenVrNativeOverlays {
     }
   }
 
-  private applyTexture(handle: OpenVR.OverlayHandle, texture: NativeOverlayTextureInput): void {
+  private applyTexture(
+    handle: OpenVR.OverlayHandle,
+    texture: NativeOverlayTextureInput,
+    stereo: boolean,
+  ): void {
+    this.check(
+      this.overlay.SetOverlayFlag(
+        handle,
+        OpenVR.OverlayFlags.VROverlayFlags_SideBySide_Parallel,
+        stereo,
+      ),
+      "SetOverlayFlag(SideBySide_Parallel)",
+    );
     const bounds = texture.sharedHandle !== undefined ? this.sharedBounds[0] : this.glBounds[0];
     this.check(this.overlay.SetOverlayTextureBounds(handle, bounds), "SetOverlayTextureBounds");
     if (texture.sharedHandle !== undefined) {
@@ -349,13 +369,18 @@ export class OpenVrNativeOverlays {
     }
   }
 
-  private acquire(size: string, texture: NativeOverlayTextureInput, key: string): Quad {
+  private acquire(
+    size: string,
+    texture: NativeOverlayTextureInput,
+    stereo: boolean,
+    key: string,
+  ): Quad {
     const mismatched: Quad[] = [];
     try {
       for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
         const quad = this.unpark(size) ?? this.create();
         try {
-          this.applyTexture(quad.handle, texture);
+          this.applyTexture(quad.handle, texture, stereo);
         } catch (error) {
           releaseAndDestroyOpenVrOverlay(this.overlay, quad.handle);
           throw error;

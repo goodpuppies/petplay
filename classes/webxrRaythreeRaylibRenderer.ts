@@ -1428,6 +1428,69 @@ export class WebXRRaythreeRaylibRenderer {
     }
   }
 
+  /**
+   * Draw only the specified mesh instances into the caller's bound render target (e.g. one eye of
+   * a native stereo quad). Uses `beginUiAlphaBlend()` for translucent meshes (premultiplied alpha)
+   * and optionally pre-fills depth with `depthPanels` so far bars of a grab-box hide behind its panel.
+   */
+  renderInstancesOnly(
+    frame: RenderFrame,
+    instances: RenderFrame["instances"],
+    matrices: { projectionMatrix: Float32Array; viewMatrix: Float32Array },
+    depthPanels?: readonly WebXRRaythreeUiPanelSnapshot[],
+  ): number {
+    applyLighting(this.lightingShader, frame);
+    this.syncLightVolumes();
+    this.sortMatrix.fromArray(matrices.viewMatrix as unknown as number[]);
+    let drawn = 0;
+    raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
+    raylib.H.rlSetMatrixProjection(this.matrixForDraw(matrices.projectionMatrix));
+    raylib.H.rlSetMatrixModelview(this.matrixForDraw(matrices.viewMatrix));
+    try {
+      if (depthPanels && depthPanels.length > 0) {
+        this.uiMvpP.fromArray(matrices.projectionMatrix as unknown as number[]);
+        this.uiMvpV.fromArray(matrices.viewMatrix as unknown as number[]);
+        this.uiMvpPV.copy(this.uiMvpP).multiply(this.uiMvpV);
+        this.uiDepthPanels.length = 0;
+        for (const panel of depthPanels) this.uiDepthPanels.push(panel);
+        this.writeUiDepth();
+      }
+      const transparent: typeof instances = [];
+      for (const instance of instances) {
+        const nativeMesh = this.geometries.get(instance.geometryId);
+        const nativeMaterial = this.materials.get(instance.materialId);
+        if (!nativeMesh || !nativeMaterial) continue;
+        if (nativeMaterial.transparent) {
+          transparent.push(instance);
+          continue;
+        }
+        this.drawInstance(nativeMesh, nativeMaterial, instance);
+        drawn++;
+      }
+      if (transparent.length > 0) {
+        transparent.sort((left, right) =>
+          this.getInstanceViewDepth(right) - this.getInstanceViewDepth(left)
+        );
+        beginUiAlphaBlend();
+        try {
+          for (const instance of transparent) {
+            this.drawInstance(
+              this.geometries.get(instance.geometryId)!,
+              this.materials.get(instance.materialId)!,
+              instance,
+            );
+            drawn++;
+          }
+        } finally {
+          raylib.H.EndBlendMode();
+        }
+      }
+    } finally {
+      raylib.H.EndMode3D();
+    }
+    return drawn;
+  }
+
   /** Called on the GL owner; keep native caches warm during in-VR A/B switching. */
   setTextRenderer(renderer: "msdf" | "pathfinder" | "glyph" | "windfoil"): void {
     if (

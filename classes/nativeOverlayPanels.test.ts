@@ -3,6 +3,7 @@ import * as THREE from "three";
 import {
   nativePanelAttachment,
   nativePanelCamera,
+  nativeStereoBoxQuad,
   nativeTextureSize,
   stripReadyNativePanels,
 } from "./nativeOverlayPanels.ts";
@@ -106,4 +107,22 @@ Deno.test("stripReadyNativePanels: only strips confirmed ready surfaces and pres
   assertEquals(stripped.ui.texts.length, 1);
   assertEquals(stripped.ui.depthOnlyPanels?.length, 1);
   assertEquals(stripped.ui.depthOnlyPanels?.[0], bg);
+});
+
+Deno.test("nativeStereoBoxQuad: places quad on nearer box face from GeometryAsset bounds", () => {
+  const world = new THREE.Matrix4().makeTranslation(0, 1.4, -1.0).elements;
+  const bounds = {
+    min: [-0.4, -0.25, -0.03] as [number, number, number],
+    max: [0.4, 0.25, 0.03] as [number, number, number],
+  };
+  const head = [0, 1.4, 0];
+  const leftEye = [-0.032, 1.4, 0];
+  const rightEye = [0.032, 1.4, 0];
+  const quad = nativeStereoBoxQuad(world, bounds, head, leftEye, rightEye);
+  assertEquals(quad != null, true);
+  // Nearer face is at z = -1.0 + 0.03 = -0.97
+  assertAlmostEquals(quad!.pose[14]!, -0.97, 1e-5);
+  assertEquals(quad!.redrawAfter >= 0.002, true);
+  // Head inside/too close returns null so the outline stays in the eye image
+  assertEquals(nativeStereoBoxQuad(world, bounds, [0, 1.4, -0.96], [-0.032, 1.4, -0.96], [0.032, 1.4, -0.96]), null);
 });

@@ -10,7 +10,13 @@
 import * as THREE from "three";
 import { type NativeOverlayTextureInput, OpenVrNativeOverlays } from "./openVrNativeOverlays.ts";
 import type { DmabufBankPool } from "./overlayPresenterNative.ts";
-import { followKey, type RenderAnchor, type RenderAnchorSpace } from "./overlayRenderTracking.ts";
+import {
+  type Anchored,
+  followKey,
+  type RenderAnchor,
+  type RenderAnchorSpace,
+} from "./overlayRenderTracking.ts";
+import type { PetplayRenderProps } from "./renderProps.ts";
 import type { WebXROverlayRaylib } from "./webxrOverlayRaylib.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import type {
@@ -45,6 +51,175 @@ const PANEL_DEPTH_RANGE = 10;
 /** Small margin around a root's rectangle so hover lift / focus rings at the edge don't clip. */
 const PANEL_OVERFLOW_MARGIN = 1.04;
 const MAX_PANEL_REDRAWS_PER_FRAME = 3;
+/** Acceptable off-plane parallax error (metres) before redrawing a fixed stereo box quad. */
+const STEREO_STALE_TOLERANCE = 0.0003;
+const STEREO_TEXELS_PER_METER = 1500;
+
+export type NativeStereoBoxQuad = {
+  pose: Float32Array;
+  width: number;
+  height: number;
+  left: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+  right: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+  redrawAfter: number;
+};
+
+const eyeOrigin = new THREE.Vector3();
+const eyeToCenter = new THREE.Vector3();
+const boxX = new THREE.Vector3();
+const boxY = new THREE.Vector3();
+const boxZ = new THREE.Vector3();
+const boxCenter = new THREE.Vector3();
+const boxFace = new THREE.Vector3();
+const boxEye = new THREE.Vector3();
+const boxCorner = new THREE.Vector3();
+
+function throughQuad(
+  eye: ArrayLike<number>,
+  center: THREE.Vector3,
+  right: THREE.Vector3,
+  up: THREE.Vector3,
+  normal: THREE.Vector3,
+  halfWidth: number,
+  halfHeight: number,
+  front: number,
+  back: number,
+): { viewMatrix: Float32Array; projectionMatrix: Float32Array } | null {
+  eyeOrigin.set(Number(eye[0]), Number(eye[1]), Number(eye[2]));
+  eyeToCenter.subVectors(center, eyeOrigin);
+  const x = eyeToCenter.dot(right);
+  const y = eyeToCenter.dot(up);
+  const planeDistance = -eyeToCenter.dot(normal);
+  if (!(planeDistance > 1e-3)) return null;
+  const near = Math.max(0.01, planeDistance - front);
+  const far = planeDistance + back + 0.01;
+  const k = near / planeDistance;
+  const projectionMatrix = new Float32Array(16);
+  cameraScratch.makePerspective(
+    (x - halfWidth) * k,
+    (x + halfWidth) * k,
+    (y + halfHeight) * k,
+    (y - halfHeight) * k,
+    near,
+    far,
+  ).toArray(projectionMatrix);
+  const viewMatrix = new Float32Array(16);
+  cameraScratch.makeBasis(right, up, normal).setPosition(eyeOrigin).invert().toArray(viewMatrix);
+  return { viewMatrix, projectionMatrix };
+}
+
+/**
+ * Stereo quad lying in the nearer face of a 1-mesh box (e.g. `GrabBoxFrame`), derived directly
+ * from `GeometryAsset.bounds.min/max` and `worldMatrix`. Returns `null` when an eye is too close
+ * or viewing edge-on (so the caller leaves it in the eye image instead of clipping).
+ */
+export function nativeStereoBoxQuad(
+  worldMatrix: ArrayLike<number>,
+  bounds: { min?: readonly [number, number, number]; max?: readonly [number, number, number] },
+  head: ArrayLike<number>,
+  leftEye: ArrayLike<number>,
+  rightEye: ArrayLike<number>,
+): NativeStereoBoxQuad | null {
+  if (!bounds.min || !bounds.max) return null;
+  const localHx = (bounds.max[0] - bounds.min[0]) * 0.5;
+  const localHy = (bounds.max[1] - bounds.min[1]) * 0.5;
+  const localHz = (bounds.max[2] - bounds.min[2]) * 0.5;
+  const cx = (bounds.min[0] + bounds.max[0]) * 0.5;
+  const cy = (bounds.min[1] + bounds.max[1]) * 0.5;
+  const cz = (bounds.min[2] + bounds.max[2]) * 0.5;
+
+  const m = worldMatrix;
+  boxX.set(Number(m[0]), Number(m[1]), Number(m[2]));
+  boxY.set(Number(m[4]), Number(m[5]), Number(m[6]));
+  boxZ.set(Number(m[8]), Number(m[9]), Number(m[10]));
+  const halfWidth = boxX.length() * localHx;
+  const halfHeight = boxY.length() * localHy;
+  const halfDepth = boxZ.length() * localHz;
+  if (!(halfWidth > 1e-6) || !(halfHeight > 1e-6) || !(halfDepth > 1e-6)) return null;
+
+  boxCenter.set(
+    Number(m[12]) + Number(m[0]) * cx + Number(m[4]) * cy + Number(m[8]) * cz,
+    Number(m[13]) + Number(m[1]) * cx + Number(m[5]) * cy + Number(m[9]) * cz,
+    Number(m[14]) + Number(m[2]) * cx + Number(m[6]) * cy + Number(m[10]) * cz,
+  );
+  boxX.normalize();
+  boxY.addScaledVector(boxX, -boxY.dot(boxX)).normalize();
+  boxZ.crossVectors(boxX, boxY);
+
+  boxEye.set(Number(head[0]), Number(head[1]), Number(head[2])).sub(boxCenter);
+  const side = boxEye.dot(boxZ) >= 0 ? 1 : -1;
+  boxX.multiplyScalar(side);
+  boxZ.multiplyScalar(side);
+  boxFace.copy(boxCenter).addScaledVector(boxZ, halfDepth);
+
+  const slideRoom = halfDepth;
+  const margin = slideRoom + 0.02 * Math.max(halfWidth, halfHeight);
+  const quadHalfWidth = halfWidth + margin;
+  const quadHalfHeight = halfHeight + margin;
+  const depth = halfDepth * 2;
+
+  let nearest = Infinity;
+  for (const eye of [leftEye, rightEye]) {
+    boxEye.set(Number(eye[0]), Number(eye[1]), Number(eye[2])).sub(boxFace);
+    const distance = boxEye.dot(boxZ);
+    if (!(distance > Math.max(0.08, depth))) return null;
+    nearest = Math.min(nearest, distance);
+    const ex = boxEye.dot(boxX);
+    const ey = boxEye.dot(boxY);
+    const slide = depth / (distance + depth);
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        boxCorner.set(sx * halfWidth, sy * halfHeight, 0);
+        const px = boxCorner.x + (ex - boxCorner.x) * slide;
+        const py = boxCorner.y + (ey - boxCorner.y) * slide;
+        if (Math.abs(px) > halfWidth + slideRoom || Math.abs(py) > halfHeight + slideRoom) {
+          return null;
+        }
+      }
+    }
+  }
+  const left = throughQuad(
+    leftEye,
+    boxFace,
+    boxX,
+    boxY,
+    boxZ,
+    quadHalfWidth,
+    quadHalfHeight,
+    0.01,
+    depth,
+  );
+  const right = throughQuad(
+    rightEye,
+    boxFace,
+    boxX,
+    boxY,
+    boxZ,
+    quadHalfWidth,
+    quadHalfHeight,
+    0.01,
+    depth,
+  );
+  if (!left || !right) return null;
+  const pose = new Float32Array(16);
+  cameraScratch.makeBasis(boxX, boxY, boxZ).setPosition(boxFace).toArray(pose);
+  return {
+    pose,
+    width: quadHalfWidth * 2,
+    height: quadHalfHeight * 2,
+    left,
+    right,
+    redrawAfter: Math.max(0.002, STEREO_STALE_TOLERANCE * nearest / depth),
+  };
+}
+
+function stereoKeyOf(
+  instance: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"][number],
+): string | null {
+  const rp = instance.renderProps as PetplayRenderProps | undefined;
+  if (rp?.overlayRole !== "stereo" || rp.nativeOverlay === false) return null;
+  return `stereo.${rp.overlayKey ?? instance.nodeId}`;
+}
 
 const cameraScratch = new THREE.Matrix4();
 const axisX = new THREE.Vector3();
@@ -172,8 +347,7 @@ export function stripReadyNativePanels(
   readySurfaceIds: ReadonlySet<string>,
 ): WebXRRaythreeRenderPayload {
   if (readySurfaceIds.size === 0) return payload;
-  const surfaces = payload.ui.surfaces;
-  if (!surfaces || surfaces.length === 0) return payload;
+  const surfaces = payload.ui.surfaces ?? [];
 
   const strippedRoots = new Set<number>();
   const depthOnlyPanels: WebXRRaythreeUiPanelSnapshot[] = [];
@@ -186,16 +360,47 @@ export function stripReadyNativePanels(
       if (bg) depthOnlyPanels.push(bg);
     }
   }
-  if (strippedRoots.size === 0) return payload;
 
-  const ui: WebXRRaythreeUiSnapshot = {
-    ...payload.ui,
-    panels: payload.ui.panels.filter((p) => !strippedRoots.has(p.rootIndex)),
-    texts: payload.ui.texts.filter((t) => !strippedRoots.has(t.rootIndex)),
-    images: (payload.ui.images ?? []).filter((img) => !strippedRoots.has(img.rootIndex)),
-    depthOnlyPanels,
+  let hasStrippedStereo = false;
+  for (const instance of payload.leftEye?.frame?.instances ?? []) {
+    const key = stereoKeyOf(instance);
+    if (key && readySurfaceIds.has(key)) {
+      hasStrippedStereo = true;
+      break;
+    }
+  }
+  if (strippedRoots.size === 0 && !hasStrippedStereo) return payload;
+
+  const ui: WebXRRaythreeUiSnapshot = strippedRoots.size > 0
+    ? {
+      ...payload.ui,
+      panels: payload.ui.panels.filter((p) => !strippedRoots.has(p.rootIndex)),
+      texts: payload.ui.texts.filter((t) => !strippedRoots.has(t.rootIndex)),
+      images: (payload.ui.images ?? []).filter((img) => !strippedRoots.has(img.rootIndex)),
+      depthOnlyPanels,
+    }
+    : payload.ui;
+
+  if (!hasStrippedStereo) return { ...payload, ui };
+  const filterInstances = (
+    instances: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"],
+  ) =>
+    instances.filter((instance) => {
+      const key = stereoKeyOf(instance);
+      return !(key && readySurfaceIds.has(key));
+    });
+  const leftEye = {
+    ...payload.leftEye,
+    frame: { ...payload.leftEye.frame, instances: filterInstances(payload.leftEye.frame.instances) },
   };
-  return { ...payload, ui };
+  const rightEye = payload.rightEye === payload.leftEye ? leftEye : {
+    ...payload.rightEye,
+    frame: {
+      ...payload.rightEye.frame,
+      instances: filterInstances(payload.rightEye.frame.instances),
+    },
+  };
+  return { ...payload, leftEye, rightEye, ui };
 }
 
 const NONE: ReadonlySet<string> = new Set();
@@ -221,12 +426,30 @@ export class NativePanelOverlayLayer {
   private sharedIdleBytes = 0;
   /** Last rendered `(contentRevision, textureWidth, textureHeight)` per `surfaceId`. */
   private readonly drawn = new Map<string, { rev: number; w: number; h: number }>();
+  /** Cached local geometry bounds by `geometryId` (for 1-mesh stereo boxes). */
+  private readonly geometryBounds = new Map<
+    number,
+    { min?: [number, number, number]; max?: [number, number, number] }
+  >();
+  /** Last rendered stereo state per stereo key, to skip redraws while eyes stay within tolerance. */
+  private readonly stereoDrawn = new Map<
+    string,
+    { geomId: number; matId: number; assetVersion: number; eyes: Float64Array; w: number; h: number }
+  >();
+  private readonly eyePoseScratch = new THREE.Matrix4();
+  private readonly quadInvScratch = new THREE.Matrix4();
+  private readonly eyeInQuadScratch = new THREE.Vector3();
+  private readonly leftEyePos = new Float64Array(3);
+  private readonly rightEyePos = new Float64Array(3);
+  private readonly eyesInQuad = new Float64Array(6);
   private targetGeneration = -1;
   private lastEpoch: string | number | undefined;
   texelsPerPixel = 2;
   readonly stats = {
     panels: 0,
+    stereo: 0,
     panelRedraws: 0,
+    stereoRedraws: 0,
     frames: 0,
     transport: "gl" as "shared" | "gl",
   };
@@ -269,14 +492,19 @@ export class NativePanelOverlayLayer {
     payload: WebXRRaythreeRenderPayload | null,
     renderer: WebXROverlayRaylib,
     view: {
+      head?: ArrayLike<number>;
+      leftEyeViewMatrix?: ArrayLike<number>;
+      rightEyeViewMatrix?: ArrayLike<number>;
       devices?: Partial<Record<RenderAnchorSpace, NativeOverlayDevice>>;
       heldFollows?: { has(key: string): boolean };
       epoch?: string | number;
+      assetVersion?: number;
     },
   ): void {
     if (!payload) {
       if (this.overlays.count > 0 || this.drawn.size > 0) this.retain(NONE, renderer);
       this.stats.panels = 0;
+      this.stats.stereo = 0;
       return;
     }
     if (
@@ -284,8 +512,13 @@ export class NativePanelOverlayLayer {
       (view.epoch !== undefined && view.epoch !== this.lastEpoch)
     ) {
       this.drawn.clear();
+      this.stereoDrawn.clear();
+      this.geometryBounds.clear();
       this.targetGeneration = renderer.nativeTargetGeneration;
       this.lastEpoch = view.epoch;
+    }
+    for (const geom of payload.leftEye.assets.geometries) {
+      if (geom.bounds) this.geometryBounds.set(geom.id, geom.bounds);
     }
 
     const surfaces = payload.ui.surfaces ?? [];
@@ -383,9 +616,175 @@ export class NativePanelOverlayLayer {
       });
     }
 
+    // Stereo 1-mesh box outlines (`<PetplayElement renderProps={{ overlayRole: "stereo" }}>`).
+    let stereoCount = 0;
+    if (view.head && view.leftEyeViewMatrix && view.rightEyeViewMatrix) {
+      this.eyePosition(view.leftEyeViewMatrix, this.leftEyePos);
+      this.eyePosition(view.rightEyeViewMatrix, this.rightEyePos);
+      const headPos = [Number(view.head[12]), Number(view.head[13]), Number(view.head[14])];
+      const assetVersion = view.assetVersion ?? 0;
+      const depthPanels: WebXRRaythreeUiPanelSnapshot[] = [];
+      for (const s of surfaces) {
+        if (s.depthPanelIndex !== undefined) {
+          const bg = payload.ui.panels[s.depthPanelIndex];
+          if (bg) depthPanels.push(bg);
+        }
+      }
+      for (const instance of payload.leftEye.frame.instances) {
+        const key = stereoKeyOf(instance);
+        if (!key || keep.has(key)) continue;
+        const bounds = this.geometryBounds.get(instance.geometryId);
+        if (!bounds) continue;
+        const quad = nativeStereoBoxQuad(
+          instance.worldMatrix,
+          bounds,
+          headPos,
+          this.leftEyePos,
+          this.rightEyePos,
+        );
+        if (!quad) continue;
+        keep.add(key);
+        stereoCount++;
+        const eyeWidth = nativeTextureSize(quad.width * STEREO_TEXELS_PER_METER, 2048);
+        const eyeHeight = nativeTextureSize(quad.height * STEREO_TEXELS_PER_METER, 2048);
+
+        this.quadInvScratch.fromArray(quad.pose as unknown as number[]).invert();
+        this.eyeInQuadScratch.fromArray(this.leftEyePos).applyMatrix4(this.quadInvScratch).toArray(
+          this.eyesInQuad,
+          0,
+        );
+        this.eyeInQuadScratch.fromArray(this.rightEyePos).applyMatrix4(this.quadInvScratch).toArray(
+          this.eyesInQuad,
+          3,
+        );
+
+        const prev = this.stereoDrawn.get(key);
+        let movedEnough = !prev ||
+          prev.geomId !== instance.geometryId ||
+          prev.matId !== instance.materialId ||
+          prev.assetVersion !== assetVersion ||
+          prev.w !== eyeWidth ||
+          prev.h !== eyeHeight;
+        if (!movedEnough && prev) {
+          const thrSq = quad.redrawAfter * quad.redrawAfter;
+          const dl = (this.eyesInQuad[0]! - prev.eyes[0]!) ** 2 +
+            (this.eyesInQuad[1]! - prev.eyes[1]!) ** 2 +
+            (this.eyesInQuad[2]! - prev.eyes[2]!) ** 2;
+          const dr = (this.eyesInQuad[3]! - prev.eyes[3]!) ** 2 +
+            (this.eyesInQuad[4]! - prev.eyes[4]!) ** 2 +
+            (this.eyesInQuad[5]! - prev.eyes[5]!) ** 2;
+          movedEnough = dl > thrSq || dr > thrSq;
+        }
+
+        let texture: NativeOverlayTextureInput | undefined;
+        if (movedEnough && redrawsThisFrame < MAX_PANEL_REDRAWS_PER_FRAME) {
+          texture = this.renderStereoTexture(
+            key,
+            eyeWidth,
+            eyeHeight,
+            payload.leftEye,
+            [instance],
+            quad,
+            depthPanels,
+            renderer,
+          );
+          this.stereoDrawn.set(key, {
+            geomId: instance.geometryId,
+            matId: instance.materialId,
+            assetVersion,
+            eyes: this.eyesInQuad.slice(),
+            w: eyeWidth,
+            h: eyeHeight,
+          });
+          redrawsThisFrame++;
+          this.stats.stereoRedraws++;
+        }
+
+        this.overlays.present({
+          key,
+          pose: quad.pose,
+          device: nativePanelAttachment(
+            (instance as Anchored).renderAnchor,
+            quad.pose,
+            view.devices,
+            view.heldFollows,
+          ) ?? undefined,
+          widthMeters: quad.width,
+          texelAspect: (quad.width / eyeWidth) / (quad.height / eyeHeight),
+          texture,
+          stereo: true,
+          sortOrder: 0,
+        });
+      }
+    }
+
     this.retain(keep, renderer);
-    this.stats.panels = keep.size;
+    this.stats.panels = keep.size - stereoCount;
+    this.stats.stereo = stereoCount;
     this.stats.frames++;
+  }
+
+  private eyePosition(viewMatrix: ArrayLike<number>, target: Float64Array): void {
+    const e = this.eyePoseScratch.fromArray(viewMatrix as number[]).invert().elements;
+    target[0] = e[12]!;
+    target[1] = e[13]!;
+    target[2] = e[14]!;
+  }
+
+  private renderStereoTexture(
+    key: string,
+    eyeWidth: number,
+    eyeHeight: number,
+    extraction: WebXRRaythreeRenderPayload["leftEye"],
+    instances: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"],
+    eyes: {
+      left: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+      right: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+    },
+    depthPanels: WebXRRaythreeUiPanelSnapshot[],
+    renderer: WebXROverlayRaylib,
+  ): NativeOverlayTextureInput {
+    const backend = this.sharedBackend;
+    if (backend) {
+      const entry = this.acquireSharedPool(key, eyeWidth * 2, eyeHeight, backend);
+      if (entry) {
+        const slotIdx = entry.next;
+        entry.next ^= 1;
+        const slot = entry.pool.slots[slotIdx]!;
+        const lockErr = entry.pool.lockBank(slotIdx);
+        if (lockErr !== 0) throw new Error(`Shared native stereo lockBank failed: ${lockErr}`);
+        try {
+          renderer.renderNativeStereoIntoFbo(
+            slot,
+            eyeWidth,
+            eyeHeight,
+            extraction,
+            instances,
+            eyes,
+            depthPanels,
+          );
+          backend.finishFence();
+        } finally {
+          entry.pool.unlockBank(slotIdx);
+        }
+        this.stats.transport = "shared";
+        return { sharedHandle: slot.sharedHandle, width: eyeWidth * 2, height: eyeHeight };
+      }
+    }
+    this.stats.transport = "gl";
+    return {
+      id: renderer.renderNativeStereo(
+        key,
+        eyeWidth,
+        eyeHeight,
+        extraction,
+        instances,
+        eyes,
+        depthPanels,
+      ),
+      width: eyeWidth * 2,
+      height: eyeHeight,
+    };
   }
 
   private renderPanelTexture(
@@ -495,6 +894,7 @@ export class NativePanelOverlayLayer {
       });
     }
     for (const key of this.drawn.keys()) if (!held.has(key)) this.drawn.delete(key);
+    for (const key of this.stereoDrawn.keys()) if (!held.has(key)) this.stereoDrawn.delete(key);
   }
 
   clear(renderer: WebXROverlayRaylib | null): void {
@@ -504,6 +904,8 @@ export class NativePanelOverlayLayer {
       console.warn("[native-overlays] cleanup:", error);
     }
     this.drawn.clear();
+    this.stereoDrawn.clear();
+    this.geometryBounds.clear();
     for (const entry of this.sharedActive.values()) entry.pool.destroy();
     this.sharedActive.clear();
     for (const retired of this.sharedRetired) retired.pool.destroy();

@@ -340,6 +340,7 @@ const state = actorState({
   raylibProjectionOverlays: null as OpenVrProjectionOverlays | null,
   raylibProjectionOverlayEnabled: raylibProjectionOverlayDefault,
   nativePanelsEnabled: false,
+  lastNativeOverlayError: null as string | null,
   /**
    * Per projection present: [ms since vsync, vsyncs elapsed since this frame was paced,
    * display frame index, compositor frame index (or -1 without the timing probe)]. A ring
@@ -1258,6 +1259,17 @@ new PostMan(
     OVERLAYRENDERSTATUS: (payload: { actorId: string; status: unknown }) => {
       if (payload.actorId === state.renderOwner) {
         state.renderOwnerStatus = payload.status;
+        const nativeError = (payload.status as { nativeError?: string | null } | null)?.nativeError ??
+          null;
+        if (nativeError && nativeError !== state.lastNativeOverlayError) {
+          pushToast({
+            title: "Native overlays turned off",
+            content: nativeError,
+            source: "PetPlay",
+            tone: "warning",
+          });
+        }
+        state.lastNativeOverlayError = nativeError;
         const mode = (payload.status as { presentMode?: string } | null)?.presentMode;
         const shouldSuppress = mode === "projection";
         if (state.displayOverlayHostActor && state.desktopSuppressedForProjection !== shouldSuppress) {

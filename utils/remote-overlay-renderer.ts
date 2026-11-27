@@ -26,7 +26,7 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
 
 const DIRECT_ENDPOINT_PREFIX = "REMOTE_RENDERER_DIRECT_ENDPOINT ";
 
-type PresentMode = "panorama" | "projection";
+type PresentMode = "panorama" | "projection" | "native";
 type DmabufBanks = 0 | 2 | 3;
 
 type HandshakeInput = {
@@ -41,6 +41,9 @@ type RendererHealth = {
   sceneVersion?: number;
   transport?: string;
   presentMode?: string;
+  nativePanels?: boolean;
+  nativeError?: string | null;
+  native?: { panels?: number; stereo?: number; panelRedraws?: number; transport?: string; sizeMismatches?: number } | null;
   dmabufBanks?: number;
   error?: string | null;
   waitTimeouts?: number;
@@ -103,8 +106,8 @@ if (args.help) {
 }
 
 function parsePresentMode(raw: string): PresentMode {
-  if (raw === "panorama" || raw === "projection") return raw;
-  throw new Error(`Invalid --mode=${raw}; expected "panorama" or "projection"`);
+  if (raw === "panorama" || raw === "projection" || raw === "native") return raw;
+  throw new Error(`Invalid --mode=${raw}; expected "panorama", "projection", or "native"`);
 }
 
 function parseBanks(raw: string | undefined): DmabufBanks | undefined {
@@ -328,7 +331,8 @@ try {
       overlayKey: args["overlay-key"] || `petplay.webxr.remote.${Deno.pid}`,
       overlayName: args["overlay-name"] || "PetPlay Remote Overlay",
       eyeSize,
-      presentMode,
+      presentMode: presentMode === "projection" ? "projection" : "panorama",
+      nativePanels: presentMode === "native",
       ...(dmabufBanks !== undefined ? { dmabufBanks } : {}),
       overlayWidthInMeters: Number.isFinite(overlayWidthInMeters) ? overlayWidthInMeters : 3,
       overlayDistance: Number.isFinite(overlayDistance) ? overlayDistance : 1,
@@ -350,8 +354,12 @@ try {
         console.log(
           `[remote-renderer] running=${Boolean(health.running)} scenes=${health.receivedScenes ?? 0} ` +
             `published=${health.publishedFrames ?? 0} ver=${health.sceneVersion ?? 0} ` +
-            `mode=${health.presentMode ?? "?"} banks=${health.dmabufBanks ?? "?"} ` +
+            `mode=${health.presentMode ?? "?"}${health.nativePanels ? "+native" : ""} banks=${health.dmabufBanks ?? "?"} ` +
             `transport="${health.transport ?? ""}"` +
+            (health.native
+              ? ` native(panels=${health.native.panels ?? 0},stereo=${health.native.stereo ?? 0},redraws=${health.native.panelRedraws ?? 0},tx=${health.native.transport ?? "?"},mis=${health.native.sizeMismatches ?? 0})`
+              : "") +
+            (health.nativeError ? ` NATIVE_ERROR="${health.nativeError}"` : "") +
             (health.error ? ` ERROR="${health.error}"` : ""),
         );
       } catch (error) {

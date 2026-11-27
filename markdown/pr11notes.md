@@ -13,11 +13,11 @@ its own SteamVR quad instead of drawing it into the head-locked panorama. The wr
   offscreen render test and the playtest were not run (they need a display). On GitHub the PR shows as
   conflicting, and CI is waiting for workflow approval.
 
-**Verdict: hold the merge.** The idea is right: quads that SteamVR places itself stay still and look
-sharper. The SteamVR measurements in the PR are worth keeping whatever happens to the code. But the
-PR has real bugs (§0), and many of its workarounds exist only because of jank already in `main` (§1).
-That jank is cheaper to fix first, so the PR can then drop the workarounds instead of carrying them in.
-Land flat UI panels first, and judge the outlines and the pointer separately later (§4).
+**Status: clean reimplementation landed on `main` (`77387f1`..HEAD).** All §0 bugs, §1/§2 workarounds,
+zero-copy DMA-BUF (Linux) + DXGI (Windows) shared-texture submission, flat UI panels, and 1-mesh
+stereo grab-box outlines have been implemented cleanly and verified live on both Linux `vrlab` and
+remote Windows SteamVR 2.18.4. Pointer lasers/dots remain in the eye image intentionally so beam and
+dot share one pose sample and depth-test against panels.
 
 Tags on each item:
 

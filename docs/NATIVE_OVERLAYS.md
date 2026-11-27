@@ -53,32 +53,32 @@ Key design properties:
 
 ## Platform findings (SteamVR 2.18.4)
 
-- **Windows (Quest Pro / Oculus driver, `vrclient_x64.dll`):** OpenGL overlays permanently lock
-  their underlying overlay *slot* (low 32 bits of handle) to the dimensions of their first GL
-  texture for the lifetime of the process — even across `DestroyOverlay`.
-- **Linux (`vrlab`, Mesa radeonsi / RX 7900 XTX, 2026-11-27):** Tested via
-  `_scratch/native-overlays/steamvr_slot_probe.ts`:
-  - Live overlay given a different GL texture ID at a new size (`600×400 → 300×500`): **resizes in place**.
-  - Recycled overlay slot after `DestroyOverlay` (`640×320 → 320×640`): **resizes in place**.
-  - Same GL texture ID reallocated via `glTexImage2D` (`400×300 → 200×500 → 600×600`): **resizes in place**.
-  - Live `vrlab` run alongside 3-bank DMA-BUF panorama: upright with default bounds, `nativeError: null`,
-    `sizeMismatches: 0`, `spareOverlays: 0`, `presents: 1`, `transforms: 1` over 69,000+ frames.
+- **Windows (GTX 1660 Ti Max-Q, NVIDIA 576.40, SteamVR 2.18.4, 2026-11-27):**
+  - Verified live via remote Iroh renderer (`--mode=native --banks=3`, `dxgi_banks.zig`):
+    `transport="DXGI 3-bank panorama flip (7120x7120)"`, `native(panels=1, redraws=1, tx=shared, mis=0)`,
+    1,022 frames at 90 Hz with zero errors and zero slot mismatches via `TextureType_DXGISharedHandle`.
+  - On the legacy `TextureType_OpenGL` fallback path (`vrclient_x64.dll`), OpenGL overlays lock their
+    underlying slot to the dimensions of their first GL texture; `OpenVrNativeOverlays` detects this via
+    `GetOverlayTextureSize` and falls back to size-keyed slot parking only when needed.
+- **Linux (`vrlab`, Mesa radeonsi / RX 7900 XTX, 2026-11-27):**
+  - Verified live with both flat UI panels and 1-mesh stereo grab-box outlines over zero-copy DMA-BUF
+    (`transport: "shared"`): upright with default top-down V bounds, `panels: 1`, `stereo: 1`,
+    `panelRedraws: 1`, `stereoRedraws: 1`, `presents: 1`, `transforms: 1`, `sizeMismatches: 0`,
+    `nativeError: null`.
+  - GL slot probe (`_scratch/native-overlays/steamvr_slot_probe.ts`) also confirmed Linux SteamVR
+    resizes live GL overlays, recycled slots, and reallocated GL textures in place with zero lock.
 
-Accordingly, `OpenVrNativeOverlays` attempts in-place `SetOverlayTexture` updates first (zero slot
-churn on Linux) and only falls back to size-keyed slot parking when `GetOverlayTextureSize` reports
-a slot-size mismatch (Windows).
+## Current scope
 
-## Current scope & future work
-
-- **Zero-copy shared-texture submission (DMA-BUF / DXGI):** Native panel quads use the same
-  2-slot `DmabufBankPool` (`OverlayPresenterNative.createDmabufBankPool` + `bindDmabufOverlay`)
-  used by the panorama banks — DMA-BUF / Vulkan on Linux and DXGI shared handles on Windows — with
-  automatic fallback to `TextureType_OpenGL` when shared banks are disabled (`dmabufBanks = 0`).
-  Shared textures bypass `vrclient`'s GL copy path and invert V (`vMin: 1, vMax: 0`) for top-down
-  Vulkan/D3D11 sampling.
-- **Flat UI panels only (v1):** Grab-box outlines (now a single merged mesh in
-  `classes/environment/grabbox.tsx`) and pointer lasers/dots remain in the eye image for v1 so
-  beam and hit-dot stay locked to one pose sample and depth-test against panels.
+- **Flat UI panels + 1-mesh stereo grab-box outlines:** Both render over zero-copy shared textures
+  (DMA-BUF / Vulkan on Linux, DXGI / D3D11 on Windows) with automatic `TextureType_OpenGL` fallback.
+  Grab-box outlines (`GrabBoxFrame` in `classes/environment/grabbox.tsx`) are a single merged mesh
+  wrapped in `<PetplayElement renderProps={{ overlayRole: "stereo", hudOverUi: true }}>`; their
+  nearer-face stereo quad is derived directly from `GeometryAsset.bounds.min/max`, redrawing only
+  when eyes move past the 0.3 mm parallax threshold (≥2 mm travel) and falling back cleanly to the
+  eye image when viewed edge-on or from inside the box.
+- **Pointer lasers & cursor dots:** Kept in the eye image so beam and hit-dot stay locked to one
+  pose sample and depth-test against panels.
 
 ## Code
 

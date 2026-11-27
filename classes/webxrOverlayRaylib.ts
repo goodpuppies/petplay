@@ -7,6 +7,7 @@ import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import { type DepthOccluder, WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
 import { beginPremultipliedCopyBlend } from "./uiAlphaBlend.ts";
+import { rlViewport } from "./rlglExtras.ts";
 import {
   getCurrentContextId,
   getFramebufferStatus,
@@ -1035,6 +1036,81 @@ export class WebXROverlayRaylib {
     } finally {
       raylib.H.EndTextureMode();
     }
+  }
+
+  /** Draw a native stereo group side-by-side into an externally owned shared FBO (DMA-BUF / DXGI). */
+  renderNativeStereoIntoFbo(
+    slot: { fbo: number; colorTexture: number; depthRbo: number },
+    eyeWidth: number,
+    eyeHeight: number,
+    extraction: WebXRRaythreeRenderPayload["leftEye"],
+    instances: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"],
+    eyes: {
+      left: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+      right: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+    },
+    depthPanels?: WebXRRaythreeRenderPayload["ui"]["panels"],
+  ): void {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target: raylib.RenderTexture2D = {
+      id: slot.fbo,
+      texture: {
+        id: slot.colorTexture,
+        width: eyeWidth * 2,
+        height: eyeHeight,
+        mipmaps: 1,
+        format: raylib.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
+      },
+      depth: {
+        id: slot.depthRbo,
+        width: eyeWidth * 2,
+        height: eyeHeight,
+        mipmaps: 1,
+        format: 19,
+      },
+    };
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      rlViewport(0, 0, eyeWidth, eyeHeight);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, eyes.left, depthPanels);
+      rlViewport(eyeWidth, 0, eyeWidth, eyeHeight);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, eyes.right, depthPanels);
+    } finally {
+      rlViewport(0, 0, eyeWidth * 2, eyeHeight);
+      raylib.H.EndTextureMode();
+    }
+  }
+
+  /** Draw a native stereo group side-by-side into a double-buffered GL texture (fallback path). */
+  renderNativeStereo(
+    key: string,
+    eyeWidth: number,
+    eyeHeight: number,
+    extraction: WebXRRaythreeRenderPayload["leftEye"],
+    instances: WebXRRaythreeRenderPayload["leftEye"]["frame"]["instances"],
+    eyes: {
+      left: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+      right: { viewMatrix: Float32Array; projectionMatrix: Float32Array };
+    },
+    depthPanels?: WebXRRaythreeRenderPayload["ui"]["panels"],
+  ): number {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target = this.nativeTarget(key, eyeWidth * 2, eyeHeight);
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      rlViewport(0, 0, eyeWidth, eyeHeight);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, eyes.left, depthPanels);
+      rlViewport(eyeWidth, 0, eyeWidth, eyeHeight);
+      sceneRenderer.renderInstancesOnly(extraction.frame, instances, eyes.right, depthPanels);
+    } finally {
+      rlViewport(0, 0, eyeWidth * 2, eyeHeight);
+      raylib.H.EndTextureMode();
+    }
+    return target.texture.id;
   }
 
   /** Draw a native UI panel head-on into its own double-buffered GL texture. */

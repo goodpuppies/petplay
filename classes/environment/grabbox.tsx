@@ -23,6 +23,7 @@ import type {
 } from "@pmndrs/pointer-events";
 import { useGrabboxOutlineVisible } from "./grabboxOutlineMode.ts";
 import { penHandler } from "./penEvents.ts";
+import { PetplayElement } from "./petplayElement.tsx";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -237,14 +238,19 @@ function GrabBoxFrame(
     [width, height, depth, t],
   );
   useEffect(() => () => geometry.dispose(), [geometry]);
+  const renderProps = useMemo(
+    () => ({ overlayRole: "stereo" as const, hudOverUi: true }),
+    [],
+  );
   return (
-    <mesh
-      geometry={geometry}
-      userData={{ raythreeHudOverUi: true }}
-      {...({ pointerEvents: "none" } as Record<string, unknown>)}
-    >
-      <meshBasicMaterial color={color} toneMapped={false} />
-    </mesh>
+    <PetplayElement renderProps={renderProps}>
+      <mesh
+        geometry={geometry}
+        {...({ pointerEvents: "none" } as Record<string, unknown>)}
+      >
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
+    </PetplayElement>
   );
 }
 

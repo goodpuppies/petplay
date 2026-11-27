@@ -1602,9 +1602,13 @@ async function run(options: Start) {
           }
           nativeLayer.texelsPerPixel = state.nativeTexelsPerPixel;
           nativeLayer.present(payload, renderer, {
+            head: head.elements,
+            leftEyeViewMatrix: cameras.leftEyeViewMatrix,
+            rightEyeViewMatrix: cameras.rightEyeViewMatrix,
             devices: nativeDevices,
             heldFollows: state.followFreeze,
             epoch: payload.delivery?.epoch,
+            assetVersion: scene?.assetVersion,
           });
         } catch (error) {
           state.nativeError = error instanceof Error ? error.message : String(error);
