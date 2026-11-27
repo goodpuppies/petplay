@@ -108,7 +108,7 @@ export class VrcCharacterSim {
   constructor(options: VrcCharacterSimOptions = {}) {
     this.latencyMs = options.latencyMs ?? 15;
     this.posTauMs = options.posCorrectionTauMs ?? 240;
-    this.yawTauMs = options.yawCorrectionTauMs ?? 90;
+    this.yawTauMs = options.yawCorrectionTauMs ?? 20;
     this.turnGain = options.turnGainRadPerSec ?? Math.PI;
   }
 
@@ -262,13 +262,31 @@ export class VrcCharacterSim {
     }
 
     // 4. Bleed 1st-order OSC offset smoothly into pos & yaw (critically damped, zero steps/bounce).
-    // Gentle while moving (avoids OSC arrival-jitter shake), crisper when stopped.
-    const posTau = moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65);
-    const aPos = 1 - Math.exp(-dtMs / posTau);
+    // Arrival-time jitter is purely parallel to velocity, so bleed `along` gently (`posTauMs`)
+    // while bleeding `perp` (head-turn curves) and `Y` (stairs/ramps) crisply.
+    const alongTau = moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65);
+    const perpTau = moveActive && !this.wallBlocked ? 45 : Math.min(this.posTauMs, 65);
+    const yTau = this.grounded ? 35 : Math.min(this.posTauMs, 80);
+    const aAlong = 1 - Math.exp(-dtMs / alongTau);
+    const aPerp = 1 - Math.exp(-dtMs / perpTau);
+    const aY = 1 - Math.exp(-dtMs / yTau);
     const aYaw = 1 - Math.exp(-dtMs / this.yawTauMs);
-    const dxC = this.pendingPos[0] * aPos;
-    const dyC = this.pendingPos[1] * aPos;
-    const dzC = this.pendingPos[2] * aPos;
+
+    const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
+    let dxC: number, dzC: number;
+    if (vSpd > 0.3) {
+      const ux = this.velCur[0] / vSpd, uz = this.velCur[2] / vSpd;
+      const pAlong = this.pendingPos[0] * ux + this.pendingPos[2] * uz;
+      const pPerp = -this.pendingPos[0] * uz + this.pendingPos[2] * ux;
+      const dAlong = pAlong * aAlong;
+      const dPerp = pPerp * aPerp;
+      dxC = dAlong * ux - dPerp * uz;
+      dzC = dAlong * uz + dPerp * ux;
+    } else {
+      dxC = this.pendingPos[0] * aAlong;
+      dzC = this.pendingPos[2] * aAlong;
+    }
+    const dyC = this.pendingPos[1] * aY;
     const dyawC = this.pendingYaw * aYaw;
     this.pendingPos[0] -= dxC;
     this.pendingPos[1] -= dyC;
@@ -417,24 +435,37 @@ export class VrcCharacterSim {
         this.groundY = pose.position[1];
         this.history = [{ t, pos: [...this.pos], yaw: this.yaw }];
       } else {
-        // Low-pass the residual while moving so ±20 ms OSC arrival-time jitter cancels out
-        // instead of creating a 20 Hz velocity oscillation; stay responsive when stopped or far off.
+        // Low-pass `along` residual (arrival-time jitter is parallel to velocity) while keeping
+        // `perp` (head-turn curves) and `Y` responsive.
         const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
-        const alpha = moveActive && !this.wallBlocked && dist < 0.2 ? 0.2 : 0.65;
-        this.pendingPos[0] += (rx - this.pendingPos[0]) * alpha;
-        this.pendingPos[1] += (ry - this.pendingPos[1]) * 0.5;
-        this.pendingPos[2] += (rz - this.pendingPos[2]) * alpha;
+        const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
+        if (moveActive && !this.wallBlocked && dist < 0.25 && vSpd > 0.3) {
+          const ux = this.velCur[0] / vSpd, uz = this.velCur[2] / vSpd;
+          const rAlong = rx * ux + rz * uz;
+          const rPerp = -rx * uz + rz * ux;
+          const pAlong = this.pendingPos[0] * ux + this.pendingPos[2] * uz;
+          const pPerp = -this.pendingPos[0] * uz + this.pendingPos[2] * ux;
+          const nAlong = pAlong + (rAlong - pAlong) * 0.2;
+          const nPerp = pPerp + (rPerp - pPerp) * 0.7;
+          this.pendingPos[0] = nAlong * ux - nPerp * uz;
+          this.pendingPos[2] = nAlong * uz + nPerp * ux;
+        } else {
+          this.pendingPos[0] += (rx - this.pendingPos[0]) * 0.65;
+          this.pendingPos[2] += (rz - this.pendingPos[2]) * 0.65;
+        }
+        this.pendingPos[1] += (ry - this.pendingPos[1]) * 0.85;
       }
     }
     if (yawChanged) {
-      // OSC avatar yaw has ~0 ms lag relative to unpredicted HMD yaw, so compare at `t` (not `t - latencyMs`).
+      // OSC avatar yaw has ~0 ms lag relative to unpredicted HMD yaw, so track it tightly so
+      // walking while turning the head steers along VRChat's actual heading immediately.
       const ryaw = angleDiffRad(pose.yawRad, this.yaw);
       if (Math.abs(ryaw) > (25 * Math.PI) / 180) {
         this.yaw = this.yaw + ryaw;
         this.pendingYaw = 0;
         for (const h of this.history) h.yaw = this.yaw;
       } else {
-        this.pendingYaw += (ryaw - this.pendingYaw) * 0.35;
+        this.pendingYaw += (ryaw - this.pendingYaw) * 0.85;
       }
     }
   }
@@ -442,8 +473,22 @@ export class VrcCharacterSim {
   evaluate(t: number, source: VrcOriginWorldPose["source"], jumpParams?: VrcJumpParams): VrcCharacterSimState {
     this.stepTo(t, jumpParams);
     const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
-    const posTauSec = (moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65)) / 1000;
+    const alongTauSec = (moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65)) / 1000;
+    const perpTauSec = (moveActive && !this.wallBlocked ? 45 : Math.min(this.posTauMs, 65)) / 1000;
+    const yTauSec = (this.grounded ? 35 : Math.min(this.posTauMs, 80)) / 1000;
     const yawTauSec = this.yawTauMs / 1000;
+    const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
+    let bvx: number, bvz: number;
+    if (vSpd > 0.3) {
+      const ux = this.velCur[0] / vSpd, uz = this.velCur[2] / vSpd;
+      const vAlong = (this.pendingPos[0] * ux + this.pendingPos[2] * uz) / alongTauSec;
+      const vPerp = (-this.pendingPos[0] * uz + this.pendingPos[2] * ux) / perpTauSec;
+      bvx = vAlong * ux - vPerp * uz;
+      bvz = vAlong * uz + vPerp * ux;
+    } else {
+      bvx = this.pendingPos[0] / alongTauSec;
+      bvz = this.pendingPos[2] / alongTauSec;
+    }
     return {
       pose: {
         source,
@@ -453,9 +498,9 @@ export class VrcCharacterSim {
       // Include the 1st-order observer bleed rate so webxr's 90 Hz extrapolation matches `pos`'s
       // exact trajectory without a 60 Hz sawtooth between ORIGINUPDATE polls.
       velocity: [
-        this.velCur[0] + this.pendingPos[0] / posTauSec,
-        this.velCur[1] + this.pendingPos[1] / posTauSec,
-        this.velCur[2] + this.pendingPos[2] / posTauSec,
+        this.velCur[0] + bvx,
+        this.velCur[1] + this.pendingPos[1] / yTauSec,
+        this.velCur[2] + bvz,
       ],
       yawRate: this.yawRateCur + this.pendingYaw / yawTauSec,
     };
