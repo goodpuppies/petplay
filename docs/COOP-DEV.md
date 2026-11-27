@@ -92,5 +92,10 @@ Submodule changes on a branch need the submodule commit to be reachable from the
 - An update is checked against `SHA256SUMS` and GitHub's asset digest, its new binary must answer
   `--version --json` before it is swapped in, and the replaced binary is kept as `petplay.previous`
   (`--update-rollback`).
+- Settings → Install → RESTART (shown after an update or rollback) shuts PetPlay down as Ctrl-C
+  does and starts the installed build in its place: the logging parent every release run has
+  starts it as its next child (same terminal, same SteamVR launch, same log file), so the person
+  you pair with presses one button after INSTALL (classes/restart.ts). Builds from before this
+  existed still need a manual restart the first time.
 - `PETPLAY_GITHUB_TOKEN` raises the GitHub API limit (anonymous checks are cached with ETags and
   rarely hit it).

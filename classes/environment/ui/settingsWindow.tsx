@@ -47,6 +47,8 @@ import {
   updateTargetPath,
 } from "../../updater.ts";
 import { describeCandidate, describeProgress } from "../../updateCli.ts";
+import { requestProcessRestart } from "../../processExitRequest.ts";
+import { canRestart } from "../../restart.ts";
 import { resetPlayspace } from "../../playspaceMover.ts";
 import {
   addWorkspaceLayoutOutput,
@@ -1237,6 +1239,8 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [channels, setChannels] = useState<BuildCandidate[] | null>(null);
+  /** An update or rollback installed a build this process is not running yet. */
+  const [restartReady, setRestartReady] = useState(false);
   const [copiedLogs, setCopiedLogs] = useState(false);
   const real = installState();
   const build = getBuildInfo();
@@ -1349,11 +1353,15 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
         | { installed: { version: string }; mode: string; downloadedBytes: number }
         | null
         | undefined;
-      const summary = result
-        ? `${result.installed.version} installed (${(result.downloadedBytes / 1e6).toFixed(1)} MB ${
+      const restartHint = canRestart() ? "RESTART to run it" : "Restart PetPlay to run it";
+      const summary = !result
+        ? "Already up to date"
+        : args.includes("--update-rollback")
+        ? `Rolled back to ${result.installed.version}. ${restartHint}.`
+        : `${result.installed.version} installed (${(result.downloadedBytes / 1e6).toFixed(1)} MB ${
           result.mode === "delta" ? "delta" : "download"
-        }). Restart PetPlay to run it.`
-        : "Already up to date";
+        }). ${restartHint}.`;
+      if (result) setRestartReady(true);
       setUpdateMessage(summary);
       setUpdateCheck(null);
       pushToast({ source: "Updater", title: summary, tone: "info", timeoutMs: 10000 });
@@ -1433,7 +1441,18 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
         title="Updates"
         description={updateMessage ?? `Newest build on ${channel}`}
       >
-        {updateCheck?.candidate && updateCheck.canApply && updateCheck.status !== "up-to-date" && (
+        {restartReady && canRestart() && (
+          <ActionButton
+            label="RESTART"
+            tone="accent"
+            onClick={() => {
+              setUpdateMessage("Restarting PetPlay…");
+              requestProcessRestart("update installed");
+            }}
+          />
+        )}
+        {!restartReady && updateCheck?.candidate && updateCheck.canApply &&
+          updateCheck.status !== "up-to-date" && (
           <ActionButton
             label={updateBusy
               ? "WORKING…"

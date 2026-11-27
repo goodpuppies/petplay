@@ -1,7 +1,7 @@
 import { IPCWorker, PostalService, setWorkerChildArgs } from "../submodules/stageforge/mod.ts";
 import { childProcessArgs } from "../classes/childModule.ts";
 import { asyncPrompt, createTemp, destroyTemp, ensuredenodir, wait } from "../classes/utils.ts";
-import { listenForProcessExitRequests } from "../classes/processExitRequest.ts";
+import { listenForProcessExitRequests, RESTART_EXIT_CODE } from "../classes/processExitRequest.ts";
 import { watchLogParent } from "../classes/runLog.ts";
 import { loadSettings } from "../classes/settings.ts";
 import { releaseWindowsSyntheticDisplayMouseState } from "../classes/environment/displayInstance/mouse.ts";
@@ -19,6 +19,8 @@ const STAGEFORGE_SIGNALING_URL = Deno.env.get("PETPLAY_TOPIC_URL") ?? "wss://top
 export async function startPetplayServer(
   options: { interactive: boolean },
 ): Promise<void> {
+  // Before an update can replace the file (classes/restart.ts).
+  const launchedFrom = Deno.execPath();
   if (
     Deno.build.os === "linux" && Deno.build.arch === "aarch64" &&
     !Deno.env.get("DENO_GLFW_PATH")
@@ -92,16 +94,29 @@ export async function startPetplayServer(
     destroyTemp();
   }
 
-  /** Normal shutdown (e.g. Ctrl+C): shared teardown, WOOF, `Deno.exit(0)`. */
-  async function petplayDefaultExit(): Promise<void> {
+  /**
+   * Normal shutdown (e.g. Ctrl+C): shared teardown, WOOF, `Deno.exit(0)`. With `restart`, PetPlay
+   * starts again afterwards (classes/restart.ts): the logging parent does it on
+   * `RESTART_EXIT_CODE`, otherwise this process starts the new executable before it exits.
+   */
+  async function petplayDefaultExit(restart = false): Promise<void> {
     if (!tryBeginExit()) {
       return;
     }
     try {
       await petplaySharedShutdown();
-      console.log("exit! WOOF~");
+      console.log(restart ? "restarting! WOOF~" : "exit! WOOF~");
     } catch (e) {
       console.error("petplay: default exit error:", e);
+    }
+    if (restart && Deno.build.standalone) {
+      if (Deno.env.get("PETPLAY_LOG_PARENT_PID")) Deno.exit(RESTART_EXIT_CODE);
+      try {
+        const { spawnDetachedRestart } = await import("../classes/restart.ts");
+        spawnDetachedRestart(launchedFrom);
+      } catch (e) {
+        console.error("petplay: restart failed; start PetPlay again by hand:", e);
+      }
     }
     Deno.exit(0);
   }
@@ -139,9 +154,9 @@ export async function startPetplayServer(
     console.log("[petplay] logging parent exited; shutting down");
     void petplayDefaultExit();
   });
-  listenForProcessExitRequests((reason) => {
-    console.log(`[petplay] exit requested: ${reason}; shutting down`);
-    void petplayDefaultExit();
+  listenForProcessExitRequests((reason, restart) => {
+    console.log(`[petplay] ${restart ? "restart" : "exit"} requested: ${reason}; shutting down`);
+    void petplayDefaultExit(restart);
   });
 
   const devExitAfterArg = Deno.args.find((arg) => arg.startsWith("--dev-exit-after-ms="));

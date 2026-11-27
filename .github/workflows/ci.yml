@@ -85,7 +85,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # Full history and tags, so the version reads `v0.0.36-3-gabc1234`, not a bare commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: bash utils/ci-submodules.sh
       - uses: denoland/setup-deno@v2
         with:

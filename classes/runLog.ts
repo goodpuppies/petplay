@@ -15,6 +15,7 @@
 import { join } from "@std/path";
 import { configDir, logsDir } from "./appPaths.ts";
 import { describeBuild } from "./buildInfo.ts";
+import { RESTART_EXIT_CODE } from "./processExitRequest.ts";
 
 const CHILD_ENV = "PETPLAY_LOG_PARENT_PID";
 const KEEP_LOGS = 10;
@@ -287,13 +288,17 @@ export async function runLogParent(): Promise<number> {
   note(header(logPath));
   console.log(`[petplay] log file: ${logPath}`);
 
-  const child = new Deno.Command(Deno.execPath(), {
-    args: [...Deno.args],
-    env: { [CHILD_ENV]: String(Deno.pid) },
-    stdin: "inherit",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+  // Read now: after an update replaced the file, Linux reports this executable as "(deleted)".
+  const launchedFrom = Deno.execPath();
+  const spawnChild = (executable: string) =>
+    new Deno.Command(executable, {
+      args: [...Deno.args],
+      env: { [CHILD_ENV]: String(Deno.pid) },
+      stdin: "inherit",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+  let child = spawnChild(launchedFrom);
   note(`[petplay log] child pid ${child.pid}\n`);
 
   const listeners: Array<[Deno.Signal, () => void]> = [];
@@ -327,21 +332,48 @@ export async function runLogParent(): Promise<number> {
       writer.releaseLock();
     }
   };
-  const mirrors = Promise.all([
-    mirror(child.stdout, Deno.stdout.writable),
-    mirror(child.stderr, Deno.stderr.writable),
-  ]);
-  const sample = healthSampler(child.pid);
-  sample();
-  const timer = Deno.build.os === "linux"
-    ? setInterval(() => note(sample()), HEALTH_INTERVAL_MS)
-    : null;
-
-  const status = await child.status;
-  if (timer != null) clearInterval(timer);
+  const restarts: number[] = [];
+  let status: Deno.CommandStatus;
+  for (;;) {
+    const running = child;
+    const mirrors = Promise.all([
+      mirror(running.stdout, Deno.stdout.writable),
+      mirror(running.stderr, Deno.stderr.writable),
+    ]);
+    const sample = healthSampler(running.pid);
+    sample();
+    const timer = Deno.build.os === "linux"
+      ? setInterval(() => note(sample()), HEALTH_INTERVAL_MS)
+      : null;
+    status = await running.status;
+    if (timer != null) clearInterval(timer);
+    // Grandchildren may still hold the pipes; bound the drain so the parent exits with its child.
+    await Promise.race([mirrors, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    if (status.code !== RESTART_EXIT_CODE) break;
+    // Restart (classes/restart.ts): run the executable an update put in place, as the next child.
+    const now = Date.now();
+    restarts.push(now);
+    if (restarts.filter((t) => now - t < 120_000).length > 3) {
+      note(`[petplay log] restart requested again within two minutes; not restarting\n`);
+      break;
+    }
+    // Let the old child's helpers release their ports and overlay keys.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    try {
+      const { restartExecutable } = await import("./restart.ts");
+      const executable = restartExecutable(launchedFrom);
+      child = spawnChild(executable);
+      note(
+        `[petplay log] restarted ${
+          new Date().toISOString()
+        }: ${executable}, child pid ${child.pid}\n`,
+      );
+    } catch (error) {
+      note(`[petplay log] restart failed: ${error}\n`);
+      break;
+    }
+  }
   for (const [signal, handler] of listeners) Deno.removeSignalListener(signal, handler);
-  // Grandchildren may still hold the pipes; bound the drain so the parent exits with its child.
-  await Promise.race([mirrors, new Promise((resolve) => setTimeout(resolve, 2_000))]);
   const footer = note(
     `[petplay log] exited ${new Date().toISOString()} code ${status.code} signal ${
       status.signal ?? "none"

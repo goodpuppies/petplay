@@ -39,13 +39,13 @@ const commit = new TextDecoder().decode(
     .stdout,
 ).trim();
 // The version shown in the wrist menu and compared by the updater (classes/buildInfo.ts,
-// classes/updater.ts). "-dirty" only for edits to PetPlay's own tracked files: CI's preconf and
-// install steps touch submodules, which made every release report itself as dirty.
+// classes/updater.ts). "-dirty" only for edits to PetPlay's own tracked files, and never in CI,
+// whose checkout is exactly the commit: CI's own preconf/install steps made every release "dirty".
 const git = async (...args: string[]) =>
   new TextDecoder().decode(
     (await new Deno.Command("git", { args, stdout: "piped", stderr: "null" }).output()).stdout,
   ).trim();
-const dirty =
+const dirty = Deno.env.get("GITHUB_ACTIONS") !== "true" &&
   (await git("status", "--porcelain", "--ignore-submodules=all", "--untracked-files=no")) !== "";
 const describe = await git("describe", "--tags", "--always");
 const version = describe && dirty ? `${describe}-dirty` : describe;
