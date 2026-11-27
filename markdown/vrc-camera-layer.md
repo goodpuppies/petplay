@@ -7,10 +7,14 @@ stack it over VRChat's own camera output. VR keeps rendering as usual; the layer
 ## Pieces
 
 - `cameraOrigin` (`petplay/VRCOriginCamera.ts`) receives `/usercamera/Pose` and `/usercamera/Zoom`
-  over OSCQuery and forwards both to `webxr`. The OSC receiver prefers UDP 9001, then a free
-  adjacent port if face/eye tracking already owns it. Its actual port is advertised through
-  OSCQuery and `_osc._udp`; the alternate receiver uses its own HTTP endpoint to avoid cached
-  destinations. mDNS announcements use a `.local` hostname, multicast loopback and TTL 255.
+  over OSCQuery and forwards both to `webxr`. The connection is `classes/oscQuery/vrchatLink.ts`,
+  modelled on OscGoesPurrr and VRCFaceTracking: it waits for VRChat's `_oscjson._tcp` record on
+  mDNS, then binds its UDP listener and HTTP server on 127.0.0.1 with OS-picked ports and
+  advertises both under a per-launch name (`PetPlay-AB12CD`). It answers mDNS queries, says
+  goodbye on stop, health-checks VRChat's OSCQuery server, ignores a crashed VRChat's leftover
+  record, and re-advertises under a fresh name when VRChat stops sending. Never 0.0.0.0 or a fixed
+  port: on Windows a 0.0.0.0 socket can share a port with another program's 127.0.0.1 socket
+  without an error, and that program then receives every datagram.
 - `webxr` holds a `VrcCameraTracker` (`classes/vrcCameraCalibration.ts`): the latest world pose and
   the world→tracking calibration. Views registered with `camera: "vrc"` get the calibrated pose
   (`vrcCamera`) and a transparent background with every frame.

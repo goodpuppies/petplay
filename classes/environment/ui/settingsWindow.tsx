@@ -888,6 +888,16 @@ type CameraOriginHealth = {
   driverRunning?: boolean;
   oscPort?: number | null;
   oscQueryRequests?: number;
+  /** classes/oscQuery/vrchatLink.ts VrchatLinkStatus (the fields this page reads). */
+  osc?: {
+    mdnsListening?: boolean;
+    connected?: boolean;
+    receiving?: boolean;
+    silent?: boolean;
+    vrchatName?: string | null;
+    packets?: number;
+    lastPacketAgeMs?: number | null;
+  } | null;
   hasLatestCameraPose?: boolean;
   hasPositionEstimate?: boolean;
   positionSampleCount?: number;
@@ -1016,17 +1026,24 @@ function OscPage({ showGuides }: { showGuides: boolean }) {
     setBusy("reannounce");
     const base = getAgentReplBaseUrl();
     try {
-      await fetch(`${base}/message`, {
+      // Withdraws the advertisement and publishes it under a fresh name; VRChat reads it again.
+      const res = await fetch(`${base}/message`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target: "cameraOrigin", type: "STOPCAMERAORIGIN", reply: true, timeoutMs: 3000 }),
+        body: JSON.stringify({
+          target: "cameraOrigin",
+          type: "REANNOUNCECAMERAORIGIN",
+          reply: true,
+          timeoutMs: 5000,
+        }),
+      }).then((r) => r.json());
+      pushToast({
+        source: "OSC",
+        title: res?.result === true
+          ? "Re-announced OSCQuery to VRChat"
+          : "Nothing to re-announce yet: still looking for VRChat",
+        tone: "info",
       });
-      await fetch(`${base}/message`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target: "cameraOrigin", type: "STARTCAMERAORIGIN", reply: false }),
-      });
-      pushToast({ source: "OSC", title: "Re-announced OSCQuery to VRChat", tone: "info" });
     } catch (err) {
       pushToast({
         source: "OSC",
@@ -1072,16 +1089,39 @@ function OscPage({ showGuides }: { showGuides: boolean }) {
   const driverRunning = cam?.driverRunning ?? false;
   const oscRequests = cam?.oscQueryRequests ?? 0;
   const oscPort = cam?.oscPort;
+  const link = cam?.osc ?? null;
+  const vrchatFound = link?.connected ?? false;
+  // Packets are the proof: VRChat reading our HOST_INFO does not mean its datagrams reach us.
+  const receiving = link?.receiving ?? false;
+  const packetAge = link?.lastPacketAgeMs;
+  const vrchatLabel = link?.vrchatName ? link.vrchatName.split(".")[0] : "VRChat";
 
-  const driverTone = !driverRunning ? "danger" : oscRequests > 0 ? "accent" : "muted";
-  const driverBadge = !driverRunning ? "OFFLINE" : oscRequests > 0 ? "CONNECTED" : "WAITING";
+  const driverTone = !driverRunning || (vrchatFound && link?.silent)
+    ? "danger"
+    : receiving
+    ? "accent"
+    : "muted";
+  const driverBadge = !driverRunning
+    ? "OFFLINE"
+    : receiving
+    ? "CONNECTED"
+    : vrchatFound
+    ? (link?.silent ? "SILENT" : "IDLE")
+    : "WAITING";
   const driverDesc = snap.error
     ? snap.error
-    : driverRunning
-    ? `UDP :${oscPort ?? "?"} · ${oscRequests} VRChat request${oscRequests === 1 ? "" : "s"}${
-      oscRequests === 0 ? " (toggle OSC in VRChat)" : ""
-    }`
-    : "Driver stopped — press Re-announce or Reload";
+    : !driverRunning
+    ? "Driver stopped — press Re-announce or Reload"
+    : !vrchatFound
+    ? link?.mdnsListening === false
+      ? "mDNS port 5353 unavailable — retrying"
+      : "Looking for VRChat on mDNS (is OSC on in VRChat?)"
+    : `${vrchatLabel} · UDP :${oscPort ?? "?"} · ${link?.packets ?? 0} packets` +
+      (receiving
+        ? ""
+        : packetAge != null
+        ? ` · last ${Math.round(packetAge / 1000)}s ago`
+        : ` · none yet (${oscRequests} OSCQuery request${oscRequests === 1 ? "" : "s"})`);
 
   const hasOrigin = orig?.hasOrigin ?? false;
   const pos = orig?.worldPose?.position;
