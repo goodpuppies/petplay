@@ -16,9 +16,9 @@ export interface VrcWalkParams {
   samples: number;
 }
 
-/** VRChat's typical default run/strafe speeds, as measured. */
+/** VRChat's SDK defaults (`ClientSimPlayerLocomotionData`: runSpeed = 4, strafeSpeed = 2). */
 export const DEFAULT_VRC_WALK: VrcWalkParams = {
-  forwardSpeed: 3.5,
+  forwardSpeed: 4.0,
   strafeSpeed: 2.0,
   samples: 0,
 };

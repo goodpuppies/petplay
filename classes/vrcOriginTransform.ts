@@ -14,6 +14,7 @@
  *     `[-sin θ,  0, cos θ ]`
  */
 
+import { VrcCharacterSim } from "./vrcCharacterSim.ts";
 import { type JumpArcEvent, VrcJumpModel } from "./vrcJumpModel.ts";
 import type { Vec3, VrcOriginWorldPose } from "./vrcOriginCodec.ts";
 import { DEFAULT_VRC_WALK, type VrcWalkParams } from "./vrcWorldLocomotion.ts";
@@ -1274,23 +1275,34 @@ export class VrcRootPredictor {
   private lastHeadYawRate = 0;
   /** Jumps: a press predicts the arc (`VrcJumpModel`), learned per world by the caller. */
   readonly jump = new VrcJumpModel();
-  /** Learned walk speeds (forward/strafe) for this world; persisted by the caller. */
-  walk: VrcWalkParams = { ...DEFAULT_VRC_WALK };
-  /** Called when steady walking updates `walk` (to persist per world). */
-  onWalkLearned: ((params: VrcWalkParams) => void) | null = null;
-  private walkNotifyCounter = 0;
-  private wallBlocked = false;
-  private movePressedAt = -Infinity;
-  private turnSamples = 0;
+  /** VRChat `ClientSimPlayerController` physics simulator + 1st-order observer (used for v2 + sticks). */
+  readonly sim: VrcCharacterSim;
+  private hasInput = false;
   private jumpHeld = false;
   private airborneUntil = 0;
   /** The measured (PhysBone) yaw, unwrapped, and when it last changed. */
   private rawYaw: number | null = null;
   private rawYawChangedAt = 0;
 
+  get walk(): VrcWalkParams {
+    return this.sim.walk;
+  }
+  set walk(params: VrcWalkParams) {
+    this.sim.walk = params;
+  }
+  get onWalkLearned(): ((params: VrcWalkParams) => void) | null {
+    return this.sim.onWalkLearned;
+  }
+  set onWalkLearned(fn: ((params: VrcWalkParams) => void) | null) {
+    this.sim.onWalkLearned = fn;
+  }
+
   constructor(options: VrcRootPredictorOptions = {}) {
     this.customSmoothing = options.smoothingMs !== undefined;
     this.customPosR = options.positionMeasurementVariance !== undefined;
+    this.sim = new VrcCharacterSim({
+      turnGainRadPerSec: options.turnGainRadPerSec ?? Math.PI,
+    });
     this.position = new KalmanChannel(
       3,
       options.positionProcessNoise ?? 2,
@@ -1326,27 +1338,22 @@ export class VrcRootPredictor {
   reset(): void {
     this.position.reset();
     this.yaw.reset();
+    this.sim.reset();
     this.lastPose = null;
     this.lastSampleAt = 0;
     this.lastMeasVel = [0, 0, 0];
     this.shown = null;
     this.rawYaw = null;
-    this.wallBlocked = false;
     this.airborneUntil = 0;
     this.stickTurn.cancel();
   }
 
-  private isAirborne(t: number): boolean {
-    return this.jump.active || t < this.airborneUntil;
+  private useSim(): boolean {
+    return this.source === "petplay-origin-v2" && this.hasInput && this.sim.isStarted;
   }
 
-  private stickWorldVelXZ(move: [number, number], yaw: number): [number, number] {
-    const vFwd = this.walk.forwardSpeed * move[1];
-    const vRgt = this.walk.strafeSpeed * move[0];
-    return [
-      vFwd * Math.sin(yaw) + vRgt * Math.cos(yaw),
-      vFwd * Math.cos(yaw) - vRgt * Math.sin(yaw),
-    ];
+  private isAirborne(t: number): boolean {
+    return this.jump.active || t < this.airborneUntil;
   }
 
   /** Whether the turn stick is driving yaw right now (`VrcOriginSolver.update`'s hint). */
@@ -1361,6 +1368,9 @@ export class VrcRootPredictor {
 
   /** The learned smooth-turn rate per unit of stick (rad/s), and whether stick turning is used. */
   turnGain(): { radPerSec: number; enabled: boolean } {
+    if (this.source === "petplay-origin-v2") {
+      return { radPerSec: this.sim.turnGain, enabled: true };
+    }
     return { radPerSec: this.stickTurn.gain, enabled: !this.stickTurn.disabled };
   }
 
@@ -1383,14 +1393,15 @@ export class VrcRootPredictor {
    */
   setInput(input: VrcLocomotionInput | null): void {
     if (!input) {
+      this.hasInput = false;
       this.move.clear();
       this.turn.clear();
       this.stickTurn.cancel();
-      this.wallBlocked = false;
       this.position.q = this.q.position;
       this.yaw.q = this.q.yaw;
       return;
     }
+    this.hasInput = true;
     this.inputAt = input.t;
     this.lastInputMove = [input.move[0], input.move[1]];
     this.lastInputTurn = input.turn;
@@ -1398,77 +1409,45 @@ export class VrcRootPredictor {
     const jumpPressed = input.jump === true && !this.jumpHeld;
     this.jumpHeld = input.jump === true;
     if (jumpPressed && this.position.started) {
-      this.jump.press(input.t, this.position.at(input.t, this.timing, this.move.active).values[1]);
+      const groundY = this.useSim()
+        ? this.sim.evaluate(input.t, this.source, this.jump.params).pose.position[1]
+        : this.position.at(input.t, this.timing, this.move.active).values[1];
+      this.jump.press(input.t, groundY);
       this.airborneUntil = Math.max(this.airborneUntil, input.t + 250);
     }
     this.applyJumpEvent(this.jump.update(input.t));
     const airborne = this.isAirborne(input.t);
-    const prevMoveChangedAt = this.move.changedAt;
-    const prevTurnChangedAt = this.turn.changedAt;
     const moveEvent = this.move.update(input.t, input.move, Math.abs(input.headYawRate) > 0.5);
     const turnEvent = this.turn.update(input.t, [input.turn, 0], false);
-    const moveChanged = moveEvent != null || this.move.changedAt !== prevMoveChangedAt;
-    const turnChanged = turnEvent != null || this.turn.changedAt !== prevTurnChangedAt;
-    if (moveEvent === "pressed") {
-      this.movePressedAt = input.t;
-      if (this.source === "petplay-origin-v2" && input.t - this.position.updatedAt > 150) {
-        this.position.reanchorAtRest(input.t);
-      }
-    }
-    if (moveChanged) this.wallBlocked = false;
+    this.sim.setInput(
+      input.t,
+      input.move,
+      input.turn,
+      input.headYawRate,
+      input.jump === true,
+      this.jump.params,
+      this.jump.enabled,
+    );
     // Only stop horizontal velocity on grounded release: mid-air release coasts ballistically.
     if (moveEvent === "released" && !airborne) {
       this.position.stopAxes(input.t, [0, 2]);
     }
     this.steerYaw(input.t, input.turn, turnEvent);
 
-    const isV2 = this.source === "petplay-origin-v2";
-    if (isV2) {
-      // If holding the stick for >100 ms with zero OSC position updates, the avatar is blocked.
-      if (
-        this.move.active && !airborne &&
-        input.t - this.movePressedAt >= 100 && input.t - this.lastSampleAt >= 100
-      ) {
-        this.wallBlocked = true;
-      }
-      // Walk velocity feedforward ONLY on stick/heading changes (never on steady 11 ms polls,
-      // which would fight real OSC velocity and cause a 50 Hz stutter).
-      if (
-        moveChanged && this.position.started && this.yaw.started && this.move.active && !airborne &&
-        !this.wallBlocked
-      ) {
-        const curYaw = this.yaw.at(input.t, this.timing, this.turn.active).values[0];
-        const [vx, vz] = this.stickWorldVelXZ(input.move, curYaw);
-        this.position.steerVelocityAxes([0, 2], [vx, vz], moveEvent === "pressed" ? 0.6 : 0.35);
-      }
-      // Yaw rate feedforward ONLY on turn-stick changes (press, reversal, release).
-      if (turnChanged && this.yaw.started) {
-        const turnPart = this.turn.active && !this.stickTurn.disabled
-          ? this.stickTurn.gain * vrcSmoothTurnCurve(input.turn)
-          : 0;
-        this.yaw.steerVelocityAxes([0], [turnPart - input.headYawRate], 0.5);
-      }
-    }
-
     const steady = (stick: StickTracker) => input.t - stick.changedAt >= this.stickChangeMs;
-    const settlingStop = !airborne && this.move.releasedWithin(input.t, 250);
-    const posQ = isV2 ? (settlingStop ? 0.1 : this.q.position) : this.q.position;
-    const posQSteady = this.q.steadyPosition;
-    const posQChanging = isV2 ? Math.min(this.q.changingPosition, 6) : this.q.changingPosition;
-    const yawQ = isV2 ? Math.max(this.q.yaw, 20) : this.q.yaw;
-    const yawQChanging = isV2 ? Math.max(this.q.changingYaw, 45) : this.q.changingYaw;
     this.position.q = this.move.active
-      ? (steady(this.move) ? posQSteady : posQChanging)
-      : posQ;
+      ? (steady(this.move) ? this.q.steadyPosition : this.q.changingPosition)
+      : this.q.position;
     this.yaw.q = this.turn.active
-      ? (steady(this.turn) ? this.q.steadyYaw : yawQChanging)
-      : yawQ;
+      ? (steady(this.turn) ? this.q.steadyYaw : this.q.changingYaw)
+      : this.q.yaw;
   }
 
   add(sample: VrcOriginSample): void {
     const { pose, t } = sample;
     this.source = pose.source;
     const isV2 = pose.source === "petplay-origin-v2";
+    if (isV2) this.sim.measure(t, pose, this.jump.params);
     const prev = this.lastPose;
     const prevT = this.lastSampleAt;
     // Per axis: with the v1 proximity rig VRChat sometimes freezes one axis's contacts while
@@ -1496,9 +1475,6 @@ export class VrcRootPredictor {
     this.lastSampleAt = t;
 
     const airborne = this.isAirborne(t);
-    const arrivalSigma = isV2 ? V2_ARRIVAL_SIGMA_MS : ARRIVAL_SIGMA_MS;
-    const posROverride = isV2 && !this.customPosR ? V2_POSITION_MEASUREMENT_VARIANCE : undefined;
-
     if (positionChanged && (!this.position.started || t > this.position.updatedAt)) {
       if (this.position.started) {
         const predicted = this.position.at(t, this.timing, this.move.active).values;
@@ -1510,64 +1486,17 @@ export class VrcRootPredictor {
           this.shown = null;
         } else if (
           this.move.active &&
-          miss > 0.06 + (3 * arrivalSigma / 1000) * Math.hypot(...this.position.velocity())
+          miss > 0.06 + (3 * ARRIVAL_SIGMA_MS / 1000) * Math.hypot(...this.position.velocity())
         ) {
-          // The motion changed in a way the stick didn't show (direction follows a hand, a
-          // slope, a wall): be responsive again.
           this.move.changedAt = t;
-          this.position.q = isV2 ? Math.min(this.q.changingPosition, 6) : this.q.changingPosition;
+          this.position.q = this.q.changingPosition;
         }
       }
-      this.position.measure(t, [...pose.position], freshAxes, arrivalSigma, posROverride);
+      this.position.measure(t, [...pose.position], freshAxes, ARRIVAL_SIGMA_MS);
       if (this.jump.active) this.applyJumpEvent(this.jump.measure(t, pose.position[1]));
-      // Just after a grounded release VRChat is stopping; clamp horizontal velocity to 0 so
-      // trailing bursts settle monotonically without a spring oscillation, unless the avatar is
-      // actually still moving fast (airborne coasting, sliding, physical walk).
       const measSpdXZ = Math.hypot(this.lastMeasVel[0], this.lastMeasVel[2]);
       if (!airborne && this.move.releasedWithin(t, 250) && measSpdXZ < 1.2) {
         this.position.clampVelocityZeroAxes([0, 2]);
-      }
-
-      // Online walk-speed learning & wall-collision detection (v2 only).
-      if (isV2 && this.move.active && !airborne && !this.turn.active) {
-        const [sx, sy] = this.lastInputMove;
-        const [kvx, , kvz] = this.position.velocity();
-        const [expX, expZ] = this.stickWorldVelXZ(this.lastInputMove, pose.yawRad);
-        const expSpd = Math.hypot(expX, expZ);
-        const kSpd = Math.hypot(kvx, kvz);
-        if (
-          t - this.movePressedAt >= 80 && expSpd > 0.6 &&
-          (measSpdXZ < 0.3 * expSpd || (kSpd < 0.3 * expSpd || kvx * expX + kvz * expZ < 0))
-        ) {
-          this.wallBlocked = true;
-        } else if (t - this.move.changedAt >= 150 && kSpd > 0.5) {
-          this.wallBlocked = false;
-          const vFwd = kvx * Math.sin(pose.yawRad) + kvz * Math.cos(pose.yawRad);
-          const vRgt = kvx * Math.cos(pose.yawRad) - kvz * Math.sin(pose.yawRad);
-          const alpha = 1 / Math.min(40, this.walk.samples + 6);
-          let updated = false;
-          if (Math.abs(sy) > 0.6 && Math.abs(sx) < 0.35 && vFwd * sy > 0.3) {
-            const est = Math.min(15, Math.max(0.5, vFwd / sy));
-            this.walk = {
-              ...this.walk,
-              forwardSpeed: this.walk.forwardSpeed + (est - this.walk.forwardSpeed) * alpha,
-              samples: this.walk.samples + 1,
-            };
-            updated = true;
-          } else if (Math.abs(sx) > 0.6 && Math.abs(sy) < 0.35 && vRgt * sx > 0.3) {
-            const est = Math.min(15, Math.max(0.5, vRgt / sx));
-            this.walk = {
-              ...this.walk,
-              strafeSpeed: this.walk.strafeSpeed + (est - this.walk.strafeSpeed) * alpha,
-              samples: this.walk.samples + 1,
-            };
-            updated = true;
-          }
-          if (updated && ++this.walkNotifyCounter >= 10) {
-            this.walkNotifyCounter = 0;
-            this.onWalkLearned?.(this.walk);
-          }
-        }
       }
     }
     if (yawChanged) {
@@ -1588,20 +1517,9 @@ export class VrcRootPredictor {
           this.shown = null;
         }
       }
-      this.yaw.measure(t, [yaw], [true], isV2 ? arrivalSigma * 0.5 : 0);
+      this.yaw.measure(t, [yaw]);
       if (this.turn.releasedWithin(t, 200) && Math.abs(this.lastHeadYawRate) < 0.2) {
         this.yaw.clampVelocityZeroAxes([0]);
-      }
-      if (isV2 && this.turn.active && t - this.turn.changedAt >= 120) {
-        const turnEff = vrcSmoothTurnCurve(this.lastInputTurn);
-        if (Math.abs(turnEff) > 0.35) {
-          const playRate = this.yaw.velocity()[0] + this.lastHeadYawRate;
-          const est = playRate / turnEff;
-          if (est > 0.5 && est < 8) {
-            const alpha = 1 / Math.min(30, ++this.turnSamples + 4);
-            this.stickTurn.gain += (est - this.stickTurn.gain) * alpha;
-          }
-        }
       }
     }
   }
@@ -1663,6 +1581,7 @@ export class VrcRootPredictor {
   private applyJumpEvent(event: JumpArcEvent): void {
     if (event === "landed" && this.jump.landedAt != null) {
       this.position.setDim(1, this.jump.landedAt);
+      this.sim.landAt(this.jump.landedAt);
     }
   }
 
@@ -1674,6 +1593,15 @@ export class VrcRootPredictor {
         velocity: [0, 0, 0],
         yawRate: 0,
       };
+    }
+    if (this.useSim()) {
+      const simOut = this.sim.evaluate(tMs, this.source, this.jump.params);
+      const arc = this.jump.at(tMs);
+      if (arc) {
+        simOut.pose.position[1] = arc.y;
+        simOut.velocity[1] = arc.vy;
+      }
+      return simOut;
     }
     const p = this.position.at(tMs, this.timing, this.move.active);
     const arc = this.jump.at(tMs);
@@ -1698,6 +1626,9 @@ export class VrcRootPredictor {
    * `smoothingMs`. Stateful: call with increasing times (each poll).
    */
   display(tMs: number): VrcRootPrediction {
+    if (this.useSim()) {
+      return this.predict(tMs);
+    }
     const target = this.predict(tMs);
     const unwrappedYaw = this.yaw.started
       ? this.yaw.at(tMs, this.timing, this.turn.active).values[0]
