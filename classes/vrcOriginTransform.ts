@@ -1099,6 +1099,9 @@ class StickTurn {
  *   over `smoothingMs`, which costs no lag at constant speed. Replaying a recorded joystick walk,
  *   this cut frame-to-frame jitter ~3× against the line fit it replaced.
  */
+/** How long after a turn-stick release `isStickTurning` stays true for v2 (ms). */
+const V2_TURN_RELEASE_TAIL_MS = 150;
+
 export class VrcRootPredictor {
   private readonly timing: ChannelTiming;
   private readonly resetDistance: number;
@@ -1124,6 +1127,8 @@ export class VrcRootPredictor {
   private readonly move = new StickTracker();
   private readonly turn = new StickTracker();
   private readonly stickTurn: StickTurn;
+  /** Time of the newest `setInput`. */
+  private inputAt = 0;
   /** The measured (PhysBone) yaw, unwrapped, and when it last changed. */
   private rawYaw: number | null = null;
   private rawYawChangedAt = 0;
@@ -1172,6 +1177,11 @@ export class VrcRootPredictor {
 
   /** Whether the turn stick is driving yaw right now (`VrcOriginSolver.update`'s hint). */
   isStickTurning(): boolean {
+    // v2 measures yaw without lag, so the stick only says the playspace is turning. VRChat's
+    // samples trail the stick by ~50-100 ms, so a release still counts for a moment.
+    if (this.source === "petplay-origin-v2") {
+      return this.turn.active || this.turn.releasedWithin(this.inputAt, V2_TURN_RELEASE_TAIL_MS);
+    }
     return this.stickTurn.turning;
   }
 
@@ -1204,6 +1214,7 @@ export class VrcRootPredictor {
       this.yaw.q = this.q.yaw;
       return;
     }
+    this.inputAt = input.t;
     const moveEvent = this.move.update(input.t, input.move, input.headYawRate > 0.5);
     const turnEvent = this.turn.update(input.t, [input.turn, 0], false);
     if (moveEvent === "released") this.position.stop(input.t);
@@ -1288,7 +1299,13 @@ export class VrcRootPredictor {
    */
   private steerYaw(t: number, stick: number, event: "pressed" | "released" | null): void {
     const turn = this.stickTurn;
-    if (!this.yaw.started || this.rawYaw == null || turn.disabled) {
+    // Dead reckoning is for v1's PhysBone yaw, which trails the avatar by ~0.4 s. v2's forward
+    // sender has no lag: dead reckoning there only drifts from the measurement (measured: ~30°
+    // after chained turns, held for a second at rest before the settle eased it back).
+    if (
+      !this.yaw.started || this.rawYaw == null || turn.disabled ||
+      this.source === "petplay-origin-v2"
+    ) {
       turn.cancel();
       return;
     }

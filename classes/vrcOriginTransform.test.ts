@@ -529,6 +529,37 @@ Deno.test("stick turning: yaw follows the stick, stops on release, ignores the l
   }
 });
 
+Deno.test("stick turning (v2): yaw follows the measurement, not a dead reckoning with a wrong gain", () => {
+  // Gain 180°/s, but VRChat turns at 120°/s: dead reckoning would end 30° ahead after 0.5 s and
+  // hold there until a settle. v2 measures yaw without lag, so the estimate tracks it throughout.
+  const predictor = new VrcRootPredictor({ turnGainRadPerSec: Math.PI });
+  const v2 = (yaw: number): VrcOriginWorldPose => ({ source: "petplay-origin-v2", position: [0, 0, 0], yawRad: yaw });
+  const rate = (120 * Math.PI) / 180;
+  let t = 0;
+  for (; t <= 300; t += 11) {
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0 });
+    predictor.add({ t, pose: v2(0.001 * Math.sin(t)) });
+  }
+  const start = t;
+  // Measured yaw trails VRChat by ~60 ms.
+  const measured = (tt: number) => rate * Math.min(Math.max(0, tt - start - 60), 1000) / 1000;
+  const turnEnd = start + 1000;
+  for (; t <= turnEnd; t += 11) {
+    predictor.setInput({ t, move: [0, 0], turn: 1, headYawRate: 0 });
+    predictor.add({ t, pose: v2(measured(t)) });
+    assert(predictor.isStickTurning(), `turning at ${t - start} ms`);
+  }
+  for (const end = t + 1500; t <= end; t += 11) {
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0 });
+    // Body sway keeps the reading from ever going quiet.
+    predictor.add({ t, pose: v2(measured(t) + 0.002 * Math.sin(t / 37)) });
+    if (t - turnEnd > 250) {
+      assertAlmostEquals(predictor.predict(t).pose.yawRad, measured(t), 0.02, `at ${t - turnEnd} ms after release`);
+      assert(!predictor.isStickTurning());
+    }
+  }
+});
+
 Deno.test("hold model: solver: while the stick turns, avatar yaw changes apply 1:1 even toward the old yaw", () => {
   const solver = new VrcOriginSolver({ yawModel: "hold" });
   solver.update(makeWorldPose([0, 0, 0], 0.5), makeHmdMatrix([0, 1.6, 0], 0));
