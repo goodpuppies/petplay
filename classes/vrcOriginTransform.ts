@@ -467,8 +467,12 @@ export class VrcOriginRoomLock {
   private readonly jumpYaw: number;
   private readonly jumpDistance: number;
 
-  /** The held transform the output is blending away from, since `blendStart`. */
-  private blendFrom: VrcWorldToStandingTransform | null = null;
+  /**
+   * The initial offset (`held` vs `raw(t0)`) being eased out after a lock break: stored as
+   * root-space position delta and yaw/scale delta so ongoing locomotion moves 1:1 immediately
+   * without rubber-banding behind a static `held` transform.
+   */
+  private breakOffset: { dRoot: Vec3; dYaw: number; dScale: number } | null = null;
   private blendStart = 0;
   private mode: VrcOriginRoomLockMode = "moving";
   private held: VrcWorldToStandingTransform | null = null;
@@ -517,7 +521,7 @@ export class VrcOriginRoomLock {
     this.lastOutput = null;
     this.sustainedSince = null;
     this.settleAnchor = null;
-    this.blendFrom = null;
+    this.breakOffset = null;
     this.desyncSince = null;
     this.correction = null;
     this.lastStickAt = -Infinity;
@@ -582,10 +586,10 @@ export class VrcOriginRoomLock {
       // rather than wait for the raw estimate to go still, which head motion can prevent.
       this.mode = "locked";
       this.held = cloneTransform(raw);
-      this.correction = this.blendFrom
+      this.correction = this.breakOffset
         ? { from: cloneTransform(this.blendOutput(raw, worldPose, nowMs)), start: nowMs }
         : null;
-      this.blendFrom = null;
+      this.breakOffset = null;
       this.sustainedSince = null;
       this.desyncSince = null;
       return this.finish(this.lockedOutput(worldPose, nowMs), errorMeters);
@@ -605,11 +609,24 @@ export class VrcOriginRoomLock {
       }
       if (breakLock) {
         this.mode = "moving";
-        // Starting to walk eases in only if there is an initial offset to hide; a clean stick
-        // break from rest (tiny offset) or a snap turn / teleport moves at once without dragging.
+        // Ease out only the initial offset between `held` and `raw` at the break, while ongoing
+        // locomotion applies 1:1 immediately (no rubber-band drag on walk or turn starts).
         const jump = yawErr > this.jumpYaw || errorMeters > this.jumpDistance;
-        const cleanStart = stickMoving && errorMeters < 0.02 && yawErr < (1 * Math.PI) / 180;
-        this.blendFrom = jump || cleanStart ? null : cloneTransform(this.held);
+        if (jump) {
+          this.breakOffset = null;
+        } else {
+          const heldRoot = unityWorldPointToStanding(this.held, worldPose.position);
+          const rawRoot = unityWorldPointToStanding(raw, worldPose.position);
+          this.breakOffset = {
+            dRoot: [
+              heldRoot[0] - rawRoot[0],
+              heldRoot[1] - rawRoot[1],
+              heldRoot[2] - rawRoot[2],
+            ],
+            dYaw: angleDiffRad(this.held.yawRad, raw.yawRad),
+            dScale: this.held.scale - raw.scale,
+          };
+        }
         this.blendStart = nowMs;
         this.sustainedSince = null;
         this.settleAnchor = cloneTransform(raw);
@@ -626,7 +643,7 @@ export class VrcOriginRoomLock {
       } else if (nowMs - this.settleAnchorAt >= this.settleMs) {
         this.mode = "locked";
         this.held = cloneTransform(raw);
-        this.blendFrom = null;
+        this.breakOffset = null;
         this.sustainedSince = null;
       }
     }
@@ -650,19 +667,33 @@ export class VrcOriginRoomLock {
     return blendAroundRoot(this.correction.from, held, worldPose, u * u * (3 - 2 * u));
   }
 
-  /** The moving output: raw, blended in from the held transform just after a break. */
+  /** The moving output: raw plus the decaying initial break offset (ongoing motion is 1:1). */
   private blendOutput(
     raw: VrcWorldToStandingTransform,
     worldPose: VrcOriginWorldPose,
     nowMs: number,
   ): VrcWorldToStandingTransform {
-    if (!this.blendFrom) return raw;
+    if (!this.breakOffset) return raw;
     const u = (nowMs - this.blendStart) / this.blendMs;
     if (u >= 1) {
-      this.blendFrom = null;
+      this.breakOffset = null;
       return raw;
     }
-    return blendAroundRoot(this.blendFrom, raw, worldPose, u * u * (3 - 2 * u));
+    const w = 1 - u * u * (3 - 2 * u);
+    const { dRoot, dYaw, dScale } = this.breakOffset;
+    const rawRoot = unityWorldPointToStanding(raw, worldPose.position);
+    const yawRad = normalizeAngleRad(raw.yawRad + dYaw * w);
+    const scale = raw.scale + dScale * w;
+    const r = rotateYawRH(unityWorldPositionToRightHanded(worldPose.position), yawRad);
+    return {
+      yawRad,
+      scale,
+      translation: [
+        rawRoot[0] + dRoot[0] * w - scale * r[0],
+        rawRoot[1] + dRoot[1] * w - scale * r[1],
+        rawRoot[2] + dRoot[2] * w - scale * r[2],
+      ],
+    };
   }
 
   private finish(
@@ -902,16 +933,23 @@ class KalmanChannel {
   }
 
   /**
-   * The stick was released at `t`: VRChat stopped on `axes` (horizontal `[0, 2]`). Advance to `t`
-   * at the current velocity, then zero velocity on `axes` (later measurements still correct).
+   * The stick was released at `t`: VRChat stopped on `axes` (horizontal `[0, 2]`). Do not
+   * extrapolate past the last burst (VRChat may already have stopped before `t`), just advance
+   * slightly (<= 10 ms), zero velocity on `axes`, and raise position variance slightly so the
+   * final rest burst snaps cleanly to rest without velocity ringing.
    */
   stopAxes(t: number, axes: number[]): void {
     if (!this.state.length) return;
-    if (t > this.updatedAt) this.advanceTo(t);
+    if (t > this.updatedAt) {
+      const capped = Math.min(t, this.updatedAt + 10);
+      this.advanceTo(capped);
+      this.updatedAt = t;
+    }
     for (const k of axes) {
       this.state[k][1] = 0;
+      this.cov[k][0] = Math.max(this.cov[k][0], 0.002);
       this.cov[k][1] = 0;
-      this.cov[k][2] = 0.005;
+      this.cov[k][2] = 0.002;
     }
   }
 
@@ -1040,11 +1078,11 @@ export interface VrcLocomotionInput {
   jump?: boolean;
 }
 
-/** Spread of OSC arrival times around when VRChat sampled (ms): v1 (measured 2026-11-24) and v2 (50 Hz). */
+/** Spread of OSC arrival times around when VRChat sampled (ms): v1 (measured 2026-11-24) and v2. */
 const ARRIVAL_SIGMA_MS = 12;
-const V2_ARRIVAL_SIGMA_MS = 10;
-const V2_POSITION_MEASUREMENT_VARIANCE = 2.5e-4;
-const V2_DEFAULT_SMOOTHING_MS = 50;
+const V2_ARRIVAL_SIGMA_MS = 14;
+const V2_POSITION_MEASUREMENT_VARIANCE = 4e-4;
+const V2_DEFAULT_SMOOTHING_MS = 55;
 const STICK_DEADZONE = 0.15;
 const STICK_CHANGE = 0.1;
 
@@ -1414,11 +1452,11 @@ export class VrcRootPredictor {
 
     const steady = (stick: StickTracker) => input.t - stick.changedAt >= this.stickChangeMs;
     const settlingStop = !airborne && this.move.releasedWithin(input.t, 250);
-    const posQ = isV2 ? (settlingStop ? 0.1 : Math.max(this.q.position, 2)) : this.q.position;
+    const posQ = isV2 ? (settlingStop ? 0.1 : this.q.position) : this.q.position;
     const posQSteady = this.q.steadyPosition;
-    const posQChanging = isV2 ? Math.max(this.q.changingPosition, 12) : this.q.changingPosition;
+    const posQChanging = isV2 ? Math.min(this.q.changingPosition, 6) : this.q.changingPosition;
     const yawQ = isV2 ? Math.max(this.q.yaw, 20) : this.q.yaw;
-    const yawQChanging = isV2 ? Math.max(this.q.changingYaw, 50) : this.q.changingYaw;
+    const yawQChanging = isV2 ? Math.max(this.q.changingYaw, 45) : this.q.changingYaw;
     this.position.q = this.move.active
       ? (steady(this.move) ? posQSteady : posQChanging)
       : posQ;
@@ -1448,8 +1486,10 @@ export class VrcRootPredictor {
         (pose.position[1] - prev.position[1]) / dt,
         (pose.position[2] - prev.position[2]) / dt,
       ];
-      if (Math.abs(this.lastMeasVel[1]) > 0.2) {
-        this.airborneUntil = Math.max(this.airborneUntil, t + 200);
+      if (
+        this.position.started && this.lastMeasVel[1] < -0.8 && this.position.velocity()[1] < -0.8
+      ) {
+        this.airborneUntil = Math.max(this.airborneUntil, t + 150);
       }
     }
     this.lastPose = pose;
@@ -1475,7 +1515,7 @@ export class VrcRootPredictor {
           // The motion changed in a way the stick didn't show (direction follows a hand, a
           // slope, a wall): be responsive again.
           this.move.changedAt = t;
-          this.position.q = isV2 ? Math.max(this.q.changingPosition, 20) : this.q.changingPosition;
+          this.position.q = isV2 ? Math.min(this.q.changingPosition, 6) : this.q.changingPosition;
         }
       }
       this.position.measure(t, [...pose.position], freshAxes, arrivalSigma, posROverride);
