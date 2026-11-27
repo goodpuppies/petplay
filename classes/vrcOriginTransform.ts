@@ -212,7 +212,7 @@ export interface VrcOriginSolverResult {
  * turn, while immediately tracking joystick turns, smooth turns, and teleports.
  */
 /** Decay (ms) of the solver's recent peak head yaw rate. */
-const PEAK_HEAD_RATE_DECAY_MS = 250;
+const PEAK_HEAD_RATE_DECAY_MS = 500;
 
 export class VrcOriginSolver {
   private readonly avatarYawEps: number;
@@ -269,6 +269,8 @@ export class VrcOriginSolver {
   /**
    * @param stickTurning the turn stick is held: every avatar yaw change is the playspace turning
    *   (not the body catching up to the head), so it applies 1:1
+   * @param sticksKnown sticks are being read, so when `!stickTurning` playspace yaw cannot change
+   *   from head movement — only allow slow convergence when the head is genuinely still.
    */
   update(
     worldPose: VrcOriginWorldPose,
@@ -276,6 +278,7 @@ export class VrcOriginSolver {
     stickTurning = false,
     nowMs = performance.now(),
     hmdYawRateRad = 0,
+    sticksKnown = false,
   ): VrcOriginSolverResult {
     const hmdPos: Vec3 = [hmdMatrix[0][3], hmdMatrix[1][3], hmdMatrix[2][3]];
     const hmdYaw = hmdYawRightHandedRad(hmdMatrix);
@@ -294,7 +297,9 @@ export class VrcOriginSolver {
         this.peakHeadRate * Math.exp(-dtMs / PEAK_HEAD_RATE_DECAY_MS),
       );
       const rate = this.peakHeadRate;
-      const [slow, fast] = this.followHeadRate;
+      const [slow, fast] = sticksKnown && !stickTurning
+        ? [(10 * Math.PI) / 180, (25 * Math.PI) / 180]
+        : this.followHeadRate;
       const trust = rate <= slow ? 1 : rate >= fast ? 0 : (fast - rate) / (fast - slow);
       if (stickTurning) {
         // The turn stick turns the playspace: take it at once, no smoothing lag. Not the root's
@@ -1376,6 +1381,11 @@ export class VrcRootPredictor {
 
   hasSamples(): boolean {
     return this.lastPose != null;
+  }
+
+  /** Latest unsmoothed OSC avatar yaw (rad), for `VrcOriginSolver` head-lead pairing. */
+  latestRawYawRad(): number | null {
+    return this.lastPose?.yawRad ?? null;
   }
 
   /**

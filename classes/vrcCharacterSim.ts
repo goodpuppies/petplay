@@ -101,6 +101,11 @@ export class VrcCharacterSim {
   private lastOscYaw = 0;
   private lastOscT = 0;
   private lastPosOscT = 0;
+  private lastYawOscT = 0;
+  /** In-phase avatar yaw rate from consecutive OSC yaw bursts (rad/s). */
+  private oscYawRate = 0;
+  /** Displacement anchor for unbiased windowed (>=150 ms) walk-speed learning. */
+  private walkAnchor: { t: number; pos: Vec3; move: [number, number]; yaw: number } | null = null;
 
   /** Ring buffer of simulated states so incoming OSC at `t` compares against `sim(t - latency)`. */
   private history: { t: number; pos: Vec3; yaw: number }[] = [];
@@ -131,6 +136,8 @@ export class VrcCharacterSim {
     this.wallBlocked = false;
     this.wallStallCount = 0;
     this.lastOscPos = null;
+    this.oscYawRate = 0;
+    this.walkAnchor = null;
     this.history = [];
     this.jumpQueued = false;
   }
@@ -209,9 +216,16 @@ export class VrcCharacterSim {
     const launchSpeed = jumpParams?.launchSpeed ?? 2.9;
     const gravity = jumpParams?.gravity ?? 9.6;
 
-    // 1. Yaw simulation (smooth-turn stick curve minus signed head yaw rate).
+    // 1. Yaw simulation:
+    // VRChat's avatar yaw leads unpredicted OpenVR HMD yaw by ~45-50 ms (SteamVR display
+    // prediction), so integrating lagged `-hmdYawRate` fights head-shake reversals. Use the
+    // in-phase OSC yaw rate when the turn stick is idle, and add smooth-turn stick rate when held.
     const turnEff = Math.abs(this.turn) > STICK_DEADZONE ? vrcSmoothTurnCurve(this.turn) : 0;
-    this.yawRateCur = this.turnGain * turnEff - this.hmdYawRate;
+    const yawAge = t - this.lastYawOscT;
+    const effOscYawRate = yawAge < 40
+      ? this.oscYawRate
+      : this.oscYawRate * Math.exp(-(yawAge - 40) / 40);
+    this.yawRateCur = turnEff !== 0 ? this.turnGain * turnEff - this.hmdYawRate : effOscYawRate;
     this.yaw += this.yawRateCur * dt;
 
     // 2. Wall-silence check: holding stick for >180 ms with zero OSC position updates -> blocked.
@@ -224,7 +238,9 @@ export class VrcCharacterSim {
     }
 
     // 3. Exact ClientSimPlayerController FixedUpdate physics.
-    const [desX, desZ] = this.wallBlocked ? [0, 0] : this.desiredMoveXZ(this.move, this.yaw);
+    // VRChat steers along the live head heading (~15 ms ahead of OSC avatar yaw).
+    const headingYaw = this.yaw + effOscYawRate * 0.015;
+    const [desX, desZ] = this.wallBlocked ? [0, 0] : this.desiredMoveXZ(this.move, headingYaw);
     if (this.grounded) {
       if (this.jumpQueued) {
         this.grounded = false;
@@ -335,6 +351,9 @@ export class VrcCharacterSim {
       this.lastOscYaw = pose.yawRad;
       this.lastOscT = t;
       this.lastPosOscT = t;
+      this.lastYawOscT = t;
+      this.oscYawRate = 0;
+      this.walkAnchor = null;
       this.history = [{ t, pos: [...this.pos], yaw: this.yaw }];
       return;
     }
@@ -357,39 +376,13 @@ export class VrcCharacterSim {
         const desSpd = Math.hypot(desX, desZ);
 
         // Wall-collision detection (require 3 consecutive stalled bursts so a single slow OSC
-        // burst never slams the brakes) & online walk-speed learning.
+        // burst never slams the brakes).
         if (this.grounded && desSpd > 0.6) {
           if (t - this.movePressedAt >= 100 && (mSpdXZ < 0.25 * desSpd || mvx * desX + mvz * desZ < 0)) {
             if (++this.wallStallCount >= 3) this.wallBlocked = true;
           } else if (mSpdXZ > 0.35 * desSpd) {
             this.wallStallCount = 0;
             this.wallBlocked = false;
-            const vFwd = mvx * Math.sin(pose.yawRad) + mvz * Math.cos(pose.yawRad);
-            const vRgt = mvx * Math.cos(pose.yawRad) - mvz * Math.sin(pose.yawRad);
-            const [sx, sy] = this.move;
-            const alpha = 1 / Math.min(60, this.walk.samples + 8);
-            let updated = false;
-            if (Math.abs(sy) > 0.65 && Math.abs(sx) < 0.3 && vFwd * sy > 0.5) {
-              const est = Math.min(15, Math.max(0.5, vFwd / sy));
-              this.walk = {
-                ...this.walk,
-                forwardSpeed: this.walk.forwardSpeed + (est - this.walk.forwardSpeed) * alpha,
-                samples: this.walk.samples + 1,
-              };
-              updated = true;
-            } else if (Math.abs(sx) > 0.65 && Math.abs(sy) < 0.3 && vRgt * sx > 0.3) {
-              const est = Math.min(15, Math.max(0.5, vRgt / sx));
-              this.walk = {
-                ...this.walk,
-                strafeSpeed: this.walk.strafeSpeed + (est - this.walk.strafeSpeed) * alpha,
-                samples: this.walk.samples + 1,
-              };
-              updated = true;
-            }
-            if (updated && ++this.walkNotifyCounter >= 10) {
-              this.walkNotifyCounter = 0;
-              this.onWalkLearned?.(this.walk);
-            }
           }
         }
         // Detect landing on a higher/lower surface.
@@ -412,11 +405,73 @@ export class VrcCharacterSim {
       }
     }
 
+    // Windowed (>=150 ms) walk-speed learning so single-burst arrival-time jitter cannot bias
+    // forwardSpeed/strafeSpeed upward via E[1/dt] > 1/E[dt].
+    if (posChanged && this.grounded && !this.wallBlocked) {
+      const [sx, sy] = this.move;
+      const pureFwd = Math.abs(sy) > 0.7 && Math.abs(sx) < 0.25;
+      const pureStr = Math.abs(sx) > 0.7 && Math.abs(sy) < 0.25;
+      if (pureFwd || pureStr) {
+        if (
+          !this.walkAnchor ||
+          Math.hypot(sx - this.walkAnchor.move[0], sy - this.walkAnchor.move[1]) > 0.1 ||
+          Math.abs(angleDiffRad(pose.yawRad, this.walkAnchor.yaw)) > 0.2
+        ) {
+          this.walkAnchor = { t, pos: [...pose.position], move: [sx, sy], yaw: pose.yawRad };
+        } else if (t - this.walkAnchor.t >= 100) {
+          const dtW = (t - this.walkAnchor.t) / 1000;
+          const vx = (pose.position[0] - this.walkAnchor.pos[0]) / dtW;
+          const vz = (pose.position[2] - this.walkAnchor.pos[2]) / dtW;
+          const midYaw = this.walkAnchor.yaw + angleDiffRad(pose.yawRad, this.walkAnchor.yaw) * 0.5;
+          const vFwd = vx * Math.sin(midYaw) + vz * Math.cos(midYaw);
+          const vRgt = vx * Math.cos(midYaw) - vz * Math.sin(midYaw);
+          const alpha = 1 / Math.min(24, this.walk.samples + 3);
+          let updated = false;
+          if (pureFwd && vFwd * sy > 0.5) {
+            const est = Math.min(15, Math.max(0.5, vFwd / sy));
+            this.walk = {
+              ...this.walk,
+              forwardSpeed: this.walk.forwardSpeed + (est - this.walk.forwardSpeed) * alpha,
+              samples: this.walk.samples + 1,
+            };
+            updated = true;
+          } else if (pureStr && vRgt * sx > 0.3) {
+            const est = Math.min(15, Math.max(0.5, vRgt / sx));
+            this.walk = {
+              ...this.walk,
+              strafeSpeed: this.walk.strafeSpeed + (est - this.walk.strafeSpeed) * alpha,
+              samples: this.walk.samples + 1,
+            };
+            updated = true;
+          }
+          if (updated && ++this.walkNotifyCounter >= 5) {
+            this.walkNotifyCounter = 0;
+            this.onWalkLearned?.(this.walk);
+          }
+          this.walkAnchor = { t, pos: [...pose.position], move: [sx, sy], yaw: pose.yawRad };
+        }
+      } else {
+        this.walkAnchor = null;
+      }
+    } else if (!this.grounded || this.wallBlocked) {
+      this.walkAnchor = null;
+    }
+
     if (posChanged) {
       this.lastOscPos = [...pose.position];
       this.lastPosOscT = t;
     }
-    if (yawChanged) this.lastOscYaw = pose.yawRad;
+    if (yawChanged) {
+      const dtY = (t - this.lastYawOscT) / 1000;
+      if (dtY > 0.008 && dtY < 0.12) {
+        const instRate = angleDiffRad(pose.yawRad, this.lastOscYaw) / dtY;
+        if (Math.abs(instRate) < 12) {
+          this.oscYawRate += (instRate - this.oscYawRate) * 0.6;
+        }
+      }
+      this.lastOscYaw = pose.yawRad;
+      this.lastYawOscT = t;
+    }
     this.lastOscT = t;
 
     // 1st-order delayed-state observer update.
@@ -457,16 +512,11 @@ export class VrcCharacterSim {
       }
     }
     if (yawChanged) {
-      // OSC avatar yaw has ~0 ms lag relative to unpredicted HMD yaw, so track it tightly so
-      // walking while turning the head steers along VRChat's actual heading immediately.
+      // Snap directly to OSC avatar yaw so heading tracks rapid head turns without observer lag.
       const ryaw = angleDiffRad(pose.yawRad, this.yaw);
-      if (Math.abs(ryaw) > (25 * Math.PI) / 180) {
-        this.yaw = this.yaw + ryaw;
-        this.pendingYaw = 0;
-        for (const h of this.history) h.yaw = this.yaw;
-      } else {
-        this.pendingYaw += (ryaw - this.pendingYaw) * 0.85;
-      }
+      this.yaw = this.yaw + ryaw;
+      this.pendingYaw = 0;
+      for (const h of this.history) h.yaw = this.yaw;
     }
   }
 

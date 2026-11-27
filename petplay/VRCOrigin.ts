@@ -458,12 +458,17 @@ async function pollOriginOnce(): Promise<boolean> {
     airborne
   );
 
+  const solverPose: VrcOriginWorldPose = {
+    ...worldPose,
+    yawRad: predictor.latestRawYawRad() ?? worldPose.yawRad,
+  };
   const raw = solver.update(
-    worldPose,
+    solverPose,
     hmdMatrix,
     predictor.isStickTurning(),
     performance.now(),
     hmdYawRate,
+    sticks != null,
   );
   hmdTrace.push([
     now,
