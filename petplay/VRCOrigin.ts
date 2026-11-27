@@ -17,6 +17,7 @@ import {
 } from "../classes/vrcOriginCodec.ts";
 import {
   type Matrix34Tuple,
+  normalizeAngleRad,
   rotateYawRH,
   unityWorldPointToStanding,
   unityWorldPositionToRightHanded,
@@ -433,6 +434,10 @@ async function pollOriginOnce(): Promise<boolean> {
   syncWorldLocomotion(now);
   // VRChat defaults: left stick moves, right stick turns.
   const sticks = latestSticks && now - latestSticks.t < STICKS_STALE_MS ? latestSticks : null;
+  const hmdYaw = Math.atan2(hmdMatrix[0][2], hmdMatrix[2][2]);
+  const headWorldYaw = state.transform != null
+    ? normalizeAngleRad(state.transform.yawRad - hmdYaw)
+    : undefined;
   predictor.setInput(
     sticks
       ? {
@@ -441,6 +446,7 @@ async function pollOriginOnce(): Promise<boolean> {
         turn: vrcSticks.right[0],
         headYawRate: hmdYawRate,
         jump: vrcJump,
+        headWorldYaw,
       }
       : null,
   );

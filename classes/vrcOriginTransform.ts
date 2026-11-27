@@ -1097,6 +1097,11 @@ export interface VrcLocomotionInput {
   headYawRate: number;
   /** Jump held (VRChat default: right A), as VRChat sees it. */
   jump?: boolean;
+  /**
+   * Current HMD look heading in Unity world space (`playspaceYaw - hmdYaw`, rad), when known.
+   * Used on walk start when VRChat kept the avatar root planted while the user turned physically.
+   */
+  headWorldYaw?: number;
 }
 
 /** Spread of OSC arrival times around when VRChat sampled (ms): v1 (measured 2026-11-24) and v2. */
@@ -1452,6 +1457,7 @@ export class VrcRootPredictor {
       input.jump === true,
       this.jump.params,
       this.jump.enabled,
+      input.headWorldYaw,
     );
     // Only stop horizontal velocity on grounded release: mid-air release coasts ballistically.
     if (moveEvent === "released" && !airborne) {

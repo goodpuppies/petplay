@@ -203,10 +203,24 @@ export class VrcCharacterSim {
     jump: boolean,
     jumpParams: VrcJumpParams,
     jumpEnabled: boolean,
+    headWorldYaw?: number,
   ): void {
     const prevActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
     const nextActive = Math.hypot(move[0], move[1]) > STICK_DEADZONE;
-    if (nextActive && !prevActive) this.movePressedAt = t;
+    if (nextActive && !prevActive) {
+      this.movePressedAt = t;
+      // If the user physically turned their head while standing still, VRChat kept the avatar root
+      // planted at the old yaw until locomotion begins — seed yaw from live HMD world heading so
+      // the first steps walk in the look direction instead of along the stale planted root.
+      if (
+        headWorldYaw != null && Number.isFinite(headWorldYaw) &&
+        Math.abs(angleDiffRad(headWorldYaw, this.yaw)) > (5 * Math.PI) / 180
+      ) {
+        this.yaw += angleDiffRad(headWorldYaw, this.yaw);
+        this.pendingYaw = 0;
+        this.corrYawRate = 0;
+      }
+    }
     if (prevActive && !nextActive) {
       this.moveReleasedAt = t;
       const vSpd = Math.hypot(this.velCur[0], this.velCur[2]);
