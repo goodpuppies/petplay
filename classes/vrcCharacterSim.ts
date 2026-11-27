@@ -276,11 +276,18 @@ export class VrcCharacterSim {
     // prediction), so integrating lagged `-hmdYawRate` fights head-shake reversals. Use the
     // in-phase OSC yaw rate when the turn stick is idle, and add smooth-turn stick rate when held.
     const turnEff = Math.abs(this.turn) > TURN_STICK_DEADZONE ? vrcSmoothTurnCurve(this.turn) : 0;
+    const inTurnReleaseTail = turnEff === 0 && t - this.turnReleasedAt < 220;
     const yawAge = t - this.lastYawOscT;
     const effOscYawRate = yawAge < 40
       ? this.oscYawRate
       : this.oscYawRate * Math.exp(-(yawAge - 40) / 40);
-    this.yawRateCur = turnEff !== 0 ? this.turnGain * turnEff - this.hmdYawRate : effOscYawRate;
+    // During the post-turn release tail, the solver still has stickTurning=true and computes
+    // playspaceYaw = yaw + hmdYaw, so integrate -hmdYawRate to cancel physical head turns 1:1.
+    this.yawRateCur = turnEff !== 0
+      ? this.turnGain * turnEff - this.hmdYawRate
+      : inTurnReleaseTail
+      ? -this.hmdYawRate
+      : effOscYawRate;
     this.yaw += this.yawRateCur * dt;
 
     // 2. Wall-silence check: holding stick for >350 ms with zero OSC position updates -> blocked.
