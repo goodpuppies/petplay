@@ -49,12 +49,14 @@ There are two rigs. Put **one** of them on an avatar:
   the world-origin `Measure` (weight `1 − 2^-N`). Both weights and their sum are exact in float32
   and the origin contributes exactly 0, so the scaled position keeps the full precision of the
   world coordinate. A Y-only rotation constraint copies the anchor's yaw.
-- `SenderFwd` is `Sender`'s child at local `(0, 0, 2^-N)`.
+- `SenderFwd` is `Sender`'s child at local `(0, 0, 2^(3-N))`, 8 m in world terms, so a decode
+  that pairs `Pos` and `Fwd` from different frames skews the heading by only
+  ~(metres moved per frame) / 8 m.
 - Two receivers at world origin (radius 1 m, `Constant`, self-only, local-only) each see one
   sender by collision tag and output its position in receiver space (VRChat SDK 3.10 contact
   advanced parameter `SenderLocalPosition`). The 1 m radius keeps every value inside `[-1, 1]`.
 - Decode (`classes/vrcOriginCodec.ts`, `decodePetPlayOriginV2Pose`): `position = Pos × 2^N`,
-  `yaw = atan2(dx, dz)` of `Fwd − Pos`. `|Fwd − Pos| = 2^-N`, so the decoder reads N from the
+  `yaw = atan2(dx, dz)` of `Fwd − Pos`. `|Fwd − Pos| = 2^(3-N)`, so the decoder reads N from the
   rig and a rebuild with another `ScaleExponent` needs no decoder change.
 
 ### v2 parameters emitted over OSC

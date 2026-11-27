@@ -183,7 +183,7 @@ Deno.test("v2 decode keeps float32 world precision across the range, for any sca
           );
         }
         const yawError = Math.atan2(Math.sin(pose.yawRad - yawRad), Math.cos(pose.yawRad - yawRad));
-        const bound = 1e-6 + Math.hypot(...position) * 2 ** -22;
+        const bound = 1e-6 + Math.hypot(...position) * 2 ** -25;
         assert(Math.abs(yawError) < bound, `yaw ${yawDeg} at ${position} N=${n}: ${yawError}`);
       }
     }
@@ -197,11 +197,11 @@ Deno.test("v2 decode needs both receivers present and a power-of-two forward off
   const noFwd = { ...good };
   delete noFwd[PETPLAY_ORIGIN_V2_PARAMS.fwd];
   assertEquals(decodePetPlayOriginV2Pose(noFwd), null);
-  // Forward offset 1.5 * 2^-13: not a power of two.
+  // Forward offset 1.5 * 2^-10: not a power of two.
   const torn = {
     ...good,
     [PETPLAY_ORIGIN_V2_PARAMS.fwdX]: good[PETPLAY_ORIGIN_V2_PARAMS.posX],
-    [PETPLAY_ORIGIN_V2_PARAMS.fwdZ]: good[PETPLAY_ORIGIN_V2_PARAMS.posZ] + 1.5 * 2 ** -13,
+    [PETPLAY_ORIGIN_V2_PARAMS.fwdZ]: good[PETPLAY_ORIGIN_V2_PARAMS.posZ] + 1.5 * 2 ** -10,
   };
   assertEquals(decodePetPlayOriginV2Pose(torn), null);
   // Coincident senders.
@@ -224,6 +224,15 @@ Deno.test("v2 decode tolerates a frame-old Fwd while walking", () => {
   const pose = decodePetPlayOriginV2Pose(mixed);
   assert(pose);
   assertAlmostEquals(pose.position[2], 50, 1e-3);
+  // Sideways at 15 m/s (flying): the 8 m forward offset keeps the heading within ~1.2 degrees.
+  const side = encodePetPlayOriginV2Pose([100 - 15 / 90, 0, 50], 0);
+  const skewed = { ...now };
+  for (const k of ["fwd", "fwdX", "fwdY", "fwdZ"] as const) {
+    skewed[PETPLAY_ORIGIN_V2_PARAMS[k]] = side[PETPLAY_ORIGIN_V2_PARAMS[k]];
+  }
+  const sidePose = decodePetPlayOriginV2Pose(skewed);
+  assert(sidePose);
+  assert(Math.abs(sidePose.yawRad) < 1.2 * Math.PI / 180, `yaw ${sidePose.yawRad}`);
 });
 
 Deno.test("decodeVrcOriginPose prefers v2 over v1 and accepts the v2 OSC prefix", () => {

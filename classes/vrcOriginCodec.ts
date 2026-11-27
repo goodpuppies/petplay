@@ -4,8 +4,8 @@
  * Supports three protocols, preferred in this order:
  * 0. `PetPlay/OriginV2/*` (Modular Avatar prefab, VRChat SDK 3.10+ contact SenderLocalPosition):
  *    - Two receivers at world origin report the local position of a sender at `anchor * 2^-N`
- *      (`Pos`) and of a second sender `2^-N` ahead of it along the anchor's yaw (`Fwd`).
- *    - `position = Pos * 2^N`, `yaw = atan2(dx, dz)` of `Fwd - Pos`; `|Fwd - Pos| = 2^-N` gives N.
+ *      (`Pos`) and of a second sender `2^(F-N)` ahead of it along the anchor's yaw (`Fwd`), F = 3.
+ *    - `position = Pos * 2^N`, `yaw = atan2(dx, dz)` of `Fwd - Pos`; `|Fwd - Pos| = 2^(F-N)` gives N.
  *    - `Pos` / `Fwd` themselves are 1 while the sender is inside its receiver (validity).
  *    - The scale is a power of two and the receiver sits at exactly 0, so the decode carries the
  *      float32 precision of the world coordinate; range is `2^N` m (N = 13 -> 8192 m).
@@ -69,9 +69,12 @@ export const PETPLAY_ORIGIN_V2_PARAMS = {
 /** N the v2 prefab is built with (`PetPlayOriginV2PrefabBuilder.ScaleExponent`). The decoder
  * measures N from the forward offset, so this is only the expected value. */
 export const PETPLAY_ORIGIN_V2_SCALE_EXPONENT = 13;
+/** F: the forward sender sits `2^(F-N)` ahead, `2^F` m in world terms
+ * (`PetPlayOriginV2PrefabBuilder.FwdOffsetExponent`). */
+export const PETPLAY_ORIGIN_V2_FWD_OFFSET_EXPONENT = 3;
 /** Accepted distance of `-log2 |Fwd - Pos|` from an integer N. OSC delivers each parameter on its
- * own, so a decode can pair a new `Pos` with a frame-old `Fwd`; that skews the offset by the
- * metres moved in that frame, and 0.25 (about ±19 %) keeps walking and running decodable. */
+ * own, so a decode can pair a new `Pos` with a frame-old `Fwd`; that skews the 8 m offset by the
+ * metres moved in that frame, and 0.25 (about ±19 %, 1.5 m) keeps any locomotion decodable. */
 const V2_EXPONENT_TOLERANCE = 0.25;
 /** Validity threshold on the Constant receivers' `Pos` / `Fwd` outputs. */
 const V2_PRESENT_MIN = 0.5;
@@ -208,7 +211,7 @@ export function decodePetPlayOriginV2Pose(
   const exponent = -Math.log2(length);
   const n = Math.round(exponent);
   if (Math.abs(exponent - n) > V2_EXPONENT_TOLERANCE) return null;
-  const scale = 2 ** n;
+  const scale = 2 ** (n + PETPLAY_ORIGIN_V2_FWD_OFFSET_EXPONENT);
   return {
     source: "petplay-origin-v2",
     position: [px * scale, py * scale, pz * scale],
@@ -227,8 +230,13 @@ export function encodePetPlayOriginV2Pose(
 ): Record<string, number> {
   const f = Math.fround;
   const s = f(2 ** -scaleExponent);
+  const offset = f(2 ** (PETPLAY_ORIGIN_V2_FWD_OFFSET_EXPONENT - scaleExponent));
   const p = position.map((v) => f(f(v) * s));
-  const fwd = [f(p[0] + f(s * f(Math.sin(yawRad)))), p[1], f(p[2] + f(s * f(Math.cos(yawRad))))];
+  const fwd = [
+    f(p[0] + f(offset * f(Math.sin(yawRad)))),
+    p[1],
+    f(p[2] + f(offset * f(Math.cos(yawRad)))),
+  ];
   const P = PETPLAY_ORIGIN_V2_PARAMS;
   return {
     [P.pos]: 1,

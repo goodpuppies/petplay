@@ -14,8 +14,10 @@
 //   world-origin Measure (weight 1 - 2^-N). Both weights and the sum are exact in float32, and the
 //   origin contributes exactly 0, so the scaled position carries the full float precision of the
 //   world coordinate. A Y-only rotation constraint copies Anchor's yaw.
-// - SenderFwd is Sender's child at local (0, 0, 2^-N): its offset from Sender is the heading,
-//   and its length (2^-N) tells the decoder N, so a rebuild with another N needs no decoder change.
+// - SenderFwd is Sender's child at local (0, 0, 2^(F-N)), F = FwdOffsetExponent = 3: 8 m in
+//   world terms. Its offset from Sender is the heading, and its length tells the decoder N, so a
+//   rebuild with another N needs no decoder change. A long offset keeps the heading steady when a
+//   decode pairs Pos and Fwd from different frames (error ~ metres moved per frame / 8 m).
 // - Two receivers at world origin (radius 1 m, Constant, self-only, local-only) each see exactly
 //   one sender by collision tag and output its position in receiver space:
 //     <param>            1 while the sender is inside (validity)
@@ -53,6 +55,8 @@ public static class PetPlayOriginV2PrefabBuilder
 
     /// N: senders sit at 2^-N of the anchor's world position; range is 2^N m.
     public const int ScaleExponent = 13;
+    /// F: SenderFwd sits 2^(F-N) ahead of Sender (2^F m in world terms).
+    public const int FwdOffsetExponent = 3;
     public const float ReceiverRadius = 1f;
     public const string ParamPrefix = "PetPlay/OriginV2/";
     public const string PosParam = ParamPrefix + "Pos";
@@ -61,6 +65,7 @@ public static class PetPlayOriginV2PrefabBuilder
     public const string FwdTag = ParamPrefix + "Fwd";
 
     static float Scale => Mathf.Pow(2f, -ScaleExponent);
+    static float FwdOffset => Mathf.Pow(2f, FwdOffsetExponent - ScaleExponent);
 
     static IEnumerable<string> ReceiverOutputs(string param) => new[]
     {
@@ -82,6 +87,7 @@ public static class PetPlayOriginV2PrefabBuilder
         public int scaleExponent = ScaleExponent;
         public float rangeMeters = Mathf.Pow(2f, ScaleExponent);
         public float receiverRadius = ReceiverRadius;
+        public int fwdOffsetExponent = FwdOffsetExponent;
         public List<string> outputs = OutputFloatParams.ToList();
         public int syncedParameterBits;
         public int localParameterCount;
@@ -327,7 +333,7 @@ public static class PetPlayOriginV2PrefabBuilder
 
             var fwdGo = new GameObject("SenderFwd");
             fwdGo.transform.SetParent(senderGo.transform, false);
-            fwdGo.transform.localPosition = new Vector3(0f, 0f, Scale);
+            fwdGo.transform.localPosition = new Vector3(0f, 0f, FwdOffset);
             AddSender(fwdGo, FwdTag);
 
             var prefab = PrefabUtility.SaveAsPrefabAsset(root, OriginPrefabPath);
@@ -417,8 +423,8 @@ public static class PetPlayOriginV2PrefabBuilder
         float wAnchor = pc.Sources[1].Weight, wOrigin = pc.Sources[0].Weight;
         if (wAnchor != Scale || wOrigin + wAnchor != 1f) throw new Exception($"Sender weights not exact: {wOrigin} + {wAnchor}");
         var fwd = sender.Find("SenderFwd");
-        if (fwd.localPosition != new Vector3(0f, 0f, Scale)) throw new Exception("SenderFwd offset must be (0, 0, 2^-N)");
-        report.checks.Add($"Sender weights exact (2^-{ScaleExponent} and 1 - 2^-{ScaleExponent}); SenderFwd at (0, 0, 2^-{ScaleExponent})");
+        if (fwd.localPosition != new Vector3(0f, 0f, FwdOffset)) throw new Exception("SenderFwd offset must be (0, 0, 2^(F-N))");
+        report.checks.Add($"Sender weights exact (2^-{ScaleExponent} and 1 - 2^-{ScaleExponent}); SenderFwd at (0, 0, 2^{FwdOffsetExponent - ScaleExponent})");
 
         report.contactSenders = loaded.GetComponentsInChildren<VRCContactSender>(true).Length;
         report.contactReceivers = loaded.GetComponentsInChildren<VRCContactReceiver>(true).Length;
