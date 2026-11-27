@@ -434,14 +434,23 @@ export class VrcCharacterSim {
 
   evaluate(t: number, source: VrcOriginWorldPose["source"], jumpParams?: VrcJumpParams): VrcCharacterSimState {
     this.stepTo(t, jumpParams);
+    const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
+    const posTauSec = (moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65)) / 1000;
+    const yawTauSec = this.yawTauMs / 1000;
     return {
       pose: {
         source,
         position: [this.pos[0], this.pos[1], this.pos[2]],
         yawRad: normalizeAngleRad(this.yaw),
       },
-      velocity: [this.velCur[0], this.velCur[1], this.velCur[2]],
-      yawRate: this.yawRateCur,
+      // Include the 1st-order observer bleed rate so webxr's 90 Hz extrapolation matches `pos`'s
+      // exact trajectory without a 60 Hz sawtooth between ORIGINUPDATE polls.
+      velocity: [
+        this.velCur[0] + this.pendingPos[0] / posTauSec,
+        this.velCur[1] + this.pendingPos[1] / posTauSec,
+        this.velCur[2] + this.pendingPos[2] / posTauSec,
+      ],
+      yawRate: this.yawRateCur + this.pendingYaw / yawTauSec,
     };
   }
 }

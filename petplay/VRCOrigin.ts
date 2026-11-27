@@ -416,6 +416,19 @@ async function pollOriginOnce(): Promise<boolean> {
     if (!seed) return false;
     predictor.add({ t: performance.timeOrigin + performance.now() - 1000, pose: seed });
   }
+  const hmdPose = await withTimeout(PostMan.PostMessage({
+    target: state.hmd,
+    type: "GETHMDPOSITION",
+    payload: null,
+  }, true)) as OpenVR.TrackedDevicePose;
+
+  if (!hmdPose?.bPoseIsValid) return false;
+  const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
+  // OpenVR's angular velocity is in tracking space: +Y is counter-clockwise, as yaw RH.
+  const hmdYawRate = hmdPose.vAngularVelocity?.v?.[1] ?? 0;
+  const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
+  lastHeadYawRate = hmdYawRate;
+
   const now = performance.timeOrigin + performance.now();
   syncWorldLocomotion(now);
   // VRChat defaults: left stick moves, right stick turns.
@@ -426,7 +439,7 @@ async function pollOriginOnce(): Promise<boolean> {
         t: now,
         move: vrcSticks.left,
         turn: vrcSticks.right[0],
-        headYawRate: lastHeadYawRate,
+        headYawRate: hmdYawRate,
         jump: vrcJump,
       }
       : null,
@@ -445,17 +458,6 @@ async function pollOriginOnce(): Promise<boolean> {
     airborne
   );
 
-  const hmdPose = await withTimeout(PostMan.PostMessage({
-    target: state.hmd,
-    type: "GETHMDPOSITION",
-    payload: null,
-  }, true)) as OpenVR.TrackedDevicePose;
-
-  if (!hmdPose?.bPoseIsValid) return false;
-  const hmdMatrix = hmdPose.mDeviceToAbsoluteTracking.m as Matrix34Tuple;
-
-  // OpenVR's angular velocity is in tracking space: +Y is counter-clockwise, as yaw RH.
-  const hmdYawRate = hmdPose.vAngularVelocity?.v?.[1] ?? 0;
   const raw = solver.update(
     worldPose,
     hmdMatrix,
@@ -463,10 +465,8 @@ async function pollOriginOnce(): Promise<boolean> {
     performance.now(),
     hmdYawRate,
   );
-  const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
-  lastHeadYawRate = hmdYawRate;
   hmdTrace.push([
-    performance.timeOrigin + performance.now(),
+    now,
     hmdMatrix[0][3],
     hmdMatrix[1][3],
     hmdMatrix[2][3],
@@ -507,8 +507,9 @@ async function pollOriginOnce(): Promise<boolean> {
     motion = {
       t: now,
       yawRad: solved.transform.yawRad,
-      // Playspace yaw is HMD yaw + avatar yaw (`VrcOriginSolver`): it turns with the avatar.
-      yawRate: prediction.yawRate,
+      // Playspace yaw = hmdYaw + avatarYaw, so its rate is hmdYawRate + avatarYawRate (zero
+      // whenever the turn stick is idle, avoiding a head-turn sawtooth between polls).
+      yawRate: predictor.isStickTurning() ? prediction.yawRate + hmdYawRate : 0,
       scale: solved.transform.scale,
       // Where this transform puts the root (the floor under the HMD, or partway there while the
       // lock blends out).
