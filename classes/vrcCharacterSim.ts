@@ -120,6 +120,8 @@ export class VrcCharacterSim {
   private oscYawRate = 0;
   /** Displacement anchor for unbiased windowed (>=150 ms) walk-speed learning. */
   private walkAnchor: { t: number; pos: Vec3; move: [number, number]; yaw: number } | null = null;
+  /** Yaw anchor for unbiased windowed (>=100 ms) smooth-turn gain learning. */
+  private turnAnchor: { t: number; yaw: number; turnEff: number } | null = null;
 
   /** Ring buffer of simulated states so incoming OSC at `t` compares against `sim(t - latency)`. */
   private history: { t: number; pos: Vec3; yaw: number }[] = [];
@@ -244,6 +246,7 @@ export class VrcCharacterSim {
     if (nextTurn) this.lastTurnDir = Math.sign(turn);
     if (prevTurn && !nextTurn) {
       this.turnReleasedAt = t;
+      this.turnAnchor = null;
       // Drop stale pre-stop yaw residual so a delayed OSC burst cannot twist backwards on release.
       this.pendingYaw = 0;
       this.corrYawRate = 0;
@@ -449,6 +452,7 @@ export class VrcCharacterSim {
       this.lastYawOscT = t;
       this.oscYawRate = 0;
       this.walkAnchor = null;
+      this.turnAnchor = null;
       this.history = [{ t, pos: [...this.pos], yaw: this.yaw }];
       return;
     }
@@ -489,18 +493,35 @@ export class VrcCharacterSim {
           this.landAt(pose.position[1]);
         }
       }
-      if (yawChanged && Math.abs(this.turn) > TURN_STICK_DEADZONE) {
-        const turnEff = vrcSmoothTurnCurve(this.turn);
-        if (Math.abs(turnEff) > 0.35) {
-          const avRate = angleDiffRad(pose.yawRad, this.lastOscYaw) / dt;
+    }
+
+    // Windowed (>=100 ms) smooth-turn gain learning so interleaved Pos/HeadFwd arrival gaps
+    // cannot divide a multi-frame yaw step by a tiny Pos-to-Yaw dt and inflate turnGain.
+    if (yawChanged && Math.abs(this.turn) > TURN_STICK_DEADZONE) {
+      const turnEff = vrcSmoothTurnCurve(this.turn);
+      if (Math.abs(turnEff) > 0.35) {
+        if (
+          !this.turnAnchor ||
+          Math.sign(turnEff) !== Math.sign(this.turnAnchor.turnEff) ||
+          Math.abs(turnEff - this.turnAnchor.turnEff) > 0.15
+        ) {
+          this.turnAnchor = { t, yaw: pose.yawRad, turnEff };
+        } else if (t - this.turnAnchor.t >= 100) {
+          const dtT = (t - this.turnAnchor.t) / 1000;
+          const avRate = angleDiffRad(pose.yawRad, this.turnAnchor.yaw) / dtT;
           const playRate = avRate + this.hmdYawRate;
           const est = playRate / turnEff;
           if (est > 0.5 && est < 8) {
             const alpha = 1 / Math.min(30, ++this.turnSamples + 4);
             this.turnGain += (est - this.turnGain) * alpha;
           }
+          this.turnAnchor = { t, yaw: pose.yawRad, turnEff };
         }
+      } else {
+        this.turnAnchor = null;
       }
+    } else if (Math.abs(this.turn) <= TURN_STICK_DEADZONE) {
+      this.turnAnchor = null;
     }
 
     // Windowed (>=150 ms) walk-speed learning so single-burst arrival-time jitter cannot bias
