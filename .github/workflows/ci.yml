@@ -72,14 +72,17 @@ jobs:
         include:
           - os: windows-latest
             name: petplay-windows-x64
+            target: x86_64-pc-windows-msvc
             args: ""
             file: dist/petplay.exe
           - os: ubuntu-24.04
             name: petplay-linux-x64
+            target: x86_64-unknown-linux-gnu
             args: ""
             file: dist/petplay
           - os: ubuntu-24.04-arm
             name: petplay-linux-arm64-experimental
+            target: aarch64-unknown-linux-gnu
             args: --target=aarch64-unknown-linux-gnu
             file: dist/petplay-aarch64
     runs-on: ${{ matrix.os }}
@@ -218,9 +221,16 @@ jobs:
           name: arm64-smoke-failure-logs
           path: _scratch/compiled-smoke-*/server.log
           retention-days: 7
+      # The natives alone, so a coop peer on another OS can cross-build PetPlay for this target
+      # without CI (utils/natives.ts, deno task peer-build).
+      - name: Pack natives
+        run: deno run -A --no-config utils/natives.ts pack ${{ matrix.target }} dist
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.file }}
+          path: |
+            ${{ matrix.file }}
+            dist/natives-${{ matrix.target }}.tar.gz
+            dist/natives-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 7

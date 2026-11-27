@@ -37,6 +37,7 @@ jobs:
             classes/updateChunks.ts
             utils/release-assets.ts
             utils/publish-branch-build.ts
+            utils/natives.ts
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
@@ -49,7 +50,8 @@ jobs:
       - name: Index and hash
         run: |
           chmod +x dist/petplay dist/petplay-aarch64
-          deno run -A --no-config utils/release-assets.ts dist petplay petplay.exe petplay-aarch64
+          deno run -A --no-config utils/release-assets.ts dist petplay petplay.exe petplay-aarch64 \
+            $(cd dist && ls natives-*)
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,6 +59,7 @@ jobs:
           deno run -A --no-config utils/publish-branch-build.ts publish dist
           petplay petplay.exe petplay-aarch64
           petplay.chunks.json petplay.exe.chunks.json petplay-aarch64.chunks.json SHA256SUMS
+          $(cd dist && ls natives-*)
 
   cleanup:
     if: github.event_name == 'delete' && github.event.ref_type == 'branch'

@@ -17,6 +17,8 @@ export type BuildInfo = {
    * `owner/repo#branch` for a branch build; absent for local builds and older releases.
    */
   channel?: string | null;
+  /** The Rust-style target triple it was built for (`x86_64-pc-windows-msvc`, …). */
+  target?: string;
 };
 
 /**
@@ -41,6 +43,7 @@ export function getBuildInfo(): BuildInfo {
         built: info.built ?? null,
         mode: info.mode ?? "unknown",
         channel: info.channel ?? null,
+        target: info.target ?? Deno.build.target,
       };
     } catch {
       cached = { version: "unknown", commit: null, built: null, mode: "unknown" };
@@ -53,6 +56,7 @@ export function getBuildInfo(): BuildInfo {
     commit: git(["rev-parse", "HEAD"]),
     built: null,
     mode: "checkout",
+    target: Deno.build.target,
   };
   return cached;
 }
