@@ -911,7 +911,7 @@ class KalmanChannel {
     for (const k of axes) {
       this.state[k][1] = 0;
       this.cov[k][1] = 0;
-      this.cov[k][2] = 0.04;
+      this.cov[k][2] = 0.005;
     }
   }
 
@@ -961,21 +961,25 @@ class KalmanChannel {
   }
 
   /**
-   * Softly pull selected axes' velocities toward `target` (per second) with variance `r`, without
-   * advancing `updatedAt` (so silence against a wall still decays and settles on `newestRaw`).
+   * Gently steer selected axes' velocities toward `target` (per second) by blend factor `alpha`
+   * (0..1), without advancing `updatedAt` (so silence against a wall still decays and settles).
    */
-  measureVelocityAxes(axes: number[], target: number[], r: number): void {
+  steerVelocityAxes(axes: number[], target: number[], alpha: number): void {
     if (!this.state.length) return;
     for (let i = 0; i < axes.length; i++) {
       const k = axes[i];
       const [x, v] = this.state[k];
-      const [a, b, d] = this.cov[k];
-      const dEff = Math.max(d, r * 0.5);
-      const sInv = 1 / (dEff + r);
-      const kv = dEff * sInv;
-      const y = target[i] - v;
-      this.state[k] = [x, v + kv * y];
-      this.cov[k] = [a, (1 - kv) * b, (1 - kv) * dEff];
+      this.state[k] = [x, v + (target[i] - v) * alpha];
+    }
+  }
+
+  /** Zero velocity on selected axes without advancing `updatedAt` (critically-damped stop). */
+  clampVelocityZeroAxes(axes: number[]): void {
+    if (!this.state.length) return;
+    for (const k of axes) {
+      this.state[k][1] = 0;
+      this.cov[k][1] = 0;
+      this.cov[k][2] = 0.005;
     }
   }
 
@@ -1038,9 +1042,9 @@ export interface VrcLocomotionInput {
 
 /** Spread of OSC arrival times around when VRChat sampled (ms): v1 (measured 2026-11-24) and v2 (50 Hz). */
 const ARRIVAL_SIGMA_MS = 12;
-const V2_ARRIVAL_SIGMA_MS = 6;
-const V2_POSITION_MEASUREMENT_VARIANCE = 1e-4;
-const V2_DEFAULT_SMOOTHING_MS = 30;
+const V2_ARRIVAL_SIGMA_MS = 10;
+const V2_POSITION_MEASUREMENT_VARIANCE = 2.5e-4;
+const V2_DEFAULT_SMOOTHING_MS = 50;
 const STICK_DEADZONE = 0.15;
 const STICK_CHANGE = 0.1;
 
@@ -1389,35 +1393,32 @@ export class VrcRootPredictor {
       ) {
         this.wallBlocked = true;
       }
-      // Walk velocity feedforward (soft velocity observation; gated off when pressed against a wall).
+      // Walk velocity feedforward ONLY on stick/heading changes (never on steady 11 ms polls,
+      // which would fight real OSC velocity and cause a 50 Hz stutter).
       if (
-        this.position.started && this.yaw.started && this.move.active && !airborne &&
+        moveChanged && this.position.started && this.yaw.started && this.move.active && !airborne &&
         !this.wallBlocked
       ) {
         const curYaw = this.yaw.at(input.t, this.timing, this.turn.active).values[0];
         const [vx, vz] = this.stickWorldVelXZ(input.move, curYaw);
-        const r = moveChanged ? 0.4 : 1.6;
-        this.position.measureVelocityAxes([0, 2], [vx, vz], r);
+        this.position.steerVelocityAxes([0, 2], [vx, vz], moveEvent === "pressed" ? 0.6 : 0.35);
       }
-      // Yaw rate feedforward: playspace smooth-turn rate minus signed head yaw rate.
-      if (this.yaw.started) {
+      // Yaw rate feedforward ONLY on turn-stick changes (press, reversal, release).
+      if (turnChanged && this.yaw.started) {
         const turnPart = this.turn.active && !this.stickTurn.disabled
           ? this.stickTurn.gain * vrcSmoothTurnCurve(input.turn)
           : 0;
-        const headPart = -input.headYawRate;
-        if (this.turn.active || turnEvent === "released" || input.headYawRate !== 0) {
-          const r = turnChanged ? 0.4 : 1.2;
-          this.yaw.measureVelocityAxes([0], [turnPart + headPart], r);
-        }
+        this.yaw.steerVelocityAxes([0], [turnPart - input.headYawRate], 0.5);
       }
     }
 
     const steady = (stick: StickTracker) => input.t - stick.changedAt >= this.stickChangeMs;
-    const posQ = isV2 ? Math.max(this.q.position, 4) : this.q.position;
-    const posQSteady = isV2 ? Math.max(this.q.steadyPosition, 0.1) : this.q.steadyPosition;
-    const posQChanging = isV2 ? Math.max(this.q.changingPosition, 20) : this.q.changingPosition;
-    const yawQ = isV2 ? Math.max(this.q.yaw, 25) : this.q.yaw;
-    const yawQChanging = isV2 ? Math.max(this.q.changingYaw, 80) : this.q.changingYaw;
+    const settlingStop = !airborne && this.move.releasedWithin(input.t, 250);
+    const posQ = isV2 ? (settlingStop ? 0.1 : Math.max(this.q.position, 2)) : this.q.position;
+    const posQSteady = this.q.steadyPosition;
+    const posQChanging = isV2 ? Math.max(this.q.changingPosition, 12) : this.q.changingPosition;
+    const yawQ = isV2 ? Math.max(this.q.yaw, 20) : this.q.yaw;
+    const yawQChanging = isV2 ? Math.max(this.q.changingYaw, 50) : this.q.changingYaw;
     this.position.q = this.move.active
       ? (steady(this.move) ? posQSteady : posQChanging)
       : posQ;
@@ -1479,11 +1480,12 @@ export class VrcRootPredictor {
       }
       this.position.measure(t, [...pose.position], freshAxes, arrivalSigma, posROverride);
       if (this.jump.active) this.applyJumpEvent(this.jump.measure(t, pose.position[1]));
-      // Just after a grounded release VRChat is standing still; damp late samples unless the
-      // avatar is actually still moving (airborne coasting, sliding, physical walk).
+      // Just after a grounded release VRChat is stopping; clamp horizontal velocity to 0 so
+      // trailing bursts settle monotonically without a spring oscillation, unless the avatar is
+      // actually still moving fast (airborne coasting, sliding, physical walk).
       const measSpdXZ = Math.hypot(this.lastMeasVel[0], this.lastMeasVel[2]);
-      if (!airborne && this.move.releasedWithin(t, 120) && measSpdXZ < 0.8) {
-        this.position.measureVelocityAxes([0, 2], [0, 0], 0.01);
+      if (!airborne && this.move.releasedWithin(t, 250) && measSpdXZ < 1.2) {
+        this.position.clampVelocityZeroAxes([0, 2]);
       }
 
       // Online walk-speed learning & wall-collision detection (v2 only).
@@ -1547,8 +1549,8 @@ export class VrcRootPredictor {
         }
       }
       this.yaw.measure(t, [yaw], [true], isV2 ? arrivalSigma * 0.5 : 0);
-      if (this.turn.releasedWithin(t, 120) && Math.abs(this.lastHeadYawRate) < 0.2) {
-        this.yaw.measureVelocityAxes([0], [0], 0.01);
+      if (this.turn.releasedWithin(t, 200) && Math.abs(this.lastHeadYawRate) < 0.2) {
+        this.yaw.clampVelocityZeroAxes([0]);
       }
       if (isV2 && this.turn.active && t - this.turn.changedAt >= 120) {
         const turnEff = vrcSmoothTurnCurve(this.lastInputTurn);
