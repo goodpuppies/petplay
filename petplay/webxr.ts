@@ -759,14 +759,18 @@ new PostMan(
           if (state.decoupledRenderer) {
             onBeforeExternalControllerApply = () => {
               state.nativeRaylibPacer?.paceToDisplayAndRefreshPoses();
+              const left = getNativeRaylibControllerSelection(
+                OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+              );
+              const right = getNativeRaylibControllerSelection(
+                OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand,
+              );
               state.host?.updateDirectOpenVrInputs(
                 state.nativeRaylibPacer?.getCachedHmdEmulation() ?? null,
-                getNativeRaylibControllerPose(
-                  OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
-                ),
-                getNativeRaylibControllerPose(
-                  OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand,
-                ),
+                left.pose,
+                right.pose,
+                left.index,
+                right.index,
               );
             };
           }
@@ -3710,14 +3714,18 @@ async function uploadRaylibShadowFrame() {
     // Single source of OpenVR HMD + controller pose for the entire app. The Raylib
     // debug cube reads from this via `captureShadowPose`; future consumers (r3f /
     // iwer bridge) will read from `host.getDirectOpenVrInputSource()`.
+    const leftSelection = getNativeRaylibControllerSelection(
+      OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
+    );
+    const rightSelection = getNativeRaylibControllerSelection(
+      OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand,
+    );
     state.host.updateDirectOpenVrInputs(
       state.nativeRaylibPacer.getCachedHmdEmulation(),
-      getNativeRaylibControllerPose(
-        OpenVR.TrackedControllerRole.TrackedControllerRole_LeftHand,
-      ),
-      getNativeRaylibControllerPose(
-        OpenVR.TrackedControllerRole.TrackedControllerRole_RightHand,
-      ),
+      leftSelection.pose,
+      rightSelection.pose,
+      leftSelection.index,
+      rightSelection.index,
     );
     // A frame-sync timeout renders with the index unchanged; the r3f clock then steps a
     // nominal period instead of standing still.

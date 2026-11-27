@@ -27,6 +27,48 @@ import { getSetting } from "./settings.ts";
 
 /** Release band below the grab threshold to prevent chatter while holding a squeeze. */
 const GRAB_HYSTERESIS = 0.10;
+/** Wait briefly after a controller device switch to let SteamVR rebind on its own first. */
+const ORIGIN_VERIFY_AFTER_SWITCH_MS = 250;
+/** Periodic watchdog interval to detect SteamVR leaving IVRInput bound to a stale device. */
+const ORIGIN_VERIFY_INTERVAL_MS = 1000;
+/** Minimum gap between `SetActionManifestPath` rebind calls. */
+const MANIFEST_REBIND_COOLDOWN_MS = 2000;
+/** Cap rebind retries per active controller-index pair so an unbound device never loops. */
+const MAX_MANIFEST_REBIND_ATTEMPTS_PER_PAIR = 2;
+
+export type HandActionOriginState = {
+  expectedDeviceIndex: number;
+  actionActive: boolean;
+  originDeviceIndex: number | null;
+};
+
+/**
+ * Returns a human-readable mismatch description when SteamVR's `IVRInput` has left an
+ * active hand role bound to a different (typically disconnected hand-tracking) device or
+ * inactive while a physical controller is active for that hand.
+ */
+export function describeStaleActionOriginMismatch(
+  left: HandActionOriginState,
+  right: HandActionOriginState,
+  invalidIndex: number,
+): string | null {
+  const parts: string[] = [];
+  const check = (label: "left" | "right", hand: HandActionOriginState) => {
+    if (hand.expectedDeviceIndex === invalidIndex) return;
+    if (!hand.actionActive) {
+      parts.push(`${label} expected=${hand.expectedDeviceIndex} active=false`);
+    } else if (
+      hand.originDeviceIndex != null &&
+      hand.originDeviceIndex !== invalidIndex &&
+      hand.originDeviceIndex !== hand.expectedDeviceIndex
+    ) {
+      parts.push(`${label} expected=${hand.expectedDeviceIndex} origin=${hand.originDeviceIndex}`);
+    }
+  };
+  check("left", left);
+  check("right", right);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
 
 /** Evaluates an analog grip force (0..1) against `threshold` with hysteresis. */
 export function applyGrabThreshold(force: number, wasHeld: boolean, threshold: number): boolean {
@@ -116,6 +158,16 @@ export class DirectOpenVrInputSource {
 
   private vrInput: OpenVR.IVRInput | null = null;
   private inputReady = false;
+  private manifestPath: string | null = null;
+  private expectedLeftDeviceIndex = OpenVR.k_unTrackedDeviceIndexInvalid;
+  private expectedRightDeviceIndex = OpenVR.k_unTrackedDeviceIndexInvalid;
+  private nextOriginVerifyAt = 0;
+  private lastManifestRebindAt = 0;
+  private rebindAttemptsForPair = 0;
+  private readonly originInfo = createStruct<OpenVR.InputOriginInfo>(
+    null,
+    OpenVR.InputOriginInfoStruct,
+  );
   private readonly rightClickModifier = { left: false, right: false };
   /** Right A clicked: VRChat's jump. */
   private jumpPressed = false;
@@ -214,7 +266,27 @@ export class DirectOpenVrInputSource {
     hmd: OpenVrHmdEmulationPose | null,
     left: OpenVrHmdEmulationPose | null,
     right: OpenVrHmdEmulationPose | null,
+    leftDeviceIndex: number = OpenVR.k_unTrackedDeviceIndexInvalid,
+    rightDeviceIndex: number = OpenVR.k_unTrackedDeviceIndexInvalid,
   ): void {
+    if (
+      leftDeviceIndex !== this.expectedLeftDeviceIndex ||
+      rightDeviceIndex !== this.expectedRightDeviceIndex
+    ) {
+      this.expectedLeftDeviceIndex = leftDeviceIndex;
+      this.expectedRightDeviceIndex = rightDeviceIndex;
+      this.rebindAttemptsForPair = 0;
+      if (
+        leftDeviceIndex !== OpenVR.k_unTrackedDeviceIndexInvalid ||
+        rightDeviceIndex !== OpenVR.k_unTrackedDeviceIndexInvalid
+      ) {
+        const soon = performance.now() + ORIGIN_VERIFY_AFTER_SWITCH_MS;
+        this.nextOriginVerifyAt = this.nextOriginVerifyAt === 0
+          ? soon
+          : Math.min(this.nextOriginVerifyAt, soon);
+      }
+    }
+
     if (hmd) {
       this.hmdBuffers.matrix.set(hmd.matrix);
       this.hmdBuffers.position[0] = hmd.position[0];
@@ -277,6 +349,7 @@ export class DirectOpenVrInputSource {
     if (error !== OpenVR.InputError.VRInputError_None) {
       throw new Error("DirectOpenVrInputSource: failed to set action manifest path");
     }
+    this.manifestPath = manifestPath;
 
     const getActionHandle = (name: string): bigint => {
       const hptr = P.BigUint64P<OpenVR.ActionHandle>();
@@ -569,6 +642,77 @@ export class DirectOpenVrInputSource {
     this.leftView.trigger = this.leftBuffers.trigger[0];
     this.rightView.grab = this.rightBuffers.grab[0];
     this.rightView.trigger = this.rightBuffers.trigger[0];
+
+    this.maybeRepairStaleActionOrigins(trigL, trigR);
+  }
+
+  /**
+   * SteamVR can leave `IVRInput` bound to disconnected Quest hand-tracking devices
+   * (`svl_hand_interaction_augmented` / `shuttlecock`) after switching back to physical
+   * controllers, leaving triggers bound to the dead device and joysticks/buttons inactive.
+   * Re-applying the action manifest forces SteamVR to rebind to the active hand roles.
+   */
+  private maybeRepairStaleActionOrigins(
+    trigL: { bActive: number | boolean; activeOrigin: bigint },
+    trigR: { bActive: number | boolean; activeOrigin: bigint },
+  ): void {
+    if (!this.vrInput || !this.manifestPath) return;
+    if (
+      this.expectedLeftDeviceIndex === OpenVR.k_unTrackedDeviceIndexInvalid &&
+      this.expectedRightDeviceIndex === OpenVR.k_unTrackedDeviceIndexInvalid
+    ) {
+      return;
+    }
+    const now = performance.now();
+    if (now < this.nextOriginVerifyAt) return;
+    this.nextOriginVerifyAt = now + ORIGIN_VERIFY_INTERVAL_MS;
+
+    const readOriginDevice = (
+      action: { bActive: number | boolean; activeOrigin: bigint },
+    ): number | null => {
+      if (!action.bActive || action.activeOrigin === OpenVR.k_ulInvalidInputValueHandle) {
+        return null;
+      }
+      const err = this.vrInput!.GetOriginTrackedDeviceInfo(
+        action.activeOrigin,
+        this.originInfo[0],
+        OpenVR.InputOriginInfoStruct.byteSize,
+      );
+      if (err !== OpenVR.InputError.VRInputError_None) return null;
+      return OpenVR.InputOriginInfoStruct.read(this.originInfo[1]).trackedDeviceIndex;
+    };
+
+    const mismatch = describeStaleActionOriginMismatch(
+      {
+        expectedDeviceIndex: this.expectedLeftDeviceIndex,
+        actionActive: Boolean(trigL.bActive),
+        originDeviceIndex: readOriginDevice(trigL),
+      },
+      {
+        expectedDeviceIndex: this.expectedRightDeviceIndex,
+        actionActive: Boolean(trigR.bActive),
+        originDeviceIndex: readOriginDevice(trigR),
+      },
+      OpenVR.k_unTrackedDeviceIndexInvalid,
+    );
+
+    if (!mismatch) {
+      this.rebindAttemptsForPair = 0;
+      return;
+    }
+    if (
+      this.rebindAttemptsForPair >= MAX_MANIFEST_REBIND_ATTEMPTS_PER_PAIR ||
+      now - this.lastManifestRebindAt < MANIFEST_REBIND_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    this.lastManifestRebindAt = now;
+    this.rebindAttemptsForPair++;
+    const err = this.vrInput.SetActionManifestPath(this.manifestPath);
+    console.warn(
+      `[DirectOpenVrInputSource] re-applied action manifest after stale IVRInput origin (${mismatch}) err=${err}`,
+    );
   }
 
   /** Right A clicked (VRChat's jump), for the VRChat origin's locomotion model. */
@@ -594,6 +738,12 @@ export class DirectOpenVrInputSource {
     this.hapticHandle = OpenVR.k_ulInvalidActionHandle;
     this.vrInput = null;
     this.inputReady = false;
+    this.manifestPath = null;
+    this.expectedLeftDeviceIndex = OpenVR.k_unTrackedDeviceIndexInvalid;
+    this.expectedRightDeviceIndex = OpenVR.k_unTrackedDeviceIndexInvalid;
+    this.nextOriginVerifyAt = 0;
+    this.lastManifestRebindAt = 0;
+    this.rebindAttemptsForPair = 0;
     this.grabLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.grabRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.grabForceLeftHandle = OpenVR.k_ulInvalidActionHandle;

@@ -1917,8 +1917,16 @@ export class WebXRHost {
     hmd: OpenVrHmdEmulationPose | null,
     leftController: OpenVrHmdEmulationPose | null,
     rightController: OpenVrHmdEmulationPose | null,
+    leftDeviceIndex?: number,
+    rightDeviceIndex?: number,
   ): void {
-    this.directOpenVrInputSource.update(hmd, leftController, rightController);
+    this.directOpenVrInputSource.update(
+      hmd,
+      leftController,
+      rightController,
+      leftDeviceIndex,
+      rightDeviceIndex,
+    );
   }
 
   /**
