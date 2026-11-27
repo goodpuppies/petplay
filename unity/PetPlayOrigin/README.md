@@ -8,10 +8,13 @@ There are two rigs. Put **one** of them on an avatar:
 | | v2 `V2/PetPlayOriginV2.prefab` (preferred) | v1 `PetPlayOrigin.prefab` |
 |---|---|---|
 | Needs | VRChat Avatar SDK 3.10+ | SDK 3.7+ |
-| Position | 1 receiver, `SenderLocalPosition` × 2^N, float32 precision | 6 overlapping proximity contacts |
-| Range | 8192 m (N = 13) | ±512 m per axis, coarser past ±102.4 m |
-| Yaw | forward sender, `atan2` | 2 PhysBones + plane collider |
-| Cost | 2 senders, 2 receivers, 4 constraints | 3 senders, 6 receivers, 2 PhysBones, 6 constraints |
+| Position | contact `SenderLocalPosition`, two scales, linear decode | 6 overlapping proximity contacts |
+| Range | fine ±768 m, coarse to 8192 m | ±512 m per axis |
+| Yaw | forward sender, `atan2` | 2 PhysBones + plane collider (lags ~1° while turning) |
+| Cost | 4 senders, 4 receivers, 6 constraints, 16 floats | 3 senders, 6 receivers, 2 PhysBones, 6 constraints, 8 floats |
+
+Measured in vrlab on the same avatar (2026-11-27): inside the fine range v2 and v1 agree within
+0.1–0.8 mm and 0.004° at rest; the coarse scale alone is within ~1 cm.
 
 ## Installing on any avatar
 
@@ -45,25 +48,37 @@ There are two rigs. Put **one** of them on an avatar:
 
 ## v2 mechanism
 
-- `Sender` sits at `anchor × 2^-N`: its position constraint blends `Anchor` (weight `2^-N`) with
-  the world-origin `Measure` (weight `1 − 2^-N`). Both weights and their sum are exact in float32
-  and the origin contributes exactly 0, so the scaled position keeps the full precision of the
-  world coordinate. A Y-only rotation constraint copies the anchor's yaw.
-- `SenderFwd` is `Sender`'s child at local `(0, 0, 2^(3-N))`, 8 m in world terms, so a decode
-  that pairs `Pos` and `Fwd` from different frames skews the heading by only
+- Two scales, each a sender, a forward sender and two receivers at world origin:
+
+  | Scale | Outputs | N | Receiver radius | Range |
+  |---|---|---|---|---|
+  | fine | `Pos`, `Fwd` | 8 | 3 m | 768 m |
+  | coarse | `CoarsePos`, `CoarseFwd` | 13 | 1 m | 8192 m |
+
+  The decoder uses fine while both its receivers see their sender, else coarse.
+- Each sender sits at `anchor × 2^-N`: its position constraint blends `Anchor` (weight `2^-N`)
+  with the world-origin `Measure` (weight `1 − 2^-N`). A Y-only rotation constraint copies the
+  anchor's yaw.
+- Each forward sender is its sender's child at local `(0, 0, 2^(3-N))`, 8 m in world terms, so a
+  decode that pairs `Pos` and `Fwd` from different frames skews the heading by only
   ~(metres moved per frame) / 8 m.
-- Two receivers at world origin (radius 1 m, `Constant`, self-only, local-only) each see one
-  sender by collision tag and output its position in receiver space (VRChat SDK 3.10 contact
-  advanced parameter `SenderLocalPosition`). The 1 m radius keeps every value inside `[-1, 1]`.
+- Receivers (`Constant`, self-only, local-only) see one sender each by collision tag and output
+  its position in receiver space (SDK 3.10 contact advanced parameter `SenderLocalPosition`), in
+  world metres. Values above 1 are not clamped (a probe at (2, 0.5, −1.5) read back exactly,
+  times the avatar's scale).
 - Decode (`classes/vrcOriginCodec.ts`, `decodePetPlayOriginV2Pose`): `position = Pos × 2^N`,
   `yaw = atan2(dx, dz)` of `Fwd − Pos`. `|Fwd − Pos| = 2^(3-N)`, so the decoder reads N from the
-  rig and a rebuild with another `ScaleExponent` needs no decoder change.
+  rig and a rebuild with other exponents needs no decoder change.
+- Precision: VRChat rounds this chain at the size of the player's world coordinate, so each axis
+  steps by about `ulp(coordinate) × 2^N`, roughly `2^(N-24)` of the coordinate (measured: N = 13
+  gives 1/128 m at 8–16 m and 1/64 m at 16–32 m). That makes N a range/precision trade, which is
+  why there are two scales. v1 obeys the same rule with a multiplier of ~205.
 
 ### v2 parameters emitted over OSC
 
-- `/avatar/parameters/PetPlay/OriginV2/Pos`, `Fwd` (1 while the sender is inside its receiver)
-- `/avatar/parameters/PetPlay/OriginV2/Pos_SenderLocalPosition{X,Y,Z}`
-- `/avatar/parameters/PetPlay/OriginV2/Fwd_SenderLocalPosition{X,Y,Z}`
+- `/avatar/parameters/PetPlay/OriginV2/{Pos,Fwd,CoarsePos,CoarseFwd}` (1 while the sender is
+  inside its receiver)
+- `/avatar/parameters/PetPlay/OriginV2/{Pos,Fwd,CoarsePos,CoarseFwd}_SenderLocalPosition{X,Y,Z}`
 
 ## v1 mechanism
 

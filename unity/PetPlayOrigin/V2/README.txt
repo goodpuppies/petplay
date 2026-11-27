@@ -11,6 +11,6 @@ Install:
 Details:
   - 0 synced Expression Parameter bits (all parameters are local-only OSC floats).
   - Always-on locally when wearing the avatar; disabled for remote players.
-  - Range: 8192 m from world origin, continuous 360 deg yaw.
-  - Emits /avatar/parameters/PetPlay/OriginV2/{Pos,Fwd}[_SenderLocalPosition{X,Y,Z}].
+  - Range: 8192 m from world origin (fine scale to 768 m), continuous 360 deg yaw.
+  - Emits /avatar/parameters/PetPlay/OriginV2/{Pos,Fwd,CoarsePos,CoarseFwd}[_SenderLocalPosition{X,Y,Z}].
   - Safe with VRCFury, AAO and d4rk Avatar Optimizer.

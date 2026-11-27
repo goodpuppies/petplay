@@ -3,12 +3,14 @@
  *
  * Supports three protocols, preferred in this order:
  * 0. `PetPlay/OriginV2/*` (Modular Avatar prefab, VRChat SDK 3.10+ contact SenderLocalPosition):
- *    - Two receivers at world origin report the local position of a sender at `anchor * 2^-N`
- *      (`Pos`) and of a second sender `2^(F-N)` ahead of it along the anchor's yaw (`Fwd`), F = 3.
+ *    - Per scale, receivers at world origin report the local position of a sender at
+ *      `anchor * 2^-N` (`Pos`) and of a second sender `2^(F-N)` ahead of it along the anchor's yaw
+ *      (`Fwd`), F = 3. Two scales: fine (`Pos`/`Fwd`, N = 8, 3 m receivers, 768 m) and coarse
+ *      (`CoarsePos`/`CoarseFwd`, N = 13, 1 m receivers, 8192 m); fine wins while it is valid.
  *    - `position = Pos * 2^N`, `yaw = atan2(dx, dz)` of `Fwd - Pos`; `|Fwd - Pos| = 2^(F-N)` gives N.
  *    - `Pos` / `Fwd` themselves are 1 while the sender is inside its receiver (validity).
- *    - The scale is a power of two and the receiver sits at exactly 0, so the decode carries the
- *      float32 precision of the world coordinate; range is `2^N` m (N = 13 -> 8192 m).
+ *    - VRChat rounds the chain at the player's world-coordinate magnitude, so each axis steps by
+ *      about `ulp(coordinate) * 2^N` (measured in vrlab: 1/128 m at 8-16 m with N = 13).
  * 1. `PetPlay/Origin/*` (release-grade local-only Modular Avatar prefab):
  *    - 6 overlapping proximity contacts (`Pos{X,Y,Z}{Pos,Neg}`):
  *      - Receivers sit at `±RECEIVER_OFFSET` (2.5 m) with `RECEIVER_RADIUS` (3.0 m) on each axis.
@@ -54,7 +56,30 @@ export const PETPLAY_ORIGIN_PARAMS = {
   yawSign: `${PETPLAY_ORIGIN_PREFIX}YawSign_Angle`,
 } as const;
 
-/** The v2 outputs; `_SenderLocalPosition*` suffixes are VRChat's contact advanced parameters. */
+/** Output names of one v2 scale; `_SenderLocalPosition*` are VRChat's contact advanced parameters. */
+export type PetPlayOriginV2ScaleParams = Record<
+  "pos" | "posX" | "posY" | "posZ" | "fwd" | "fwdX" | "fwdY" | "fwdZ",
+  string
+>;
+
+function v2ScaleParams(pos: string, fwd: string): PetPlayOriginV2ScaleParams {
+  const p = PETPLAY_ORIGIN_V2_PREFIX;
+  return {
+    pos: `${p}${pos}`,
+    posX: `${p}${pos}_SenderLocalPositionX`,
+    posY: `${p}${pos}_SenderLocalPositionY`,
+    posZ: `${p}${pos}_SenderLocalPositionZ`,
+    fwd: `${p}${fwd}`,
+    fwdX: `${p}${fwd}_SenderLocalPositionX`,
+    fwdY: `${p}${fwd}_SenderLocalPositionY`,
+    fwdZ: `${p}${fwd}_SenderLocalPositionZ`,
+  };
+}
+
+/** The coarse scale (N = 13, 1 m receivers, 8192 m), used outside the fine range. */
+export const PETPLAY_ORIGIN_V2_COARSE_PARAMS = v2ScaleParams("CoarsePos", "CoarseFwd");
+
+/** The fine scale (N = 8, 3 m receivers, 768 m). */
 export const PETPLAY_ORIGIN_V2_PARAMS = {
   pos: `${PETPLAY_ORIGIN_V2_PREFIX}Pos`,
   posX: `${PETPLAY_ORIGIN_V2_PREFIX}Pos_SenderLocalPositionX`,
@@ -66,9 +91,12 @@ export const PETPLAY_ORIGIN_V2_PARAMS = {
   fwdZ: `${PETPLAY_ORIGIN_V2_PREFIX}Fwd_SenderLocalPositionZ`,
 } as const;
 
-/** N the v2 prefab is built with (`PetPlayOriginV2PrefabBuilder.ScaleExponent`). The decoder
- * measures N from the forward offset, so this is only the expected value. */
-export const PETPLAY_ORIGIN_V2_SCALE_EXPONENT = 13;
+/** N and receiver radius of each scale (`PetPlayOriginV2PrefabBuilder.Scales`). The decoder
+ * measures N from the forward offset, so these are only the expected values. */
+export const PETPLAY_ORIGIN_V2_SCALE_EXPONENT = 8;
+export const PETPLAY_ORIGIN_V2_RADIUS = 3;
+export const PETPLAY_ORIGIN_V2_COARSE_SCALE_EXPONENT = 13;
+export const PETPLAY_ORIGIN_V2_COARSE_RADIUS = 1;
 /** F: the forward sender sits `2^(F-N)` ahead, `2^F` m in world terms
  * (`PetPlayOriginV2PrefabBuilder.FwdOffsetExponent`). */
 export const PETPLAY_ORIGIN_V2_FWD_OFFSET_EXPONENT = 3;
@@ -196,7 +224,15 @@ export function decodeVrcOriginPose(
 export function decodePetPlayOriginV2Pose(
   coords: Readonly<Record<string, number>>,
 ): VrcOriginWorldPose | null {
-  const P = PETPLAY_ORIGIN_V2_PARAMS;
+  return decodePetPlayOriginV2Scale(coords, PETPLAY_ORIGIN_V2_PARAMS) ??
+    decodePetPlayOriginV2Scale(coords, PETPLAY_ORIGIN_V2_COARSE_PARAMS);
+}
+
+/** One scale of the v2 rig; null unless both its receivers see their sender. */
+export function decodePetPlayOriginV2Scale(
+  coords: Readonly<Record<string, number>>,
+  P: PetPlayOriginV2ScaleParams,
+): VrcOriginWorldPose | null {
   if (!((coords[P.pos] ?? 0) > V2_PRESENT_MIN) || !((coords[P.fwd] ?? 0) > V2_PRESENT_MIN)) {
     return null;
   }
@@ -227,6 +263,7 @@ export function encodePetPlayOriginV2Pose(
   position: Vec3,
   yawRad: number,
   scaleExponent = PETPLAY_ORIGIN_V2_SCALE_EXPONENT,
+  P: PetPlayOriginV2ScaleParams = PETPLAY_ORIGIN_V2_PARAMS,
 ): Record<string, number> {
   const f = Math.fround;
   const s = f(2 ** -scaleExponent);
@@ -237,7 +274,6 @@ export function encodePetPlayOriginV2Pose(
     p[1],
     f(p[2] + f(offset * f(Math.cos(yawRad)))),
   ];
-  const P = PETPLAY_ORIGIN_V2_PARAMS;
   return {
     [P.pos]: 1,
     [P.posX]: p[0],
@@ -248,6 +284,36 @@ export function encodePetPlayOriginV2Pose(
     [P.fwdY]: fwd[1],
     [P.fwdZ]: fwd[2],
   };
+}
+
+/**
+ * Encodes the whole two-scale rig: a scale reports nothing (0) when its senders are outside its
+ * receivers, as VRChat would.
+ */
+export function encodePetPlayOriginV2RigPose(
+  position: Vec3,
+  yawRad: number,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  const scales: [number, number, PetPlayOriginV2ScaleParams][] = [
+    [PETPLAY_ORIGIN_V2_SCALE_EXPONENT, PETPLAY_ORIGIN_V2_RADIUS, PETPLAY_ORIGIN_V2_PARAMS],
+    [
+      PETPLAY_ORIGIN_V2_COARSE_SCALE_EXPONENT,
+      PETPLAY_ORIGIN_V2_COARSE_RADIUS,
+      PETPLAY_ORIGIN_V2_COARSE_PARAMS,
+    ],
+  ];
+  for (const [n, radius, P] of scales) {
+    const values = encodePetPlayOriginV2Pose(position, yawRad, n, P);
+    const inside = (x: string, y: string, z: string) =>
+      Math.hypot(values[x], values[y], values[z]) < radius;
+    if (!inside(P.posX, P.posY, P.posZ) || !inside(P.fwdX, P.fwdY, P.fwdZ)) {
+      for (const k of Object.values(P)) out[k] = 0;
+      continue;
+    }
+    Object.assign(out, values);
+  }
+  return out;
 }
 
 export function decodePetPlayOriginPose(

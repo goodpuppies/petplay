@@ -10,21 +10,22 @@
 //
 // Mechanism (must match classes/vrcOriginCodec.ts, decodePetPlayOriginV2Pose):
 // - WorldRoot is pinned to world origin by constraints to the uninstantiated World.prefab asset.
-// - Sender sits at Anchor * 2^-N: a position constraint blends Anchor (weight 2^-N) with the
-//   world-origin Measure (weight 1 - 2^-N). Both weights and the sum are exact in float32, and the
-//   origin contributes exactly 0, so the scaled position carries the full float precision of the
-//   world coordinate. A Y-only rotation constraint copies Anchor's yaw.
-// - SenderFwd is Sender's child at local (0, 0, 2^(F-N)), F = FwdOffsetExponent = 3: 8 m in
-//   world terms. Its offset from Sender is the heading, and its length tells the decoder N, so a
-//   rebuild with another N needs no decoder change. A long offset keeps the heading steady when a
-//   decode pairs Pos and Fwd from different frames (error ~ metres moved per frame / 8 m).
-// - Two receivers at world origin (radius 1 m, Constant, self-only, local-only) each see exactly
-//   one sender by collision tag and output its position in receiver space:
+// - Two scales, each a sender, a forward sender and two receivers:
+//     fine   (Pos / Fwd):             N = 8,  receiver radius 3 m, range 768 m
+//     coarse (CoarsePos / CoarseFwd): N = 13, receiver radius 1 m, range 8192 m
+//   The decoder uses fine while both its receivers see their sender, else coarse.
+// - Each Sender sits at Anchor * 2^-N: a position constraint blends Anchor (weight 2^-N) with the
+//   world-origin Measure (weight 1 - 2^-N). A Y-only rotation constraint copies Anchor's yaw.
+// - Each SenderFwd is its Sender's child at local (0, 0, 2^(F-N)), F = FwdOffsetExponent = 3:
+//   8 m in world terms. The offset is the heading, and its length tells the decoder N. A long
+//   offset keeps the heading steady when a decode pairs Pos and Fwd from different frames.
+// - Receivers at world origin (Constant, self-only, local-only) each see one sender by collision
+//   tag and output its position in receiver space (contact advanced parameter):
 //     <param>            1 while the sender is inside (validity)
 //     <param>_SenderLocalPositionX/Y/Z
-//   The 1 m radius keeps every output inside [-1, 1] and makes metres and radius-normalised units
-//   the same, so the decode does not depend on how VRChat scales or clamps these floats.
-// - Range: |Anchor| < 2^N m (sphere). Precision: that of the float32 world coordinate.
+// - Precision (measured in vrlab, 2026-11-27): VRChat rounds this chain at the player's
+//   world-coordinate magnitude, so each axis steps by about ulp(coordinate) * 2^N, i.e. roughly
+//   2^(N-24) of the coordinate. Fine N = 8 gives ~1.5 mm at 100 m; coarse N = 13 ~5 cm.
 // - Local-only (0 synced bits), no menu, no PhysBones. Measure is inactive for remote players.
 // - Optimizer guard as in v1 (PetPlayOriginBuildUtil.AddOutputGuardDriver).
 using System;
@@ -53,19 +54,29 @@ public static class PetPlayOriginV2PrefabBuilder
     public const string LocalOffClipPath = AnimationsFolder + "/PetPlayOriginV2LocalOff.anim";
     public const string ReadmePath = RootFolder + "/README.txt";
 
-    /// N: senders sit at 2^-N of the anchor's world position; range is 2^N m.
-    public const int ScaleExponent = 13;
-    /// F: SenderFwd sits 2^(F-N) ahead of Sender (2^F m in world terms).
+    /// F: each SenderFwd sits 2^(F-N) ahead of its Sender (2^F m in world terms).
     public const int FwdOffsetExponent = 3;
-    public const float ReceiverRadius = 1f;
     public const string ParamPrefix = "PetPlay/OriginV2/";
-    public const string PosParam = ParamPrefix + "Pos";
-    public const string FwdParam = ParamPrefix + "Fwd";
-    public const string PosTag = ParamPrefix + "Pos";
-    public const string FwdTag = ParamPrefix + "Fwd";
 
-    static float Scale => Mathf.Pow(2f, -ScaleExponent);
-    static float FwdOffset => Mathf.Pow(2f, FwdOffsetExponent - ScaleExponent);
+    /// One measuring scale: senders at 2^-N of the anchor's world position, receivers of the
+    /// given radius, range radius * 2^N m.
+    public class ScaleSpec
+    {
+        public string name;
+        public int exponent;
+        public float radius;
+        public string posParam;
+        public string fwdParam;
+        public float Scale => Mathf.Pow(2f, -exponent);
+        public float FwdOffset => Mathf.Pow(2f, FwdOffsetExponent - exponent);
+        public float RangeMeters => radius * Mathf.Pow(2f, exponent);
+    }
+
+    public static readonly ScaleSpec[] Scales =
+    {
+        new ScaleSpec { name = "Fine", exponent = 8, radius = 3f, posParam = ParamPrefix + "Pos", fwdParam = ParamPrefix + "Fwd" },
+        new ScaleSpec { name = "Coarse", exponent = 13, radius = 1f, posParam = ParamPrefix + "CoarsePos", fwdParam = ParamPrefix + "CoarseFwd" },
+    };
 
     static IEnumerable<string> ReceiverOutputs(string param) => new[]
     {
@@ -76,7 +87,7 @@ public static class PetPlayOriginV2PrefabBuilder
     };
 
     static readonly string[] OutputFloatParams =
-        ReceiverOutputs(PosParam).Concat(ReceiverOutputs(FwdParam)).ToArray();
+        Scales.SelectMany(sc => ReceiverOutputs(sc.posParam).Concat(ReceiverOutputs(sc.fwdParam))).ToArray();
 
     [Serializable]
     class BuildReport
@@ -84,9 +95,7 @@ public static class PetPlayOriginV2PrefabBuilder
         public bool ok;
         public string error = "";
         public string prefabPath = OriginPrefabPath;
-        public int scaleExponent = ScaleExponent;
-        public float rangeMeters = Mathf.Pow(2f, ScaleExponent);
-        public float receiverRadius = ReceiverRadius;
+        public List<string> scales = Scales.Select(sc => $"{sc.name}: N={sc.exponent} radius={sc.radius} range={sc.RangeMeters} m").ToList();
         public int fwdOffsetExponent = FwdOffsetExponent;
         public List<string> outputs = OutputFloatParams.ToList();
         public int syncedParameterBits;
@@ -160,8 +169,8 @@ public static class PetPlayOriginV2PrefabBuilder
             "Details:\n" +
             "  - 0 synced Expression Parameter bits (all parameters are local-only OSC floats).\n" +
             "  - Always-on locally when wearing the avatar; disabled for remote players.\n" +
-            $"  - Range: {Mathf.Pow(2f, ScaleExponent):0} m from world origin, continuous 360 deg yaw.\n" +
-            "  - Emits /avatar/parameters/PetPlay/OriginV2/{Pos,Fwd}[_SenderLocalPosition{X,Y,Z}].\n" +
+            $"  - Range: {Scales.Max(sc => sc.RangeMeters):0} m from world origin (fine scale to {Scales[0].RangeMeters:0} m), continuous 360 deg yaw.\n" +
+            "  - Emits /avatar/parameters/PetPlay/OriginV2/{Pos,Fwd,CoarsePos,CoarseFwd}[_SenderLocalPosition{X,Y,Z}].\n" +
             "  - Safe with VRCFury, AAO and d4rk Avatar Optimizer.\n");
         AssetDatabase.ImportAsset(ReadmePath);
         report.createdAssets.Add(ReadmePath);
@@ -308,33 +317,7 @@ public static class PetPlayOriginV2PrefabBuilder
             measure.transform.SetParent(worldRoot.transform, false);
             measure.SetActive(false);
 
-            BuildReceiver(measure.transform, "ReceiverPos", PosTag, PosParam);
-            BuildReceiver(measure.transform, "ReceiverFwd", FwdTag, FwdParam);
-
-            var senderGo = new GameObject("Sender");
-            senderGo.transform.SetParent(measure.transform, false);
-            AddSender(senderGo, PosTag);
-
-            var posConstraint = senderGo.AddComponent<VRCPositionConstraint>();
-            posConstraint.Sources.Add(new VRCConstraintSource(measure.transform, 1f - Scale, Vector3.zero, Vector3.zero));
-            posConstraint.Sources.Add(new VRCConstraintSource(anchor.transform, Scale, Vector3.zero, Vector3.zero));
-            posConstraint.PositionAtRest = Vector3.zero;
-            posConstraint.PositionOffset = Vector3.zero;
-            posConstraint.Locked = true;
-            posConstraint.IsActive = true;
-
-            var yawConstraint = senderGo.AddComponent<VRCRotationConstraint>();
-            yawConstraint.Sources.Add(new VRCConstraintSource(anchor.transform, 1f, Vector3.zero, Vector3.zero));
-            yawConstraint.AffectsRotationX = false;
-            yawConstraint.AffectsRotationY = true;
-            yawConstraint.AffectsRotationZ = false;
-            yawConstraint.Locked = true;
-            yawConstraint.IsActive = true;
-
-            var fwdGo = new GameObject("SenderFwd");
-            fwdGo.transform.SetParent(senderGo.transform, false);
-            fwdGo.transform.localPosition = new Vector3(0f, 0f, FwdOffset);
-            AddSender(fwdGo, FwdTag);
+            foreach (var sc in Scales) BuildScale(measure.transform, anchor.transform, sc);
 
             var prefab = PrefabUtility.SaveAsPrefabAsset(root, OriginPrefabPath);
             if (prefab == null) throw new Exception($"Failed to save {OriginPrefabPath}");
@@ -346,6 +329,37 @@ public static class PetPlayOriginV2PrefabBuilder
         }
     }
 
+    static void BuildScale(Transform measure, Transform anchor, ScaleSpec sc)
+    {
+        BuildReceiver(measure, $"Receiver{sc.name}Pos", sc.posParam, sc.posParam, sc.radius);
+        BuildReceiver(measure, $"Receiver{sc.name}Fwd", sc.fwdParam, sc.fwdParam, sc.radius);
+
+        var senderGo = new GameObject($"Sender{sc.name}");
+        senderGo.transform.SetParent(measure, false);
+        AddSender(senderGo, sc.posParam);
+
+        var posConstraint = senderGo.AddComponent<VRCPositionConstraint>();
+        posConstraint.Sources.Add(new VRCConstraintSource(measure, 1f - sc.Scale, Vector3.zero, Vector3.zero));
+        posConstraint.Sources.Add(new VRCConstraintSource(anchor, sc.Scale, Vector3.zero, Vector3.zero));
+        posConstraint.PositionAtRest = Vector3.zero;
+        posConstraint.PositionOffset = Vector3.zero;
+        posConstraint.Locked = true;
+        posConstraint.IsActive = true;
+
+        var yawConstraint = senderGo.AddComponent<VRCRotationConstraint>();
+        yawConstraint.Sources.Add(new VRCConstraintSource(anchor, 1f, Vector3.zero, Vector3.zero));
+        yawConstraint.AffectsRotationX = false;
+        yawConstraint.AffectsRotationY = true;
+        yawConstraint.AffectsRotationZ = false;
+        yawConstraint.Locked = true;
+        yawConstraint.IsActive = true;
+
+        var fwdGo = new GameObject($"Sender{sc.name}Fwd");
+        fwdGo.transform.SetParent(senderGo.transform, false);
+        fwdGo.transform.localPosition = new Vector3(0f, 0f, sc.FwdOffset);
+        AddSender(fwdGo, sc.fwdParam);
+    }
+
     static void AddSender(GameObject go, string tag)
     {
         var sender = go.AddComponent<VRCContactSender>();
@@ -355,13 +369,13 @@ public static class PetPlayOriginV2PrefabBuilder
         sender.collisionTags = new List<string> { tag };
     }
 
-    static void BuildReceiver(Transform parent, string name, string tag, string paramName)
+    static void BuildReceiver(Transform parent, string name, string tag, string paramName, float radius)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         var receiver = go.AddComponent<VRCContactReceiver>();
         receiver.shapeType = ContactBase.ShapeType.Sphere;
-        receiver.radius = ReceiverRadius;
+        receiver.radius = radius;
         receiver.receiverType = ContactReceiver.ReceiverType.Constant;
         receiver.collisionTags = new List<string> { tag };
         receiver.allowSelf = true;
@@ -418,22 +432,30 @@ public static class PetPlayOriginV2PrefabBuilder
         if (measure == null || measure.gameObject.activeSelf) throw new Exception("WorldRoot/Measure must exist and start inactive");
         report.checks.Add("WorldRoot anchored to World.prefab; Measure starts inactive");
 
-        var sender = measure.Find("Sender");
-        var pc = sender.GetComponent<VRCPositionConstraint>();
-        float wAnchor = pc.Sources[1].Weight, wOrigin = pc.Sources[0].Weight;
-        if (wAnchor != Scale || wOrigin + wAnchor != 1f) throw new Exception($"Sender weights not exact: {wOrigin} + {wAnchor}");
-        var fwd = sender.Find("SenderFwd");
-        if (fwd.localPosition != new Vector3(0f, 0f, FwdOffset)) throw new Exception("SenderFwd offset must be (0, 0, 2^(F-N))");
-        report.checks.Add($"Sender weights exact (2^-{ScaleExponent} and 1 - 2^-{ScaleExponent}); SenderFwd at (0, 0, 2^{FwdOffsetExponent - ScaleExponent})");
+        foreach (var sc in Scales)
+        {
+            var sender = measure.Find($"Sender{sc.name}");
+            var pc = sender.GetComponent<VRCPositionConstraint>();
+            float wAnchor = pc.Sources[1].Weight, wOrigin = pc.Sources[0].Weight;
+            if (wAnchor != sc.Scale || wOrigin + wAnchor != 1f) throw new Exception($"{sc.name} weights not exact: {wOrigin} + {wAnchor}");
+            var fwd = sender.Find($"Sender{sc.name}Fwd");
+            if (fwd.localPosition != new Vector3(0f, 0f, sc.FwdOffset)) throw new Exception($"{sc.name} forward offset must be (0, 0, 2^(F-N))");
+            foreach (var r in new[] { $"Receiver{sc.name}Pos", $"Receiver{sc.name}Fwd" })
+            {
+                if (Mathf.Abs(measure.Find(r).GetComponent<VRCContactReceiver>().radius - sc.radius) > 1e-6f) throw new Exception($"{r} radius");
+            }
+            report.checks.Add($"{sc.name}: weights 2^-{sc.exponent} / 1 - 2^-{sc.exponent}, forward 2^{FwdOffsetExponent - sc.exponent}, radius {sc.radius} m, range {sc.RangeMeters} m");
+        }
 
         report.contactSenders = loaded.GetComponentsInChildren<VRCContactSender>(true).Length;
         report.contactReceivers = loaded.GetComponentsInChildren<VRCContactReceiver>(true).Length;
         report.physBones = loaded.GetComponentsInChildren<VRCPhysBone>(true).Length;
         report.vrcConstraints = loaded.GetComponentsInChildren<VRCConstraintBase>(true).Length;
-        if (report.contactSenders != 2) throw new Exception($"Expected 2 ContactSenders, got {report.contactSenders}");
-        if (report.contactReceivers != 2) throw new Exception($"Expected 2 ContactReceivers, got {report.contactReceivers}");
+        int n = Scales.Length;
+        if (report.contactSenders != 2 * n) throw new Exception($"Expected {2 * n} ContactSenders, got {report.contactSenders}");
+        if (report.contactReceivers != 2 * n) throw new Exception($"Expected {2 * n} ContactReceivers, got {report.contactReceivers}");
         if (report.physBones != 0) throw new Exception($"Expected 0 PhysBones, got {report.physBones}");
-        if (report.vrcConstraints != 4) throw new Exception($"Expected 4 VRCConstraints, got {report.vrcConstraints}");
+        if (report.vrcConstraints != 2 + 2 * n) throw new Exception($"Expected {2 + 2 * n} VRCConstraints, got {report.vrcConstraints}");
 
         foreach (var r in loaded.GetComponentsInChildren<VRCContactReceiver>(true))
         {
@@ -446,7 +468,7 @@ public static class PetPlayOriginV2PrefabBuilder
                 throw new Exception($"Receiver {r.name} must output SenderLocalPosition");
             }
         }
-        report.checks.Add("2 receivers: Constant, local-only, self-only, SenderLocalPosition, radius 1 m");
+        report.checks.Add($"{2 * n} receivers: Constant, local-only, self-only, SenderLocalPosition");
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         var dummyAvatar = new GameObject("DummyAvatar");

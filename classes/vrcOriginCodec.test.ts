@@ -9,10 +9,12 @@ import {
   decodeVrcOriginPose,
   encodeOverlappingProximityAxis,
   encodePetPlayOriginV2Pose,
+  encodePetPlayOriginV2RigPose,
   encodePhysBoneYawRad,
   isOverlappingProximityConsistent,
   isVrcOriginOscAddress,
   PETPLAY_ORIGIN_PARAMS,
+  PETPLAY_ORIGIN_V2_COARSE_PARAMS,
   PETPLAY_ORIGIN_V2_PARAMS,
 } from "./vrcOriginCodec.ts";
 
@@ -197,11 +199,11 @@ Deno.test("v2 decode needs both receivers present and a power-of-two forward off
   const noFwd = { ...good };
   delete noFwd[PETPLAY_ORIGIN_V2_PARAMS.fwd];
   assertEquals(decodePetPlayOriginV2Pose(noFwd), null);
-  // Forward offset 1.5 * 2^-10: not a power of two.
+  // Forward offset 1.5 * 2^-5: not a power of two.
   const torn = {
     ...good,
     [PETPLAY_ORIGIN_V2_PARAMS.fwdX]: good[PETPLAY_ORIGIN_V2_PARAMS.posX],
-    [PETPLAY_ORIGIN_V2_PARAMS.fwdZ]: good[PETPLAY_ORIGIN_V2_PARAMS.posZ] + 1.5 * 2 ** -10,
+    [PETPLAY_ORIGIN_V2_PARAMS.fwdZ]: good[PETPLAY_ORIGIN_V2_PARAMS.posZ] + 1.5 * 2 ** -5,
   };
   assertEquals(decodePetPlayOriginV2Pose(torn), null);
   // Coincident senders.
@@ -244,4 +246,18 @@ Deno.test("decodeVrcOriginPose prefers v2 over v1 and accepts the v2 OSC prefix"
   };
   assertEquals(decodeVrcOriginPose(coords)?.source, "petplay-origin-v2");
   assert(isVrcOriginOscAddress(PETPLAY_ORIGIN_V2_PARAMS.posX));
+});
+
+Deno.test("two-scale v2 rig: fine inside 768 m, coarse beyond, nothing past 8192 m", () => {
+  const near = decodePetPlayOriginV2Pose(encodePetPlayOriginV2RigPose([300.25, 2, -500.5], 1));
+  assert(near);
+  assertEquals(near.position, [300.25, 2, -500.5]);
+  const far = encodePetPlayOriginV2RigPose([3000, 10, -2000], -2);
+  assertEquals(far[PETPLAY_ORIGIN_V2_PARAMS.pos], 0);
+  assertEquals(far[PETPLAY_ORIGIN_V2_COARSE_PARAMS.pos], 1);
+  const farPose = decodePetPlayOriginV2Pose(far);
+  assert(farPose);
+  assertEquals(farPose.position, [3000, 10, -2000]);
+  assertAlmostEquals(farPose.yawRad, -2, 1e-4);
+  assertEquals(decodePetPlayOriginV2Pose(encodePetPlayOriginV2RigPose([9000, 0, 0], 0)), null);
 });
