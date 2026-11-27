@@ -36,6 +36,8 @@ export function fingerprintScene(payload: WebXRRaythreeRenderPayload, extra = 0)
   h.texts(payload.ui.texts);
   h.items(payload.ui.images);
   h.value(payload.ui.textRendering);
+  // Absent in most scenes: hashed only when present, so their fingerprints do not change.
+  if (payload.ui.nativePanels) h.items(payload.ui.nativePanels);
   return h.digest();
 }
 

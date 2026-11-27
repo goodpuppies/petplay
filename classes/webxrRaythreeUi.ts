@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { getTextRenderingSettings, type TextRenderingSettings } from "./textRenderingSettings.ts";
 import { captureVectorTextGlyphs, type VectorTextGeometrySource } from "./vectorTextGlyphs.ts";
-import { type Anchored, captureRenderAnchor } from "./overlayRenderTracking.ts";
+import { type Anchored, captureRenderAnchor, type RenderAnchor } from "./overlayRenderTracking.ts";
+import { NATIVE_PANEL_USERDATA, type NativePanelSnapshot } from "./nativeOverlayContent.ts";
 import type { InstancedBufferAttribute, Material, Object3D } from "three";
 import type { RootContext } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/context.ts";
 import { Component } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/components/component.ts";
@@ -126,6 +127,18 @@ export type WebXRRaythreeUiSnapshot = {
   panels: WebXRRaythreeUiPanelSnapshot[];
   texts: WebXRRaythreeUiTextSnapshot[];
   images: WebXRRaythreeUiImageSnapshot[];
+  /**
+   * One entry per uikit root that has items, unless something above it opts out with
+   * `userData.nativePanel = false`. The items stay in the lists above; a renderer presenting
+   * native overlays takes them out of the eye image and draws each root into its own quad overlay
+   * instead. See `nativeOverlayContent.ts`.
+   */
+  nativePanels?: NativePanelSnapshot[];
+  /**
+   * Renderer-side only: panels drawn into the depth buffer alone, standing in for roots that are
+   * shown as native overlays, so the lasers still stop at them.
+   */
+  depthOnlyPanels?: WebXRRaythreeUiPanelSnapshot[];
 };
 
 export type WebXRRaythreeTextUserData = {
@@ -283,27 +296,69 @@ export function extractWebXRRaythreeUiFromCollected(
   for (const rootCtx of roots) {
     rootIndexFor(rootCtx);
   }
+
+  // A root is flat and its own world matrix frames it, so each one that draws anything is
+  // described as a native panel, once, from the first of its objects.
+  const nativeLookedUp = new Set<unknown>();
+  const noteRoot = (rootCtx: unknown, rootIndex: number, component: Object3D) => {
+    if (nativeLookedUp.has(rootCtx)) return;
+    nativeLookedUp.add(rootCtx);
+    const root = (rootCtx as { component?: Object3D }).component ?? component;
+    const size = (root as unknown as { size?: { peek?: () => [number, number] | undefined } })
+      .size?.peek?.();
+    // Not laid out yet: there is no rectangle to describe.
+    if (size == null || !(size[0] > 0) || !(size[1] > 0)) return;
+    if (staysInEyeImage(root)) return;
+    const world = root.matrixWorld.elements;
+    const anchor = captureRenderAnchor(root, world, undefined, nativePanelAnchors.get(root));
+    if (anchor) nativePanelAnchors.set(root, anchor);
+    else nativePanelAnchors.delete(root);
+    let id = nativePanelIds.get(root);
+    if (id === undefined) nativePanelIds.set(root, id = ++nextNativePanelId);
+    (snapshot.nativePanels ??= []).push({
+      key: `ui-${id}`,
+      rootIndices: [rootIndex],
+      worldMatrix: new Float32Array(world),
+      pixelWidth: size[0],
+      pixelHeight: size[1],
+      renderAnchor: anchor,
+    });
+  };
+
   for (let i = 0; i < panelMeshes.length; i++) {
     const mesh = panelMeshes[i]!;
     if (!mesh.visible) {
       continue;
     }
-    const rootIndex = resolveRootIndex(mesh, rootIndexFor);
+    const rootIndex = resolveRootIndex(mesh, rootIndexFor, noteRoot);
     maybeCollectPanels(mesh, snapshot.panels, rootIndex);
   }
 
   for (let i = 0; i < textObjects.length; i++) {
     const object = textObjects[i]!;
-    const rootIndex = resolveRootIndex(object, rootIndexFor);
+    const rootIndex = resolveRootIndex(object, rootIndexFor, noteRoot);
     maybeCollectText(object, snapshot.texts, rootIndex);
   }
   for (let i = 0; i < imageObjects.length; i++) {
     const object = imageObjects[i]!;
-    const rootIndex = resolveRootIndex(object, rootIndexFor);
+    const rootIndex = resolveRootIndex(object, rootIndexFor, noteRoot);
     maybeCollectImage(object, snapshot.images, rootIndex);
   }
 
   return snapshot;
+}
+
+/** Last anchor per root, so an unchanged anchor keeps its identity (see captureRenderAnchor). */
+const nativePanelAnchors = new WeakMap<Object3D, RenderAnchor>();
+/** A number per root for as long as it lives: its SteamVR overlay keeps its name across frames. */
+const nativePanelIds = new WeakMap<Object3D, number>();
+let nextNativePanelId = 0;
+
+function staysInEyeImage(root: Object3D): boolean {
+  for (let current: Object3D | null = root; current != null; current = current.parent) {
+    if (current.userData?.[NATIVE_PANEL_USERDATA] === false) return true;
+  }
+  return false;
 }
 
 type PanelCacheEntry = {
@@ -552,11 +607,15 @@ function maybeCollectPanels(
 function resolveRootIndex(
   object: Object3D,
   rootIndexFor: (rootCtx: unknown) => number,
+  onRoot?: (rootCtx: unknown, rootIndex: number, component: Object3D) => void,
 ): number {
   let current: Object3D | null = object;
   while (current != null) {
     if (current instanceof Component) {
-      return rootIndexFor((current as unknown as { root: { value: unknown } }).root.value);
+      const rootCtx = (current as unknown as { root: { value: unknown } }).root.value;
+      const rootIndex = rootIndexFor(rootCtx);
+      onRoot?.(rootCtx, rootIndex, current);
+      return rootIndex;
     }
     current = current.parent;
   }

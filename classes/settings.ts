@@ -37,6 +37,12 @@ const isLocaleOrNull = (value: unknown): value is string | null =>
 export const VRC_CAMERA_RESOLUTIONS = ["1920x1080", "1280x720", "2560x1440"] as const;
 export type VrcCameraResolution = typeof VRC_CAMERA_RESOLUTIONS[number];
 
+/**
+ * `native` presents like `panorama`, and additionally hands marked UI panels to SteamVR as
+ * world-placed quad overlays (docs/NATIVE_OVERLAYS.md).
+ */
+export type OverlayPresentMode = "panorama" | "projection" | "native";
+
 export const SETTINGS_SCHEMA = {
   passthroughKey: {
     default: null as string | null,
@@ -95,12 +101,18 @@ export const SETTINGS_SCHEMA = {
       value === null || value === "linear" || value === "catmull-rom",
   } satisfies SettingSpec<"linear" | "catmull-rom" | null>,
   overlayPresentMode: {
-    default: "panorama" as "panorama" | "projection",
+    default: "panorama" as OverlayPresentMode,
     label:
-      "Overlay presentation mode: panorama (default, native quad displays) or projection (lower VRAM, head reprojection)",
-    valid: (value: unknown): value is "panorama" | "projection" =>
-      value === "panorama" || value === "projection",
-  } satisfies SettingSpec<"panorama" | "projection">,
+      "Overlay presentation mode: panorama (default, native quad displays), projection (lower VRAM, head reprojection) or native (panorama, with UI panels as SteamVR quads that stay put)",
+    valid: (value: unknown): value is OverlayPresentMode =>
+      value === "panorama" || value === "projection" || value === "native",
+  } satisfies SettingSpec<OverlayPresentMode>,
+  nativeStereoSizing: {
+    default: "halved" as "halved" | "full",
+    label:
+      "How SteamVR sizes a side-by-side stereo quad: from one eye's half of its texture (halved) or from all of it (full, then corrected). Judged by eye: wrong makes 3D quads half or twice as tall",
+    valid: (value: unknown): value is "halved" | "full" => value === "halved" || value === "full",
+  } satisfies SettingSpec<"halved" | "full">,
   grabboxOutline: {
     default: true as boolean,
     label: "Draw grab-box outlines (the hull stays grabbable either way)",

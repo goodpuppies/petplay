@@ -134,6 +134,7 @@ import type { DirectOpenVrInputSource } from "../directOpenVrInputSource.ts";
 import { penHandler } from "./penEvents.ts";
 import { ToastOverlay } from "./toastOverlay.tsx";
 import { SettingsWindowOverlay } from "./settingsWindowOverlay.tsx";
+import { DebugTestCubes } from "./debugTestCube.tsx";
 import { pushToast } from "./toastStore.ts";
 import { startXsoNotificationReceiver } from "./xsoNotificationReceiver.ts";
 import { startDesktopNotificationFollow } from "./desktopNotifications.ts";
@@ -2966,6 +2967,7 @@ export function WebXRScene(
       />
       <VrcTofuPromptOverlay vrcPeersActor={vrcPeersActor} />
       <SettingsWindowOverlay />
+      <DebugTestCubes />
       <ToastOverlay />
     </>
   );

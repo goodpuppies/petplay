@@ -23,6 +23,7 @@ import type {
 } from "@pmndrs/pointer-events";
 import { useGrabboxOutlineVisible } from "./grabboxOutlineMode.ts";
 import { penHandler } from "./penEvents.ts";
+import type { NativeStereoUserData } from "../nativeOverlayContent.ts";
 
 // deno-lint-ignore no-explicit-any
 extend(THREE as any);
@@ -150,6 +151,8 @@ export const GRABBOX_CHROME_THICKNESS = 0.002;
  * built from boxes instead of lines. `raythreeHudOverUi` keeps it above the
  * uikit pass that draws the keys and panels over everything before it.
  */
+let nextGrabBoxFrameId = 0;
+
 function GrabBoxFrame(
   { width, height, depth, color }: {
     width: number;
@@ -159,6 +162,16 @@ function GrabBoxFrame(
   },
 ) {
   const t = GRABBOX_CHROME_THICKNESS;
+  // In the `native` present mode the renderer shows the frame on its own stereo SteamVR quad,
+  // which holds still like the panel inside it (docs/NATIVE_OVERLAYS.md). The bars are arranged
+  // evenly around the box's centre, which is how the renderer finds it.
+  const stereoKey = useMemo(() => `grabbox-${++nextGrabBoxFrameId}`, []);
+  const nativeStereo = useMemo((): NativeStereoUserData => ({
+    key: stereoKey,
+    radius: Math.hypot(width, height, depth) / 2 + t,
+    box: [width, height, depth],
+    withPanels: true,
+  }), [stereoKey, width, height, depth, t]);
   const hx = width / 2;
   const hy = height / 2;
   const hz = depth / 2;
@@ -184,7 +197,7 @@ function GrabBoxFrame(
         <mesh
           key={index}
           position={bar.position}
-          userData={{ raythreeHudOverUi: true }}
+          userData={{ raythreeHudOverUi: true, nativeStereo }}
           {...({ pointerEvents: "none" } as Record<string, unknown>)}
         >
           <boxGeometry args={bar.size} />
