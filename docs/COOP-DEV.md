@@ -10,7 +10,9 @@ in when a change has to reach people who are not pairing.
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------- |
 | My own PetPlay picks up my edits                                                   | `--watch-webxr` hot reload (stageforge `HotReload`)         | this machine                  |
 | The other PetPlay picks up my edits                                                | `deno task peer-patch --watch` (classes/peerPatch.ts)       | trusted peers in the instance |
-| Changes a patch cannot carry (imports, exports, top level, the main process, Rust) | push a branch; CI publishes it; both pick it in the updater | anyone following that branch  |
+| Changes a patch cannot carry (imports, exports, top level, the main process, Rust) | `deno task peer-build --peer NAME` (classes/peerBuild.ts)   | one trusted peer, any OS      |
+| Reading the other side: status, log, actors, eval                                  | `deno task peer <name> …` (utils/peer.ts)                   | trusted peers                 |
+| A build for people who are not pairing                                             | push a branch; CI publishes it; they pick it in the updater | anyone following that branch  |
 | Is the whole thing working, on both ends?                                          | `deno task coop:verify` (classes/peerProbe.ts)              | this machine + trusted peers  |
 
 ## Setting up a pairing
@@ -18,8 +20,9 @@ in when a change has to reach people who are not pairing.
 1. Both run PetPlay with Peer Networking on, in the same VRChat instance, and press Trust on each
    other (wrist menu). Trust upgrades the link from the relay-only discovery tier to the direct
    tier, which carries everything below.
-2. Both turn on Settings → Install → **Peer Code Patches**. That is the opt-in for both live patches
-   and the read-only probes `coop:verify` sends. Turn it off after the session.
+2. Both turn on Settings → Install → **Peer Code Patches**. That is the opt-in for live patches,
+   peer builds, remote eval and the probes `coop:verify` and `deno task peer` send. Turn it off
+   after the session.
 3. Start from the same build. Either both run a checkout of the same commit, or both pick the same
    **Update Channel** (Settings → Install, or `petplay --update --channel=<owner>/<repo>#<branch>`).
    `coop:verify` reports a build mismatch as its first warning.
@@ -35,13 +38,39 @@ deno task coop:verify --watch 10  # a soak while both people use the feature
 ```
 
 `peer-patch` replaces function bodies only. It reports anything structural ("structural", "blocked")
-instead of applying it; such a change needs a restart on the other side, which means a build:
+instead of applying it; such a change needs a new build on the other side. That does not need CI:
 
-- **The peer runs a checkout**: they pull your branch and restart.
-- **The peer runs a release**: push the branch. CI (`.github/workflows/branch-build.yml`) builds it
-  and publishes the binaries as a prerelease, and the peer installs it from Settings → Install →
-  Update Channel → your branch → INSTALL. A delta update downloads only the changed parts of the
-  binary, usually a few MB of the ~500 MB.
+```sh
+deno task peer-build --peer NAME   # build here for the peer's OS, send it, it installs and restarts
+```
+
+`peer-build` asks the peer (through the trusted link) which target it runs, compiles PetPlay for
+that target here, and sends only the chunks of the executable the peer does not already have (the
+same chunking as delta updates, usually a few MB). The peer checks the SHA-256, installs it with the
+one installer backend (`petplay.previous` kept, so ROLL BACK works) and restarts into it. It needs
+the peer to run an installed release-style build (a checkout just pulls and restarts) with Peer Code
+Patches on. `--no-restart` installs without restarting; `--binary PATH` sends an existing build.
+
+The Rust and C helpers inside the build cannot be cross-compiled from every OS. For another target
+`peer-build` uses the natives CI built for the same submodule and `native/overlayPresenter` commits
+(`natives-<target>.tar.gz` on every branch build, utils/natives.ts). Changing native code for the
+other OS therefore means one push of the branch, after which TypeScript iteration on top of it needs
+no CI again. Same-OS peers never need CI.
+
+To see the other side without asking the person in VR:
+
+```sh
+deno task peer list                       # trusted peers in the instance
+deno task peer NAME status                # their probe: build, link, displays, recent errors
+deno task peer NAME log --lines 200 --grep link
+deno task peer NAME actors                # actors running there
+deno task peer NAME eval webxr 'return Object.keys(globalThis).length'
+```
+
+These go through this machine's `vrcPeers` (`PEERCALL`, local only) to the peer's, so the peer's
+trust check sees a trusted sender. `eval` (`EVALJS` from a peer) runs only while that peer has Peer
+Code Patches on; with it off, a trusted peer can still call ordinary actor functions but not run
+arbitrary code.
 
 ## What `coop:verify` checks
 
@@ -87,21 +116,21 @@ Submodule changes on a branch need the submodule commit to be reachable from the
 
 ## Updater reference
 
-- One installer backend (classes/installer.ts) does every install, update, rollback and
-  uninstall, whether it comes from the CLI, the Settings overlay (which runs `petplay … --json` as a
-  child process, classes/installerClient.ts) or the prompt a newer download shows when an older
-  build is installed. Every operation takes the install directory's lock, stages the new
-  executable, swaps it in atomically, keeps the replaced one as `petplay.previous`, records the
-  build actually installed and keeps the SteamVR registration current.
+- One installer backend (classes/installer.ts) does every install, update, rollback and uninstall,
+  whether it comes from the CLI, the Settings overlay (which runs `petplay … --json` as a child
+  process, classes/installerClient.ts) or the prompt a newer download shows when an older build is
+  installed. Every operation takes the install directory's lock, stages the new executable, swaps it
+  in atomically, keeps the replaced one as `petplay.previous`, records the build actually installed
+  and keeps the SteamVR registration current.
 - `petplay --install`, `--uninstall`, `--update-channels`, `--update-check [--channel=C]`,
   `--update [--channel=C] [--yes]`, `--update-rollback`; all take `--json`.
 - An update is checked against `SHA256SUMS` and GitHub's asset digest, its new binary must answer
   `--version --json` before it is swapped in, and the replaced binary is kept as `petplay.previous`
   (`--update-rollback`).
-- Settings → Install → RESTART (shown after an update or rollback) shuts PetPlay down as Ctrl-C
-  does and starts the installed build in its place: the logging parent every release run has
-  starts it as its next child (same terminal, same SteamVR launch, same log file), so the person
-  you pair with presses one button after INSTALL (classes/restart.ts). Builds from before this
-  existed still need a manual restart the first time.
+- Settings → Install → RESTART (shown after an update or rollback) shuts PetPlay down as Ctrl-C does
+  and starts the installed build in its place: the logging parent every release run has starts it as
+  its next child (same terminal, same SteamVR launch, same log file), so the person you pair with
+  presses one button after INSTALL (classes/restart.ts). Builds from before this existed still need
+  a manual restart the first time.
 - `PETPLAY_GITHUB_TOKEN` raises the GitHub API limit (anonymous checks are cached with ETags and
   rarely hit it).

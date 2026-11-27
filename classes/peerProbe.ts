@@ -44,6 +44,8 @@ export type PeerProbe = {
   peers: Array<{ displayName: string; actorId: string; trust: string; inInstance: boolean }>;
   sharing: { actor: string | null; shared: ProbeSharedDisplay[] } | null;
   viewing: ProbeViewedDisplay[] | null;
+  /** This PetPlay's actors, for `deno task peer <name> eval <actor> …`. */
+  actors?: Array<{ name: string; actorId: string }>;
   logErrors: string[];
 };
 
@@ -53,13 +55,19 @@ const ERROR_LINE = /\b(error|exception|panic|fatal|uncaught|failed|timed out)\b/
 
 /** The last `max` error-looking lines of this run's log (release `current.log`, checkout `logs/`). */
 export function recentLogErrors(max = 20): string[] {
+  return recentLogLines(max, ERROR_LINE.source, 300);
+}
+
+/** The last `max` lines of this run's log, or of those matching `grep` (a regular expression). */
+export function recentLogLines(max = 200, grep?: string, width = 2000): string[] {
+  const pattern = grep ? new RegExp(grep, "i") : null;
   const path = currentLogPath();
   if (!path) return [];
   try {
     const file = Deno.openSync(path, { read: true });
     try {
       const size = file.statSync().size;
-      const length = Math.min(size, 512 * 1024);
+      const length = Math.min(size, 4 * 1024 * 1024);
       file.seekSync(size - length, Deno.SeekMode.Start);
       const bytes = new Uint8Array(length);
       let read = 0;
@@ -69,9 +77,9 @@ export function recentLogErrors(max = 20): string[] {
         read += n;
       }
       return new TextDecoder().decode(bytes.subarray(0, read)).split("\n")
-        .filter((line) => ERROR_LINE.test(line))
-        .slice(-max)
-        .map((line) => line.length > 300 ? `${line.slice(0, 299)}…` : line);
+        .filter((line) => line !== "" && (!pattern || pattern.test(line)))
+        .slice(-Math.min(Math.max(1, max), 5000))
+        .map((line) => line.length > width ? `${line.slice(0, width - 1)}…` : line);
     } finally {
       file.close();
     }

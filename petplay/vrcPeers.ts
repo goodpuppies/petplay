@@ -43,8 +43,16 @@ import {
   type ProbeSharedDisplay,
   type ProbeViewedDisplay,
   recentLogErrors,
+  recentLogLines,
 } from "../classes/peerProbe.ts";
-import { getBuildInfo } from "../classes/buildInfo.ts";
+import { type BuildInfo, getBuildInfo } from "../classes/buildInfo.ts";
+import {
+  type PeerBuildOffer,
+  type PeerBuildPiece,
+  type PeerBuildPlan,
+  PeerBuildReceiver,
+} from "../classes/peerBuild.ts";
+import { requestProcessRestart } from "../classes/processExitRequest.ts";
 import { getSettingsPath, parseSettings } from "../classes/settings.ts";
 import type { IrohConnectionInfo } from "../classes/irohCarrier.ts";
 
@@ -857,18 +865,110 @@ export const api = {
    * A trusted peer's coop dev check (`deno task coop:verify`): a read-only snapshot of this
    * PetPlay, when Peer Code Patches is on (the same opt-in as live patches).
    */
-  PEERPROBE: async (): Promise<PeerProbeReply> => {
-    const sender = PostMan.sender;
-    const peer = sender ? peers.get(sender) : undefined;
-    if (!peer || peer.trust !== "trusted") return { ok: false, error: "not a trusted peer" };
-    if (!peerPatchesAccepted()) {
-      return {
-        ok: false,
-        error: `${
-          state.self?.displayName ?? "this peer"
-        } has Settings → Install → Peer Code Patches off`,
-      };
+  /** A trusted peer reads this PetPlay's log (dev pairing): the last `lines`, or those matching `grep`. */
+  PEERLOG: (request: { lines?: number; grep?: string } | null) => {
+    const check = devPairingSender();
+    if ("error" in check) return { ok: false, error: check.error };
+    return { ok: true, lines: recentLogLines(request?.lines ?? 200, request?.grep) };
+  },
+  /** Dev pairing: a trusted peer offers a whole build (classes/peerBuild.ts). */
+  PEERBUILDOFFER: async (
+    offer: PeerBuildOffer,
+  ): Promise<({ ok: true } & PeerBuildPlan) | { ok: false; error: string }> => {
+    const check = devPairingSender();
+    if ("error" in check) return { ok: false, error: check.error };
+    if (!Deno.build.standalone) {
+      return { ok: false, error: "this PetPlay runs from a checkout: pull the branch and restart" };
     }
+    try {
+      const plan = await peerBuilds.offer(offer);
+      console.log(
+        `[peerBuild] ${check.peer.displayName} offers ${offer.build.version}: ${
+          (plan.fetchBytes / 1e6).toFixed(1)
+        } MB to receive, ${(plan.reusedBytes / 1e6).toFixed(0)} MB reused`,
+      );
+      toast(`${check.peer.displayName} is sending a build`, `${offer.build.version}`);
+      return { ok: true, ...plan };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+  PEERBUILDDATA: async (piece: PeerBuildPiece) => {
+    const check = devPairingSender();
+    if ("error" in check) return { ok: false, error: check.error };
+    try {
+      return { ok: true, ...await peerBuilds.piece(piece) };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+  /** Verifies and installs the received build (classes/installer.ts), then restarts into it. */
+  PEERBUILDCOMMIT: async (request: { id: string; restart?: boolean }) => {
+    const check = devPairingSender();
+    if ("error" in check) return { ok: false, error: check.error };
+    try {
+      const { installFile } = await import("../classes/installer.ts");
+      const result = await peerBuilds.commit(
+        request.id,
+        (staging, sha256, build: BuildInfo) =>
+          installFile(staging, {
+            expectedSha256: sha256,
+            from: `peer ${check.peer.displayName} (${build.version})`,
+          }),
+      );
+      console.log(`[peerBuild] ${result.notes.join("; ")}`);
+      if (request.restart !== false) {
+        toast(`Restarting into ${result.installed?.version}`, `sent by ${check.peer.displayName}`);
+        // Reply first: the sender waits for this answer, and the restart drops the link.
+        setTimeout(() => requestProcessRestart(`build from ${check.peer.displayName}`), 750);
+      } else {
+        toast(`${check.peer.displayName}'s build is installed`, "Settings → Install → RESTART");
+      }
+      return { ok: true, result, restarting: request.restart !== false };
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      toast("A peer build was not installed", text, "warning");
+      return { ok: false, error: text };
+    }
+  },
+  PEERBUILDABORT: (request: { id?: string } | null) => {
+    const check = devPairingSender();
+    if ("error" in check) return { ok: false, error: check.error };
+    return { ok: true, aborted: peerBuilds.abort(request?.id) };
+  },
+  /**
+   * Local only: a dev tool's call to one trusted peer (`deno task peer`, `peer-build`,
+   * `coop:verify`), sent from this vrcPeers so the peer's trust checks see a trusted sender.
+   * `peer` is part of a display name or an actor id.
+   */
+  PEERCALL: async (
+    request: { peer: string; type: string; payload?: unknown; timeoutMs?: number },
+  ): Promise<{ peer: string; actorId: ActorId; reply: unknown }> => {
+    if (!PEER_CALLABLE.has(request?.type)) throw new Error(`PEERCALL cannot send ${request?.type}`);
+    const matches = trustedInInstance().filter((info) =>
+      info.actorId === request.peer ||
+      info.displayName.toLowerCase().includes(String(request.peer ?? "").toLowerCase())
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        matches.length === 0
+          ? `no trusted peer in this instance matches ${request.peer}`
+          : `${request.peer} matches ${matches.map((m) => m.displayName).join(", ")}`,
+      );
+    }
+    const info = matches[0]!;
+    const reply = await timeout(
+      PostMan.PostMessage(
+        { target: info.actorId, type: request.type, payload: request.payload ?? null },
+        true,
+      ) as Promise<unknown>,
+      request.timeoutMs ?? 60_000,
+    );
+    return { peer: info.displayName, actorId: info.actorId, reply };
+  },
+  PEERPROBE: async (): Promise<PeerProbeReply> => {
+    const check = devPairingSender();
+    if ("error" in check) return { ok: false, error: check.error };
     return { ok: true, probe: await localProbe() };
   },
   /** Local only: probe this machine and every trusted peer in the instance (utils/coop-verify.ts). */
@@ -1010,7 +1110,7 @@ async function localProbe(): Promise<PeerProbe> {
     settings = parseSettings("{}").settings;
   }
   const build = getBuildInfo();
-  const [links, direct, sharing, viewing] = await Promise.all([
+  const [links, direct, sharing, viewing, inspected] = await Promise.all([
     ask<IrohConnectionInfo[] | null>(System, "IROH_CONNECTIONS"),
     ask<IrohEndpoint | null>(System, "DIRECT_ENDPOINT", 15_000),
     displayShareActor
@@ -1019,6 +1119,7 @@ async function localProbe(): Promise<PeerProbe> {
     householdDesktopsActor
       ? ask<ProbeViewedDisplay[]>(householdDesktopsActor, "DESCRIBEPOSES")
       : Promise.resolve(null),
+    ask<Array<{ actorId: string; actorname?: string; ownership?: string }>>(System, "INSPECT"),
   ]);
   return {
     at: Date.now(),
@@ -1037,9 +1138,50 @@ async function localProbe(): Promise<PeerProbe> {
     })),
     sharing: sharing ? { actor: displayShareActor, shared: sharing.shared ?? [] } : null,
     viewing,
+    actors: (inspected ?? [])
+      .filter((a) => a.ownership !== "external")
+      .map((a) => ({ name: a.actorname ?? a.actorId.split("@")[0]!, actorId: a.actorId })),
     logErrors: recentLogErrors(),
   };
 }
+
+/**
+ * The trusted peer that sent the current message, when this machine accepts dev pairing
+ * (Peer Code Patches on); otherwise the reason to refuse.
+ */
+function devPairingSender(): { peer: VrcPeerInfo } | { error: string } {
+  const sender = PostMan.sender;
+  const peer = sender ? peers.get(sender) : undefined;
+  if (!peer || peer.trust !== "trusted") return { error: "not a trusted peer" };
+  if (!peerPatchesAccepted()) {
+    return {
+      error: `${state.self?.displayName ?? "this peer"} has Settings → Install → Peer Code Patches off`,
+    };
+  }
+  return { peer };
+}
+
+function toast(title: string, content: string, tone: "info" | "warning" = "info"): void {
+  if (!webxrActor) return;
+  PostMan.PostMessage({
+    target: webxrActor,
+    type: "TOAST",
+    payload: { title, content, source: "Coop dev", tone, timeoutMs: 10_000 },
+  });
+}
+
+const peerBuilds = new PeerBuildReceiver();
+
+/** What a dev tool may ask a trusted peer through PEERCALL (all check trust on the peer's side). */
+const PEER_CALLABLE = new Set([
+  "PEERPROBE",
+  "PEERLOG",
+  "PEERPATCH",
+  "PEERBUILDOFFER",
+  "PEERBUILDDATA",
+  "PEERBUILDCOMMIT",
+  "PEERBUILDABORT",
+]);
 
 function timeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;

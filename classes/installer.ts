@@ -42,7 +42,7 @@ import {
   type UpdateProgress,
 } from "./updater.ts";
 
-export type InstallerAction = "install" | "update" | "rollback" | "uninstall";
+export type InstallerAction = "install" | "update" | "rollback" | "uninstall" | "install-file";
 export type InstallerProgress = UpdateProgress;
 
 export type InstallerResult = {
@@ -226,6 +226,54 @@ export async function update(
       targetPath: target,
       previousPath,
       ...download,
+      notes,
+      restartNeeded: true,
+    };
+  });
+}
+
+/**
+ * Installs an executable file that is already on disk (a local `deno task build`, or a build a
+ * trusted peer just sent, classes/peerBuild.ts) the same way an update is installed: checked
+ * against `expectedSha256` when given, started once, swapped in with the old build kept.
+ * A file in the target's own directory is moved into place, anything else is copied.
+ */
+export async function installFile(
+  path: string,
+  options: InstallerOptions & { expectedSha256?: string; from?: string } = {},
+): Promise<InstallerResult> {
+  requireRelease(options);
+  const target = options.targetPath ?? installerTarget();
+  const progress = options.onProgress ?? (() => {});
+  if (!exists(path)) throw new Error(`No such file: ${path}`);
+  return await withInstallLock(dirname(target), async () => {
+    if (options.expectedSha256) {
+      progress({ phase: "verifying", receivedBytes: 0, totalBytes: null });
+      const { sha256File } = await import("./updater.ts");
+      const actual = await sha256File(path);
+      if (actual !== options.expectedSha256.toLowerCase()) {
+        throw new Error(`${path} is not the expected build (SHA-256 ${actual.slice(0, 12)})`);
+      }
+    }
+    const size = Deno.statSync(path).size;
+    const { installed, previousPath } = await replaceWith(target, options, async (incoming) => {
+      progress({ phase: "copying", receivedBytes: 0, totalBytes: size });
+      if (dirname(path) === dirname(target)) Deno.renameSync(path, incoming);
+      else await Deno.copyFile(path, incoming);
+      return null;
+    }, options.from ?? path);
+    const notes = [`Installed ${installed.version} at ${target} (from ${options.from ?? path})`];
+    if (options.register !== false && target === installedExecutablePath()) {
+      notes.push(...await refreshSteamVrRegistration(target, progress));
+    }
+    return {
+      action: "install-file",
+      installed,
+      targetPath: target,
+      previousPath,
+      mode: "copy",
+      downloadedBytes: 0,
+      reusedBytes: 0,
       notes,
       restartNeeded: true,
     };

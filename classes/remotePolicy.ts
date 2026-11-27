@@ -15,8 +15,20 @@
  * - On every remote connection, `HOTPATCH` is rejected: code patches from peers go through
  *   `vrcPeers`' `PEERPATCH`, which checks the sender's trust and the `acceptPeerPatches` setting
  *   (`classes/peerPatch.ts`).
+ * - `EVALJS` from a peer (`deno task peer <name> eval`) runs code in an actor, so even a trusted
+ *   peer gets it only while this machine has Peer Code Patches on: the dev pairing opt-in.
  */
+import { peerPatchesAccepted } from "./peerPatch.ts";
 import type { RemoteMessagePolicy } from "../submodules/stageforge/mod.ts";
+
+/** Remote code evaluation needs dev pairing on; re-read from settings at most every 2 s. */
+const EVAL_TYPES: ReadonlySet<string> = new Set(["EVALJS"]);
+let evalAllowed = { value: false, at: 0 };
+function remoteEvalAllowed(): boolean {
+  const now = Date.now();
+  if (now - evalAllowed.at > 2_000) evalAllowed = { value: peerPatchesAccepted(), at: now };
+  return evalAllowed.value;
+}
 
 const DISCOVERY_ALLOWED_BY_ACTOR: Record<string, ReadonlySet<string>> = {
   vrcPeers: new Set(["CHALLENGE", "SHAREOFFER", "DIRECTOFFER"]),
@@ -39,6 +51,7 @@ const LOCAL_ONLY_BY_ACTOR: Record<string, ReadonlySet<string>> = {
     "ASSIGNWEBXR",
     "SENDPEERPATCH",
     "SENDPEERPROBE",
+    "PEERCALL",
   ]),
   displayShare: new Set([
     "SETUP",
@@ -77,7 +90,8 @@ export function petplayRemotePolicy(): RemoteMessagePolicy {
       return DISCOVERY_ALLOWED_BY_ACTOR[actorName]?.has(baseType) === true;
     }
 
-    // Trusted `"direct"` P2P connection: allow shared compute (`EVALJS`, actor RPCs, etc.).
+    if (EVAL_TYPES.has(baseType)) return remoteEvalAllowed();
+    // Trusted `"direct"` P2P connection: allow shared compute (actor RPCs, etc.).
     return true;
   };
 }

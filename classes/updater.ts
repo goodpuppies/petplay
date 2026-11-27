@@ -741,6 +741,20 @@ async function assembleDelta(
   fetchImpl: typeof fetch,
   onReceived: (bytes: number) => void,
 ): Promise<void> {
+  await writeLocalChunks(index, plan, path);
+  await fetchMissingRanges(plan, path, url, fetchImpl, onReceived);
+}
+
+/**
+ * Creates `path` at the index's size with every chunk the plan found on disk copied into place;
+ * the plan's `ranges` are left to fill (by `Range` fetches, or a peer sending them,
+ * classes/peerBuild.ts).
+ */
+export async function writeLocalChunks(
+  index: ChunkIndex,
+  plan: ReturnType<typeof planDelta>,
+  path: string,
+): Promise<void> {
   const out = await Deno.open(path, { write: true, create: true, truncate: true });
   try {
     await out.truncate(index.size);
@@ -772,7 +786,15 @@ async function assembleDelta(
   } finally {
     out.close();
   }
+}
 
+async function fetchMissingRanges(
+  plan: ReturnType<typeof planDelta>,
+  path: string,
+  url: string,
+  fetchImpl: typeof fetch,
+  onReceived: (bytes: number) => void,
+): Promise<void> {
   let received = 0;
   const queue = [...plan.ranges];
   const worker = async () => {

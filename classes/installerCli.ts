@@ -12,6 +12,7 @@ import { describeBuild } from "./buildInfo.ts";
 import { getSetting } from "./settings.ts";
 import {
   install,
+  installFile,
   type InstallerProgress,
   type InstallerResult,
   rollback,
@@ -52,6 +53,11 @@ export async function runInstallerCli(args: readonly string[]): Promise<number> 
   try {
     if (args.includes("--install")) return finish(await install({ onProgress }));
     if (args.includes("--uninstall")) return finish(await uninstall({ onProgress }));
+    const file = args.find((a) => a.startsWith("--install-file="))?.slice("--install-file=".length);
+    if (file) {
+      const expectedSha256 = args.find((a) => a.startsWith("--sha256="))?.slice("--sha256=".length);
+      return finish(await installFile(file, { onProgress, expectedSha256 }));
+    }
 
     const channelArg = args.find((a) => a.startsWith("--channel="))?.slice("--channel=".length);
     if (channelArg != null && !isChannelId(channelArg)) {

@@ -41,7 +41,8 @@ export async function runCliCommand(args: readonly string[]): Promise<number | n
   }
   if (
     args.some((a) =>
-      a === "--install" || a === "--uninstall" || a === "--update" || a.startsWith("--update-")
+      a === "--install" || a === "--uninstall" || a === "--update" || a.startsWith("--update-") ||
+      a.startsWith("--install-file=")
     )
   ) {
     const { runInstallerCli } = await import("./installerCli.ts");
@@ -69,6 +70,8 @@ Run with no arguments to start PetPlay.
   --update-rollback
                 put back the build the last update replaced
                 (all --update commands take --json for one JSON object per line)
+  --install-file=PATH [--sha256=HEX]
+                install that PetPlay executable (a local build) in place of this one
   --install     install this PetPlay and start it with SteamVR
   --uninstall   remove the installed PetPlay and its SteamVR entry
   --help        this text`;
