@@ -50,7 +50,7 @@ export interface VrcCharacterSimOptions {
   posCorrectionTauMs?: number;
   /** 1st-order yaw correction time constant (ms, default 45). */
   yawCorrectionTauMs?: number;
-  /** Initial smooth-turn speed at full stick (rad/s, default 180°/s). */
+  /** Initial smooth-turn speed at full stick (rad/s, default ~145°/s). */
   turnGainRadPerSec?: number;
 }
 
@@ -130,7 +130,7 @@ export class VrcCharacterSim {
     this.latencyMs = options.latencyMs ?? 15;
     this.posTauMs = options.posCorrectionTauMs ?? 240;
     this.yawTauMs = options.yawCorrectionTauMs ?? 20;
-    this.turnGain = options.turnGainRadPerSec ?? Math.PI;
+    this.turnGain = options.turnGainRadPerSec ?? 2.53;
   }
 
   get isStarted(): boolean {
@@ -377,13 +377,16 @@ export class VrcCharacterSim {
     const dyC = this.pendingPos[1] * (1 - Math.exp(-dtMs / yTau));
 
     // Cap yaw correction rate so rotation never twists backwards faster than physically plausible:
-    // after turn-stick release, backward recoil is capped gently (12°/s) vs active turns (30°/s).
+    // active turns can shed gain mismatch smoothly (60°/s, never reversing turn direction), while
+    // post-release recoil settles gently (25°/s) before the solver re-locks playspace yaw.
     const isYawStopRecoil = turnEff === 0 && this.lastTurnDir !== 0 &&
       this.pendingYaw * this.lastTurnDir < -0.002;
-    const maxYawCorrRate = isYawStopRecoil
-      ? (12 * Math.PI) / 180
-      : (30 * Math.PI) / 180;
-    const yawCorrTauSec = isYawStopRecoil ? 0.16 : yawTauSec;
+    const maxYawCorrRate = turnEff !== 0
+      ? (60 * Math.PI) / 180
+      : isYawStopRecoil
+      ? (25 * Math.PI) / 180
+      : (35 * Math.PI) / 180;
+    const yawCorrTauSec = isYawStopRecoil ? 0.12 : yawTauSec;
     let targetYawRate = Math.max(
       -maxYawCorrRate,
       Math.min(maxYawCorrRate, this.pendingYaw / yawCorrTauSec),
@@ -512,7 +515,7 @@ export class VrcCharacterSim {
           const playRate = avRate + this.hmdYawRate;
           const est = playRate / turnEff;
           if (est > 0.5 && est < 8) {
-            const alpha = 1 / Math.min(30, ++this.turnSamples + 4);
+            const alpha = 1 / Math.min(8, ++this.turnSamples + 2);
             this.turnGain += (est - this.turnGain) * alpha;
           }
           this.turnAnchor = { t, yaw: pose.yawRad, turnEff };
@@ -635,7 +638,7 @@ export class VrcCharacterSim {
       }
     }
     if (yawChanged) {
-      const stickTurning = Math.abs(this.turn) > TURN_STICK_DEADZONE || t - this.turnReleasedAt < 150;
+      const stickTurning = Math.abs(this.turn) > TURN_STICK_DEADZONE || t - this.turnReleasedAt < 220;
       const ryaw = angleDiffRad(pose.yawRad, this.yaw);
       if (stickTurning) {
         // During stick turns (and the brief release tail), bleed yaw residuals smoothly so OSC

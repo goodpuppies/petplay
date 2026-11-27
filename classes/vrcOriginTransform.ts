@@ -1277,7 +1277,7 @@ class StickTurn {
  *   this cut frame-to-frame jitter ~3× against the line fit it replaced.
  */
 /** How long after a turn-stick release `isStickTurning` stays true for v2 (ms). */
-const V2_TURN_RELEASE_TAIL_MS = 150;
+const V2_TURN_RELEASE_TAIL_MS = 220;
 
 export class VrcRootPredictor {
   private readonly timing: ChannelTiming;
@@ -1342,7 +1342,7 @@ export class VrcRootPredictor {
     this.customSmoothing = options.smoothingMs !== undefined;
     this.customPosR = options.positionMeasurementVariance !== undefined;
     this.sim = new VrcCharacterSim({
-      turnGainRadPerSec: options.turnGainRadPerSec ?? Math.PI,
+      turnGainRadPerSec: options.turnGainRadPerSec,
     });
     this.position = new KalmanChannel(
       3,
