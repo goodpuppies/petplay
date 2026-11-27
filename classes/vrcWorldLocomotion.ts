@@ -7,8 +7,25 @@ import { join } from "@std/path";
 import { stateDir } from "./appPaths.ts";
 import type { VrcJumpParams } from "./vrcJumpModel.ts";
 
+export interface VrcWalkParams {
+  /** Forward/back walk speed at full stick (m/s). */
+  forwardSpeed: number;
+  /** Strafe speed at full stick (m/s). */
+  strafeSpeed: number;
+  /** Steady walk samples learned from. */
+  samples: number;
+}
+
+/** VRChat's typical default run/strafe speeds, as measured. */
+export const DEFAULT_VRC_WALK: VrcWalkParams = {
+  forwardSpeed: 3.5,
+  strafeSpeed: 2.0,
+  samples: 0,
+};
+
 export interface VrcWorldLocomotion {
   jump?: VrcJumpParams;
+  walk?: VrcWalkParams;
   /** ISO time of the last change. */
   updatedAt?: string;
 }
@@ -36,6 +53,15 @@ export class VrcWorldLocomotionStore {
     this.data[worldId] = {
       ...this.data[worldId],
       jump: { ...jump },
+      updatedAt: new Date().toISOString(),
+    };
+    this.scheduleSave();
+  }
+
+  setWalk(worldId: string, walk: VrcWalkParams): void {
+    this.data[worldId] = {
+      ...this.data[worldId],
+      walk: { ...walk },
       updatedAt: new Date().toISOString(),
     };
     this.scheduleSave();

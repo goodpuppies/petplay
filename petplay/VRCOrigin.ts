@@ -5,7 +5,7 @@ import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
 import { VrcLogWatcher } from "../classes/vrc/logParser.ts";
 import { DEFAULT_VRC_JUMP } from "../classes/vrcJumpModel.ts";
-import { VrcWorldLocomotionStore } from "../classes/vrcWorldLocomotion.ts";
+import { DEFAULT_VRC_WALK, VrcWorldLocomotionStore } from "../classes/vrcWorldLocomotion.ts";
 import {
   getOverlayTransformAbsolute,
   setOverlayTransformAbsolute,
@@ -113,12 +113,16 @@ function syncWorldLocomotion(nowMs: number): void {
   }
   if (worldAppliedTo === predictor) return;
   worldAppliedTo = predictor;
-  const learned = worldId ? worldLocomotion.get(worldId)?.jump : undefined;
+  const learned = worldId ? worldLocomotion.get(worldId) : undefined;
   predictor.jump.cancel();
-  predictor.jump.params = { ...(learned ?? DEFAULT_VRC_JUMP) };
+  predictor.jump.params = { ...(learned?.jump ?? DEFAULT_VRC_JUMP) };
+  predictor.walk = { ...(learned?.walk ?? DEFAULT_VRC_WALK) };
   const forWorld = worldId;
   predictor.jump.onLearned = (params) => {
     if (forWorld) worldLocomotion.setJump(forWorld, params);
+  };
+  predictor.onWalkLearned = (params) => {
+    if (forWorld) worldLocomotion.setWalk(forWorld, params);
   };
 }
 /** Received stick states, for locomotion analysis (`GETSTICKTRACE`). */
@@ -196,6 +200,7 @@ new PostMan(
         airborne: performance.timeOrigin + performance.now() < airborneUntil,
         worldId,
         jumpModel: { ...predictor.jump.params, active: predictor.jump.active },
+        walkModel: { ...predictor.walk },
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -459,7 +464,7 @@ async function pollOriginOnce(): Promise<boolean> {
     hmdYawRate,
   );
   const v = hmdPose.vVelocity?.v ?? [0, 0, 0];
-  lastHeadYawRate = Math.abs(hmdPose.vAngularVelocity?.v?.[1] ?? 0);
+  lastHeadYawRate = hmdYawRate;
   hmdTrace.push([
     performance.timeOrigin + performance.now(),
     hmdMatrix[0][3],

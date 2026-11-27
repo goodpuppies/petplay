@@ -16,6 +16,7 @@
 
 import { type JumpArcEvent, VrcJumpModel } from "./vrcJumpModel.ts";
 import type { Vec3, VrcOriginWorldPose } from "./vrcOriginCodec.ts";
+import { DEFAULT_VRC_WALK, type VrcWalkParams } from "./vrcWorldLocomotion.ts";
 
 export type Matrix34Tuple = [
   [number, number, number, number],
@@ -498,7 +499,7 @@ export class VrcOriginRoomLock {
     this.settleMs = options.settleMs ?? 300;
     this.locomotionBreakSpeed = options.locomotionBreakSpeed ?? 0.3;
     this.settleMaxLocomotionSpeed = options.settleMaxLocomotionSpeed ?? 0.08;
-    this.blendMs = options.blendMs ?? 400;
+    this.blendMs = options.blendMs ?? 200;
     this.jumpYaw = options.jumpYawRad ?? (10 * Math.PI) / 180;
     this.jumpDistance = options.jumpDistanceMeters ?? 1.0;
     this.desyncDistance = options.desyncDistanceMeters ?? 0.25;
@@ -604,10 +605,11 @@ export class VrcOriginRoomLock {
       }
       if (breakLock) {
         this.mode = "moving";
-        // Starting to walk eases in; a snap turn or teleport moves the VRChat world at once, and
-        // content goes with it.
+        // Starting to walk eases in only if there is an initial offset to hide; a clean stick
+        // break from rest (tiny offset) or a snap turn / teleport moves at once without dragging.
         const jump = yawErr > this.jumpYaw || errorMeters > this.jumpDistance;
-        this.blendFrom = jump ? null : cloneTransform(this.held);
+        const cleanStart = stickMoving && errorMeters < 0.02 && yawErr < (1 * Math.PI) / 180;
+        this.blendFrom = jump || cleanStart ? null : cloneTransform(this.held);
         this.blendStart = nowMs;
         this.sustainedSince = null;
         this.settleAnchor = cloneTransform(raw);
@@ -838,12 +840,19 @@ class KalmanChannel {
    * A measurement at `t`. `fresh[k] === false` means dim `k` didn't update in it (VRChat can
    * freeze one axis's contacts for ~200 ms while another keeps moving): that dim only advances.
    */
-  measure(t: number, values: number[], fresh?: boolean[], timingSigmaMs = 0): void {
+  measure(
+    t: number,
+    values: number[],
+    fresh?: boolean[],
+    timingSigmaMs = 0,
+    rOverride?: number,
+  ): void {
+    const r = rOverride ?? this.r;
     this.newestRaw = [...values];
     if (!this.state.length) {
       this.state = values.map((x) => [x, 0]);
       // Unknown velocity at first: let the second measurement set it.
-      this.cov = values.map(() => [this.r, 0, 25]);
+      this.cov = values.map(() => [r, 0, 25]);
       this.updatedAt = t;
       return;
     }
@@ -864,13 +873,45 @@ class KalmanChannel {
       }
       // Arrival-time noise shows as position noise in proportion to speed.
       const timingNoise = (v * timingSigmaMs) / 1000;
-      const sInv = 1 / (a + this.r + timingNoise * timingNoise);
+      const sInv = 1 / (a + r + timingNoise * timingNoise);
       const ka = a * sInv, kb = b * sInv;
       const y = values[k] - x;
       x += ka * y;
       v += kb * y;
       this.state[k] = [x, v];
       this.cov[k] = [(1 - ka) * a, (1 - ka) * b, d - kb * b];
+    }
+  }
+
+  /** Advance state and covariance to `t` without a measurement. */
+  advanceTo(t: number): void {
+    if (!this.state.length || t <= this.updatedAt) return;
+    const dt = (t - this.updatedAt) / 1000;
+    this.updatedAt = t;
+    const q = this.q;
+    for (let k = 0; k < this.dims; k++) {
+      let [x, v] = this.state[k];
+      let [a, b, d] = this.cov[k];
+      x += v * dt;
+      a += 2 * dt * b + dt * dt * d + (q * dt ** 3) / 3;
+      b += dt * d + (q * dt * dt) / 2;
+      d += q * dt;
+      this.state[k] = [x, v];
+      this.cov[k] = [a, b, d];
+    }
+  }
+
+  /**
+   * The stick was released at `t`: VRChat stopped on `axes` (horizontal `[0, 2]`). Advance to `t`
+   * at the current velocity, then zero velocity on `axes` (later measurements still correct).
+   */
+  stopAxes(t: number, axes: number[]): void {
+    if (!this.state.length) return;
+    if (t > this.updatedAt) this.advanceTo(t);
+    for (const k of axes) {
+      this.state[k][1] = 0;
+      this.cov[k][1] = 0;
+      this.cov[k][2] = 0.04;
     }
   }
 
@@ -920,6 +961,33 @@ class KalmanChannel {
   }
 
   /**
+   * Softly pull selected axes' velocities toward `target` (per second) with variance `r`, without
+   * advancing `updatedAt` (so silence against a wall still decays and settles on `newestRaw`).
+   */
+  measureVelocityAxes(axes: number[], target: number[], r: number): void {
+    if (!this.state.length) return;
+    for (let i = 0; i < axes.length; i++) {
+      const k = axes[i];
+      const [x, v] = this.state[k];
+      const [a, b, d] = this.cov[k];
+      const dEff = Math.max(d, r * 0.5);
+      const sInv = 1 / (dEff + r);
+      const kv = dEff * sInv;
+      const y = target[i] - v;
+      this.state[k] = [x, v + kv * y];
+      this.cov[k] = [a, (1 - kv) * b, (1 - kv) * dEff];
+    }
+  }
+
+  /** Re-anchor `updatedAt` to `t` at `newestRaw` (when starting motion from a quiet standstill). */
+  reanchorAtRest(t: number): void {
+    if (!this.state.length || !this.newestRaw || t <= this.updatedAt) return;
+    this.state = this.newestRaw.map((x) => [x, 0]);
+    this.cov = this.newestRaw.map(() => [this.r, 0, 4]);
+    this.updatedAt = t;
+  }
+
+  /**
    * The estimate at `t`: extrapolated at full velocity up to `extrapolateMs` past the newest
    * measurement (or `heldMs` while the stick says VRChat is still moving), then with the velocity
    * decaying over `decayMs`; after `stopAfterMs` of silence it fades over `fadeMs` to the newest
@@ -961,16 +1029,29 @@ export interface VrcLocomotionInput {
   move: [number, number];
   /** Turn stick x (VRChat default: right stick); zero while PetPlay UI holds it. */
   turn: number;
-  /** HMD yaw rate (rad/s, magnitude): VRChat walks where the head looks. */
+  /** HMD yaw rate (rad/s, signed right-handed +Y CCW): VRChat walks where the head looks, and
+   * avatar yaw turns at `-headYawRate` when the playspace is still. */
   headYawRate: number;
   /** Jump held (VRChat default: right A), as VRChat sees it. */
   jump?: boolean;
 }
 
-/** Spread of OSC arrival times around when VRChat sampled (ms), measured 2026-11-24. */
+/** Spread of OSC arrival times around when VRChat sampled (ms): v1 (measured 2026-11-24) and v2 (50 Hz). */
 const ARRIVAL_SIGMA_MS = 12;
+const V2_ARRIVAL_SIGMA_MS = 6;
+const V2_POSITION_MEASUREMENT_VARIANCE = 1e-4;
+const V2_DEFAULT_SMOOTHING_MS = 30;
 const STICK_DEADZONE = 0.15;
 const STICK_CHANGE = 0.1;
+
+/**
+ * VRChat's smooth-turn stick response curve (measured 2026-11-27): ~0.35 deadzone and quadratic
+ * ramp up to full stick.
+ */
+function vrcSmoothTurnCurve(stickX: number): number {
+  const mag = Math.max(0, (Math.abs(stickX) - 0.35) / 0.65);
+  return Math.sign(stickX) * mag * mag;
+}
 
 /** Active/steady/released tracking for one stick. */
 class StickTracker {
@@ -1119,11 +1200,16 @@ export class VrcRootPredictor {
   private readonly resetDistance: number;
   private readonly resetYaw: number;
   private readonly smoothingMs: number;
+  private readonly customSmoothing: boolean;
+  private readonly customPosR: boolean;
   private readonly position: KalmanChannel;
   /** Unwrapped yaw. */
   private readonly yaw: KalmanChannel;
   private source: VrcOriginWorldPose["source"] = "petplay-origin";
   private lastPose: VrcOriginWorldPose | null = null;
+  private lastSampleAt = 0;
+  /** Recent finite-difference velocity from OSC bursts, for airborne/stop checks. */
+  private lastMeasVel: Vec3 = [0, 0, 0];
   /** Shown state for `display`: `[x, y, z, unwrappedYaw]` at `shownAt`. */
   private shown: number[] | null = null;
   private shownAt = 0;
@@ -1141,14 +1227,28 @@ export class VrcRootPredictor {
   private readonly stickTurn: StickTurn;
   /** Time of the newest `setInput`. */
   private inputAt = 0;
+  private lastInputMove: [number, number] = [0, 0];
+  private lastInputTurn = 0;
+  private lastHeadYawRate = 0;
   /** Jumps: a press predicts the arc (`VrcJumpModel`), learned per world by the caller. */
   readonly jump = new VrcJumpModel();
+  /** Learned walk speeds (forward/strafe) for this world; persisted by the caller. */
+  walk: VrcWalkParams = { ...DEFAULT_VRC_WALK };
+  /** Called when steady walking updates `walk` (to persist per world). */
+  onWalkLearned: ((params: VrcWalkParams) => void) | null = null;
+  private walkNotifyCounter = 0;
+  private wallBlocked = false;
+  private movePressedAt = -Infinity;
+  private turnSamples = 0;
   private jumpHeld = false;
+  private airborneUntil = 0;
   /** The measured (PhysBone) yaw, unwrapped, and when it last changed. */
   private rawYaw: number | null = null;
   private rawYawChangedAt = 0;
 
   constructor(options: VrcRootPredictorOptions = {}) {
+    this.customSmoothing = options.smoothingMs !== undefined;
+    this.customPosR = options.positionMeasurementVariance !== undefined;
     this.position = new KalmanChannel(
       3,
       options.positionProcessNoise ?? 2,
@@ -1185,9 +1285,26 @@ export class VrcRootPredictor {
     this.position.reset();
     this.yaw.reset();
     this.lastPose = null;
+    this.lastSampleAt = 0;
+    this.lastMeasVel = [0, 0, 0];
     this.shown = null;
     this.rawYaw = null;
+    this.wallBlocked = false;
+    this.airborneUntil = 0;
     this.stickTurn.cancel();
+  }
+
+  private isAirborne(t: number): boolean {
+    return this.jump.active || t < this.airborneUntil;
+  }
+
+  private stickWorldVelXZ(move: [number, number], yaw: number): [number, number] {
+    const vFwd = this.walk.forwardSpeed * move[1];
+    const vRgt = this.walk.strafeSpeed * move[0];
+    return [
+      vFwd * Math.sin(yaw) + vRgt * Math.cos(yaw),
+      vFwd * Math.cos(yaw) - vRgt * Math.sin(yaw),
+    ];
   }
 
   /** Whether the turn stick is driving yaw right now (`VrcOriginSolver.update`'s hint). */
@@ -1213,57 +1330,133 @@ export class VrcRootPredictor {
    * What the controllers say about VRChat locomotion, each poll; `null` when unknown (then the
    * filters run on OSC samples alone).
    *
-   * VRChat moves the instant the stick moves and stops the instant it is released, and the OSC
-   * samples only show it ~50 ms later with ±20 ms arrival noise. So: a release stops the estimate
-   * right there (no overshoot); while the stick is held, skipped samples never slow it; and while
-   * the stick (and, for walking, the head's yaw: VRChat walks where the head looks) holds steady,
-   * speed cannot change, so the filter trusts its velocity and ignores arrival noise. For
-   * `stickChangeMs` after a change it is responsive again.
+   * VRChat moves the instant the stick moves and stops on ground release, while OSC samples trail
+   * by ~20–50 ms with arrival noise. So:
+   * - A grounded release zeroes horizontal velocity right there (no overshoot); releasing mid-air
+   *   keeps horizontal ballistic momentum.
+   * - On v2, stick velocity (`forwardSpeed`/`strafeSpeed`, learned per world) and turn-stick +
+   *   signed head yaw rate are fused as soft velocity observations so starts, stops, and direction
+   *   reversals respond immediately without fighting wall collisions or real OSC measurements.
+   * - While the stick holds steady, low process noise lets the filter ignore arrival jitter.
    */
   setInput(input: VrcLocomotionInput | null): void {
     if (!input) {
       this.move.clear();
       this.turn.clear();
       this.stickTurn.cancel();
+      this.wallBlocked = false;
       this.position.q = this.q.position;
       this.yaw.q = this.q.yaw;
       return;
     }
     this.inputAt = input.t;
+    this.lastInputMove = [input.move[0], input.move[1]];
+    this.lastInputTurn = input.turn;
+    this.lastHeadYawRate = input.headYawRate;
     const jumpPressed = input.jump === true && !this.jumpHeld;
     this.jumpHeld = input.jump === true;
     if (jumpPressed && this.position.started) {
       this.jump.press(input.t, this.position.at(input.t, this.timing, this.move.active).values[1]);
+      this.airborneUntil = Math.max(this.airborneUntil, input.t + 250);
     }
     this.applyJumpEvent(this.jump.update(input.t));
-    const moveEvent = this.move.update(input.t, input.move, input.headYawRate > 0.5);
+    const airborne = this.isAirborne(input.t);
+    const prevMoveChangedAt = this.move.changedAt;
+    const prevTurnChangedAt = this.turn.changedAt;
+    const moveEvent = this.move.update(input.t, input.move, Math.abs(input.headYawRate) > 0.5);
     const turnEvent = this.turn.update(input.t, [input.turn, 0], false);
-    if (moveEvent === "released") this.position.stop(input.t);
+    const moveChanged = moveEvent != null || this.move.changedAt !== prevMoveChangedAt;
+    const turnChanged = turnEvent != null || this.turn.changedAt !== prevTurnChangedAt;
+    if (moveEvent === "pressed") {
+      this.movePressedAt = input.t;
+      if (this.source === "petplay-origin-v2" && input.t - this.position.updatedAt > 150) {
+        this.position.reanchorAtRest(input.t);
+      }
+    }
+    if (moveChanged) this.wallBlocked = false;
+    // Only stop horizontal velocity on grounded release: mid-air release coasts ballistically.
+    if (moveEvent === "released" && !airborne) {
+      this.position.stopAxes(input.t, [0, 2]);
+    }
     this.steerYaw(input.t, input.turn, turnEvent);
+
+    const isV2 = this.source === "petplay-origin-v2";
+    if (isV2) {
+      // If holding the stick for >100 ms with zero OSC position updates, the avatar is blocked.
+      if (
+        this.move.active && !airborne &&
+        input.t - this.movePressedAt >= 100 && input.t - this.lastSampleAt >= 100
+      ) {
+        this.wallBlocked = true;
+      }
+      // Walk velocity feedforward (soft velocity observation; gated off when pressed against a wall).
+      if (
+        this.position.started && this.yaw.started && this.move.active && !airborne &&
+        !this.wallBlocked
+      ) {
+        const curYaw = this.yaw.at(input.t, this.timing, this.turn.active).values[0];
+        const [vx, vz] = this.stickWorldVelXZ(input.move, curYaw);
+        const r = moveChanged ? 0.4 : 1.6;
+        this.position.measureVelocityAxes([0, 2], [vx, vz], r);
+      }
+      // Yaw rate feedforward: playspace smooth-turn rate minus signed head yaw rate.
+      if (this.yaw.started) {
+        const turnPart = this.turn.active && !this.stickTurn.disabled
+          ? this.stickTurn.gain * vrcSmoothTurnCurve(input.turn)
+          : 0;
+        const headPart = -input.headYawRate;
+        if (this.turn.active || turnEvent === "released" || input.headYawRate !== 0) {
+          const r = turnChanged ? 0.4 : 1.2;
+          this.yaw.measureVelocityAxes([0], [turnPart + headPart], r);
+        }
+      }
+    }
+
     const steady = (stick: StickTracker) => input.t - stick.changedAt >= this.stickChangeMs;
+    const posQ = isV2 ? Math.max(this.q.position, 4) : this.q.position;
+    const posQSteady = isV2 ? Math.max(this.q.steadyPosition, 0.1) : this.q.steadyPosition;
+    const posQChanging = isV2 ? Math.max(this.q.changingPosition, 20) : this.q.changingPosition;
+    const yawQ = isV2 ? Math.max(this.q.yaw, 25) : this.q.yaw;
+    const yawQChanging = isV2 ? Math.max(this.q.changingYaw, 80) : this.q.changingYaw;
     this.position.q = this.move.active
-      ? (steady(this.move) ? this.q.steadyPosition : this.q.changingPosition)
-      : this.q.position;
+      ? (steady(this.move) ? posQSteady : posQChanging)
+      : posQ;
     this.yaw.q = this.turn.active
-      ? (steady(this.turn) ? this.q.steadyYaw : this.q.changingYaw)
-      : this.q.yaw;
+      ? (steady(this.turn) ? this.q.steadyYaw : yawQChanging)
+      : yawQ;
   }
 
   add(sample: VrcOriginSample): void {
     const { pose, t } = sample;
     this.source = pose.source;
+    const isV2 = pose.source === "petplay-origin-v2";
     const prev = this.lastPose;
+    const prevT = this.lastSampleAt;
     // Per axis: with the v1 proximity rig VRChat sometimes freezes one axis's contacts while
     // another keeps moving, so an unchanged axis in a moving sample is stale, not a measurement.
     // v2 reports each axis exactly: an unchanged axis is level (walking flat after a step), and
     // skipping it would let the velocity learned on the step run on unchecked.
     const changedAxes = pose.position.map((v, k) => !prev || v !== prev.position[k]);
     const positionChanged = changedAxes.some((changed) => changed);
-    const freshAxes = pose.source === "petplay-origin-v2"
-      ? changedAxes.map(() => true)
-      : changedAxes;
+    const freshAxes = isV2 ? changedAxes.map(() => true) : changedAxes;
     const yawChanged = !prev || pose.yawRad !== prev.yawRad;
+    if (prev && positionChanged && t > prevT && t - prevT < 150) {
+      const dt = (t - prevT) / 1000;
+      this.lastMeasVel = [
+        (pose.position[0] - prev.position[0]) / dt,
+        (pose.position[1] - prev.position[1]) / dt,
+        (pose.position[2] - prev.position[2]) / dt,
+      ];
+      if (Math.abs(this.lastMeasVel[1]) > 0.2) {
+        this.airborneUntil = Math.max(this.airborneUntil, t + 200);
+      }
+    }
     this.lastPose = pose;
+    this.lastSampleAt = t;
+
+    const airborne = this.isAirborne(t);
+    const arrivalSigma = isV2 ? V2_ARRIVAL_SIGMA_MS : ARRIVAL_SIGMA_MS;
+    const posROverride = isV2 && !this.customPosR ? V2_POSITION_MEASUREMENT_VARIANCE : undefined;
 
     if (positionChanged && (!this.position.started || t > this.position.updatedAt)) {
       if (this.position.started) {
@@ -1276,18 +1469,64 @@ export class VrcRootPredictor {
           this.shown = null;
         } else if (
           this.move.active &&
-          miss > 0.06 + (3 * ARRIVAL_SIGMA_MS / 1000) * Math.hypot(...this.position.velocity())
+          miss > 0.06 + (3 * arrivalSigma / 1000) * Math.hypot(...this.position.velocity())
         ) {
           // The motion changed in a way the stick didn't show (direction follows a hand, a
           // slope, a wall): be responsive again.
           this.move.changedAt = t;
-          this.position.q = this.q.changingPosition;
+          this.position.q = isV2 ? Math.max(this.q.changingPosition, 20) : this.q.changingPosition;
         }
       }
-      this.position.measure(t, [...pose.position], freshAxes, ARRIVAL_SIGMA_MS);
+      this.position.measure(t, [...pose.position], freshAxes, arrivalSigma, posROverride);
       if (this.jump.active) this.applyJumpEvent(this.jump.measure(t, pose.position[1]));
-      // Just after a release VRChat is standing still; late samples must not restart motion.
-      if (this.move.releasedWithin(t, 500)) this.position.measureVelocity([0, 0, 0], 1e-4);
+      // Just after a grounded release VRChat is standing still; damp late samples unless the
+      // avatar is actually still moving (airborne coasting, sliding, physical walk).
+      const measSpdXZ = Math.hypot(this.lastMeasVel[0], this.lastMeasVel[2]);
+      if (!airborne && this.move.releasedWithin(t, 120) && measSpdXZ < 0.8) {
+        this.position.measureVelocityAxes([0, 2], [0, 0], 0.01);
+      }
+
+      // Online walk-speed learning & wall-collision detection (v2 only).
+      if (isV2 && this.move.active && !airborne && !this.turn.active) {
+        const [sx, sy] = this.lastInputMove;
+        const [kvx, , kvz] = this.position.velocity();
+        const [expX, expZ] = this.stickWorldVelXZ(this.lastInputMove, pose.yawRad);
+        const expSpd = Math.hypot(expX, expZ);
+        const kSpd = Math.hypot(kvx, kvz);
+        if (
+          t - this.movePressedAt >= 80 && expSpd > 0.6 &&
+          (measSpdXZ < 0.3 * expSpd || (kSpd < 0.3 * expSpd || kvx * expX + kvz * expZ < 0))
+        ) {
+          this.wallBlocked = true;
+        } else if (t - this.move.changedAt >= 150 && kSpd > 0.5) {
+          this.wallBlocked = false;
+          const vFwd = kvx * Math.sin(pose.yawRad) + kvz * Math.cos(pose.yawRad);
+          const vRgt = kvx * Math.cos(pose.yawRad) - kvz * Math.sin(pose.yawRad);
+          const alpha = 1 / Math.min(40, this.walk.samples + 6);
+          let updated = false;
+          if (Math.abs(sy) > 0.6 && Math.abs(sx) < 0.35 && vFwd * sy > 0.3) {
+            const est = Math.min(15, Math.max(0.5, vFwd / sy));
+            this.walk = {
+              ...this.walk,
+              forwardSpeed: this.walk.forwardSpeed + (est - this.walk.forwardSpeed) * alpha,
+              samples: this.walk.samples + 1,
+            };
+            updated = true;
+          } else if (Math.abs(sx) > 0.6 && Math.abs(sy) < 0.35 && vRgt * sx > 0.3) {
+            const est = Math.min(15, Math.max(0.5, vRgt / sx));
+            this.walk = {
+              ...this.walk,
+              strafeSpeed: this.walk.strafeSpeed + (est - this.walk.strafeSpeed) * alpha,
+              samples: this.walk.samples + 1,
+            };
+            updated = true;
+          }
+          if (updated && ++this.walkNotifyCounter >= 10) {
+            this.walkNotifyCounter = 0;
+            this.onWalkLearned?.(this.walk);
+          }
+        }
+      }
     }
     if (yawChanged) {
       this.rawYaw = this.rawYaw == null
@@ -1307,8 +1546,21 @@ export class VrcRootPredictor {
           this.shown = null;
         }
       }
-      this.yaw.measure(t, [yaw]);
-      if (this.turn.releasedWithin(t, 500)) this.yaw.measureVelocity([0], 1e-4);
+      this.yaw.measure(t, [yaw], [true], isV2 ? arrivalSigma * 0.5 : 0);
+      if (this.turn.releasedWithin(t, 120) && Math.abs(this.lastHeadYawRate) < 0.2) {
+        this.yaw.measureVelocityAxes([0], [0], 0.01);
+      }
+      if (isV2 && this.turn.active && t - this.turn.changedAt >= 120) {
+        const turnEff = vrcSmoothTurnCurve(this.lastInputTurn);
+        if (Math.abs(turnEff) > 0.35) {
+          const playRate = this.yaw.velocity()[0] + this.lastHeadYawRate;
+          const est = playRate / turnEff;
+          if (est > 0.5 && est < 8) {
+            const alpha = 1 / Math.min(30, ++this.turnSamples + 4);
+            this.stickTurn.gain += (est - this.stickTurn.gain) * alpha;
+          }
+        }
+      }
     }
   }
 
@@ -1416,7 +1668,10 @@ export class VrcRootPredictor {
     } else {
       const dt = tMs - this.shownAt;
       this.shownAt = tMs;
-      const a = 1 - Math.exp(-dt / this.smoothingMs);
+      const smoothMs = !this.customSmoothing && this.source === "petplay-origin-v2"
+        ? V2_DEFAULT_SMOOTHING_MS
+        : this.smoothingMs;
+      const a = smoothMs <= 0 ? 1 : 1 - Math.exp(-dt / smoothMs);
       this.shown = this.shown.map((x, k) => {
         const moved = x + (rates[k] * dt) / 1000;
         return moved + (goal[k] - moved) * a;

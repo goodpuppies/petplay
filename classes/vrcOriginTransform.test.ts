@@ -785,3 +785,65 @@ Deno.test("room lock, known sticks: a stick unlocks, and release locks again aft
 function translationDelta(a: { translation: Vec3 }, b: { translation: Vec3 }): number {
   return Math.hypot(...a.translation.map((v, k) => v - b.translation[k]));
 }
+
+Deno.test("root predictor (v2): releasing the move stick mid-jump keeps horizontal momentum", () => {
+  const predictor = new VrcRootPredictor();
+  const v2 = (pos: Vec3, yaw = 0): VrcOriginWorldPose => ({
+    source: "petplay-origin-v2",
+    position: pos,
+    yawRad: yaw,
+  });
+  let t = 0;
+  // Walk forward (+Z) at 3.5 m/s for 300 ms.
+  for (; t <= 300; t += 20) {
+    predictor.setInput({ t, move: [0, 1], turn: 0, headYawRate: 0, jump: false });
+    predictor.add({ t, pose: v2([0, 0, 3.5 * t / 1000]) });
+  }
+  // Jump and release the stick mid-air: VRChat keeps flying horizontally at 3.5 m/s.
+  const tJump = t;
+  const zJump = 3.5 * tJump / 1000;
+  for (; t <= tJump + 400; t += 20) {
+    const dt = (t - tJump) / 1000;
+    const y = Math.max(0, 2.9 * dt - 0.5 * 9.6 * dt * dt);
+    const z = zJump + 3.5 * dt;
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0, jump: t === tJump });
+    predictor.add({ t, pose: v2([0, y, z]) });
+    const disp = predictor.display(t);
+    assert(
+      Math.abs(disp.pose.position[2] - z) < 0.08,
+      `horizontal lag at +${t - tJump}ms: ${Math.abs(disp.pose.position[2] - z).toFixed(3)} m`,
+    );
+  }
+});
+
+Deno.test("root predictor (v2): stick velocity feedforward anticipates walk start and falls back on walls", () => {
+  const predictor = new VrcRootPredictor();
+  const v2 = (pos: Vec3, yaw = 0): VrcOriginWorldPose => ({
+    source: "petplay-origin-v2",
+    position: pos,
+    yawRad: yaw,
+  });
+  predictor.add({ t: 0, pose: v2([0, 0, 0], 0) });
+  predictor.setInput({ t: 10, move: [0, 1], turn: 0, headYawRate: 0 });
+  // Immediate velocity response before any moving OSC sample arrives.
+  assert(predictor.predict(20).velocity[2] > 1.0, "feedforward starts velocity at once");
+  // Now press against a wall: position stays at 0 -> predictor must not drift through the wall.
+  for (let t = 20; t <= 400; t += 20) {
+    predictor.setInput({ t, move: [0, 1], turn: 0, headYawRate: 0 });
+    predictor.add({ t, pose: v2([0, 0, 0.0001 * (t % 40)], 0) });
+  }
+  assert(Math.abs(predictor.display(400).pose.position[2]) < 0.05, "wall stops drift");
+});
+
+Deno.test("room lock: a clean stick break from rest does not drag behind with a blend", () => {
+  const { solver, lock } = lockedWithKnownSticks();
+  let t = 500;
+  // Break the lock with the stick while still at the locked pose (zero offset), then walk.
+  let res = knownStep(solver, lock, makeWorldPose([9, 0.2, -4], -1.4), [0.4, 1.6, -0.4], 0, 0, t, true);
+  assertEquals(res.mode, "moving");
+  t += 100;
+  const walked = makeWorldPose([9.35, 0.2, -4], -1.4);
+  const raw = solver.update(walked, makeHmdMatrix([0.4, 1.6, -0.4], 0), false, t);
+  res = lock.update(raw.transform, walked, [0.4, 1.6, -0.4], 0, t, 3.5, true, true);
+  assertVec3AlmostEquals(res.transform.translation, raw.transform.translation, 1e-6);
+});
