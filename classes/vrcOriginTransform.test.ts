@@ -632,6 +632,25 @@ Deno.test("follow model: a lasting yaw jump is taken after 400 ms, a brief one i
   assertAlmostEquals(angleDiffRad(r.transform.yawRad, 0.2 + jump + 5 * step), 0, 1e-9);
 });
 
+Deno.test("follow model: a head turn during a stick turn does not stay in the playspace yaw", () => {
+  const solver = new VrcOriginSolver();
+  const hmdPos: Vec3 = [0.5, 1.2, -0.3];
+  // The stick turns the playspace 180°/s for 1 s while the head turns +16° (recorded 2026-11-27).
+  const playspaceAt = (t: number) => -0.9 + Math.PI * Math.min(Math.max(0, t - 1000), 1000) / 1000;
+  const headTurn = (16 * Math.PI) / 180;
+  const headAt = (t: number) => 0.5 + headTurn * Math.min(Math.max(0, t - 1200), 600) / 600;
+  let r = null;
+  for (let t = 0; t < 3500; t += 11) {
+    const rootYaw = playspaceAt(t) - headAt(t);
+    const rate = (headAt(t + 1) - headAt(t - 1)) / 0.002;
+    const turning = t >= 1000 && t < 2150;
+    r = solver.update(makeWorldPose([9, 0.2, -4], rootYaw), makeHmdMatrix(hmdPos, headAt(t)), turning, t, rate);
+    if (t >= 2150) {
+      assertAlmostEquals(angleDiffRad(r.transform.yawRad, playspaceAt(t)), 0, (0.5 * Math.PI) / 180, `at ${t} ms`);
+    }
+  }
+});
+
 function knownStep(
   solver: VrcOriginSolver,
   lock: VrcOriginRoomLock,

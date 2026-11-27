@@ -294,10 +294,11 @@ export class VrcOriginSolver {
       const [slow, fast] = this.followHeadRate;
       const trust = rate <= slow ? 1 : rate >= fast ? 0 : (fast - rate) / (fast - slow);
       if (stickTurning) {
-        // The turn stick turns the playspace: follow the root at once, no smoothing lag.
-        this.yawRad = normalizeAngleRad(
-          this.yawRad + angleDiffRad(worldPose.yawRad, this.prevWorldYawRad),
-        );
+        // The turn stick turns the playspace: take it at once, no smoothing lag. Not the root's
+        // yaw change 1:1: the root also turns with the head, and a head turn during a stick turn
+        // would stay in the playspace yaw (measured: 14.5° from a 16° head turn).
+        this.yawRad = followYaw;
+        this.outlierSince = null;
       } else if (Math.abs(err) > this.followSnap) {
         this.outlierSince = trust === 1 ? (this.outlierSince ?? nowMs) : null;
         if (this.outlierSince !== null && nowMs - this.outlierSince >= this.followSnapMs) {
