@@ -73,6 +73,17 @@ let latestSticks: SticksPayload | null = null;
  * lets go, and a stick pushed during the hold does nothing).
  */
 const vrcSticks: { left: [number, number]; right: [number, number] } = { left: [0, 0], right: [0, 0] };
+/** Right A (jump) as VRChat sees it: frozen like the sticks while PetPlay holds the right hand. */
+let vrcJump = false;
+/**
+ * Airborne: VRChat moves the player (and its playspace, so the world shifts against the room)
+ * through a jump, with sticks idle or not. A jump press counts at once, before samples show it;
+ * then the root's vertical speed keeps it airborne until the landing, plus `AIRBORNE_HOLD_MS`
+ * (the apex has no vertical speed for a moment).
+ */
+const AIRBORNE_VERTICAL_SPEED = 0.15;
+const AIRBORNE_HOLD_MS = 200;
+let airborneUntil = 0;
 /** Received stick states, for locomotion analysis (`GETSTICKTRACE`). */
 const stickTrace: SticksPayload[] = [];
 const STICK_TRACE_MAX = 30_000;
@@ -144,6 +155,8 @@ new PostMan(
           ? { ...latestSticks, ageMs: performance.timeOrigin + performance.now() - latestSticks.t }
           : null,
         vrcSticks,
+        vrcJump,
+        airborne: performance.timeOrigin + performance.now() < airborneUntil,
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -164,7 +177,10 @@ new PostMan(
     STICKS: (payload: SticksPayload) => {
       latestSticks = payload;
       if (!payload.blocked.left) vrcSticks.left = payload.left;
-      if (!payload.blocked.right) vrcSticks.right = payload.right;
+      if (!payload.blocked.right) {
+        vrcSticks.right = payload.right;
+        vrcJump = payload.jump ?? false;
+      }
       stickTrace.push(payload);
       if (stickTrace.length > STICK_TRACE_MAX) stickTrace.splice(0, 5_000);
     },
@@ -369,11 +385,19 @@ async function pollOriginOnce(): Promise<boolean> {
       }
       : null,
   );
-  const stickMoving = sticks != null && (
-    Math.hypot(vrcSticks.left[0], vrcSticks.left[1]) > 0.15 || Math.abs(vrcSticks.right[0]) > 0.15
-  );
   const prediction = predictor.display(now);
   const worldPose = prediction.pose;
+  if (
+    (sticks != null && vrcJump) || Math.abs(prediction.velocity[1]) > AIRBORNE_VERTICAL_SPEED
+  ) {
+    airborneUntil = now + AIRBORNE_HOLD_MS;
+  }
+  const airborne = now < airborneUntil;
+  // VRChat is moving the player: a stick, or a jump in progress.
+  const stickMoving = sticks != null && (
+    Math.hypot(vrcSticks.left[0], vrcSticks.left[1]) > 0.15 || Math.abs(vrcSticks.right[0]) > 0.15 ||
+    airborne
+  );
 
   const hmdPose = await withTimeout(PostMan.PostMessage({
     target: state.hmd,
