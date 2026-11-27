@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { fromFileUrl } from "@std/path";
-import { getRaylibLibraryPath } from "./nativeLibraryPaths.ts";
+import { rlDrawRenderBatchActive } from "./rlglExtras.ts";
 import type { WebXRRaythreeUiSnapshot } from "./webxrRaythreeUi.ts";
 import type { TextRenderingSettings } from "./textRenderingSettings.ts";
 
@@ -21,9 +21,6 @@ const symbols = {
 /** Native vector coverage renderer, used inside the existing raythree UI pass. */
 export class PathfinderTextRenderer {
   private library: Deno.DynamicLibrary<typeof symbols>;
-  private raylib: Deno.DynamicLibrary<
-    { rlDrawRenderBatchActive: { parameters: []; result: "void" } }
-  >;
   private handle: Deno.PointerValue;
   private records = new Float32Array(0);
   private readonly matrix = new THREE.Matrix4();
@@ -62,14 +59,10 @@ export class PathfinderTextRenderer {
       this.library.close();
       throw new Error("Unsupported Pathfinder text ABI; rebuild the library");
     }
-    this.raylib = Deno.dlopen(getRaylibLibraryPath(), {
-      rlDrawRenderBatchActive: { parameters: [], result: "void" },
-    });
-    this.raylib.symbols.rlDrawRenderBatchActive();
+    rlDrawRenderBatchActive();
     this.handle = this.library.symbols.pp_pf_create();
     if (this.handle === null) {
       const message = this.error();
-      this.raylib.close();
       this.library.close();
       throw new Error(message);
     }
@@ -109,7 +102,7 @@ export class PathfinderTextRenderer {
         offset += 25;
       }
     }
-    this.raylib.symbols.rlDrawRenderBatchActive();
+    rlDrawRenderBatchActive();
     const exponent = tuning?.glyphCoverageExponent ?? 1;
     const weight = tuning?.glyphWeightPixels ?? 0;
     const aaWidth = tuning?.glyphAaWidth ?? 1;
@@ -130,11 +123,10 @@ export class PathfinderTextRenderer {
 
   dispose(): void {
     if (this.handle === null) return;
-    this.raylib.symbols.rlDrawRenderBatchActive();
+    rlDrawRenderBatchActive();
     this.library.symbols.pp_pf_destroy(this.handle);
     this.handle = null;
     this.library.close();
-    this.raylib.close();
   }
 
   private error(): string {

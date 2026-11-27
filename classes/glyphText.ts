@@ -9,7 +9,7 @@
  */
 import * as THREE from "three";
 import { fromFileUrl } from "@std/path";
-import { getRaylibLibraryPath } from "./nativeLibraryPaths.ts";
+import { rlDrawRenderBatchActive } from "./rlglExtras.ts";
 import {
   bufferOffset,
   cString,
@@ -85,9 +85,6 @@ export class GlyphTextRenderer {
   private readonly nativeHeader = new Uint32Array(10);
   private readonly nativeUniforms = new Float32Array(5);
   private nativeRuns = new Uint32Array(64 * 5);
-  private readonly raylib: Deno.DynamicLibrary<
-    { rlDrawRenderBatchActive: { parameters: []; result: "void" } }
-  >;
   private readonly program: number;
   private readonly vao: number;
   private readonly corners: number;
@@ -135,11 +132,8 @@ export class GlyphTextRenderer {
   constructor() {
     this.gl = loadGlFunctions();
     this.nativeDraw = loadNativeGlyphDraw();
-    this.raylib = Deno.dlopen(getRaylibLibraryPath(), {
-      rlDrawRenderBatchActive: { parameters: [], result: "void" },
-    });
     const gl = this.gl;
-    this.raylib.symbols.rlDrawRenderBatchActive();
+    rlDrawRenderBatchActive();
     const saved = this.saveState();
     try {
       this.program = linkProgram(gl, GLYPH_VERTEX_SHADER, GLYPH_FRAGMENT_SHADER);
@@ -435,7 +429,7 @@ export class GlyphTextRenderer {
     if (index === 0) return visible;
 
     const gl = this.gl;
-    this.raylib.symbols.rlDrawRenderBatchActive();
+    rlDrawRenderBatchActive();
     const saved = fastUiPass ? null : this.saveDrawState();
     let vpW: number;
     let vpH: number;
@@ -599,14 +593,13 @@ export class GlyphTextRenderer {
     if (this.disposed) return;
     this.disposed = true;
     const gl = this.gl;
-    this.raylib.symbols.rlDrawRenderBatchActive();
+    rlDrawRenderBatchActive();
     gl.glDeleteProgram(this.program);
     gl.glDeleteVertexArrays(1, new Uint32Array([this.vao]));
     gl.glDeleteBuffers(1, new Uint32Array([this.corners]));
     gl.glDeleteBuffers(1, new Uint32Array([this.instanceBuffer]));
     const textures = new Uint32Array(this.pages.flatMap((page) => page.textures));
     if (textures.length > 0) gl.glDeleteTextures(textures.length, textures);
-    this.raylib.close();
   }
 
   private lookup(slot: number, code: number): { glyph: GlyphFontGlyph; page: number } | null {

@@ -10,6 +10,7 @@ import { extend, type ThreeToJSXElements } from "@react-three/fiber/webgpu";
 import { Container } from "../../../submodules/threewebxrwebgpudeno/webgpu-uikit.tsx";
 import { UiImage } from "../ui/image.tsx";
 import { DEFAULT_GRABBOX_LINE_COLOR, GrabBox } from "../grabbox.tsx";
+import { PetplayElement } from "../petplayElement.tsx";
 import { createMainControllerGate } from "../mainController.ts";
 import type { DisplayMouseButton, DisplayMouseSink } from "./mouse.ts";
 import { penHandler } from "../penEvents.ts";
@@ -411,7 +412,11 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
            * grab hull and screen proxy own pointer input.
            */
         }
-        <group position={[0, 0, -depth / 2 - 0.001]} rotation={[0, Math.PI, 0]}>
+        <PetplayElement
+          position={[0, 0, -depth / 2 - 0.001]}
+          rotation={[0, Math.PI, 0]}
+          renderProps={{ nativeOverlay: false }}
+        >
           <mesh {...({ pointerEvents: "none" } as Record<string, unknown>)}>
             <planeGeometry args={[width, height]} />
             <meshBasicNodeMaterial colorNode={TSL.color(0x000000)} side={THREE.FrontSide} />
@@ -433,7 +438,7 @@ export const DisplayInstanceFrame = forwardRef<THREE.Group, DisplayInstanceFrame
               positionTop={(height - height * BACKPLATE_LOGO_SIZE) / 2 / 0.001}
             />
           </Container>
-        </group>
+        </PetplayElement>
         {children}
       </GrabBox>
     );

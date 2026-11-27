@@ -15,7 +15,13 @@ import { Text } from "./text.tsx";
 import { Icon, type IconName } from "./icons.tsx";
 import { Cell, Grid } from "./grid.tsx";
 import { COLOR, GAP, INNER_GAP, RADIUS, UNIT, unitSpan } from "./tokens.ts";
-import { setSetting, type SettingKey, useSetting, VRC_CAMERA_RESOLUTIONS } from "../../settings.ts";
+import {
+  type OverlayPresentMode,
+  setSetting,
+  type SettingKey,
+  useSetting,
+  VRC_CAMERA_RESOLUTIONS,
+} from "../../settings.ts";
 import { getAgentReplBaseUrl } from "../../utils.ts";
 import {
   baseEyeSize,
@@ -455,14 +461,15 @@ function OverlayModeRow({ row }: { row: number }) {
     <SettingRow
       row={row}
       title="Overlay Mode"
-      description="Panorama (default, native displays) or Projection (lower VRAM, head reprojection)"
+      description="PANO default, PROJ reprojected, NATIVE SteamVR quads for UI panels"
     >
       <SegmentedControl
         value={mode}
-        onChange={(next) => setSetting("overlayPresentMode", next as "panorama" | "projection")}
+        onChange={(next) => setSetting("overlayPresentMode", next as OverlayPresentMode)}
         options={[
           { value: "panorama", label: "PANO" },
           { value: "projection", label: "PROJ" },
+          { value: "native", label: "NATIVE" },
         ]}
         itemWidth={92}
       />

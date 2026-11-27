@@ -482,6 +482,7 @@ export class OverlaySceneWireEncoder {
     const ui: WirePayload["ui"] = {
       textRendering: payload.ui.textRendering,
       images: payload.ui.images,
+      ...(payload.ui.surfaces ? { surfaces: payload.ui.surfaces } : {}),
       ...(packedPanels ? { packedPanels } : { panels: payload.ui.panels }),
       ...(packedTexts ? { packedTexts } : { texts: wireTexts }),
     };
@@ -585,6 +586,7 @@ export class OverlaySceneWireDecoder {
         ui: {
           textRendering: wire.ui.textRendering,
           images: wire.ui.images,
+          ...(wire.ui.surfaces ? { surfaces: wire.ui.surfaces } : {}),
           panels,
           texts,
         },

@@ -150,15 +150,17 @@ export const GRABBOX_CHROME_THICKNESS = 0.002;
  * built from boxes instead of lines. `raythreeHudOverUi` keeps it above the
  * uikit pass that draws the keys and panels over everything before it.
  */
-function GrabBoxFrame(
-  { width, height, depth, color }: {
-    width: number;
-    height: number;
-    depth: number;
-    color: THREE.Color;
-  },
-) {
-  const t = GRABBOX_CHROME_THICKNESS;
+/**
+ * Build one merged `BufferGeometry` containing all 12 wireframe edge bars of a box centered at
+ * `(0, 0, 0)`. One mesh + one draw call, with exact `boundingBox` / `boundingSphere` matching the
+ * grab box itself.
+ */
+function buildGrabBoxFrameGeometry(
+  width: number,
+  height: number,
+  depth: number,
+  t: number,
+): THREE.BufferGeometry {
   const hx = width / 2;
   const hy = height / 2;
   const hz = depth / 2;
@@ -178,20 +180,71 @@ function GrabBoxFrame(
       bars.push({ position: [x, y, 0], size: [t, t, depth + t] });
     }
   }
+
+  const vertsPerBar = 24;
+  const indicesPerBar = 36;
+  const positions = new Float32Array(bars.length * vertsPerBar * 3);
+  const normals = new Float32Array(bars.length * vertsPerBar * 3);
+  const uvs = new Float32Array(bars.length * vertsPerBar * 2);
+  const indices = new Uint16Array(bars.length * indicesPerBar);
+
+  for (let b = 0; b < bars.length; b++) {
+    const bar = bars[b]!;
+    const box = new THREE.BoxGeometry(bar.size[0], bar.size[1], bar.size[2]);
+    const posAttr = box.getAttribute("position") as THREE.BufferAttribute;
+    const normAttr = box.getAttribute("normal") as THREE.BufferAttribute;
+    const uvAttr = box.getAttribute("uv") as THREE.BufferAttribute;
+    const idxAttr = box.getIndex()!;
+    const vOff = b * vertsPerBar;
+    const iOff = b * indicesPerBar;
+    for (let i = 0; i < vertsPerBar; i++) {
+      positions[(vOff + i) * 3] = posAttr.getX(i) + bar.position[0];
+      positions[(vOff + i) * 3 + 1] = posAttr.getY(i) + bar.position[1];
+      positions[(vOff + i) * 3 + 2] = posAttr.getZ(i) + bar.position[2];
+      normals[(vOff + i) * 3] = normAttr.getX(i);
+      normals[(vOff + i) * 3 + 1] = normAttr.getY(i);
+      normals[(vOff + i) * 3 + 2] = normAttr.getZ(i);
+      uvs[(vOff + i) * 2] = uvAttr.getX(i);
+      uvs[(vOff + i) * 2 + 1] = uvAttr.getY(i);
+    }
+    for (let i = 0; i < indicesPerBar; i++) {
+      indices[iOff + i] = idxAttr.getX(i) + vOff;
+    }
+    box.dispose();
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function GrabBoxFrame(
+  { width, height, depth, color }: {
+    width: number;
+    height: number;
+    depth: number;
+    color: THREE.Color;
+  },
+) {
+  const t = GRABBOX_CHROME_THICKNESS;
+  const geometry = useMemo(
+    () => buildGrabBoxFrameGeometry(width, height, depth, t),
+    [width, height, depth, t],
+  );
+  useEffect(() => () => geometry.dispose(), [geometry]);
   return (
-    <>
-      {bars.map((bar, index) => (
-        <mesh
-          key={index}
-          position={bar.position}
-          userData={{ raythreeHudOverUi: true }}
-          {...({ pointerEvents: "none" } as Record<string, unknown>)}
-        >
-          <boxGeometry args={bar.size} />
-          <meshBasicMaterial color={color} toneMapped={false} />
-        </mesh>
-      ))}
-    </>
+    <mesh
+      geometry={geometry}
+      userData={{ raythreeHudOverUi: true }}
+      {...({ pointerEvents: "none" } as Record<string, unknown>)}
+    >
+      <meshBasicMaterial color={color} toneMapped={false} />
+    </mesh>
   );
 }
 

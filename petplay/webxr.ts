@@ -339,6 +339,7 @@ const state = actorState({
   /** The per-eye projection overlays, while `raylibProjectionOverlayEnabled`. */
   raylibProjectionOverlays: null as OpenVrProjectionOverlays | null,
   raylibProjectionOverlayEnabled: raylibProjectionOverlayDefault,
+  nativePanelsEnabled: false,
   /**
    * Per projection present: [ms since vsync, vsyncs elapsed since this frame was paced,
    * display frame index, compositor frame index (or -1 without the timing probe)]. A ring
@@ -3114,6 +3115,7 @@ async function startRenderOwner() {
     ? "projection"
     : "panorama";
   state.raylibProjectionOverlayEnabled = initialPresentMode === "projection";
+  state.nativePanelsEnabled = getSettings().overlayPresentMode === "native";
   await PostMan.PostMessage({
     target: state.renderOwner,
     type: "STARTOVERLAYRENDERER",
@@ -3123,6 +3125,7 @@ async function startRenderOwner() {
       overlayName: config?.overlayName,
       eyeSize: getRaylibNativeEyeSize(),
       presentMode: initialPresentMode,
+      nativePanels: state.nativePanelsEnabled,
       overlayWidthInMeters: config?.overlayWidthInMeters,
       overlayDistance: config?.overlayDistance,
       playspaceAnchor: playspaceFrame.active ? Array.from(playspaceFrame.petplayToRaw) : null,
@@ -3142,14 +3145,26 @@ playspaceFrame.onAnchorChange((anchor) => {
 subscribeSettings(() => {
   const mode = getSettings().overlayPresentMode;
   const wantProjection = mode === "projection";
-  if (state.raylibProjectionOverlayEnabled === wantProjection) return;
-  state.raylibProjectionOverlayEnabled = wantProjection;
-  if (state.renderOwner) {
-    PostMan.PostMessage({
-      target: state.renderOwner,
-      type: "SETPRESENTMODE",
-      payload: mode,
-    });
+  const wantNative = mode === "native";
+  if (state.raylibProjectionOverlayEnabled !== wantProjection) {
+    state.raylibProjectionOverlayEnabled = wantProjection;
+    if (state.renderOwner) {
+      PostMan.PostMessage({
+        target: state.renderOwner,
+        type: "SETPRESENTMODE",
+        payload: wantProjection ? "projection" : "panorama",
+      });
+    }
+  }
+  if (state.nativePanelsEnabled !== wantNative) {
+    state.nativePanelsEnabled = wantNative;
+    if (state.renderOwner) {
+      PostMan.PostMessage({
+        target: state.renderOwner,
+        type: "SETNATIVEPANELS",
+        payload: wantNative,
+      });
+    }
   }
 });
 async function stopRenderOwner() {

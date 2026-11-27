@@ -57,6 +57,61 @@ export function releaseAndDestroyOpenVrOverlay(
   }
 }
 
+/**
+ * Create an OpenVR overlay, first clearing any `staleKeys` and retrying if `key` is still held by
+ * a previous worker/process whose cleanup never ran.
+ */
+export function createOpenVrOverlayWithCleanup(
+  overlay: OpenVR.IVROverlay,
+  key: string,
+  name: string,
+  options: {
+    staleKeys?: string[];
+    retries?: number;
+    releaseWaitMs?: number;
+  } = {},
+): OpenVR.OverlayHandle {
+  const retries = options.retries ?? OVERLAY_KEY_IN_USE_RETRIES;
+  const releaseWaitMs = options.releaseWaitMs ?? OVERLAY_KEY_RELEASE_WAIT_MS;
+
+  for (const staleKey of options.staleKeys ?? []) {
+    const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+    if (
+      overlay.FindOverlay(staleKey, staleHandlePtr) !== OpenVR.OverlayError.VROverlayError_None
+    ) {
+      continue;
+    }
+    const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
+    releaseAndDestroyOpenVrOverlay(overlay, staleHandle);
+    overlay.WaitFrameSync(releaseWaitMs);
+  }
+
+  const overlayHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+  let createError = overlay.CreateOverlay(key, name, overlayHandlePtr);
+  for (
+    let attempt = 0;
+    createError === OpenVR.OverlayError.VROverlayError_KeyInUse && attempt < retries;
+    attempt++
+  ) {
+    const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
+    if (
+      overlay.FindOverlay(key, staleHandlePtr) === OpenVR.OverlayError.VROverlayError_None
+    ) {
+      const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
+      releaseAndDestroyOpenVrOverlay(overlay, staleHandle);
+    }
+    overlay.WaitFrameSync(releaseWaitMs);
+    createError = overlay.CreateOverlay(key, name, overlayHandlePtr);
+  }
+
+  if (createError !== OpenVR.OverlayError.VROverlayError_None) {
+    throw new Error(
+      `OpenVR CreateOverlay(${key}) failed: ${OpenVR.OverlayError[createError] ?? createError}`,
+    );
+  }
+  return new Deno.UnsafePointerView(overlayHandlePtr).getBigUint64();
+}
+
 export class OpenVrOverlayTexture {
   private readonly overlayClass: OpenVR.IVROverlay;
   private overlayHandle: OpenVR.OverlayHandle | null = null;
@@ -83,51 +138,11 @@ export class OpenVrOverlayTexture {
       return;
     }
 
-    const overlayHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
     const key = options.key ?? `petplay.webxr.${crypto.randomUUID()}`;
     const name = options.name ?? "PetPlay WebXR";
-    // Ghost overlays from processes that died without cleanup: destroying them
-    // here is the only way they leave the compositor, and their texture would
-    // otherwise keep being drawn.
-    for (const staleKey of options.staleKeys ?? []) {
-      const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-      if (
-        this.overlayClass.FindOverlay(staleKey, staleHandlePtr) !==
-          OpenVR.OverlayError.VROverlayError_None
-      ) {
-        continue;
-      }
-      const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
-      releaseAndDestroyOpenVrOverlay(this.overlayClass, staleHandle);
-      this.overlayClass.WaitFrameSync(OVERLAY_KEY_RELEASE_WAIT_MS);
-    }
-    let createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
-
-    // A module reload can terminate the old worker before its OpenVR cleanup
-    // runs, and SteamVR then retains the key *and* its stale texture. Destroying
-    // it is not enough on its own: SteamVR frees the key an overlay frame later,
-    // so retry while it is still reported in use.
-    for (
-      let attempt = 0;
-      createError === OpenVR.OverlayError.VROverlayError_KeyInUse &&
-      attempt < OVERLAY_KEY_IN_USE_RETRIES;
-      attempt++
-    ) {
-      const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-      if (
-        this.overlayClass.FindOverlay(key, staleHandlePtr) ===
-          OpenVR.OverlayError.VROverlayError_None
-      ) {
-        const staleHandle = new Deno.UnsafePointerView(staleHandlePtr).getBigUint64();
-        releaseAndDestroyOpenVrOverlay(this.overlayClass, staleHandle);
-      }
-      this.overlayClass.WaitFrameSync(OVERLAY_KEY_RELEASE_WAIT_MS);
-      createError = this.overlayClass.CreateOverlay(key, name, overlayHandlePtr);
-    }
-
-    this.assertOverlayOk(createError, "CreateOverlay");
-
-    this.overlayHandle = new Deno.UnsafePointerView(overlayHandlePtr).getBigUint64();
+    this.overlayHandle = createOpenVrOverlayWithCleanup(this.overlayClass, key, name, {
+      staleKeys: options.staleKeys,
+    });
     const mode = options.mode ?? "quad";
     const widthInMeters = mode === "stereo-panorama"
       ? Math.max(options.widthInMeters ?? 3, 3)
@@ -138,6 +153,14 @@ export class OpenVrOverlayTexture {
         widthInMeters,
       ),
       "SetOverlayWidthInMeters",
+    );
+    this.assertOverlayOk(
+      this.overlayClass.SetOverlayFlag(
+        this.overlayHandle,
+        OpenVR.OverlayFlags.VROverlayFlags_IsPremultiplied,
+        true,
+      ),
+      "SetOverlayFlag(IsPremultiplied=true)",
     );
     if (mode === "stereo-panorama") {
       this.assertOverlayOk(

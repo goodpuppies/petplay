@@ -97,6 +97,29 @@ class PlayspaceFrame {
   }
 
   /**
+   * Column-major 4×4 PetPlay-frame pose → flat row-major 3×4 (12 floats) in {@link universe},
+   * as `SetOverlayTransformAbsolute` takes. Zero-allocation.
+   */
+  poseColumnMajorToRows34(pose: ArrayLike<number>, out: Float32Array): void {
+    const a = this.isActive ? this.petplayToRaw : null;
+    for (let column = 0; column < 4; column++) {
+      const x = Number(pose[column * 4]);
+      const y = Number(pose[column * 4 + 1]);
+      const z = Number(pose[column * 4 + 2]);
+      const w = column === 3 ? 1 : 0;
+      for (let row = 0; row < 3; row++) {
+        out[row * 4 + column] = a
+          ? a[row]! * x + a[4 + row]! * y + a[8 + row]! * z + a[12 + row]! * w
+          : row === 0
+          ? x
+          : row === 1
+          ? y
+          : z;
+      }
+    }
+  }
+
+  /**
    * A row-major 3×4 view matrix (PetPlay frame → eye), as `SetOverlayTransformProjection` takes,
    * rewritten to take the {@link universe} instead, in place.
    */

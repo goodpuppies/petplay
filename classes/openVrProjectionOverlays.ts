@@ -15,7 +15,10 @@ import { playspaceFrame } from "./playspaceFrame.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { createStruct } from "../submodules/OpenVR_TS_Bindings_Deno/utils.ts";
-import { releaseAndDestroyOpenVrOverlay } from "./openVrOverlayTexture.ts";
+import {
+  createOpenVrOverlayWithCleanup,
+  releaseAndDestroyOpenVrOverlay,
+} from "./openVrOverlayTexture.ts";
 
 /** Knobs for the conventions that are easiest to confirm in the headset; live-editable. */
 export type ProjectionOverlayConventions = {
@@ -92,28 +95,23 @@ export class OpenVrProjectionOverlays {
     ];
     for (const [eye, side] of sides) {
       const key = `${options.key}.${side}`;
-      for (const stale of [key, ...(options.staleKeys ?? []).map((k) => `${k}.${side}`)]) {
-        const staleHandlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-        if (
-          this.overlayClass.FindOverlay(stale, staleHandlePtr) ===
-            OpenVR.OverlayError.VROverlayError_None
-        ) {
-          releaseAndDestroyOpenVrOverlay(
-            this.overlayClass,
-            new Deno.UnsafePointerView(staleHandlePtr).getBigUint64(),
-          );
-          this.overlayClass.WaitFrameSync(120);
-        }
-      }
-      const handlePtr = P.BigUint64P<OpenVR.OverlayHandle>();
-      this.check(
-        this.overlayClass.CreateOverlay(key, `${options.name} (${side} eye)`, handlePtr),
-        `CreateOverlay(${key})`,
+      const handle = createOpenVrOverlayWithCleanup(
+        this.overlayClass,
+        key,
+        `${options.name} (${side} eye)`,
+        { staleKeys: (options.staleKeys ?? []).map((k) => `${k}.${side}`) },
       );
-      const handle = new Deno.UnsafePointerView(handlePtr).getBigUint64();
       this.check(
         this.overlayClass.SetOverlaySortOrder(handle, options.sortOrder ?? 0),
         "SetOverlaySortOrder",
+      );
+      this.check(
+        this.overlayClass.SetOverlayFlag(
+          handle,
+          OpenVR.OverlayFlags.VROverlayFlags_IsPremultiplied,
+          true,
+        ),
+        "SetOverlayFlag(IsPremultiplied=true)",
       );
       const [textureStructPtr, textureView] = createStruct<OpenVR.Texture>(
         {

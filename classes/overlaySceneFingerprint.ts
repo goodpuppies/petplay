@@ -36,6 +36,7 @@ export function fingerprintScene(payload: WebXRRaythreeRenderPayload, extra = 0)
   h.texts(payload.ui.texts);
   h.items(payload.ui.images);
   h.value(payload.ui.textRendering);
+  if (payload.ui.surfaces) h.items(payload.ui.surfaces);
   return h.digest();
 }
 

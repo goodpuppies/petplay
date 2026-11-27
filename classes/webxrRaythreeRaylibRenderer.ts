@@ -34,10 +34,11 @@ import type {
   RenderFrame,
   RenderInstance,
 } from "../submodules/raythree/src/lib.ts";
-import type {
-  WebXRRaythreeUiOrderInfo,
-  WebXRRaythreeUiPanelSnapshot,
-  WebXRRaythreeUiSnapshot,
+import {
+  UI_PANEL_DATA,
+  type WebXRRaythreeUiOrderInfo,
+  type WebXRRaythreeUiPanelSnapshot,
+  type WebXRRaythreeUiSnapshot,
 } from "./webxrRaythreeUi.ts";
 
 const MAX_MATERIAL_MAPS = 11;
@@ -837,7 +838,7 @@ export class WebXRRaythreeRaylibRenderer {
     setUiDepthMaskEnabled(false);
     setUiDepthTestEnabled(false);
     setUiBackfaceCullingEnabled(false);
-    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    beginUiAlphaBlend();
     try {
       rlFast.DrawMesh(this.uiPanelMesh.mesh, material, this.matrixForDraw(this.identityMatrix16));
     } finally {
@@ -1386,6 +1387,45 @@ export class WebXRRaythreeRaylibRenderer {
       batchGeometries: extraction.assets.geometries.length,
       batchMaterials: extraction.assets.materials.length,
     };
+  }
+
+  /**
+   * Draw only the UI pass of `ui` into the caller's bound, cleared render target (e.g. a native
+   * panel overlay texture). Uses an isolated UI frame slot so it never collides with the stereo
+   * eye pass's cached panel runs, and explicitly restores blend/depth/backface state.
+   */
+  renderUiOnly(
+    ui: WebXRRaythreeUiSnapshot,
+    matrices: { projectionMatrix: Float32Array; viewMatrix: Float32Array },
+    viewport: { width: number; height: number },
+  ): { panelDrawn: number; textDrawn: number } {
+    if (ui.textRendering) this.setTextRenderer(ui.textRendering.renderer);
+    this.uiTextGeometryInterner.intern(ui.texts);
+    // Isolated pass: advance the panel-run cache slot so this pass cannot clobber the eye pass.
+    this.uiFrame++;
+    this.sortMatrix.fromArray(matrices.viewMatrix as unknown as number[]);
+    raylib.H.BeginMode3D(DEFAULT_RAYLIB_CAMERA);
+    raylib.H.rlSetMatrixProjection(this.matrixForDraw(matrices.projectionMatrix));
+    raylib.H.rlSetMatrixModelview(this.matrixForDraw(matrices.viewMatrix));
+    setUiDepthMaskEnabled(false);
+    setUiDepthTestEnabled(false);
+    setUiBackfaceCullingEnabled(false);
+    beginUiAlphaBlend();
+    try {
+      const phases = this.drawUiSnapshot(
+        ui,
+        matrices.viewMatrix,
+        matrices.projectionMatrix,
+        viewport,
+      );
+      return { panelDrawn: phases.panelDrawn, textDrawn: phases.textDrawn };
+    } finally {
+      raylib.H.EndBlendMode();
+      setUiBackfaceCullingEnabled(true);
+      setUiDepthTestEnabled(true);
+      setUiDepthMaskEnabled(true);
+      raylib.H.EndMode3D();
+    }
   }
 
   /** Called on the GL owner; keep native caches warm during in-VR A/B switching. */
@@ -1956,7 +1996,7 @@ void main() {
     }
     const tOpq1 = performance.now();
 
-    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    beginUiAlphaBlend();
     for (const instance of transparentInstances) {
       const nativeMesh = this.geometries.get(instance.geometryId);
       const nativeMaterial = this.materials.get(instance.materialId);
@@ -2006,7 +2046,12 @@ void main() {
       }
     }
     if (hasHudOverUi) {
-      this.drawHudOverUiInstances(frame);
+      beginUiAlphaBlend();
+      try {
+        this.drawHudOverUiInstances(frame);
+      } finally {
+        raylib.H.EndBlendMode();
+      }
     }
     const tUi1 = performance.now();
     raylib.H.EndBlendMode();
@@ -2124,10 +2169,33 @@ void main() {
       panelsByRoot.set(panel.rootIndex, group);
     }
     this.uiDepthPanels.length = 0;
-    for (const rootPanels of panelsByRoot.values()) {
-      // Sorted back to front within the root, so this is its background (a card, the wrist square).
-      const background = rootPanels.find((panel) => (panel.data[7] ?? 0) >= UI_DEPTH_MIN_OPACITY);
-      if (background != null) this.uiDepthPanels.push(background);
+    if (ui.surfaces && ui.surfaces.length > 0) {
+      const coveredRoots = new Set<number>();
+      for (const surface of ui.surfaces) {
+        coveredRoots.add(surface.rootIndex);
+        if (surface.depthPanelIndex !== undefined) {
+          const panel = ui.panels[surface.depthPanelIndex];
+          if (panel != null) this.uiDepthPanels.push(panel);
+        }
+      }
+      for (const [rootIndex, rootPanels] of panelsByRoot) {
+        if (coveredRoots.has(rootIndex)) continue;
+        const background = rootPanels.find(
+          (panel) => (panel.data[UI_PANEL_DATA.OPACITY] ?? 0) >= UI_DEPTH_MIN_OPACITY,
+        );
+        if (background != null) this.uiDepthPanels.push(background);
+      }
+    } else {
+      for (const rootPanels of panelsByRoot.values()) {
+        // Sorted back to front within the root, so this is its background (a card, the wrist square).
+        const background = rootPanels.find(
+          (panel) => (panel.data[UI_PANEL_DATA.OPACITY] ?? 0) >= UI_DEPTH_MIN_OPACITY,
+        );
+        if (background != null) this.uiDepthPanels.push(background);
+      }
+    }
+    if (ui.depthOnlyPanels) {
+      for (const panel of ui.depthOnlyPanels) this.uiDepthPanels.push(panel);
     }
     const textsByRoot = new Map<number, typeof texts>();
     for (const text of texts) {
@@ -2742,7 +2810,7 @@ void main() {
           material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA
         ) {
           raylib.H.EndBlendMode();
-          raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
+          beginUiAlphaBlend();
         }
         return;
       }
@@ -2772,7 +2840,7 @@ void main() {
         material.blendMode !== raylibBindings.BlendMode.BLEND_ALPHA
       ) {
         raylib.H.EndBlendMode();
-        raylib.H.BeginBlendMode(raylibBindings.BlendMode.BLEND_ALPHA);
+        beginUiAlphaBlend();
       }
     } finally {
       if (restoreDepthTest) {

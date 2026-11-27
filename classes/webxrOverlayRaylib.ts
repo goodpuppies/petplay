@@ -6,6 +6,7 @@ import { areNativeAssetBatchesIdenticalForSync } from "./raythreeAssetBatchesFor
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 import { type DepthOccluder, WebXRRaythreeRaylibRenderer } from "./webxrRaythreeRaylibRenderer.ts";
 import { WEBXR_VARGGLES_GLSL330_FRAGMENT } from "./webxrVargglesShader.ts";
+import { beginPremultipliedCopyBlend } from "./uiAlphaBlend.ts";
 import {
   getCurrentContextId,
   getFramebufferStatus,
@@ -192,6 +193,21 @@ export class WebXROverlayRaylib {
   private spareOutputTargets: raylib.RenderTexture2D[] = [];
   private combineShader: raylib.Shader | null = null;
   private sceneRenderer: WebXRRaythreeRaylibRenderer | null = null;
+  /** Double-buffered render targets for native panel overlays, keyed by surfaceId. */
+  private nativeTargets = new Map<string, {
+    targets: [raylib.RenderTexture2D, raylib.RenderTexture2D];
+    width: number;
+    height: number;
+    next: number;
+  }>();
+  /** Incremented whenever native targets are cleared/lost so caches redraw. */
+  nativeTargetGeneration = 0;
+  /** Pooled native targets by `"WxH"`, bounded by total byte budget. */
+  private nativeTargetPool: Array<{ size: string; bytes: number; target: raylib.RenderTexture2D }> =
+    [];
+  private nativeTargetPoolBytes = 0;
+  /** Replaced native targets waiting briefly before returning to the pool. */
+  private retiredNativeTargets: Array<{ target: raylib.RenderTexture2D; frames: number }> = [];
   /** Kept across renderer re-creation (`resetSceneAssets`). */
   private depthOccluder: DepthOccluder | null = null;
   private lookRotationLocation = -1;
@@ -901,6 +917,154 @@ export class WebXROverlayRaylib {
     };
   }
 
+  private static readonly NATIVE_POOL_MAX_BYTES = 128 * 1024 * 1024;
+  private static readonly NATIVE_RETIRE_FRAMES = 4;
+
+  private nativeTargetBytes(width: number, height: number): number {
+    // RGBA8 color + 32-bit depth renderbuffer allocated by raylib LoadRenderTexture.
+    return width * height * 8;
+  }
+
+  private takeNativeTarget(width: number, height: number): raylib.RenderTexture2D {
+    const size = `${width}x${height}`;
+    for (let i = this.nativeTargetPool.length - 1; i >= 0; i--) {
+      const entry = this.nativeTargetPool[i]!;
+      if (entry.size === size) {
+        this.nativeTargetPool.splice(i, 1);
+        this.nativeTargetPoolBytes -= entry.bytes;
+        return entry.target;
+      }
+    }
+    const target = raylib.H.LoadRenderTexture(width, height);
+    if (!target || !raylib.H.IsRenderTextureValid(target)) {
+      throw new Error(`Native overlay texture ${width}x${height} failed`);
+    }
+    raylib.H.SetTextureFilter(target.texture, raylib.TextureFilter.TEXTURE_FILTER_BILINEAR);
+    return target;
+  }
+
+  private poolNativeTarget(target: raylib.RenderTexture2D): void {
+    const width = target.texture.width;
+    const height = target.texture.height;
+    const bytes = this.nativeTargetBytes(width, height);
+    if (bytes > WebXROverlayRaylib.NATIVE_POOL_MAX_BYTES) {
+      raylib.H.UnloadRenderTexture(target);
+      return;
+    }
+    this.nativeTargetPool.push({ size: `${width}x${height}`, bytes, target });
+    this.nativeTargetPoolBytes += bytes;
+    while (
+      this.nativeTargetPoolBytes > WebXROverlayRaylib.NATIVE_POOL_MAX_BYTES &&
+      this.nativeTargetPool.length > 0
+    ) {
+      const oldest = this.nativeTargetPool.shift()!;
+      this.nativeTargetPoolBytes -= oldest.bytes;
+      raylib.H.UnloadRenderTexture(oldest.target);
+    }
+  }
+
+  /**
+   * Double-buffered target for a native overlay key. Allocates atomically so a failure on the
+   * second target never leaks the first.
+   */
+  private nativeTarget(key: string, width: number, height: number): raylib.RenderTexture2D {
+    let entry = this.nativeTargets.get(key);
+    if (entry && (entry.width !== width || entry.height !== height)) {
+      for (const target of entry.targets) {
+        this.retiredNativeTargets.push({
+          target,
+          frames: WebXROverlayRaylib.NATIVE_RETIRE_FRAMES,
+        });
+      }
+      this.nativeTargets.delete(key);
+      entry = undefined;
+    }
+    if (!entry) {
+      const first = this.takeNativeTarget(width, height);
+      let second: raylib.RenderTexture2D;
+      try {
+        second = this.takeNativeTarget(width, height);
+      } catch (error) {
+        this.poolNativeTarget(first);
+        throw error;
+      }
+      entry = { targets: [first, second], width, height, next: 0 };
+      this.nativeTargets.set(key, entry);
+    }
+    const target = entry.targets[entry.next]!;
+    entry.next ^= 1;
+    return target;
+  }
+
+  /** Draw a native UI panel head-on into its own double-buffered GL texture. */
+  renderNativePanel(
+    key: string,
+    ui: WebXRRaythreeRenderPayload["ui"],
+    camera: {
+      viewMatrix: Float32Array;
+      projectionMatrix: Float32Array;
+      textureWidth: number;
+      textureHeight: number;
+    },
+  ): number {
+    const sceneRenderer = this.sceneRenderer;
+    if (!sceneRenderer) throw new Error("raylib compositor not initialized");
+    const target = this.nativeTarget(key, camera.textureWidth, camera.textureHeight);
+    raylib.H.BeginTextureMode(target);
+    try {
+      raylib.H.ClearBackground(TRANSPARENT_BLACK);
+      sceneRenderer.renderUiOnly(ui, camera, {
+        width: camera.textureWidth,
+        height: camera.textureHeight,
+      });
+    } finally {
+      raylib.H.EndTextureMode();
+    }
+    return target.texture.id;
+  }
+
+  /** Once per frame: retire targets for native overlays no longer held by SteamVR. */
+  retainNativeTargets(keep: ReadonlySet<string>): void {
+    for (const [key, entry] of this.nativeTargets) {
+      if (keep.has(key)) continue;
+      for (const target of entry.targets) {
+        this.retiredNativeTargets.push({
+          target,
+          frames: WebXROverlayRaylib.NATIVE_RETIRE_FRAMES,
+        });
+      }
+      this.nativeTargets.delete(key);
+    }
+    if (this.retiredNativeTargets.length === 0) return;
+    this.retiredNativeTargets = this.retiredNativeTargets.filter((retired) => {
+      if (--retired.frames > 0) return true;
+      this.poolNativeTarget(retired.target);
+      return false;
+    });
+  }
+
+  /** Unload all active, retired, and pooled native targets (e.g. leaving native mode). */
+  clearNativeTargets(): void {
+    for (const entry of this.nativeTargets.values()) {
+      for (const target of entry.targets) raylib.H.UnloadRenderTexture(target);
+    }
+    this.nativeTargets.clear();
+    for (const retired of this.retiredNativeTargets) raylib.H.UnloadRenderTexture(retired.target);
+    this.retiredNativeTargets = [];
+    for (const pooled of this.nativeTargetPool) raylib.H.UnloadRenderTexture(pooled.target);
+    this.nativeTargetPool = [];
+    this.nativeTargetPoolBytes = 0;
+    this.nativeTargetGeneration++;
+  }
+
+  getNativeTargetCounts(): { inUse: number; pooled: number; pooledBytes: number } {
+    return {
+      inUse: this.nativeTargets.size * 2,
+      pooled: this.nativeTargetPool.length + this.retiredNativeTargets.length,
+      pooledBytes: this.nativeTargetPoolBytes,
+    };
+  }
+
   /** Varggles: resample both eye targets into the head-locked stereo panorama in `outputTarget`. */
   private combineEyesIntoPanorama(
     frame: { lookRotation: Float32Array; halfFovInRadians: number },
@@ -930,7 +1094,8 @@ export class WebXROverlayRaylib {
     const outputSize = Math.min(outputTarget.texture.width, outputTarget.texture.height);
     // Drawn outside shader mode so the panorama shader cannot rewrite it.
     this.markCanary("outputPostClear", outputSize);
-    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    // Eye targets already hold premultiplied RGBA; copy verbatim into the cleared panorama.
+    beginPremultipliedCopyBlend();
     raylib.H.BeginShaderMode(shader);
     this.setShaderVec2(shader, this.outputUvScaleLocation, 1, 0.5);
     this.setShaderVec2(shader, this.outputUvOffsetLocation, 0, 0);
@@ -1041,7 +1206,8 @@ export class WebXROverlayRaylib {
     const outputSize = Math.min(outputTarget.texture.width, outputTarget.texture.height);
     // Drawn outside shader mode so the panorama shader cannot rewrite it.
     this.markCanary("outputPostClear", outputSize);
-    raylib.H.BeginBlendMode(raylib.BlendMode.BLEND_ALPHA);
+    // Eye targets already hold premultiplied RGBA; copy verbatim into the cleared panorama.
+    beginPremultipliedCopyBlend();
     raylib.H.BeginShaderMode(shader);
     this.setShaderVec2(shader, this.outputUvScaleLocation, 1, 0.5);
     this.setShaderVec2(shader, this.outputUvOffsetLocation, 0, 0);
@@ -1105,6 +1271,7 @@ export class WebXROverlayRaylib {
       "[webxr] raylib cleanup: unloading render targets",
     );
     this.unloadTargets();
+    this.clearNativeTargets();
     LogChannel.log(
       "webxrv2",
       "[webxr] raylib cleanup: disposing scene renderer",
@@ -1410,6 +1577,7 @@ export class WebXROverlayRaylib {
    */
   invalidateRenderTargets(): void {
     this.unloadTargets();
+    this.clearNativeTargets();
   }
 
   /**

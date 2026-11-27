@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createDefaultLowerers, type RenderLowerer } from "../submodules/raythree/src/lib.ts";
+import { resolvePetplayRenderProps } from "./renderProps.ts";
 import type { WebXRRaythreeRenderPayload } from "./webxrRaythreeScene.ts";
 
 export type RenderAnchorSpace = "head" | "left-hand" | "right-hand" | "left-ray" | "right-ray";
@@ -261,12 +262,15 @@ export function anchoredLowerers(): RenderLowerer[] {
         );
         (instance as typeof instance & { vrcCameraHidden?: boolean }).vrcCameraHidden =
           object.userData.vrcCameraHidden === true;
+        const renderProps = resolvePetplayRenderProps(object);
         Object.assign(instance, {
           passthroughKey: object.userData.passthroughKey === true,
           passthroughCutout: object.userData.passthroughCutout === true,
           ...(object.userData.desktopSurface
             ? { desktopSurface: object.userData.desktopSurface }
             : {}),
+          ...(renderProps ? { renderProps } : {}),
+          ...(renderProps?.hudOverUi ? { hudOverUi: true } : {}),
         });
         return instance;
       }),
@@ -340,5 +344,6 @@ export function resolveRenderAnchors(
   for (const item of payload.ui.panels) resolve(item);
   for (const item of payload.ui.texts) resolve(item);
   for (const item of payload.ui.images) resolve(item);
+  if (payload.ui.surfaces) for (const item of payload.ui.surfaces) resolve(item);
   return count;
 }

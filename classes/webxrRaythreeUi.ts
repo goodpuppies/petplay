@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { getTextRenderingSettings, type TextRenderingSettings } from "./textRenderingSettings.ts";
 import { captureVectorTextGlyphs, type VectorTextGeometrySource } from "./vectorTextGlyphs.ts";
-import { type Anchored, captureRenderAnchor } from "./overlayRenderTracking.ts";
+import { type Anchored, captureRenderAnchor, type RenderAnchor } from "./overlayRenderTracking.ts";
+import { resolvePetplayRenderProps } from "./renderProps.ts";
 import type { InstancedBufferAttribute, Material, Object3D } from "three";
 import type { RootContext } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/context.ts";
 import { Component } from "../submodules/threewebxrwebgpudeno/submodules/uikit/packages/uikit/src/components/component.ts";
@@ -58,6 +59,8 @@ export type WebXRRaythreeUiPanelSnapshot = Anchored & {
 export type WebXRRaythreeUiImageUserData = {
   /** Key into the renderer's texture registry. Only a string crosses this boundary. */
   texture: string;
+  /** Optional procedural surface shader id (e.g. "glass-chrome") rendered in place of a static image. */
+  shader?: string;
   /** Panel size in uikit px; the renderer scales its unit quad by this. */
   width: number;
   height: number;
@@ -121,11 +124,58 @@ export type WebXRRaythreeUiTextSnapshot = Anchored & {
   };
 };
 
+/**
+ * Named offsets into uikit's 16-float packed `panel.data` attribute (`aData0..3`).
+ * Avoids hardcoding magic indices across renderers, native overlays, and tests.
+ */
+export const UI_PANEL_DATA = {
+  COLOR_R: 4,
+  COLOR_G: 5,
+  COLOR_B: 6,
+  OPACITY: 7,
+  BORDER_RADIUS_PACKED: 8,
+  BORDER_OPACITY: 12,
+  WIDTH_PX: 14,
+  HEIGHT_PX: 15,
+} as const;
+
+/** Minimum panel opacity to act as a surface's opaque depth-coverage stand-in. */
+export const UI_DEPTH_STAND_IN_MIN_OPACITY = 0.5;
+
+/**
+ * Typed per-root UI surface descriptor exported alongside `panels`/`texts`/`images`.
+ * Gives native overlays, the eye renderer, and scene-stream stable root identity, a monotonic
+ * `contentRevision` (bumped only when content/clipping/text-rendering changes, not on pure
+ * tracking motion), unified depth-coverage info, and `<PetplayElement>` render policy.
+ */
+export type WebXRRaythreeUiSurfaceSnapshot = Anchored & {
+  /** Stable for the root's lifetime (scoped to scene epoch, or explicit `overlayKey`). */
+  surfaceId: string;
+  /** Matches `rootIndex` on this extraction's panels, texts, and images. */
+  rootIndex: number;
+  /** Maps the unit square (-0.5..0.5 in X and Y, Z = 0) onto the root's rectangle in world space. */
+  worldMatrix: Float32Array;
+  /** Root size in uikit pixels. */
+  pixelWidth: number;
+  pixelHeight: number;
+  /** Monotonic per-surface content revision; unchanged when only tracked pose moves. */
+  contentRevision: number;
+  /** Index into `ui.panels` of the largest opaque background panel for depth coverage, if any. */
+  depthPanelIndex?: number;
+  /** `false` opts this surface out of native quad promotion (keeps it in the eye image). */
+  nativeOverlay?: boolean;
+  /** `true` when the surface contains view-dependent/animated shaders (e.g. `glass-chrome`). */
+  dynamicOverlay?: boolean;
+};
+
 export type WebXRRaythreeUiSnapshot = {
   textRendering?: TextRenderingSettings;
   panels: WebXRRaythreeUiPanelSnapshot[];
   texts: WebXRRaythreeUiTextSnapshot[];
   images: WebXRRaythreeUiImageSnapshot[];
+  surfaces?: WebXRRaythreeUiSurfaceSnapshot[];
+  /** Renderer-side only: panels drawn into the depth buffer alone for surfaces promoted to quads. */
+  depthOnlyPanels?: WebXRRaythreeUiPanelSnapshot[];
 };
 
 export type WebXRRaythreeTextUserData = {
@@ -262,6 +312,98 @@ function isObjectVisibleInTree(object: Object3D): boolean {
   return true;
 }
 
+/** Per-root state for stable surface IDs, anchors, and content revision tracking. */
+type SurfaceCacheState = {
+  surfaceId: string;
+  revision: number;
+  contentKey: string;
+  anchor?: RenderAnchor;
+};
+const uiSurfaceEpoch = Math.floor(Math.random() * 0xffff).toString(36);
+let nextUiSurfaceSeq = 0;
+const uiSurfaceCache = new WeakMap<Object3D, SurfaceCacheState>();
+
+function readUikitRootInfo(
+  rootCtx: unknown,
+  fallbackComponent: Object3D,
+): { root: Object3D; pixelWidth: number; pixelHeight: number } | null {
+  const root = (rootCtx as { component?: Object3D } | null)?.component ?? fallbackComponent;
+  const size = (root as unknown as { size?: { peek?: () => [number, number] | undefined } })
+    .size?.peek?.();
+  if (size == null || !(size[0] > 0) || !(size[1] > 0)) return null;
+  return { root, pixelWidth: size[0], pixelHeight: size[1] };
+}
+
+function surfaceContentSignature(
+  rootIndex: number,
+  panels: readonly WebXRRaythreeUiPanelSnapshot[],
+  texts: readonly WebXRRaythreeUiTextSnapshot[],
+  images: readonly WebXRRaythreeUiImageSnapshot[],
+  textRendering: TextRenderingSettings | undefined,
+  pixelWidth: number,
+  pixelHeight: number,
+): { key: string; depthPanelIndex?: number; hasShader: boolean } {
+  let parts = `${pixelWidth}x${pixelHeight}|`;
+  if (textRendering) {
+    parts += `${textRendering.renderer}:${textRendering.panoramaFilter ?? ""}:${
+      textRendering.glyphCoverageExponent ?? ""
+    }:${textRendering.glyphWeightPixels ?? ""}:${textRendering.glyphAaWidth ?? ""}|`;
+  }
+  let bestDepthIndex: number | undefined;
+  let bestDepthArea = 0;
+  let panelCount = 0;
+  for (let i = 0; i < panels.length; i++) {
+    const p = panels[i]!;
+    if (p.rootIndex !== rootIndex) continue;
+    panelCount++;
+    const opacity = p.data[UI_PANEL_DATA.OPACITY] ?? 0;
+    if (opacity >= UI_DEPTH_STAND_IN_MIN_OPACITY) {
+      const area = Number(p.data[UI_PANEL_DATA.WIDTH_PX] ?? 0) *
+        Number(p.data[UI_PANEL_DATA.HEIGHT_PX] ?? 0);
+      if (area > bestDepthArea) {
+        bestDepthArea = area;
+        bestDepthIndex = i;
+      }
+    }
+    // `data` and `clipping` buffers are immutable per content version; panel order + data identity
+    // capture every visual/clipping edit while ignoring pure tracking-pose updates.
+    parts += `P${p.instanceIndex}:${p.renderOrder}:${p.data[UI_PANEL_DATA.OPACITY]}:${
+      p.data[UI_PANEL_DATA.COLOR_R]
+    },${p.data[UI_PANEL_DATA.COLOR_G]},${p.data[UI_PANEL_DATA.COLOR_B]}:${
+      p.data[UI_PANEL_DATA.BORDER_RADIUS_PACKED]
+    }:${p.data[UI_PANEL_DATA.BORDER_OPACITY]}:${p.data[UI_PANEL_DATA.WIDTH_PX]}x${
+      p.data[UI_PANEL_DATA.HEIGHT_PX]
+    }:${p.clipping[0]},${p.clipping[3]},${p.clipping[4]},${p.clipping[7]},${p.clipping[8]},${
+      p.clipping[11]
+    },${p.clipping[12]},${p.clipping[15]};`;
+  }
+  let textCount = 0;
+  for (let i = 0; i < texts.length; i++) {
+    const t = texts[i]!;
+    if (t.rootIndex !== rootIndex) continue;
+    textCount++;
+    parts += `T${t.text}:${t.fontSize}:${t.font ?? ""}:${t.color.join(",")}:${
+      t.geometry?.id ?? 0
+    }:${t.geometry?.revision ?? t.geometry?.version ?? 0};`;
+  }
+  let hasShader = false;
+  let imageCount = 0;
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i]!;
+    if (img.rootIndex !== rootIndex) continue;
+    imageCount++;
+    if (img.shader) hasShader = true;
+    parts += `I${img.texture}:${img.shader ?? ""}:${img.width}x${img.height}:${
+      img.opacity ?? 1
+    }:${img.fit ?? ""}:${img.focus?.join(",") ?? ""}:${img.borderRadius?.join(",") ?? ""};`;
+  }
+  return {
+    key: `${panelCount}/${textCount}/${imageCount}|${parts}`,
+    depthPanelIndex: bestDepthIndex,
+    hasShader,
+  };
+}
+
 export function extractWebXRRaythreeUiFromCollected(
   collected: CollectedWebXRRaythreeUi,
 ): WebXRRaythreeUiSnapshot {
@@ -285,6 +427,14 @@ export function extractWebXRRaythreeUiFromCollected(
     return index;
   };
 
+  // Record each root that has at least one visible drawable (after `isObjectVisibleInTree`).
+  const visibleRoots = new Map<number, { root: Object3D; pixelWidth: number; pixelHeight: number }>();
+  const noteVisibleRoot = (rootCtx: unknown, rootIndex: number, component: Object3D) => {
+    if (visibleRoots.has(rootIndex)) return;
+    const info = readUikitRootInfo(rootCtx, component);
+    if (info) visibleRoots.set(rootIndex, info);
+  };
+
   const { roots, panelMeshes, textObjects, imageObjects } = collected;
 
   for (const rootCtx of roots) {
@@ -295,7 +445,7 @@ export function extractWebXRRaythreeUiFromCollected(
     if (!isObjectVisibleInTree(mesh)) {
       continue;
     }
-    const rootIndex = resolveRootIndex(mesh, rootIndexFor);
+    const rootIndex = resolveRootIndex(mesh, rootIndexFor, noteVisibleRoot);
     maybeCollectPanels(mesh, snapshot.panels, rootIndex);
   }
 
@@ -304,7 +454,7 @@ export function extractWebXRRaythreeUiFromCollected(
     if (!isObjectVisibleInTree(object)) {
       continue;
     }
-    const rootIndex = resolveRootIndex(object, rootIndexFor);
+    const rootIndex = resolveRootIndex(object, rootIndexFor, noteVisibleRoot);
     maybeCollectText(object, snapshot.texts, rootIndex);
   }
   for (let i = 0; i < imageObjects.length; i++) {
@@ -312,8 +462,52 @@ export function extractWebXRRaythreeUiFromCollected(
     if (!isObjectVisibleInTree(object)) {
       continue;
     }
-    const rootIndex = resolveRootIndex(object, rootIndexFor);
+    const rootIndex = resolveRootIndex(object, rootIndexFor, noteVisibleRoot);
     maybeCollectImage(object, snapshot.images, rootIndex);
+  }
+
+  if (visibleRoots.size > 0) {
+    const surfaces: WebXRRaythreeUiSurfaceSnapshot[] = [];
+    for (const [rootIndex, { root, pixelWidth, pixelHeight }] of visibleRoots) {
+      const renderProps = resolvePetplayRenderProps(root);
+      let cache = uiSurfaceCache.get(root);
+      if (!cache) {
+        const surfaceId = renderProps?.overlayKey ?? `ui-${uiSurfaceEpoch}-${++nextUiSurfaceSeq}`;
+        cache = { surfaceId, revision: 0, contentKey: "" };
+        uiSurfaceCache.set(root, cache);
+      } else if (renderProps?.overlayKey && cache.surfaceId !== renderProps.overlayKey) {
+        cache.surfaceId = renderProps.overlayKey;
+      }
+      const sig = surfaceContentSignature(
+        rootIndex,
+        snapshot.panels,
+        snapshot.texts,
+        snapshot.images,
+        snapshot.textRendering,
+        pixelWidth,
+        pixelHeight,
+      );
+      if (sig.key !== cache.contentKey) {
+        cache.contentKey = sig.key;
+        cache.revision++;
+      }
+      const world = root.matrixWorld.elements;
+      const anchor = captureRenderAnchor(root, world, undefined, cache.anchor);
+      cache.anchor = anchor;
+      surfaces.push({
+        surfaceId: cache.surfaceId,
+        rootIndex,
+        worldMatrix: new Float32Array(world),
+        pixelWidth,
+        pixelHeight,
+        contentRevision: cache.revision,
+        ...(sig.depthPanelIndex !== undefined ? { depthPanelIndex: sig.depthPanelIndex } : {}),
+        ...(renderProps?.nativeOverlay === false ? { nativeOverlay: false } : {}),
+        ...(renderProps?.dynamicOverlay === true || sig.hasShader ? { dynamicOverlay: true } : {}),
+        ...(anchor ? { renderAnchor: anchor } : {}),
+      });
+    }
+    snapshot.surfaces = surfaces;
   }
 
   return snapshot;
@@ -473,9 +667,11 @@ function maybeCollectPanels(
       }
     } else if (
       staticMatch && entry!.snapshot.renderAnchor != null &&
-      samePanelInputsRange(entry!, 16, 48)
+      samePanelInputsRange(entry!, 16, 64)
     ) {
-      // Anchored panel moved with its hand/grab: reuse snapshot & typed arrays when anchor holds.
+      // Anchored panel moved with its hand/grab while content and clipping stayed identical:
+      // emit a fresh shallow snapshot with the updated worldMatrix (never mutate a previously
+      // returned snapshot in place) while reusing the immutable `data` and `clipping` buffers.
       matrixHelper.copy(object.matrixWorld);
       instanceMatrixHelper.fromArray(
         instanceMatrix.array as unknown as number[],
@@ -489,34 +685,13 @@ function maybeCollectPanels(
         entry!.snapshot.renderAnchor,
         matrixOffset,
       );
-      if (anchor === entry!.snapshot.renderAnchor) {
-        entry!.snapshot.worldMatrix.set(matrixHelper.elements);
-        for (let k = 0; k < 16; k++) {
-          entry!.inputs[k] = panelInputs[k]!;
-          entry!.inputs[48 + k] = panelInputs[48 + k]!;
-          entry!.snapshot.clipping[k] = panelInputs[48 + k]!;
-        }
-      } else {
-        const worldMatrix = new Float32Array(matrixHelper.elements);
-        entry = {
-          inputs: panelInputs.slice(),
-          snapshot: {
-            worldMatrix,
-            data: new Float32Array(dataBlock16),
-            clipping: clippingArray == null
-              ? new Float32Array(DEFAULT_CLIPPING)
-              : new Float32Array(panelInputs.subarray(48, 64)),
-            instanceIndex: index,
-            rootIndex,
-            renderOrder,
-            depthTest,
-            depthWrite,
-            orderInfo,
-            renderAnchor: anchor,
-          },
-        };
-        cache[index] = entry;
-      }
+      const worldMatrix = new Float32Array(matrixHelper.elements);
+      for (let k = 0; k < 16; k++) entry!.inputs[k] = panelInputs[k]!;
+      entry!.snapshot = {
+        ...entry!.snapshot,
+        worldMatrix,
+        renderAnchor: anchor,
+      };
     } else {
       matrixHelper.copy(object.matrixWorld);
       instanceMatrixHelper.fromArray(
@@ -565,11 +740,15 @@ function maybeCollectPanels(
 function resolveRootIndex(
   object: Object3D,
   rootIndexFor: (rootCtx: unknown) => number,
+  onRoot?: (rootCtx: unknown, rootIndex: number, component: Object3D) => void,
 ): number {
   let current: Object3D | null = object;
   while (current != null) {
     if (current instanceof Component) {
-      return rootIndexFor((current as unknown as { root: { value: unknown } }).root.value);
+      const rootCtx = (current as unknown as { root: { value: unknown } }).root.value;
+      const rootIndex = rootIndexFor(rootCtx);
+      onRoot?.(rootCtx, rootIndex, current);
+      return rootIndex;
     }
     current = current.parent;
   }

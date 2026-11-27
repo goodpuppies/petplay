@@ -38,6 +38,11 @@ import { acquireWindowsHighResTimer } from "../classes/windowsTimer.ts";
 import { OverlayWristMotionProbe } from "../classes/overlayWristMotionProbe.ts";
 import { motionProbeFrame, OverlayMotionProbe } from "../classes/overlayMotionProbe.ts";
 import { OverlaySceneInbox } from "../classes/overlaySceneDelivery.ts";
+import {
+  type NativeOverlayDevice,
+  NativePanelOverlayLayer,
+  stripReadyNativePanels,
+} from "../classes/nativeOverlayPanels.ts";
 
 /**
  * `projection`: per-eye projection overlays, reprojected by SteamVR, but SteamVR draws them
@@ -64,6 +69,8 @@ type Start = {
   overlayName?: string;
   eyeSize?: number;
   presentMode?: PresentMode;
+  /** Show UI panels as their own SteamVR quads (`overlayPresentMode: "native"`). */
+  nativePanels?: boolean;
   dmabufBanks?: DmabufBankCount;
   overlayWidthInMeters?: number;
   overlayDistance?: number;
@@ -109,6 +116,14 @@ const state = actorState({
   // This chooses optical parameters only; render eye views remain independent of IR-time poses.
   projectionMode: "scene-compatible" as "headset" | "scene-compatible",
   presentMode: "projection" as PresentMode,
+  /** Show UI panels as world/device-placed SteamVR quads (`overlayPresentMode: "native"`). */
+  nativePanels: false,
+  /** Why native panel overlays turned themselves off (everything draws in the eyes again). */
+  nativeError: null as string | null,
+  /** Texture texels per uikit pixel of a native panel. */
+  nativeTexelsPerPixel: 2,
+  /** Counts and per-quad state of native panel overlays, refreshed with each status report. */
+  native: null as unknown,
   /**
    * Linux projection mode: number of pre-bound DMA-BUF overlay banks (2 or 3) flipped via
    * ShowOverlay/HideOverlay with zero per-frame SetOverlayTexture calls. 0 = legacy GL submit.
@@ -243,6 +258,8 @@ new PostMan(
       state.webxrTarget = options.webxrTarget ?? null;
       state.eyeSize = options.eyeSize ?? null;
       state.presentMode = options.presentMode ?? "projection";
+      state.nativePanels = options.nativePanels === true && state.presentMode === "panorama";
+      state.nativeError = null;
       playspaceFrame.setAnchor(options.playspaceAnchor ?? null);
       if (options.dmabufBanks != null) state.dmabufBanks = options.dmabufBanks;
       state.stopRequested = false;
@@ -279,6 +296,12 @@ new PostMan(
         throw new Error(`Unknown present mode ${mode}`);
       }
       state.presentMode = mode;
+      if (mode !== "panorama") state.nativePanels = false;
+      return health();
+    },
+    SETNATIVEPANELS: (enabled: boolean) => {
+      state.nativePanels = enabled === true && state.presentMode === "panorama";
+      state.nativeError = null;
       return health();
     },
     SETEYESIZE: (eyeSize: number) => {
@@ -525,6 +548,7 @@ async function run(options: Start) {
   };
   let panorama: OpenVrOverlayTexture | null = null;
   let panoramaBankOverlays: OpenVrOverlayTexture[] = [];
+  let nativeLayer: NativePanelOverlayLayer | null = null;
   const clearPendingBanks = () => {
     if (pendingPanorama) {
       presenter?.deleteGpuFence(pendingPanorama.fence);
@@ -1027,6 +1051,9 @@ async function run(options: Start) {
         };
       }
       const anchors: RenderAnchors = probeSample?.anchors ?? { head: hmd.matrix };
+      const nativeDevices: Partial<Record<RenderAnchorSpace, NativeOverlayDevice>> = {
+        head: { index: OpenVR.k_unTrackedDeviceIndex_Hmd, pose: hmd.matrix },
+      };
       if (!probe) {
         for (
           const [hand, role] of [[
@@ -1037,6 +1064,10 @@ async function run(options: Start) {
           const index = system.GetTrackedDeviceIndexForControllerRole(role);
           const pose = pacer.getCachedTrackedDevicePose(index);
           if (pose) {
+            nativeDevices[`${hand}-hand`] = nativeDevices[`${hand}-ray`] = {
+              index,
+              pose: pose.matrix,
+            };
             const resolved = tip.resolve(index, pose);
             setRenderHandAnchors(anchors, hand, resolved.matrix, payload.renderGripOffsets?.[hand]);
           }
@@ -1117,9 +1148,14 @@ async function run(options: Start) {
       );
       const renderStartMs = performance.now();
       const publishedBefore = state.publishedFrames;
+      const wantNativePanels = panoramaMode && state.nativePanels && !state.nativeError && !probe;
+      // Only omit UI panels whose SteamVR quads are already live & shown: UI can never vanish.
+      const eyePayload = wantNativePanels && nativeLayer
+        ? stripReadyNativePanels(payload, nativeLayer.readySurfaceIds())
+        : payload;
       let renderWork: ReturnType<typeof renderer.renderRaythreeFrame>;
       try {
-        renderWork = renderer.renderRaythreeFrame(payload, {
+        renderWork = renderer.renderRaythreeFrame(eyePayload, {
           skipCombine: !panoramaMode,
           drawDesktopSurfaces: !panoramaMode,
           cameras,
@@ -1524,8 +1560,33 @@ async function run(options: Start) {
           present: state.lastPresent,
         });
       }
+      // Run native panel updates AFTER panorama submission so panel redraws never stall panorama.
+      if (wantNativePanels) {
+        try {
+          nativeLayer ??= new NativePanelOverlayLayer(
+            pointers.overlay,
+            `${overlayKey}.native`,
+            overlayName,
+          );
+          nativeLayer.texelsPerPixel = state.nativeTexelsPerPixel;
+          nativeLayer.present(payload, renderer, {
+            devices: nativeDevices,
+            heldFollows: state.followFreeze,
+            epoch: payload.delivery?.epoch,
+          });
+        } catch (error) {
+          state.nativeError = error instanceof Error ? error.message : String(error);
+          console.error("[overlay_renderer] native panel overlays disabled:", error);
+          nativeLayer?.clear(renderer);
+        }
+        mark("native", nativeLayer?.stats.panelRedraws ?? 0);
+      } else if (nativeLayer) {
+        nativeLayer.clear(renderer);
+        nativeLayer = null;
+      }
       if (state.webxrTarget && performance.now() - lastReportAt > 500) {
         mark("status");
+        state.native = nativeLayer?.status() ?? null;
         PostMan.PostMessage({
           target: state.webxrTarget!,
           type: "OVERLAYRENDERSTATUS",
@@ -1554,6 +1615,7 @@ async function run(options: Start) {
     state.motionProbe = false;
     latest = null;
     teardownDmabufBanks();
+    nativeLayer?.clear(renderer);
     overlays?.cleanup();
     panorama?.cleanup();
     presenter?.close();
