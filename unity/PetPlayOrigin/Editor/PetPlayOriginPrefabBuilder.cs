@@ -15,6 +15,9 @@
 //   with per-axis collision tags so world origin (0,0,0) sits deep inside both receivers
 //   (~0.167 proximity) with zero cross-talk and no contact-edge deadzone.
 // - Dual PhysBone plane yaw measurement (YawMag + YawSign) decoded continuously via atan2.
+// - Optimizer guard: a local-only parameter driver names every output so d4rk Avatar Optimizer
+//   does not delete them as unused (PetPlayOriginBuildUtil.AddOutputGuardDriver).
+// - Rebuilds update assets in place, keeping their GUIDs.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -189,26 +192,25 @@ public static class PetPlayOriginPrefabBuilder
 
     static AnimatorController CreateAnimatorController()
     {
-        var onClip = new AnimationClip { name = "PetPlayOriginLocalOn" };
+        // Assets are updated in place (not deleted and recreated) so their GUIDs, and the
+        // references avatars already hold to them, survive a rebuild.
+        var onClip = PetPlayOriginBuildUtil.CreateOrClearClip(LocalOnClipPath, "PetPlayOriginLocalOn");
         onClip.SetCurve("WorldRoot/Measure", typeof(GameObject), "m_IsActive", AnimationCurve.Constant(0f, 1f / 60f, 1f));
-        AssetDatabase.DeleteAsset(LocalOnClipPath);
-        AssetDatabase.CreateAsset(onClip, LocalOnClipPath);
+        EditorUtility.SetDirty(onClip);
 
-        var offClip = new AnimationClip { name = "PetPlayOriginLocalOff" };
+        var offClip = PetPlayOriginBuildUtil.CreateOrClearClip(LocalOffClipPath, "PetPlayOriginLocalOff");
         offClip.SetCurve("WorldRoot/Measure", typeof(GameObject), "m_IsActive", AnimationCurve.Constant(0f, 1f / 60f, 0f));
-        AssetDatabase.DeleteAsset(LocalOffClipPath);
-        AssetDatabase.CreateAsset(offClip, LocalOffClipPath);
+        EditorUtility.SetDirty(offClip);
 
-        AssetDatabase.DeleteAsset(ControllerPath);
-        var controller = AnimatorController.CreateAnimatorControllerAtPath(ControllerPath);
+        var controller = PetPlayOriginBuildUtil.CreateOrClearController(ControllerPath);
         controller.AddParameter("IsLocal", AnimatorControllerParameterType.Bool);
         foreach (string p in OutputFloatParams)
         {
             controller.AddParameter(p, AnimatorControllerParameterType.Float);
         }
 
+        controller.AddLayer("PetPlay Origin Local");
         var layers = controller.layers;
-        layers[0].name = "PetPlay Origin Local";
         layers[0].defaultWeight = 1f;
         var sm = layers[0].stateMachine;
 
@@ -221,6 +223,7 @@ public static class PetPlayOriginPrefabBuilder
         localState.writeDefaultValues = false;
 
         sm.defaultState = remoteState;
+        PetPlayOriginBuildUtil.AddOutputGuardDriver(remoteState, OutputFloatParams);
 
         var toLocal = remoteState.AddTransition(localState);
         toLocal.hasExitTime = false;
@@ -455,6 +458,9 @@ public static class PetPlayOriginPrefabBuilder
         if (merge.pathMode != MergeAnimatorPathMode.Relative) throw new Exception("MergeAnimator must use Relative path mode");
         if (!merge.matchAvatarWriteDefaults) throw new Exception("MergeAnimator must match avatar Write Defaults");
         report.checks.Add("ModularAvatarMergeAnimator: FX, Relative, matchAvatarWriteDefaults=true");
+
+        PetPlayOriginBuildUtil.VerifyOutputGuardDriver((AnimatorController)merge.animator, OutputFloatParams);
+        report.checks.Add("Optimizer guard: local-only driver names every output (d4rk keeps them)");
 
         var maParams = loaded.GetComponent<ModularAvatarParameters>();
         if (maParams == null || maParams.parameters.Count != OutputFloatParams.Length)

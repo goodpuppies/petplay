@@ -4,13 +4,16 @@ import {
   decodeLegacyCustomObjectSyncPose,
   decodeOverlappingProximityAxis,
   decodePetPlayOriginPose,
+  decodePetPlayOriginV2Pose,
   decodePhysBoneYawRad,
   decodeVrcOriginPose,
   encodeOverlappingProximityAxis,
+  encodePetPlayOriginV2Pose,
   encodePhysBoneYawRad,
   isOverlappingProximityConsistent,
   isVrcOriginOscAddress,
   PETPLAY_ORIGIN_PARAMS,
+  PETPLAY_ORIGIN_V2_PARAMS,
 } from "./vrcOriginCodec.ts";
 
 Deno.test("overlapping proximity axis round-trips across full ±512 m range including origin and overlap transitions", () => {
@@ -153,4 +156,83 @@ Deno.test("isVrcOriginOscAddress matches both new and legacy prefixes", () => {
   assert(isVrcOriginOscAddress(PETPLAY_ORIGIN_PARAMS.yawMag));
   assert(isVrcOriginOscAddress(CUSTOM_OBJECT_SYNC_PARAMS.posX));
   assert(!isVrcOriginOscAddress("/avatar/parameters/VelocityX"));
+});
+
+Deno.test("v2 decode keeps float32 world precision across the range, for any scale exponent", () => {
+  const positions: [number, number, number][] = [
+    [0, 0, 0],
+    [0.001, -0.002, 0.003],
+    [12.345, 1.5, -67.89],
+    [-1000.125, 250.5, 4000.75],
+    [8000, -3000, 6000.3],
+  ];
+  for (const n of [6, 10, 13, 16]) {
+    for (const position of positions) {
+      if (Math.hypot(...position) >= 2 ** n) continue;
+      for (const yawDeg of [-179, -90, -1, 0, 37, 90, 180]) {
+        const yawRad = (yawDeg * Math.PI) / 180;
+        const pose = decodePetPlayOriginV2Pose(encodePetPlayOriginV2Pose(position, yawRad, n));
+        assert(pose, `no decode at ${position} N=${n}`);
+        assertEquals(pose.source, "petplay-origin-v2");
+        for (let i = 0; i < 3; i++) {
+          // A power-of-two scale is exact: the only error is float32 rounding of the coordinate.
+          assertEquals(
+            pose.position[i],
+            Math.fround(position[i]),
+            `axis ${i} at ${position} N=${n}`,
+          );
+        }
+        const yawError = Math.atan2(Math.sin(pose.yawRad - yawRad), Math.cos(pose.yawRad - yawRad));
+        const bound = 1e-6 + Math.hypot(...position) * 2 ** -22;
+        assert(Math.abs(yawError) < bound, `yaw ${yawDeg} at ${position} N=${n}: ${yawError}`);
+      }
+    }
+  }
+});
+
+Deno.test("v2 decode needs both receivers present and a power-of-two forward offset", () => {
+  const good = encodePetPlayOriginV2Pose([10, 2, -30], 0.5);
+  assert(decodePetPlayOriginV2Pose(good));
+  assertEquals(decodePetPlayOriginV2Pose({ ...good, [PETPLAY_ORIGIN_V2_PARAMS.pos]: 0 }), null);
+  const noFwd = { ...good };
+  delete noFwd[PETPLAY_ORIGIN_V2_PARAMS.fwd];
+  assertEquals(decodePetPlayOriginV2Pose(noFwd), null);
+  // Forward offset 1.5 * 2^-13: not a power of two.
+  const torn = {
+    ...good,
+    [PETPLAY_ORIGIN_V2_PARAMS.fwdX]: good[PETPLAY_ORIGIN_V2_PARAMS.posX],
+    [PETPLAY_ORIGIN_V2_PARAMS.fwdZ]: good[PETPLAY_ORIGIN_V2_PARAMS.posZ] + 1.5 * 2 ** -13,
+  };
+  assertEquals(decodePetPlayOriginV2Pose(torn), null);
+  // Coincident senders.
+  const zero = {
+    ...good,
+    [PETPLAY_ORIGIN_V2_PARAMS.fwdX]: good[PETPLAY_ORIGIN_V2_PARAMS.posX],
+    [PETPLAY_ORIGIN_V2_PARAMS.fwdZ]: good[PETPLAY_ORIGIN_V2_PARAMS.posZ],
+  };
+  assertEquals(decodePetPlayOriginV2Pose(zero), null);
+});
+
+Deno.test("v2 decode tolerates a frame-old Fwd while walking", () => {
+  // Pos from this frame, Fwd from one 90 Hz frame earlier at 5 m/s (~5.6 cm behind).
+  const now = encodePetPlayOriginV2Pose([100, 0, 50], 0);
+  const before = encodePetPlayOriginV2Pose([100, 0, 50 - 5 / 90], 0);
+  const mixed = { ...now };
+  for (const k of ["fwd", "fwdX", "fwdY", "fwdZ"] as const) {
+    mixed[PETPLAY_ORIGIN_V2_PARAMS[k]] = before[PETPLAY_ORIGIN_V2_PARAMS[k]];
+  }
+  const pose = decodePetPlayOriginV2Pose(mixed);
+  assert(pose);
+  assertAlmostEquals(pose.position[2], 50, 1e-3);
+});
+
+Deno.test("decodeVrcOriginPose prefers v2 over v1 and accepts the v2 OSC prefix", () => {
+  const [xPos, xNeg] = encodeOverlappingProximityAxis(1);
+  const coords = {
+    ...encodePetPlayOriginV2Pose([5, 6, 7], 0),
+    [PETPLAY_ORIGIN_PARAMS.posXPos]: xPos,
+    [PETPLAY_ORIGIN_PARAMS.posXNeg]: xNeg,
+  };
+  assertEquals(decodeVrcOriginPose(coords)?.source, "petplay-origin-v2");
+  assert(isVrcOriginOscAddress(PETPLAY_ORIGIN_V2_PARAMS.posX));
 });

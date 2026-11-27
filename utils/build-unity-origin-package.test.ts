@@ -64,6 +64,9 @@ Deno.test("buildUnityPackageBytes packs unity/PetPlayOrigin into a valid .unityp
   assert(paths.has("Assets/PetPlay/Origin/Animations/PetPlayOrigin.controller"));
   assert(paths.has("Assets/PetPlay/Origin/Animations/PetPlayOriginLocalOn.anim"));
   assert(paths.has("Assets/PetPlay/Origin/Animations/PetPlayOriginLocalOff.anim"));
+  assert(paths.has("Assets/PetPlay/Origin/V2/PetPlayOriginV2.prefab"));
+  assert(paths.has("Assets/PetPlay/Origin/V2/World.prefab"));
+  assert(paths.has("Assets/PetPlay/Origin/V2/Animations/PetPlayOriginV2.controller"));
   for (const p of paths) {
     assert(!p.includes("/Editor/"), `Editor script must not be packed: ${p}`);
   }

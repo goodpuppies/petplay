@@ -1,7 +1,14 @@
 /**
  * Decoder for VRChat avatar world-origin OSC parameters.
  *
- * Supports two protocols:
+ * Supports three protocols, preferred in this order:
+ * 0. `PetPlay/OriginV2/*` (Modular Avatar prefab, VRChat SDK 3.10+ contact SenderLocalPosition):
+ *    - Two receivers at world origin report the local position of a sender at `anchor * 2^-N`
+ *      (`Pos`) and of a second sender `2^-N` ahead of it along the anchor's yaw (`Fwd`).
+ *    - `position = Pos * 2^N`, `yaw = atan2(dx, dz)` of `Fwd - Pos`; `|Fwd - Pos| = 2^-N` gives N.
+ *    - `Pos` / `Fwd` themselves are 1 while the sender is inside its receiver (validity).
+ *    - The scale is a power of two and the receiver sits at exactly 0, so the decode carries the
+ *      float32 precision of the world coordinate; range is `2^N` m (N = 13 -> 8192 m).
  * 1. `PetPlay/Origin/*` (release-grade local-only Modular Avatar prefab):
  *    - 6 overlapping proximity contacts (`Pos{X,Y,Z}{Pos,Neg}`):
  *      - Receivers sit at `±RECEIVER_OFFSET` (2.5 m) with `RECEIVER_RADIUS` (3.0 m) on each axis.
@@ -22,7 +29,7 @@
 
 export type Vec3 = [number, number, number];
 
-export type VrcOriginSource = "petplay-origin" | "custom-object-sync";
+export type VrcOriginSource = "petplay-origin-v2" | "petplay-origin" | "custom-object-sync";
 
 export interface VrcOriginWorldPose {
   source: VrcOriginSource;
@@ -32,6 +39,7 @@ export interface VrcOriginWorldPose {
   yawRad: number;
 }
 
+export const PETPLAY_ORIGIN_V2_PREFIX = "/avatar/parameters/PetPlay/OriginV2/";
 export const PETPLAY_ORIGIN_PREFIX = "/avatar/parameters/PetPlay/Origin/";
 export const CUSTOM_OBJECT_SYNC_PREFIX = "/avatar/parameters/CustomObjectSync/";
 
@@ -45,6 +53,28 @@ export const PETPLAY_ORIGIN_PARAMS = {
   yawMag: `${PETPLAY_ORIGIN_PREFIX}YawMag_Angle`,
   yawSign: `${PETPLAY_ORIGIN_PREFIX}YawSign_Angle`,
 } as const;
+
+/** The v2 outputs; `_SenderLocalPosition*` suffixes are VRChat's contact advanced parameters. */
+export const PETPLAY_ORIGIN_V2_PARAMS = {
+  pos: `${PETPLAY_ORIGIN_V2_PREFIX}Pos`,
+  posX: `${PETPLAY_ORIGIN_V2_PREFIX}Pos_SenderLocalPositionX`,
+  posY: `${PETPLAY_ORIGIN_V2_PREFIX}Pos_SenderLocalPositionY`,
+  posZ: `${PETPLAY_ORIGIN_V2_PREFIX}Pos_SenderLocalPositionZ`,
+  fwd: `${PETPLAY_ORIGIN_V2_PREFIX}Fwd`,
+  fwdX: `${PETPLAY_ORIGIN_V2_PREFIX}Fwd_SenderLocalPositionX`,
+  fwdY: `${PETPLAY_ORIGIN_V2_PREFIX}Fwd_SenderLocalPositionY`,
+  fwdZ: `${PETPLAY_ORIGIN_V2_PREFIX}Fwd_SenderLocalPositionZ`,
+} as const;
+
+/** N the v2 prefab is built with (`PetPlayOriginV2PrefabBuilder.ScaleExponent`). The decoder
+ * measures N from the forward offset, so this is only the expected value. */
+export const PETPLAY_ORIGIN_V2_SCALE_EXPONENT = 13;
+/** Accepted distance of `-log2 |Fwd - Pos|` from an integer N. OSC delivers each parameter on its
+ * own, so a decode can pair a new `Pos` with a frame-old `Fwd`; that skews the offset by the
+ * metres moved in that frame, and 0.25 (about ±19 %) keeps walking and running decodable. */
+const V2_EXPONENT_TOLERANCE = 0.25;
+/** Validity threshold on the Constant receivers' `Pos` / `Fwd` outputs. */
+const V2_PRESENT_MIN = 0.5;
 
 export const CUSTOM_OBJECT_SYNC_PARAMS = {
   posX: `${CUSTOM_OBJECT_SYNC_PREFIX}PositionX`,
@@ -143,15 +173,73 @@ export interface DecodeVrcOriginOptions {
 
 /**
  * Decodes VRChat world-space avatar pose from a map of OSC `/avatar/parameters/...` values.
- * Prefers `PetPlay/Origin/*` when active; falls back to legacy `CustomObjectSync/*`.
+ * Prefers `PetPlay/OriginV2/*`, then `PetPlay/Origin/*`, then legacy `CustomObjectSync/*`.
  */
 export function decodeVrcOriginPose(
   coords: Readonly<Record<string, number>>,
   options: DecodeVrcOriginOptions = {},
 ): VrcOriginWorldPose | null {
+  const v2Pose = decodePetPlayOriginV2Pose(coords);
+  if (v2Pose) return v2Pose;
   const petplayPose = decodePetPlayOriginPose(coords);
   if (petplayPose) return petplayPose;
   return decodeLegacyCustomObjectSyncPose(coords, options.legacyMaxRadius ?? 8);
+}
+
+/**
+ * Decodes the v2 rig. Null until both receivers report their sender inside, or when the forward
+ * offset is not a power of two (a torn or foreign reading).
+ */
+export function decodePetPlayOriginV2Pose(
+  coords: Readonly<Record<string, number>>,
+): VrcOriginWorldPose | null {
+  const P = PETPLAY_ORIGIN_V2_PARAMS;
+  if (!((coords[P.pos] ?? 0) > V2_PRESENT_MIN) || !((coords[P.fwd] ?? 0) > V2_PRESENT_MIN)) {
+    return null;
+  }
+  // VRChat only sends a parameter when it changes, so an unseen component is still its default 0.
+  const px = coords[P.posX] ?? 0, py = coords[P.posY] ?? 0, pz = coords[P.posZ] ?? 0;
+  const dx = (coords[P.fwdX] ?? 0) - px;
+  const dy = (coords[P.fwdY] ?? 0) - py;
+  const dz = (coords[P.fwdZ] ?? 0) - pz;
+  if (![px, py, pz, dx, dy, dz].every(Number.isFinite)) return null;
+  const length = Math.hypot(dx, dy, dz);
+  if (!(length > 0)) return null;
+  const exponent = -Math.log2(length);
+  const n = Math.round(exponent);
+  if (Math.abs(exponent - n) > V2_EXPONENT_TOLERANCE) return null;
+  const scale = 2 ** n;
+  return {
+    source: "petplay-origin-v2",
+    position: [px * scale, py * scale, pz * scale],
+    yawRad: Math.atan2(dx, dz),
+  };
+}
+
+/**
+ * Encodes a world pose as the v2 rig's OSC values for testing, rounding through float32 the way
+ * the constraint and contact solve would.
+ */
+export function encodePetPlayOriginV2Pose(
+  position: Vec3,
+  yawRad: number,
+  scaleExponent = PETPLAY_ORIGIN_V2_SCALE_EXPONENT,
+): Record<string, number> {
+  const f = Math.fround;
+  const s = f(2 ** -scaleExponent);
+  const p = position.map((v) => f(f(v) * s));
+  const fwd = [f(p[0] + f(s * f(Math.sin(yawRad)))), p[1], f(p[2] + f(s * f(Math.cos(yawRad))))];
+  const P = PETPLAY_ORIGIN_V2_PARAMS;
+  return {
+    [P.pos]: 1,
+    [P.posX]: p[0],
+    [P.posY]: p[1],
+    [P.posZ]: p[2],
+    [P.fwd]: 1,
+    [P.fwdX]: fwd[0],
+    [P.fwdY]: fwd[1],
+    [P.fwdZ]: fwd[2],
+  };
 }
 
 export function decodePetPlayOriginPose(
@@ -222,7 +310,8 @@ export function decodeLegacyCustomObjectSyncPose(
 }
 
 export function isVrcOriginOscAddress(address: string): boolean {
-  return address.startsWith(PETPLAY_ORIGIN_PREFIX) ||
+  return address.startsWith(PETPLAY_ORIGIN_V2_PREFIX) ||
+    address.startsWith(PETPLAY_ORIGIN_PREFIX) ||
     address.startsWith(CUSTOM_OBJECT_SYNC_PREFIX);
 }
 
