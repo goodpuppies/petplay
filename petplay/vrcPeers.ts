@@ -11,9 +11,11 @@
  * No VRChat API credentials are required. Friend-list filtering (`vrcApi`) can layer onto this
  * actor later without changing the topic or handshake protocol.
  */
-import { type ActorId, actorState, PostMan } from "../submodules/stageforge/mod.ts";
+import { type ActorId, actorState, PostMan, System } from "../submodules/stageforge/mod.ts";
+import type { IrohEndpoint } from "../classes/irohCarrier.ts";
 import { type VrcLogState, VrcLogWatcher, type VrcPlayer } from "../classes/vrc/logParser.ts";
 import {
+  instancePreimageProof,
   keyFingerprint,
   loadOrCreateIdentity,
   type LocalIdentity,
@@ -22,7 +24,9 @@ import {
   type TrustEvaluation,
   type TrustedPeerRecord,
   verifyChallenge,
+  verifyInstancePreimageProof,
   vrcInstanceTopic,
+  vrcInstanceTopicKey,
   VrcTrustStore,
 } from "../classes/vrc/identity.ts";
 
@@ -52,6 +56,7 @@ export type VrcPeersConfig = {
 type ChallengeRequest = {
   from: ActorId;
   nonce: string;
+  instanceProof: string;
 };
 
 type ChallengeResponse = {
@@ -83,6 +88,7 @@ let trustPath: string | undefined;
 let pollIntervalMs = DEFAULT_POLL_MS;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let currentTopic: string | null = null;
+let currentTopicKey: string | null = null;
 let topicGeneration = 0;
 let webxrActor: ActorId | null = null;
 let displayShareActor: ActorId | null = null;
@@ -96,6 +102,13 @@ type ShareOffer = {
   token: string;
 };
 
+type DirectOffer = {
+  from: ActorId;
+  endpoint: IrohEndpoint;
+  /** True once the sender has already allowlisted our direct endpoint id. */
+  allowed?: boolean;
+};
+
 /** Verified peers discovered on the current instance topic, keyed by their remote actor id. */
 const peers = new Map<ActorId, VrcPeerInfo>();
 /** Contacts currently being handshaken, to avoid duplicate parallel challenges. */
@@ -106,6 +119,14 @@ const grantedTo = new Set<ActorId>();
 const receivedOffers = new Map<ActorId, ShareOffer>();
 /** Remote `displayShare` actors currently registered with our local `householdDesktops`. */
 const activeSources = new Map<ActorId, ActorId>();
+/** Whether we have sent our direct endpoint offer to a trusted peer (`true` = with `allowed: true`). */
+const directOfferSent = new Map<ActorId, boolean>();
+/** Direct endpoint offers received from remote peers, keyed by their `vrcPeers` actor id. */
+const receivedDirectOffers = new Map<ActorId, DirectOffer>();
+/** Remote direct iroh endpoint ids allowlisted for each peer, so we can revoke on untrust. */
+const directPeerIds = new Map<ActorId, string>();
+/** Peers whose direct P2P upgrade has been dialed from this side. */
+const upgradedDirect = new Set<ActorId>();
 
 function pushPeersToWebXr(): void {
   if (!webxrActor) return;
@@ -154,6 +175,94 @@ async function grantPeerSharing(peer: VrcPeerInfo): Promise<void> {
   }
 }
 
+async function upgradePeerToDirect(peer: VrcPeerInfo): Promise<void> {
+  if (peer.actorId.startsWith("vrcPeers@sim-")) return;
+  let myDirect: IrohEndpoint | null = null;
+  try {
+    myDirect = await PostMan.PostMessage({
+      target: System,
+      type: "DIRECT_ENDPOINT",
+      payload: null,
+    }, true) as IrohEndpoint | null;
+  } catch (error) {
+    console.warn(`[vrcPeers] DIRECT_ENDPOINT failed:`, error);
+    return;
+  }
+  if (!myDirect || typeof myDirect.id !== "string" || !myDirect.id) return;
+
+  // Re-check trust after async hop.
+  const current = peers.get(peer.actorId);
+  if (!current || current.trust !== "trusted" || !current.inInstance) return;
+
+  const remoteOffer = receivedDirectOffers.get(peer.actorId);
+  if (remoteOffer) {
+    directPeerIds.set(peer.actorId, remoteOffer.endpoint.id);
+    await PostMan.PostMessage({
+      target: System,
+      type: "ALLOW_DIRECT",
+      payload: { peerId: remoteOffer.endpoint.id },
+    }, true);
+
+    const alreadySentAllowed = directOfferSent.get(peer.actorId) === true;
+    const shouldAck = !alreadySentAllowed &&
+      (!remoteOffer.allowed || state.id < peer.actorId);
+    if (shouldAck) {
+      directOfferSent.set(peer.actorId, true);
+      PostMan.PostMessage({
+        target: peer.actorId,
+        type: "DIRECTOFFER",
+        payload: {
+          from: state.id,
+          endpoint: myDirect,
+          allowed: true,
+        } satisfies DirectOffer,
+      });
+    }
+
+    if (remoteOffer.allowed === true && !upgradedDirect.has(peer.actorId)) {
+      upgradedDirect.add(peer.actorId);
+      const actors: ActorId[] = [peer.actorId];
+      const shareOffer = receivedOffers.get(peer.actorId);
+      if (shareOffer) actors.push(shareOffer.shareActor);
+      try {
+        await PostMan.PostMessage({
+          target: System,
+          type: "CONNECT_DIRECT",
+          payload: { endpoint: remoteOffer.endpoint, actors },
+        }, true);
+        // Send one message over the newly upgraded direct connection so the remote hub
+        // upgrades our `state.id` route onto that direct connection too.
+        PostMan.PostMessage({
+          target: peer.actorId,
+          type: "DIRECTOFFER",
+          payload: {
+            from: state.id,
+            endpoint: myDirect,
+            allowed: true,
+          } satisfies DirectOffer,
+        });
+      } catch (error) {
+        upgradedDirect.delete(peer.actorId);
+        console.warn(`[vrcPeers] CONNECT_DIRECT failed for ${peer.vrcUserId}:`, error);
+      }
+    }
+    return;
+  }
+
+  if (!directOfferSent.has(peer.actorId)) {
+    directOfferSent.set(peer.actorId, false);
+    PostMan.PostMessage({
+      target: peer.actorId,
+      type: "DIRECTOFFER",
+      payload: {
+        from: state.id,
+        endpoint: myDirect,
+        allowed: false,
+      } satisfies DirectOffer,
+    });
+  }
+}
+
 function revokePeerSharing(peerActorId: ActorId, vrcUserId?: string): void {
   if (grantedTo.delete(peerActorId) && displayShareActor && vrcUserId) {
     PostMan.PostMessage({
@@ -173,10 +282,22 @@ function revokePeerSharing(peerActorId: ActorId, vrcUserId?: string): void {
       });
     }
   }
+  directOfferSent.delete(peerActorId);
+  upgradedDirect.delete(peerActorId);
+  const directPeerId = directPeerIds.get(peerActorId);
+  if (directPeerId) {
+    directPeerIds.delete(peerActorId);
+    PostMan.PostMessage({
+      target: System,
+      type: "REVOKE_DIRECT",
+      payload: { peerId: directPeerId },
+    });
+  }
 }
 
 function syncSharingForPeer(peer: VrcPeerInfo): void {
   if (peer.trust === "trusted" && peer.inInstance) {
+    void upgradePeerToDirect(peer);
     void grantPeerSharing(peer);
     const offer = receivedOffers.get(peer.actorId);
     if (offer && householdDesktopsActor && activeSources.get(peer.actorId) !== offer.shareActor) {
@@ -200,6 +321,13 @@ function clearAllPeerSharing(): void {
   for (const [peerActorId, peer] of peers.entries()) {
     revokePeerSharing(peerActorId, peer.vrcUserId);
   }
+  for (const directPeerId of directPeerIds.values()) {
+    PostMan.PostMessage({
+      target: System,
+      type: "REVOKE_DIRECT",
+      payload: { peerId: directPeerId },
+    });
+  }
   for (const sourceActor of activeSources.values()) {
     if (householdDesktopsActor) {
       PostMan.PostMessage({
@@ -212,6 +340,10 @@ function clearAllPeerSharing(): void {
   grantedTo.clear();
   receivedOffers.clear();
   activeSources.clear();
+  directOfferSent.clear();
+  receivedDirectOffers.clear();
+  directPeerIds.clear();
+  upgradedDirect.clear();
 }
 
 async function ensureInitialized(): Promise<{ identity: LocalIdentity; trustStore: VrcTrustStore }> {
@@ -261,6 +393,7 @@ function reevaluatePeers(): void {
 async function switchInstanceTopic(instanceId: string | null): Promise<void> {
   const gen = ++topicGeneration;
   const nextTopic = instanceId ? await vrcInstanceTopic(instanceId) : null;
+  const nextKey = instanceId ? await vrcInstanceTopicKey(instanceId) : null;
   if (gen !== topicGeneration) return;
   if (nextTopic === currentTopic) return;
 
@@ -271,6 +404,7 @@ async function switchInstanceTopic(instanceId: string | null): Promise<void> {
   peers.clear();
   handshaking.clear();
   currentTopic = nextTopic;
+  currentTopicKey = nextKey;
   state.instanceTopic = nextTopic;
   syncCounts();
 
@@ -278,11 +412,11 @@ async function switchInstanceTopic(instanceId: string | null): Promise<void> {
     PostMan.PostMessage({
       target: displayShareActor,
       type: "SETINSTANCETOPIC",
-      payload: { topic: nextTopic },
+      payload: { topic: nextTopic, key: nextKey },
     });
   }
   if (nextTopic) {
-    PostMan.setTopic(nextTopic);
+    PostMan.setTopic(nextTopic, nextKey ? { key: nextKey } : undefined);
   }
 }
 
@@ -315,17 +449,24 @@ function restartPollTimer(): void {
 async function handshakePeer(remoteActorId: ActorId): Promise<void> {
   if (!isVrcPeerActor(remoteActorId) || handshaking.has(remoteActorId)) return;
   const topic = currentTopic;
-  if (!topic) return;
+  const instanceId = state.instanceId;
+  if (!topic || !instanceId) return;
 
   handshaking.add(remoteActorId);
   try {
     const { trustStore: store } = await ensureInitialized();
     const nonce = randomNonce();
+    const instanceProof = await instancePreimageProof({
+      instanceId,
+      from: state.id,
+      to: remoteActorId,
+      nonce,
+    });
     const reply = await Promise.race([
       PostMan.PostMessage({
         target: remoteActorId,
         type: "CHALLENGE",
-        payload: { from: state.id, nonce } satisfies ChallengeRequest,
+        payload: { from: state.id, nonce, instanceProof } satisfies ChallengeRequest,
       }, true) as Promise<ChallengeResponse | null>,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("challenge timeout")), CHALLENGE_TIMEOUT_MS)
@@ -333,7 +474,7 @@ async function handshakePeer(remoteActorId: ActorId): Promise<void> {
     ]);
 
     // If we switched instances while awaiting, ignore the stale reply.
-    if (topic !== currentTopic) return;
+    if (topic !== currentTopic || instanceId !== state.instanceId) return;
     if (
       !reply || reply.actorId !== remoteActorId || typeof reply.vrcUserId !== "string" ||
       typeof reply.publicKey !== "string" || typeof reply.signature !== "string"
@@ -346,7 +487,7 @@ async function handshakePeer(remoteActorId: ActorId): Promise<void> {
       signature: reply.signature,
       actorId: reply.actorId,
       vrcUserId: reply.vrcUserId,
-      instanceTopic: topic,
+      instanceId,
       nonce,
     });
     if (!ok) {
@@ -421,6 +562,7 @@ export const api = {
     if (currentTopic) {
       PostMan.delTopic(currentTopic);
       currentTopic = null;
+      currentTopicKey = null;
       state.instanceTopic = null;
     }
     peers.clear();
@@ -444,7 +586,7 @@ export const api = {
         PostMan.PostMessage({
           target: displayShareActor,
           type: "SETINSTANCETOPIC",
-          payload: { topic: currentTopic },
+          payload: { topic: currentTopic, key: currentTopicKey },
         });
       }
     }
@@ -461,9 +603,42 @@ export const api = {
     ) {
       return false;
     }
+    if (PostMan.sender && PostMan.sender !== offer.from) {
+      console.warn(`[vrcPeers] rejected spoofed SHAREOFFER claiming ${offer.from} from ${PostMan.sender}`);
+      return false;
+    }
     receivedOffers.set(offer.from, offer);
     const peer = peers.get(offer.from);
-    if (peer) syncSharingForPeer(peer);
+    if (peer) {
+      syncSharingForPeer(peer);
+      // If we already upgraded this peer to direct P2P, attach their shareActor to that connection too.
+      const directOffer = receivedDirectOffers.get(offer.from);
+      if (peer.trust === "trusted" && upgradedDirect.has(offer.from) && directOffer) {
+        void PostMan.PostMessage({
+          target: System,
+          type: "CONNECT_DIRECT",
+          payload: { endpoint: directOffer.endpoint, actors: [offer.shareActor] },
+        }, true).catch(() => {});
+      }
+    }
+    return true;
+  },
+  DIRECTOFFER: (offer: DirectOffer | null) => {
+    if (
+      !offer || typeof offer.from !== "string" || !offer.endpoint ||
+      typeof offer.endpoint.id !== "string" || !offer.endpoint.id
+    ) {
+      return false;
+    }
+    if (PostMan.sender && PostMan.sender !== offer.from) {
+      console.warn(`[vrcPeers] rejected spoofed DIRECTOFFER claiming ${offer.from} from ${PostMan.sender}`);
+      return false;
+    }
+    receivedDirectOffers.set(offer.from, offer);
+    const peer = peers.get(offer.from);
+    if (peer && peer.trust === "trusted" && peer.inInstance) {
+      void upgradePeerToDirect(peer);
+    }
     return true;
   },
   SIMULATEPEER: async (
@@ -576,13 +751,36 @@ export const api = {
   },
   CHALLENGE: async (request: ChallengeRequest): Promise<ChallengeResponse | null> => {
     const { identity: id } = await ensureInitialized();
-    if (!currentTopic || !state.self || typeof request?.nonce !== "string" || !request.nonce) {
+    const instanceId = state.instanceId;
+    if (
+      !currentTopic || !instanceId || !state.self ||
+      typeof request?.from !== "string" || !request.from ||
+      typeof request?.nonce !== "string" || !request.nonce ||
+      typeof request?.instanceProof !== "string" || !request.instanceProof
+    ) {
+      return null;
+    }
+    if (PostMan.sender && PostMan.sender !== request.from) {
+      console.warn(
+        `[vrcPeers] rejected spoofed CHALLENGE claiming ${request.from} from ${PostMan.sender}`,
+      );
+      return null;
+    }
+    const knowsInstance = await verifyInstancePreimageProof({
+      proof: request.instanceProof,
+      instanceId,
+      from: request.from,
+      to: state.id,
+      nonce: request.nonce,
+    });
+    if (!knowsInstance) {
+      console.warn(`[vrcPeers] rejected CHALLENGE with invalid instance proof from ${request.from}`);
       return null;
     }
     const signature = await signChallenge(id, {
       actorId: state.id,
       vrcUserId: state.self.userId,
-      instanceTopic: currentTopic,
+      instanceId,
       nonce: request.nonce,
     });
     // Also initiate our own challenge back if we haven't verified them yet.
@@ -607,6 +805,7 @@ export const api = {
     state.addressBook.delete(contactId);
     const departed = peers.get(contactId);
     receivedOffers.delete(contactId);
+    receivedDirectOffers.delete(contactId);
     if (departed) {
       revokePeerSharing(contactId, departed.vrcUserId);
       peers.delete(contactId);

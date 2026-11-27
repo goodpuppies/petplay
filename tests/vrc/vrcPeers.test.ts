@@ -89,11 +89,15 @@ Deno.test({
     );
 
     const clients = new Set<WebSocket>();
+    const observedWireRecords: Array<Record<string, unknown>> = [];
     const relay = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (req) => {
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onopen = () => clients.add(socket);
       socket.onclose = () => clients.delete(socket);
       socket.onmessage = (event) => {
+        if (typeof event.data === "string") {
+          observedWireRecords.push(JSON.parse(event.data) as Record<string, unknown>);
+        }
         for (const client of clients) {
           if (client.readyState === WebSocket.OPEN) client.send(event.data);
         }
@@ -123,6 +127,21 @@ Deno.test({
     let malloryChild: Deno.ChildProcess | null = null;
 
     try {
+      // 0. A CHALLENGE lacking a valid raw-instanceId preimage proof (e.g. someone who only knows
+      //    the public topic hash) is rejected without revealing Alice's userId or publicKey.
+      const rejectedBadProof = await call<unknown>(alice, "CHALLENGE", {
+        from: "SYSTEM",
+        nonce: "probe-nonce",
+        instanceProof: "not-a-valid-preimage-proof",
+      });
+      assertEquals(rejectedBadProof, null);
+      const rejectedSpoofedFrom = await call<unknown>(alice, "CHALLENGE", {
+        from: "vrcPeers@probe",
+        nonce: "probe-nonce",
+        instanceProof: "not-a-valid-preimage-proof",
+      });
+      assertEquals(rejectedSpoofedFrom, null);
+
       // 1. Alice discovers Bob as `pending`.
       const [bob1] = await eventually(
         () => call<VrcPeerInfo[]>(alice, "LISTPEERS"),
@@ -132,6 +151,37 @@ Deno.test({
       assertEquals(bob1.displayName, "Bob");
       assertEquals(bob1.inInstance, true);
       assertEquals(bob1.trust, "pending");
+
+      // Every topic-server frame must be sealed: no plaintext actorId, routes, or raw instanceId.
+      assertEquals(observedWireRecords.length > 0, true);
+      for (const wire of observedWireRecords) {
+        assertEquals(typeof wire.sealed, "string");
+        assertEquals("actorId" in wire, false);
+        assertEquals("routes" in wire, false);
+        const raw = JSON.stringify(wire);
+        assertEquals(raw.includes("vrcPeers@"), false);
+        assertEquals(raw.includes("wrld_"), false);
+      }
+
+      // Forged plaintext or corrupted sealed records from a malicious topic server are ignored.
+      const topic = String(observedWireRecords[0].topic);
+      for (const client of clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        client.send(JSON.stringify({
+          type: "join",
+          topic,
+          actorId: "vrcPeers@forged-plaintext",
+          routes: [{ transport: "iroh", endpoint: { id: "forged", addrs: ["127.0.0.1:1"] } }],
+        }));
+        client.send(JSON.stringify({
+          type: "join",
+          topic,
+          sealed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        }));
+      }
+      await sleep(150);
+      const afterForge = await call<VrcPeerInfo[]>(alice, "LISTPEERS");
+      assertEquals(afterForge.some((p) => p.actorId.includes("forged")), false);
 
       // 2. Alice trusts Bob (TOFU).
       await call(alice, "TRUST", { userId: BOB_ID });

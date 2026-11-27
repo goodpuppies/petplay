@@ -7,7 +7,12 @@
  *   (including any `~hidden(...)` / `~private(...)` / `~nonce(...)` tags). The public topic server
  *   only ever sees the hash, never the world id or instance nonce.
  * - Challenge-response (`signChallenge` / `verifyChallenge`): binds `(actorId, vrcUserId,
- *   instanceTopic, nonce)` to the Ed25519 key so a peer on the topic proves live key possession.
+ *   instanceId, nonce)` to the Ed25519 key so a peer proves both live key possession and knowledge
+ *   of the raw VRChat `instanceId` (not just its public topic hash), without ever sending
+ *   `instanceId` over the wire.
+ * - Preimage proof (`instancePreimageProof` / `verifyInstancePreimageProof`): sent in `CHALLENGE`
+ *   requests so peers refuse to reveal their `vrcUserId`/`displayName`/`publicKey` to an attacker
+ *   who only knows the topic hash.
  * - TOFU trust store (`vrc-trust.json` in `configDir()`): pins `vrcUserId -> publicKey`. Once a
  *   user confirms a peer in VR, future sessions in any instance auto-trust that peer; a different
  *   key claiming the same `vrcUserId` is flagged as `key_mismatch`.
@@ -74,28 +79,78 @@ export async function vrcInstanceTopic(instanceId: string): Promise<string> {
   return `vrc-inst-${toHex(digest, 16)}`;
 }
 
+/**
+ * Symmetric 256-bit AES-GCM key (base64url) derived from the raw VRChat `instanceId`
+ * (domain-separated from `vrcInstanceTopic`) used to seal `actorId` and Iroh routes on the
+ * public topic server.
+ */
+export async function vrcInstanceTopicKey(instanceId: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(`petplay:vrc:topic-key:v1:${instanceId}`),
+  );
+  return toBase64Url(new Uint8Array(digest));
+}
+
 /** Fresh random challenge nonce (16 bytes, base64url). */
 export function randomNonce(): string {
   return toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
 }
 
+/**
+ * One-way proof that a peer knows the raw VRChat `instanceId` (not just its public topic hash),
+ * bound to `(from, to, nonce)` so it cannot be replayed in reverse or to another peer.
+ */
+export async function instancePreimageProof(params: {
+  instanceId: string;
+  from: string;
+  to: string;
+  nonce: string;
+}): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(
+      `petplay:vrc:preimage:v1|${params.instanceId}|${params.from}|${params.to}|${params.nonce}`,
+    ),
+  );
+  return toBase64Url(new Uint8Array(digest));
+}
+
+/** Verifies a peer's one-way `instanceId` preimage proof in constant time. */
+export async function verifyInstancePreimageProof(params: {
+  proof: string;
+  instanceId: string;
+  from: string;
+  to: string;
+  nonce: string;
+}): Promise<boolean> {
+  if (typeof params.proof !== "string" || !params.proof) return false;
+  const expected = await instancePreimageProof(params);
+  if (params.proof.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= params.proof.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 function challengePayload(params: {
   actorId: string;
   vrcUserId: string;
-  instanceTopic: string;
+  instanceId: string;
   nonce: string;
 }): Uint8Array<ArrayBuffer> {
-  const text = `petplay:vrc:challenge:v1|${params.actorId}|${params.vrcUserId}|${params.instanceTopic}|${params.nonce}`;
+  const text = `petplay:vrc:challenge:v2|${params.actorId}|${params.vrcUserId}|${params.instanceId}|${params.nonce}`;
   const encoded = encoder.encode(text);
   const buf = new Uint8Array(new ArrayBuffer(encoded.byteLength));
   buf.set(encoded);
   return buf;
 }
 
-/** Signs a peer challenge proving this actor holds the private key for `identity`. */
+/** Signs a peer challenge proving this actor holds `identity` and knows the raw `instanceId`. */
 export async function signChallenge(
   identity: LocalIdentity,
-  params: { actorId: string; vrcUserId: string; instanceTopic: string; nonce: string },
+  params: { actorId: string; vrcUserId: string; instanceId: string; nonce: string },
 ): Promise<string> {
   const sig = await crypto.subtle.sign("Ed25519", identity.privateKey, challengePayload(params));
   return toBase64Url(new Uint8Array(sig));
@@ -107,7 +162,7 @@ export async function verifyChallenge(params: {
   signature: string;
   actorId: string;
   vrcUserId: string;
-  instanceTopic: string;
+  instanceId: string;
   nonce: string;
 }): Promise<boolean> {
   try {

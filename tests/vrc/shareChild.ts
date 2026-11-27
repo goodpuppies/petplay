@@ -8,9 +8,13 @@
  */
 import { PostalService, resolveActorId } from "../../submodules/stageforge/mod.ts";
 import { irohCarrier } from "../../classes/irohCarrier.ts";
+import { petplayRemotePolicy } from "../../classes/remotePolicy.ts";
 
 const [relayUrl, logDir, identityPath, trustPath] = Deno.args;
 const postal = new PostalService();
+if (Deno.env.get("PETPLAY_ENABLE_REMOTE_POLICY") === "1") {
+  postal.setRemotePolicy(petplayRemotePolicy());
+}
 const iroh = irohCarrier({ local: true });
 postal.registerRemoteCarrier(iroh);
 postal.initSignalingClient(relayUrl);

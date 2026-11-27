@@ -237,9 +237,11 @@ export async function startPetplayServer(
     if (networkingEnabled) return true;
     console.log(`Stageforge networking enabled (${STAGEFORGE_SIGNALING_URL})`);
     const { irohCarrier } = await import("../classes/irohCarrier.ts");
+    const { petplayRemotePolicy } = await import("../classes/remotePolicy.ts");
     const carrier = irohCarrier();
     activeIroh = carrier;
     networkingEnabled = true;
+    postalservice.setRemotePolicy(petplayRemotePolicy());
     postalservice.registerRemoteCarrier(carrier);
     postalservice.initSignalingClient(STAGEFORGE_SIGNALING_URL);
     return true;

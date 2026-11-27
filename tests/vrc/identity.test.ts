@@ -1,11 +1,14 @@
 import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import {
+  instancePreimageProof,
   loadOrCreateIdentity,
   randomNonce,
   signChallenge,
   verifyChallenge,
+  verifyInstancePreimageProof,
   vrcInstanceTopic,
+  vrcInstanceTopicKey,
   VrcTrustStore,
 } from "../../classes/vrc/identity.ts";
 
@@ -18,15 +21,68 @@ Deno.test("Ed25519 identity persists across loads and signs/verifies challenges"
     assertEquals(id1.publicKey, id2.publicKey);
     assertEquals(id1.fingerprint, id2.fingerprint);
 
-    const topic = await vrcInstanceTopic("wrld_abc:123~hidden(usr_1)~region(eu)");
+    const instanceId = "wrld_abc:123~hidden(usr_1)~region(eu)~nonce(secret)";
+    const topic = await vrcInstanceTopic(instanceId);
+    const topicKey = await vrcInstanceTopicKey(instanceId);
     assertEquals(topic.startsWith("vrc-inst-"), true);
     assertEquals(topic.includes("wrld_abc"), false);
+    assertEquals(topicKey.length, 43); // 32 bytes base64url without padding
+    assertNotEquals(topicKey, topic);
+    assertEquals(topicKey, await vrcInstanceTopicKey(instanceId));
 
     const nonce = randomNonce();
+    const proof = await instancePreimageProof({
+      instanceId,
+      from: "vrcPeers@bob",
+      to: "vrcPeers@alice",
+      nonce,
+    });
+    assertEquals(
+      await verifyInstancePreimageProof({
+        proof,
+        instanceId,
+        from: "vrcPeers@bob",
+        to: "vrcPeers@alice",
+        nonce,
+      }),
+      true,
+    );
+    // Knowing only the topic hash, reversing direction, or changing nonce must fail.
+    assertEquals(
+      await verifyInstancePreimageProof({
+        proof,
+        instanceId: topic,
+        from: "vrcPeers@bob",
+        to: "vrcPeers@alice",
+        nonce,
+      }),
+      false,
+    );
+    assertEquals(
+      await verifyInstancePreimageProof({
+        proof,
+        instanceId,
+        from: "vrcPeers@alice",
+        to: "vrcPeers@bob",
+        nonce,
+      }),
+      false,
+    );
+    assertEquals(
+      await verifyInstancePreimageProof({
+        proof,
+        instanceId,
+        from: "vrcPeers@bob",
+        to: "vrcPeers@alice",
+        nonce: randomNonce(),
+      }),
+      false,
+    );
+
     const sig = await signChallenge(id1, {
       actorId: "vrcPeers@alice",
       vrcUserId: "usr_alice",
-      instanceTopic: topic,
+      instanceId,
       nonce,
     });
 
@@ -36,20 +92,20 @@ Deno.test("Ed25519 identity persists across loads and signs/verifies challenges"
         signature: sig,
         actorId: "vrcPeers@alice",
         vrcUserId: "usr_alice",
-        instanceTopic: topic,
+        instanceId,
         nonce,
       }),
       true,
     );
 
-    // Wrong nonce, wrong topic, or wrong userId must fail verification.
+    // Wrong nonce, wrong instanceId (e.g. only the topic hash), or wrong userId must fail.
     assertEquals(
       await verifyChallenge({
         publicKey: id1.publicKey,
         signature: sig,
         actorId: "vrcPeers@alice",
         vrcUserId: "usr_alice",
-        instanceTopic: topic,
+        instanceId,
         nonce: randomNonce(),
       }),
       false,
@@ -59,8 +115,19 @@ Deno.test("Ed25519 identity persists across loads and signs/verifies challenges"
         publicKey: id1.publicKey,
         signature: sig,
         actorId: "vrcPeers@alice",
+        vrcUserId: "usr_alice",
+        instanceId: topic,
+        nonce,
+      }),
+      false,
+    );
+    assertEquals(
+      await verifyChallenge({
+        publicKey: id1.publicKey,
+        signature: sig,
+        actorId: "vrcPeers@alice",
         vrcUserId: "usr_mallory",
-        instanceTopic: topic,
+        instanceId,
         nonce,
       }),
       false,

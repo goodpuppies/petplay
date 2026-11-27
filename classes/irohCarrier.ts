@@ -2,16 +2,18 @@
  * Iroh as this process's stageforge remote carrier: how actors in other processes reach the
  * actors here once a topic record names them (`PostalService.registerRemoteCarrier`).
  *
- * One `petplay-media link` child per process owns the iroh node (see
- * submodules/petplay_mediatransport/src/link.rs); this module drives it over stdio and turns
- * each iroh connection into a `Carrier`. The published endpoint is `{id, relay}`: it identifies
- * and authenticates this process and reveals no IP address. Actors negotiate better transports
- * between themselves afterwards (`Transport.open`).
+ * One `petplay-media link` child per process owns two iroh endpoints (see
+ * submodules/petplay_mediatransport/src/link.rs):
+ * - A relay-only **discovery** endpoint (published as `{id, relay}` on the topic server; binds no
+ *   UDP socket and leaks zero IP addresses, mitigating iroh#3535).
+ * - A lazy **direct** P2P endpoint (never published; full QUIC holepunching, guarded by an
+ *   `EndpointHooks::after_handshake` allowlist). Peers only learn it over the encrypted discovery
+ *   link after the user trusts them.
  *
  * `local: true` binds loopback with no relay, for tests on one machine; its endpoint carries
  * loopback addresses instead of a relay.
  */
-import type { Carrier, RemoteCarrierKind } from "../submodules/stageforge/mod.ts";
+import type { Carrier, CarrierTier, RemoteCarrierKind } from "../submodules/stageforge/mod.ts";
 import {
   decodeWebSocketWorkerMessage,
   encodeWebSocketWorkerMessage,
@@ -30,9 +32,10 @@ export type IrohCarrierOptions = {
 
 type Event =
   | { ev: "ready"; id: string; relay: string | null; addrs: string[] }
-  | { ev: "connected"; req: number; conn: number }
+  | { ev: "direct_ready"; req: number; id: string; relay: string | null; addrs: string[] }
+  | { ev: "connected"; req: number; conn: number; peer?: string; tier?: CarrierTier }
   | { ev: "failed"; req: number; error: string }
-  | { ev: "incoming"; conn: number; peer: string }
+  | { ev: "incoming"; conn: number; peer: string; tier?: CarrierTier }
   | { ev: "data"; conn: number; data: string }
   | { ev: "closed"; conn: number; reason: string };
 
@@ -41,7 +44,12 @@ class IrohCarrier implements Carrier {
   #onmessage: ((data: unknown) => void) | null = null;
   #queue: unknown[] = [];
   #closed = false;
-  constructor(private readonly daemon: LinkDaemon, readonly conn: number, readonly peer: string) {}
+  constructor(
+    private readonly daemon: LinkDaemon,
+    readonly conn: number,
+    readonly peer: string,
+    readonly tier: CarrierTier,
+  ) {}
   get onmessage() {
     return this.#onmessage;
   }
@@ -82,6 +90,10 @@ class LinkDaemon {
   #writer: WritableStreamDefaultWriter<Uint8Array>;
   #encoder = new TextEncoder();
   #requests = new Map<number, { resolve: (c: IrohCarrier) => void; reject: (e: Error) => void }>();
+  #directRequests = new Map<
+    number,
+    { resolve: (ep: IrohEndpoint) => void; reject: (e: Error) => void }
+  >();
   #carriers = new Map<number, IrohCarrier>();
   #nextReq = 1;
   #accept: ((carrier: Carrier) => void) | null = null;
@@ -106,6 +118,8 @@ class LinkDaemon {
       rejectReady(new Error(reason));
       for (const pending of this.#requests.values()) pending.reject(new Error(reason));
       this.#requests.clear();
+      for (const pending of this.#directRequests.values()) pending.reject(new Error(reason));
+      this.#directRequests.clear();
       for (const carrier of this.#carriers.values()) carrier.ended(reason);
       this.#carriers.clear();
     });
@@ -123,12 +137,28 @@ class LinkDaemon {
     this.#carriers.delete(conn);
   }
 
-  connect(endpoint: IrohEndpoint): Promise<IrohCarrier> {
+  connect(endpoint: IrohEndpoint, tier: CarrierTier = "discovery"): Promise<IrohCarrier> {
     const req = this.#nextReq++;
     return new Promise((resolve, reject) => {
       this.#requests.set(req, { resolve, reject });
-      this.command({ op: "connect", req, endpoint });
+      this.command({ op: "connect", req, endpoint, tier });
     });
+  }
+
+  directEndpoint(): Promise<IrohEndpoint> {
+    const req = this.#nextReq++;
+    return new Promise((resolve, reject) => {
+      this.#directRequests.set(req, { resolve, reject });
+      this.command({ op: "direct_endpoint", req });
+    });
+  }
+
+  allowDirect(peer: string): void {
+    this.command({ op: "allow_direct", peer });
+  }
+
+  revokeDirect(peer: string): void {
+    this.command({ op: "revoke_direct", peer });
   }
 
   async stop(): Promise<void> {
@@ -155,22 +185,46 @@ class LinkDaemon {
       case "ready":
         resolveReady({ id: event.id, relay: event.relay, addrs: event.addrs });
         return;
+      case "direct_ready": {
+        const pending = this.#directRequests.get(event.req);
+        this.#directRequests.delete(event.req);
+        pending?.resolve({ id: event.id, relay: event.relay, addrs: event.addrs });
+        return;
+      }
       case "connected": {
         const pending = this.#requests.get(event.req);
         this.#requests.delete(event.req);
-        const carrier = new IrohCarrier(this, event.conn, "");
+        const carrier = new IrohCarrier(
+          this,
+          event.conn,
+          event.peer ?? "",
+          event.tier ?? "discovery",
+        );
         this.#carriers.set(event.conn, carrier);
         pending?.resolve(carrier);
         return;
       }
       case "failed": {
         const pending = this.#requests.get(event.req);
-        this.#requests.delete(event.req);
-        pending?.reject(new Error(event.error));
+        if (pending) {
+          this.#requests.delete(event.req);
+          pending.reject(new Error(event.error));
+          return;
+        }
+        const directPending = this.#directRequests.get(event.req);
+        if (directPending) {
+          this.#directRequests.delete(event.req);
+          directPending.reject(new Error(event.error));
+        }
         return;
       }
       case "incoming": {
-        const carrier = new IrohCarrier(this, event.conn, event.peer);
+        const carrier = new IrohCarrier(
+          this,
+          event.conn,
+          event.peer,
+          event.tier ?? "discovery",
+        );
         this.#carriers.set(event.conn, carrier);
         if (this.#accept) this.#accept(carrier);
         else carrier.close("not accepting connections");
@@ -194,7 +248,14 @@ export function defaultLinkBinary(): string {
 /** The iroh remote carrier, plus `stop()` to end its child process. */
 export function irohCarrier(
   options: IrohCarrierOptions = {},
-): RemoteCarrierKind & { stop(): Promise<void>; endpoint(): Promise<IrohEndpoint> } {
+): Omit<RemoteCarrierKind, "directEndpoint" | "allowDirect" | "revokeDirect" | "connectDirect"> & {
+  stop(): Promise<void>;
+  endpoint(): Promise<IrohEndpoint>;
+  directEndpoint(): Promise<IrohEndpoint>;
+  allowDirect(peerId: string): void;
+  revokeDirect(peerId: string): void;
+  connectDirect(endpoint: IrohEndpoint): Promise<Carrier>;
+} {
   let daemon: LinkDaemon | null = null;
   const start = () =>
     daemon ??= new LinkDaemon(
@@ -202,6 +263,10 @@ export function irohCarrier(
       !!options.local,
       options.relay,
     );
+  const publishableEndpoint = (endpoint: IrohEndpoint): IrohEndpoint =>
+    options.local
+      ? { id: endpoint.id, addrs: endpoint.addrs }
+      : { id: endpoint.id, relay: endpoint.relay };
   return {
     kind: "iroh",
     // An endpoint id plus relay URL identifies the process and reveals no IP address. A local
@@ -211,14 +276,29 @@ export function irohCarrier(
       const running = start();
       running.onIncoming(accept);
       const endpoint = await running.ready;
-      return options.local
-        ? { id: endpoint.id, addrs: endpoint.addrs }
-        : { id: endpoint.id, relay: endpoint.relay };
+      return publishableEndpoint(endpoint);
     },
     async connect(endpoint) {
       const running = start();
       await running.ready;
-      return await running.connect(endpoint as IrohEndpoint);
+      return await running.connect(endpoint as IrohEndpoint, "discovery");
+    },
+    async directEndpoint() {
+      const running = start();
+      await running.ready;
+      const endpoint = await running.directEndpoint();
+      return publishableEndpoint(endpoint);
+    },
+    allowDirect(peerId: string) {
+      start().allowDirect(peerId);
+    },
+    revokeDirect(peerId: string) {
+      start().revokeDirect(peerId);
+    },
+    async connectDirect(endpoint) {
+      const running = start();
+      await running.ready;
+      return await running.connect(endpoint as IrohEndpoint, "direct");
     },
     endpoint: () => start().ready,
     async stop() {

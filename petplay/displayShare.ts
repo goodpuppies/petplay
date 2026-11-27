@@ -417,12 +417,13 @@ new PostMan(
      * Join/leave the current VRChat instance topic so trusted peers' hubs have an iroh route to
      * this actor. Requests still require a valid per-peer token (or household proof).
      */
-    SETINSTANCETOPIC: (payload: { topic: string | null }) => {
+    SETINSTANCETOPIC: (payload: { topic: string | null; key?: string | null }) => {
       const next = typeof payload?.topic === "string" && payload.topic ? payload.topic : null;
+      const key = typeof payload?.key === "string" && payload.key ? payload.key : null;
       if (next === state.instanceTopic) return true;
       if (state.instanceTopic) PostMan.delTopic(state.instanceTopic);
       state.instanceTopic = next;
-      if (next) PostMan.setTopic(next);
+      if (next) PostMan.setTopic(next, key ? { key } : undefined);
       return true;
     },
     /** Share these screens and/or windows (the scene's shared displays). */
