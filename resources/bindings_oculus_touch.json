@@ -73,6 +73,9 @@
           "inputs": {
             "touch": {
               "output": "/actions/main/in/RightClickModifier"
+            },
+            "click": {
+              "output": "/actions/main/in/Jump"
             }
           },
           "mode": "button",

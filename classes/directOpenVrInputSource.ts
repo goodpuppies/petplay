@@ -117,6 +117,8 @@ export class DirectOpenVrInputSource {
   private vrInput: OpenVR.IVRInput | null = null;
   private inputReady = false;
   private readonly rightClickModifier = { left: false, right: false };
+  /** Right A clicked: VRChat's jump. */
+  private jumpPressed = false;
   private readonly middleClickModifier = { left: false, right: false };
   private spaceDragHeld = false;
 
@@ -131,6 +133,7 @@ export class DirectOpenVrInputSource {
   private joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
   private joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
   private rightClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+  private jumpHandle = OpenVR.k_ulInvalidActionHandle;
   private middleClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
   private spaceDragHandle = OpenVR.k_ulInvalidActionHandle;
   private hapticHandle = OpenVR.k_ulInvalidActionHandle;
@@ -151,6 +154,10 @@ export class DirectOpenVrInputSource {
     OpenVR.InputDigitalActionDataStruct,
   );
   private readonly triggerRight = createStruct<OpenVR.InputDigitalActionData>(
+    null,
+    OpenVR.InputDigitalActionDataStruct,
+  );
+  private readonly jumpRight = createStruct<OpenVR.InputDigitalActionData>(
     null,
     OpenVR.InputDigitalActionDataStruct,
   );
@@ -294,6 +301,7 @@ export class DirectOpenVrInputSource {
     this.joystickLeftHandle = getActionHandle("/actions/main/in/JoystickLeft");
     this.joystickRightHandle = getActionHandle("/actions/main/in/JoystickRight");
     this.rightClickModifierHandle = getActionHandle("/actions/main/in/RightClickModifier");
+    this.jumpHandle = getActionHandle("/actions/main/in/Jump");
     this.middleClickModifierHandle = getActionHandle("/actions/main/in/MiddleClickModifier");
     try {
       this.spaceDragHandle = getActionHandle("/actions/main/in/SpaceDrag");
@@ -437,6 +445,12 @@ export class DirectOpenVrInputSource {
       this.rightHandPathHandle,
     );
     this.vrInput.GetDigitalActionData(
+      this.jumpHandle,
+      this.jumpRight[0],
+      OpenVR.InputDigitalActionDataStruct.byteSize,
+      this.rightHandPathHandle,
+    );
+    this.vrInput.GetDigitalActionData(
       this.middleClickModifierHandle,
       this.middleClickModifierLeft[0],
       OpenVR.InputDigitalActionDataStruct.byteSize,
@@ -546,6 +560,8 @@ export class DirectOpenVrInputSource {
     this.rightClickModifier.left = Boolean(rightModL.bActive && rightModL.bState);
     this.rightClickModifier.right = Boolean(rightModR.bActive && rightModR.bState);
     this.middleClickModifier.left = Boolean(middleModL.bActive && middleModL.bState);
+    const jump = OpenVR.InputDigitalActionDataStruct.read(this.jumpRight[1]);
+    this.jumpPressed = Boolean(jump.bActive && jump.bState);
     this.middleClickModifier.right = Boolean(middleModR.bActive && middleModR.bState);
 
     // Sync scalar snapshot properties (they are not live references like Float32Arrays)
@@ -553,6 +569,11 @@ export class DirectOpenVrInputSource {
     this.leftView.trigger = this.leftBuffers.trigger[0];
     this.rightView.grab = this.rightBuffers.grab[0];
     this.rightView.trigger = this.rightBuffers.trigger[0];
+  }
+
+  /** Right A clicked (VRChat's jump), for the VRChat origin's locomotion model. */
+  isJumpPressed(): boolean {
+    return this.jumpPressed;
   }
 
   /** Left stick click, held: drag the playspace (`classes/playspaceMover.ts`). */
@@ -584,6 +605,8 @@ export class DirectOpenVrInputSource {
     this.joystickLeftHandle = OpenVR.k_ulInvalidActionHandle;
     this.joystickRightHandle = OpenVR.k_ulInvalidActionHandle;
     this.rightClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
+    this.jumpHandle = OpenVR.k_ulInvalidActionHandle;
+    this.jumpPressed = false;
     this.middleClickModifierHandle = OpenVR.k_ulInvalidActionHandle;
     this.spaceDragHandle = OpenVR.k_ulInvalidActionHandle;
     this.spaceDragHeld = false;

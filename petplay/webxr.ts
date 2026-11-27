@@ -549,9 +549,10 @@ function pushSticksToVrcOrigin(): void {
       left: gameInputBlocking.isBlocked("left"),
       right: gameInputBlocking.isBlocked("right"),
     },
+    jump: host.getDirectOpenVrInputSource().isJumpPressed(),
   };
   const key = [...payload.left, ...payload.right].map((x) => Math.round(x * 50)).join() +
-    `${payload.blocked.left}${payload.blocked.right}`;
+    `${payload.blocked.left}${payload.blocked.right}${payload.jump}`;
   if (key === lastSticksKey && payload.t - lastSticksSentAt < 100) return;
   lastSticksKey = key;
   lastSticksSentAt = payload.t;

@@ -49,6 +49,10 @@
       "type": "boolean"
     },
     {
+      "name": "/actions/main/in/Jump",
+      "type": "boolean"
+    },
+    {
       "name": "/actions/main/in/SpaceDrag",
       "type": "boolean"
     },

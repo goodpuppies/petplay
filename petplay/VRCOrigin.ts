@@ -63,6 +63,8 @@ type SticksPayload = {
   left: [number, number];
   right: [number, number];
   blocked: { left: boolean; right: boolean };
+  /** Right A clicked (VRChat's jump). */
+  jump?: boolean;
 };
 let latestSticks: SticksPayload | null = null;
 /**
