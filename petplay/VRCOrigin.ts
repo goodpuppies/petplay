@@ -458,14 +458,17 @@ async function pollOriginOnce(): Promise<boolean> {
     airborne
   );
 
+  const stickTurning = predictor.isStickTurning();
   const solverPose: VrcOriginWorldPose = {
     ...worldPose,
-    yawRad: predictor.latestRawYawRad() ?? worldPose.yawRad,
+    // During stick turns, use the simulator's predicted yaw so smooth turns track immediately
+    // across OSC gaps; otherwise use raw OSC yaw for exact head-lead cancellation.
+    yawRad: stickTurning ? worldPose.yawRad : (predictor.latestRawYawRad() ?? worldPose.yawRad),
   };
   const raw = solver.update(
     solverPose,
     hmdMatrix,
-    predictor.isStickTurning(),
+    stickTurning,
     performance.now(),
     hmdYawRate,
     sticks != null,

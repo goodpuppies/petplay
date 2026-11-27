@@ -526,11 +526,23 @@ export class VrcCharacterSim {
       }
     }
     if (yawChanged) {
-      // Snap directly to OSC avatar yaw so heading tracks rapid head turns without observer lag.
-      const ryaw = angleDiffRad(pose.yawRad, this.yaw);
-      this.yaw = this.yaw + ryaw;
-      this.pendingYaw = 0;
-      for (const h of this.history) h.yaw = this.yaw;
+      if (Math.abs(this.turn) > STICK_DEADZONE) {
+        // During stick turns, OSC yaw lags stick input by ~latencyMs; compare against delayed sim.
+        const ryaw = angleDiffRad(pose.yawRad, ref.yaw);
+        if (Math.abs(ryaw) > (25 * Math.PI) / 180) {
+          this.yaw = this.yaw + angleDiffRad(pose.yawRad, this.yaw);
+          this.pendingYaw = 0;
+          for (const h of this.history) h.yaw = this.yaw;
+        } else {
+          this.pendingYaw += (ryaw - this.pendingYaw) * 0.5;
+        }
+      } else {
+        // Head turns have ~0 ms lag in OSC avatar yaw; snap directly so walk heading stays locked.
+        const ryaw = angleDiffRad(pose.yawRad, this.yaw);
+        this.yaw = this.yaw + ryaw;
+        this.pendingYaw = 0;
+        for (const h of this.history) h.yaw = this.yaw;
+      }
     }
   }
 
