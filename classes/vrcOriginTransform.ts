@@ -14,6 +14,7 @@
  *     `[-sin θ,  0, cos θ ]`
  */
 
+import { type JumpArcEvent, VrcJumpModel } from "./vrcJumpModel.ts";
 import type { Vec3, VrcOriginWorldPose } from "./vrcOriginCodec.ts";
 
 export type Matrix34Tuple = [
@@ -897,6 +898,14 @@ class KalmanChannel {
     this.newestRaw = [...values];
   }
 
+  /** Overwrite one dim with `x` at rest (a landing), as of `updatedAt`. */
+  setDim(k: number, x: number): void {
+    if (!this.state.length) return;
+    this.state[k] = [x, 0];
+    this.cov[k] = [this.r, 0, 0.01];
+    if (this.newestRaw) this.newestRaw[k] = x;
+  }
+
   /** Pull the velocity toward `values` (per second) with variance `r`, without moving in time. */
   measureVelocity(values: number[], r: number): void {
     for (let k = 0; k < this.state.length; k++) {
@@ -954,6 +963,8 @@ export interface VrcLocomotionInput {
   turn: number;
   /** HMD yaw rate (rad/s, magnitude): VRChat walks where the head looks. */
   headYawRate: number;
+  /** Jump held (VRChat default: right A), as VRChat sees it. */
+  jump?: boolean;
 }
 
 /** Spread of OSC arrival times around when VRChat sampled (ms), measured 2026-11-24. */
@@ -1130,6 +1141,9 @@ export class VrcRootPredictor {
   private readonly stickTurn: StickTurn;
   /** Time of the newest `setInput`. */
   private inputAt = 0;
+  /** Jumps: a press predicts the arc (`VrcJumpModel`), learned per world by the caller. */
+  readonly jump = new VrcJumpModel();
+  private jumpHeld = false;
   /** The measured (PhysBone) yaw, unwrapped, and when it last changed. */
   private rawYaw: number | null = null;
   private rawYawChangedAt = 0;
@@ -1216,6 +1230,12 @@ export class VrcRootPredictor {
       return;
     }
     this.inputAt = input.t;
+    const jumpPressed = input.jump === true && !this.jumpHeld;
+    this.jumpHeld = input.jump === true;
+    if (jumpPressed && this.position.started) {
+      this.jump.press(input.t, this.position.at(input.t, this.timing, this.move.active).values[1]);
+    }
+    this.applyJumpEvent(this.jump.update(input.t));
     const moveEvent = this.move.update(input.t, input.move, input.headYawRate > 0.5);
     const turnEvent = this.turn.update(input.t, [input.turn, 0], false);
     if (moveEvent === "released") this.position.stop(input.t);
@@ -1265,6 +1285,7 @@ export class VrcRootPredictor {
         }
       }
       this.position.measure(t, [...pose.position], freshAxes, ARRIVAL_SIGMA_MS);
+      if (this.jump.active) this.applyJumpEvent(this.jump.measure(t, pose.position[1]));
       // Just after a release VRChat is standing still; late samples must not restart motion.
       if (this.move.releasedWithin(t, 500)) this.position.measureVelocity([0, 0, 0], 1e-4);
     }
@@ -1344,6 +1365,13 @@ export class VrcRootPredictor {
     this.yaw.set(t, [estimate], [((measured - estimate) * 1000) / 400]);
   }
 
+  /** A landing puts the height filter on the ground at rest (it learned the fall's speed). */
+  private applyJumpEvent(event: JumpArcEvent): void {
+    if (event === "landed" && this.jump.landedAt != null) {
+      this.position.setDim(1, this.jump.landedAt);
+    }
+  }
+
   /** The filters' estimate at `tMs` (no output smoothing). */
   predict(tMs: number): VrcRootPrediction {
     if (!this.lastPose) {
@@ -1354,6 +1382,11 @@ export class VrcRootPredictor {
       };
     }
     const p = this.position.at(tMs, this.timing, this.move.active);
+    const arc = this.jump.at(tMs);
+    if (arc) {
+      p.values[1] = arc.y;
+      p.velocity[1] = arc.vy;
+    }
     const y = this.yaw.at(tMs, this.timing, this.turn.active);
     return {
       pose: {

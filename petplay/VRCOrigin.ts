@@ -3,6 +3,9 @@ import { tempFile, wait } from "../classes/utils.ts";
 import * as OpenVR from "../submodules/OpenVR_TS_Bindings_Deno/openvr_bindings.ts";
 import { P } from "../submodules/OpenVR_TS_Bindings_Deno/pointers.ts";
 import { LogChannel } from "@mommysgoodpuppy/logchannel";
+import { VrcLogWatcher } from "../classes/vrc/logParser.ts";
+import { DEFAULT_VRC_JUMP } from "../classes/vrcJumpModel.ts";
+import { VrcWorldLocomotionStore } from "../classes/vrcWorldLocomotion.ts";
 import {
   getOverlayTransformAbsolute,
   setOverlayTransformAbsolute,
@@ -84,6 +87,40 @@ let vrcJump = false;
 const AIRBORNE_VERTICAL_SPEED = 0.15;
 const AIRBORNE_HOLD_MS = 200;
 let airborneUntil = 0;
+
+/** The VRChat world (from its log) and what PetPlay learned about moving in it. */
+const worldLocomotion = new VrcWorldLocomotionStore();
+const vrcLog = new VrcLogWatcher();
+const WORLD_POLL_MS = 2000;
+let worldPolledAt = 0;
+let worldId: string | null = null;
+/** The predictor the current world's parameters were given to (it is recreated on start). */
+let worldAppliedTo: VrcRootPredictor | null = null;
+
+function syncWorldLocomotion(nowMs: number): void {
+  if (nowMs - worldPolledAt >= WORLD_POLL_MS) {
+    worldPolledAt = nowMs;
+    try {
+      vrcLog.poll();
+    } catch {
+      // The log is optional: without it everything runs on defaults.
+    }
+    const id = vrcLog.state.instanceId?.split(":")[0] ?? null;
+    if (id !== worldId) {
+      worldId = id;
+      worldAppliedTo = null;
+    }
+  }
+  if (worldAppliedTo === predictor) return;
+  worldAppliedTo = predictor;
+  const learned = worldId ? worldLocomotion.get(worldId)?.jump : undefined;
+  predictor.jump.cancel();
+  predictor.jump.params = { ...(learned ?? DEFAULT_VRC_JUMP) };
+  const forWorld = worldId;
+  predictor.jump.onLearned = (params) => {
+    if (forWorld) worldLocomotion.setJump(forWorld, params);
+  };
+}
 /** Received stick states, for locomotion analysis (`GETSTICKTRACE`). */
 const stickTrace: SticksPayload[] = [];
 const STICK_TRACE_MAX = 30_000;
@@ -157,6 +194,8 @@ new PostMan(
         vrcSticks,
         vrcJump,
         airborne: performance.timeOrigin + performance.now() < airborneUntil,
+        worldId,
+        jumpModel: { ...predictor.jump.params, active: predictor.jump.active },
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -373,6 +412,7 @@ async function pollOriginOnce(): Promise<boolean> {
     predictor.add({ t: performance.timeOrigin + performance.now() - 1000, pose: seed });
   }
   const now = performance.timeOrigin + performance.now();
+  syncWorldLocomotion(now);
   // VRChat defaults: left stick moves, right stick turns.
   const sticks = latestSticks && now - latestSticks.t < STICKS_STALE_MS ? latestSticks : null;
   predictor.setInput(
@@ -382,6 +422,7 @@ async function pollOriginOnce(): Promise<boolean> {
         move: vrcSticks.left,
         turn: vrcSticks.right[0],
         headYawRate: lastHeadYawRate,
+        jump: vrcJump,
       }
       : null,
   );
