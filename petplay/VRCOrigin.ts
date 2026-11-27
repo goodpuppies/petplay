@@ -65,6 +65,12 @@ type SticksPayload = {
   blocked: { left: boolean; right: boolean };
 };
 let latestSticks: SticksPayload | null = null;
+/**
+ * The sticks as VRChat sees them. While PetPlay holds a hand's input VRChat keeps the last value
+ * it saw before the hold (measured: a turn held when PetPlay takes focus keeps spinning until it
+ * lets go, and a stick pushed during the hold does nothing).
+ */
+const vrcSticks: { left: [number, number]; right: [number, number] } = { left: [0, 0], right: [0, 0] };
 /** Received stick states, for locomotion analysis (`GETSTICKTRACE`). */
 const stickTrace: SticksPayload[] = [];
 const STICK_TRACE_MAX = 30_000;
@@ -135,6 +141,7 @@ new PostMan(
         sticks: latestSticks
           ? { ...latestSticks, ageMs: performance.timeOrigin + performance.now() - latestSticks.t }
           : null,
+        vrcSticks,
         overlayCount: state.overlays.length,
         originChangeCount: state.originChangeCount,
       };
@@ -150,10 +157,12 @@ new PostMan(
     },
     /**
      * Controller sticks from webxr (`pushSticksToVrcOrigin`), ~every 15 ms while they change and
-     * every 100 ms otherwise. A hand PetPlay UI holds reads as centred: VRChat doesn't see it.
+     * every 100 ms otherwise. A hand PetPlay UI holds keeps its last value in VRChat (`vrcSticks`).
      */
     STICKS: (payload: SticksPayload) => {
       latestSticks = payload;
+      if (!payload.blocked.left) vrcSticks.left = payload.left;
+      if (!payload.blocked.right) vrcSticks.right = payload.right;
       stickTrace.push(payload);
       if (stickTrace.length > STICK_TRACE_MAX) stickTrace.splice(0, 5_000);
     },
@@ -352,15 +361,14 @@ async function pollOriginOnce(): Promise<boolean> {
     sticks
       ? {
         t: now,
-        move: sticks.blocked.left ? [0, 0] : sticks.left,
-        turn: sticks.blocked.right ? 0 : sticks.right[0],
+        move: vrcSticks.left,
+        turn: vrcSticks.right[0],
         headYawRate: lastHeadYawRate,
       }
       : null,
   );
   const stickMoving = sticks != null && (
-    (!sticks.blocked.left && Math.hypot(sticks.left[0], sticks.left[1]) > 0.15) ||
-    (!sticks.blocked.right && Math.abs(sticks.right[0]) > 0.15)
+    Math.hypot(vrcSticks.left[0], vrcSticks.left[1]) > 0.15 || Math.abs(vrcSticks.right[0]) > 0.15
   );
   const prediction = predictor.display(now);
   const worldPose = prediction.pose;
