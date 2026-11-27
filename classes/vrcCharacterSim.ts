@@ -94,8 +94,9 @@ export class VrcCharacterSim {
   private jumpQueued = false;
   private movePressedAt = -Infinity;
 
-  /** Wall-collision gate: stops forward sim if OSC shows zero progress while holding stick. */
+  /** Wall-collision gate: stops forward sim only after sustained zero progress while holding stick. */
   private wallBlocked = false;
+  private wallStallCount = 0;
   private lastOscPos: Vec3 | null = null;
   private lastOscYaw = 0;
   private lastOscT = 0;
@@ -106,8 +107,8 @@ export class VrcCharacterSim {
 
   constructor(options: VrcCharacterSimOptions = {}) {
     this.latencyMs = options.latencyMs ?? 15;
-    this.posTauMs = options.posCorrectionTauMs ?? 60;
-    this.yawTauMs = options.yawCorrectionTauMs ?? 45;
+    this.posTauMs = options.posCorrectionTauMs ?? 160;
+    this.yawTauMs = options.yawCorrectionTauMs ?? 70;
     this.turnGain = options.turnGainRadPerSec ?? Math.PI;
   }
 
@@ -128,6 +129,7 @@ export class VrcCharacterSim {
     this.velCur = [0, 0, 0];
     this.yawRateCur = 0;
     this.wallBlocked = false;
+    this.wallStallCount = 0;
     this.lastOscPos = null;
     this.history = [];
     this.jumpQueued = false;
@@ -186,6 +188,7 @@ export class VrcCharacterSim {
     if (nextActive && !prevActive) this.movePressedAt = t;
     if (Math.hypot(move[0] - this.move[0], move[1] - this.move[1]) > 0.12 || (!prevActive && nextActive)) {
       this.wallBlocked = false;
+      this.wallStallCount = 0;
     }
     this.move = [move[0], move[1]];
     this.turn = turn;
@@ -211,11 +214,11 @@ export class VrcCharacterSim {
     this.yawRateCur = this.turnGain * turnEff - this.hmdYawRate;
     this.yaw += this.yawRateCur * dt;
 
-    // 2. Wall-silence check: holding stick for >100 ms with zero OSC position updates -> blocked.
+    // 2. Wall-silence check: holding stick for >180 ms with zero OSC position updates -> blocked.
     const moveActive = Math.hypot(this.move[0], this.move[1]) > STICK_DEADZONE;
     if (
       this.grounded && moveActive &&
-      t - this.movePressedAt >= 100 && t - this.lastPosOscT >= 100
+      t - this.movePressedAt >= 180 && t - this.lastPosOscT >= 180
     ) {
       this.wallBlocked = true;
     }
@@ -259,7 +262,9 @@ export class VrcCharacterSim {
     }
 
     // 4. Bleed 1st-order OSC offset smoothly into pos & yaw (critically damped, zero steps/bounce).
-    const aPos = 1 - Math.exp(-dtMs / this.posTauMs);
+    // Gentle while moving (avoids OSC arrival-jitter shake), crisper when stopped.
+    const posTau = moveActive && !this.wallBlocked ? this.posTauMs : Math.min(this.posTauMs, 65);
+    const aPos = 1 - Math.exp(-dtMs / posTau);
     const aYaw = 1 - Math.exp(-dtMs / this.yawTauMs);
     const dxC = this.pendingPos[0] * aPos;
     const dyC = this.pendingPos[1] * aPos;
@@ -333,11 +338,13 @@ export class VrcCharacterSim {
         const [desX, desZ] = this.desiredMoveXZ(this.move, pose.yawRad);
         const desSpd = Math.hypot(desX, desZ);
 
-        // Wall-collision detection & online walk-speed learning.
+        // Wall-collision detection (require 3 consecutive stalled bursts so a single slow OSC
+        // burst never slams the brakes) & online walk-speed learning.
         if (this.grounded && desSpd > 0.6) {
-          if (t - this.movePressedAt >= 80 && (mSpdXZ < 0.25 * desSpd || mvx * desX + mvz * desZ < 0)) {
-            this.wallBlocked = true;
-          } else if (mSpdXZ > 0.4) {
+          if (t - this.movePressedAt >= 100 && (mSpdXZ < 0.25 * desSpd || mvx * desX + mvz * desZ < 0)) {
+            if (++this.wallStallCount >= 3) this.wallBlocked = true;
+          } else if (mSpdXZ > 0.35 * desSpd) {
+            this.wallStallCount = 0;
             this.wallBlocked = false;
             const vFwd = mvx * Math.sin(pose.yawRad) + mvz * Math.cos(pose.yawRad);
             const vRgt = mvx * Math.cos(pose.yawRad) - mvz * Math.sin(pose.yawRad);
@@ -413,9 +420,10 @@ export class VrcCharacterSim {
       }
     }
     if (yawChanged) {
-      const ryaw = angleDiffRad(pose.yawRad, ref.yaw);
+      // OSC avatar yaw has ~0 ms lag relative to unpredicted HMD yaw, so compare at `t` (not `t - latencyMs`).
+      const ryaw = angleDiffRad(pose.yawRad, this.yaw);
       if (Math.abs(ryaw) > (25 * Math.PI) / 180) {
-        this.yaw = this.yaw + angleDiffRad(pose.yawRad, this.yaw);
+        this.yaw = this.yaw + ryaw;
         this.pendingYaw = 0;
         for (const h of this.history) h.yaw = this.yaw;
       } else {

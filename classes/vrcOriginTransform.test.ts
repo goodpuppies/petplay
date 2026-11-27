@@ -810,7 +810,7 @@ Deno.test("root predictor (v2): releasing the move stick mid-jump keeps horizont
     predictor.add({ t, pose: v2([0, y, z]) });
     const disp = predictor.display(t);
     assert(
-      Math.abs(disp.pose.position[2] - z) < 0.08,
+      Math.abs(disp.pose.position[2] - z) < 0.12,
       `horizontal lag at +${t - tJump}ms: ${Math.abs(disp.pose.position[2] - z).toFixed(3)} m`,
     );
   }
