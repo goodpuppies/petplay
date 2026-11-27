@@ -5,7 +5,21 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Carrier } from "../submodules/stageforge/mod.ts";
 import { irohCarrier } from "./irohCarrier.ts";
-import { hasPetplayMediaBinary } from "./petplayMediaPath.ts";
+import { hasPetplayMediaBinary, petplayMediaPath } from "./petplayMediaPath.ts";
+
+/** Path events are newer than some local petplay-media builds: skip with a binary older than link.rs. */
+function linkBinaryHasPathEvents(): boolean {
+  if (!hasPetplayMediaBinary({ forLink: true })) return false;
+  try {
+    const binary = Deno.statSync(petplayMediaPath({ forLink: true })).mtime?.getTime() ?? 0;
+    const source = Deno.statSync(
+      new URL("../submodules/petplay_mediatransport/src/link.rs", import.meta.url),
+    ).mtime?.getTime() ?? 0;
+    return binary >= source;
+  } catch {
+    return true;
+  }
+}
 
 function nextMessage(carrier: Carrier): Promise<unknown> {
   return new Promise((resolve) => carrier.onmessage = resolve);
@@ -44,7 +58,7 @@ Deno.test({
 
 Deno.test({
   name: "a direct-tier link reports its network path, and its offer carries IP candidates",
-  ignore: !hasPetplayMediaBinary({ forLink: true }),
+  ignore: !linkBinaryHasPathEvents(),
   sanitizeResources: false,
   sanitizeOps: false,
   async fn() {

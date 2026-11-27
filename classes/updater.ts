@@ -7,15 +7,12 @@
  * channel it was built from unless Settings → Install picks another, so a tester given a branch
  * build keeps getting that branch.
  *
- * **Applying** runs in its own process (`petplay --update`, classes/updateCli.ts), never in a
- * scene worker: it reads ~500 MB. It takes a lock, fetches only the chunks the executables on
- * disk do not already contain (classes/updateChunks.ts; falls back to a resumable full download),
- * checks the result against the release's `SHA256SUMS`, runs the new binary's `--version` to
- * prove it starts, and only then swaps it in, keeping the old one for `--update-rollback`.
+ * **Downloading** ({@link downloadVerified}) fetches only the chunks the executables on disk do
+ * not already contain (classes/updateChunks.ts; falls back to a resumable full download) and
+ * proves the result against the release's `SHA256SUMS`. Installing it (lock, start check, swap,
+ * rollback, SteamVR) is the one installer backend, classes/installer.ts.
  */
-import { dirname, join } from "@std/path";
 import { createHash } from "node:crypto";
-import { installDir, installedExecutablePath } from "./appPaths.ts";
 import { type BuildInfo, getBuildInfo } from "./buildInfo.ts";
 import {
   BRANCH_BUILD_TAG_PREFIX,
@@ -23,7 +20,6 @@ import {
   parseBuildMetadata,
 } from "./branchBuild.ts";
 import { GitHubClient, GitHubNotFoundError } from "./githubApi.ts";
-import { installState, previousExecutablePath, swapInExecutable } from "./install.ts";
 import {
   type ChunkIndex,
   type FetchRange,
@@ -42,7 +38,6 @@ const DOWNLOAD_ATTEMPTS = 5;
 const IDLE_TIMEOUT_MS = 30_000;
 const RANGE_CONCURRENCY = 4;
 const SMOKE_TIMEOUT_MS = 90_000;
-const STALE_LOCK_MS = 60 * 60 * 1000;
 
 export type ReleaseAsset = {
   name: string;
@@ -410,10 +405,20 @@ export async function checkForUpdate(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Applying
+// Downloading a build (installing it is classes/installer.ts)
 
 export type UpdateProgress = {
-  phase: "preparing" | "indexing" | "downloading" | "verifying" | "testing" | "installing";
+  /** Download phases here; classes/installer.ts adds its own (copying, testing, installing…). */
+  phase:
+    | "preparing"
+    | "indexing"
+    | "downloading"
+    | "verifying"
+    | "copying"
+    | "testing"
+    | "installing"
+    | "registering"
+    | "removing";
   /** `delta` fetches only missing chunks; `full` downloads the whole binary. */
   mode?: "delta" | "full";
   receivedBytes: number;
@@ -423,224 +428,134 @@ export type UpdateProgress = {
   reusedBytes?: number;
 };
 
-export type UpdateApplyResult = {
-  installed: BuildInfo;
-  targetPath: string;
+export type DownloadResult = {
+  /** `delta` fetched only missing chunks; `full` downloaded the whole binary. */
   mode: "delta" | "full";
   downloadedBytes: number;
   reusedBytes: number;
-  previousPath: string | null;
+  sha256: string;
 };
 
-type ApplyOptions = {
-  onProgress?: (progress: UpdateProgress) => void;
-  fetchImpl?: typeof fetch;
-  /** Where to install; default the installed copy, else the running executable. */
-  targetPath?: string;
-  /** Skip running the new binary (tests with fake binaries). */
-  skipSmokeTest?: boolean;
-};
-
-/** Where an update goes: the installed copy when there is one, else the running executable. */
-export function updateTargetPath(): string {
-  return installState().installed ? installedExecutablePath() : Deno.execPath();
-}
-
-function incomingPath(target: string): string {
-  return Deno.build.os === "windows"
-    ? target.replace(/\.exe$/i, "") + ".incoming.exe"
-    : `${target}.incoming`;
-}
-
-export async function applyUpdate(
+/**
+ * Downloads `candidate`'s binary to `destination` and proves it is the published file: its
+ * SHA-256 must match the release's `SHA256SUMS` (and GitHub's own digest of the upload). Takes
+ * every chunk it can from `localSources` (executables already on disk) and fetches only the rest
+ * (classes/updateChunks.ts), else downloads in full. Installing it is classes/installer.ts.
+ */
+export async function downloadVerified(
   candidate: BuildCandidate,
-  options: ApplyOptions = {},
-): Promise<UpdateApplyResult> {
-  if (!Deno.build.standalone && options.targetPath == null) {
-    throw new Error("In-app updates only apply to release builds (use git pull in a checkout).");
-  }
+  destination: string,
+  options: {
+    localSources?: readonly string[];
+    onProgress?: (progress: UpdateProgress) => void;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<DownloadResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const progress = options.onProgress ?? (() => {});
-  const target = options.targetPath ?? updateTargetPath();
-  const incoming = incomingPath(target);
-  const release = await acquireUpdateLock(dirname(target));
-  try {
-    progress({ phase: "preparing", receivedBytes: 0, totalBytes: null });
-    const sums = await fetchText(candidate.sums.browser_download_url, fetchImpl);
-    const expected = parseSha256Sums(sums, candidate.binary.name);
-    if (!expected) {
-      throw new Error(`${SUMS_ASSET} of ${candidate.tag} lists no ${candidate.binary.name}`);
-    }
-    // GitHub's own digest of the upload must agree with what CI wrote.
-    const digest = candidate.binary.digest?.replace(/^sha256:/, "").toLowerCase();
-    if (digest && digest !== expected) {
-      throw new Error(
-        `${candidate.binary.name} of ${candidate.tag} does not match its ${SUMS_ASSET}`,
-      );
-    }
-    let index: ChunkIndex | null = null;
-    if (candidate.chunks) {
-      try {
-        const text = await fetchText(candidate.chunks.browser_download_url, fetchImpl);
-        const indexSum = parseSha256Sums(sums, candidate.chunks.name);
-        if (indexSum && sha256Text(text) === indexSum) {
-          const parsed = parseChunkIndex(JSON.parse(text));
-          if (parsed.sha256 === expected && parsed.size === candidate.binary.size) index = parsed;
-        }
-      } catch {
-        // No usable index: full download.
+  progress({ phase: "preparing", receivedBytes: 0, totalBytes: null });
+  const sums = await fetchText(candidate.sums.browser_download_url, fetchImpl);
+  const expected = parseSha256Sums(sums, candidate.binary.name);
+  if (!expected) {
+    throw new Error(`${SUMS_ASSET} of ${candidate.tag} lists no ${candidate.binary.name}`);
+  }
+  // GitHub's own digest of the upload must agree with what CI wrote.
+  const digest = candidate.binary.digest?.replace(/^sha256:/, "").toLowerCase();
+  if (digest && digest !== expected) {
+    throw new Error(
+      `${candidate.binary.name} of ${candidate.tag} does not match its ${SUMS_ASSET}`,
+    );
+  }
+  let index: ChunkIndex | null = null;
+  if (candidate.chunks) {
+    try {
+      const text = await fetchText(candidate.chunks.browser_download_url, fetchImpl);
+      const indexSum = parseSha256Sums(sums, candidate.chunks.name);
+      if (indexSum && sha256Text(text) === indexSum) {
+        const parsed = parseChunkIndex(JSON.parse(text));
+        if (parsed.sha256 === expected && parsed.size === candidate.binary.size) index = parsed;
       }
+    } catch {
+      // No usable index: full download.
     }
+  }
 
-    const sources = [target, previousExecutablePath(target), Deno.execPath()];
-    let mode: "delta" | "full" = "full";
-    let downloadedBytes = 0;
-    let reusedBytes = 0;
-    if (index) {
-      progress({ phase: "indexing", mode: "delta", receivedBytes: 0, totalBytes: null });
-      const local = await indexLocalFiles(sources.filter(exists));
-      const plan = planDelta(index, local);
-      if (plan.reusedBytes >= index.size * MIN_DELTA_REUSE) {
-        mode = "delta";
-        reusedBytes = plan.reusedBytes;
-        try {
-          await assembleDelta(
-            index,
-            plan,
-            incoming,
-            candidate.binary.browser_download_url,
-            fetchImpl,
-            (n) => {
-              downloadedBytes = n;
-              progress({
-                phase: "downloading",
-                mode: "delta",
-                receivedBytes: n,
-                totalBytes: plan.fetchBytes,
-                reusedBytes,
-              });
-            },
-          );
-          progress({
-            phase: "verifying",
-            mode,
-            receivedBytes: downloadedBytes,
-            totalBytes: plan.fetchBytes,
-            reusedBytes,
-          });
-          // A wrong range (a proxy that ignores Range, a replaced asset) fails here.
-          if (await sha256File(incoming) !== expected) throw new Error("delta result mismatch");
-        } catch (error) {
-          console.warn(`[updater] delta update failed (${message(error)}); downloading in full`);
-          mode = "full";
-          reusedBytes = 0;
+  let downloadedBytes = 0;
+  if (index) {
+    progress({ phase: "indexing", mode: "delta", receivedBytes: 0, totalBytes: null });
+    const local = await indexLocalFiles((options.localSources ?? []).filter(exists));
+    const plan = planDelta(index, local);
+    if (plan.reusedBytes >= index.size * MIN_DELTA_REUSE) {
+      try {
+        await assembleDelta(
+          index,
+          plan,
+          destination,
+          candidate.binary.browser_download_url,
+          fetchImpl,
+          (n) => {
+            downloadedBytes = n;
+            progress({
+              phase: "downloading",
+              mode: "delta",
+              receivedBytes: n,
+              totalBytes: plan.fetchBytes,
+              reusedBytes: plan.reusedBytes,
+            });
+          },
+        );
+        progress({
+          phase: "verifying",
+          mode: "delta",
+          receivedBytes: downloadedBytes,
+          totalBytes: plan.fetchBytes,
+          reusedBytes: plan.reusedBytes,
+        });
+        // A wrong range (a proxy that ignores Range, a replaced asset) fails here.
+        if (await sha256File(destination) === expected) {
+          return {
+            mode: "delta",
+            downloadedBytes,
+            reusedBytes: plan.reusedBytes,
+            sha256: expected,
+          };
         }
+        throw new Error("delta result mismatch");
+      } catch (error) {
+        console.warn(`[updater] delta update failed (${message(error)}); downloading in full`);
       }
     }
-    if (mode === "full") {
-      await downloadFull(
-        candidate.binary.browser_download_url,
-        incoming,
-        candidate.binary.size,
-        fetchImpl,
-        (n) => {
-          downloadedBytes = n;
-          progress({
-            phase: "downloading",
-            mode,
-            receivedBytes: n,
-            totalBytes: candidate.binary.size,
-          });
-        },
-      );
+  }
+  await downloadFull(
+    candidate.binary.browser_download_url,
+    destination,
+    candidate.binary.size,
+    fetchImpl,
+    (n) => {
+      downloadedBytes = n;
       progress({
-        phase: "verifying",
-        mode,
-        receivedBytes: downloadedBytes,
+        phase: "downloading",
+        mode: "full",
+        receivedBytes: n,
         totalBytes: candidate.binary.size,
       });
-      const actual = await sha256File(incoming);
-      if (actual !== expected) {
-        throw new Error(
-          `SHA-256 mismatch for ${candidate.binary.name} (expected ${expected.slice(0, 12)}, got ${
-            actual.slice(0, 12)
-          })`,
-        );
-      }
-    }
-
-    if (Deno.build.os !== "windows") Deno.chmodSync(incoming, 0o755);
-    progress({ phase: "testing", mode, receivedBytes: downloadedBytes, totalBytes: null });
-    const installed = options.skipSmokeTest
-      ? {
-        version: candidate.version,
-        commit: candidate.commit,
-        built: candidate.publishedAt,
-        mode: "production",
-        channel: candidate.channel,
-      }
-      : await smokeTestExecutable(incoming);
-    installed.channel ??= candidate.channel;
-
-    progress({ phase: "installing", mode, receivedBytes: downloadedBytes, totalBytes: null });
-    const previousPath = swapInExecutable(incoming, target);
-    writeInstallRecord(target, installed, candidate.releaseUrl);
-    return { installed, targetPath: target, mode, downloadedBytes, reusedBytes, previousPath };
-  } finally {
-    try {
-      Deno.removeSync(incoming);
-    } catch {
-      // Moved into place, or never written.
-    }
-    release();
-  }
-}
-
-/** Puts the kept previous build back (and keeps the current one as the new previous). */
-export async function rollbackUpdate(
-  options: { targetPath?: string; skipSmokeTest?: boolean } = {},
-): Promise<UpdateApplyResult> {
-  const target = options.targetPath ?? updateTargetPath();
-  const previous = previousExecutablePath(target);
-  if (!exists(previous)) throw new Error(`No previous build kept at ${previous}`);
-  const release = await acquireUpdateLock(dirname(target));
-  const incoming = incomingPath(target);
-  try {
-    Deno.copyFileSync(previous, incoming);
-    if (Deno.build.os !== "windows") Deno.chmodSync(incoming, 0o755);
-    const installed = options.skipSmokeTest
-      ? { version: "unknown", commit: null, built: null, mode: "production" }
-      : await smokeTestExecutable(incoming);
-    const previousPath = swapInExecutable(incoming, target);
-    writeInstallRecord(target, installed, previous);
-    return {
-      installed,
-      targetPath: target,
-      mode: "full",
-      downloadedBytes: 0,
-      reusedBytes: 0,
-      previousPath,
-    };
-  } finally {
-    try {
-      Deno.removeSync(incoming);
-    } catch {
-      // Moved into place.
-    }
-    release();
-  }
-}
-
-function writeInstallRecord(target: string, build: BuildInfo, from: string): void {
-  if (target !== installedExecutablePath()) return;
-  try {
-    Deno.writeTextFileSync(
-      join(installDir(), "install.json"),
-      JSON.stringify({ ...build, installedAt: new Date().toISOString(), from }, null, 2) + "\n",
+    },
+  );
+  progress({
+    phase: "verifying",
+    mode: "full",
+    receivedBytes: downloadedBytes,
+    totalBytes: candidate.binary.size,
+  });
+  const actual = await sha256File(destination);
+  if (actual !== expected) {
+    throw new Error(
+      `SHA-256 mismatch for ${candidate.binary.name} (expected ${expected.slice(0, 12)}, got ${
+        actual.slice(0, 12)
+      })`,
     );
-  } catch {
-    // Non-fatal: the binary is already updated, and reports its own build.
   }
+  return { mode: "full", downloadedBytes, reusedBytes: 0, sha256: expected };
 }
 
 /**
@@ -686,50 +601,6 @@ export async function smokeTestExecutable(path: string): Promise<BuildInfo> {
     built: details.find((d) => /^\d{4}-\d{2}-\d{2}/.test(d)) ?? null,
     mode: details[0] ?? "production",
   };
-}
-
-// ---------------------------------------------------------------------------------------------
-// Locking: one update at a time per install directory (two PetPlays, or a CLI and the UI).
-
-async function acquireUpdateLock(directory: string): Promise<() => void> {
-  Deno.mkdirSync(directory, { recursive: true });
-  const path = join(directory, ".petplay-update.lock");
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const file = Deno.openSync(path, { write: true, createNew: true });
-      file.writeSync(new TextEncoder().encode(JSON.stringify({ pid: Deno.pid, at: Date.now() })));
-      file.close();
-      return () => {
-        try {
-          Deno.removeSync(path);
-        } catch {
-          // Already gone.
-        }
-      };
-    } catch (error) {
-      if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
-      if (!lockIsStale(path)) {
-        throw new Error("Another PetPlay update is already running.");
-      }
-      try {
-        Deno.removeSync(path);
-      } catch {
-        // Someone else took it over.
-      }
-    }
-  }
-  throw new Error("Another PetPlay update is already running.");
-}
-
-function lockIsStale(path: string): boolean {
-  try {
-    const { pid, at } = JSON.parse(Deno.readTextFileSync(path)) as { pid?: number; at?: number };
-    if (typeof at !== "number" || Date.now() - at > STALE_LOCK_MS) return true;
-    if (Deno.build.os === "linux" && typeof pid === "number") return !exists(`/proc/${pid}`);
-    return false;
-  } catch {
-    return true;
-  }
 }
 
 // ---------------------------------------------------------------------------------------------

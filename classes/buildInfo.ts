@@ -19,6 +19,13 @@ export type BuildInfo = {
   channel?: string | null;
 };
 
+/**
+ * Version of the `--json` installer commands (classes/installerCli.ts) this build speaks. A front
+ * end runs an executable for an install or update only once its `--version --json` reports it:
+ * older builds start PetPlay on flags they do not know.
+ */
+export const INSTALLER_PROTOCOL = 1;
+
 let cached: BuildInfo | undefined;
 
 export function getBuildInfo(): BuildInfo {
@@ -41,7 +48,8 @@ export function getBuildInfo(): BuildInfo {
     return cached;
   }
   cached = {
-    version: git(["describe", "--tags", "--always", "--dirty"]) ?? "dev",
+    // Release tags only: branch builds tag `build-…` too (utils/publish-branch-build.ts).
+    version: git(["describe", "--tags", "--always", "--dirty", "--match", "v[0-9]*"]) ?? "dev",
     commit: git(["rev-parse", "HEAD"]),
     built: null,
     mode: "checkout",

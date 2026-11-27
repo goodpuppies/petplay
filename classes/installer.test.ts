@@ -2,7 +2,6 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { createHash } from "node:crypto";
 import {
-  applyUpdate,
   branchCandidates,
   type BuildCandidate,
   buildChannel,
@@ -14,9 +13,9 @@ import {
   parseSha256Sums,
   parseVersionTag,
   releaseAssetName,
-  rollbackUpdate,
 } from "./updater.ts";
 import { previousExecutablePath } from "./install.ts";
+import { install, rollback, uninstall, update } from "./installer.ts";
 import {
   branchBuildTag,
   branchSlug,
@@ -310,7 +309,7 @@ function twoBuilds(): { oldBuild: Uint8Array; newBuild: Uint8Array } {
   return { oldBuild, newBuild };
 }
 
-Deno.test("applyUpdate fetches only missing chunks, keeps the previous build, and rolls back", async () => {
+Deno.test("update fetches only missing chunks, keeps the previous build, and rolls back", async () => {
   const { oldBuild, newBuild } = twoBuilds();
   const served = await serveRelease(newBuild, { chunks: true });
   const dir = await Deno.makeTempDir();
@@ -318,10 +317,11 @@ Deno.test("applyUpdate fetches only missing chunks, keeps the previous build, an
     const target = join(dir, "petplay");
     await Deno.writeFile(target, oldBuild);
     const phases = new Set<string>();
-    const result = await applyUpdate(served.candidate, {
+    const result = await update(served.candidate, {
+      register: false,
       targetPath: target,
       skipSmokeTest: true,
-      onProgress: (p) => phases.add(p.phase),
+      onProgress: (p: { phase: string }) => phases.add(p.phase),
     });
     assertEquals(result.mode, "delta");
     assertEquals(await Deno.readFile(target), newBuild);
@@ -334,7 +334,7 @@ Deno.test("applyUpdate fetches only missing chunks, keeps the previous build, an
       "petplay.previous",
     ]);
 
-    await rollbackUpdate({ targetPath: target, skipSmokeTest: true });
+    await rollback({ targetPath: target, skipSmokeTest: true, register: false });
     assertEquals(await Deno.readFile(target), oldBuild);
     assertEquals(await Deno.readFile(previousExecutablePath(target)), newBuild);
   } finally {
@@ -343,7 +343,7 @@ Deno.test("applyUpdate fetches only missing chunks, keeps the previous build, an
   }
 });
 
-Deno.test("applyUpdate falls back to a full download without an index or Range support", async () => {
+Deno.test("update falls back to a full download without an index or Range support", async () => {
   const { oldBuild, newBuild } = twoBuilds();
   for (const options of [{ chunks: false }, { chunks: true, ignoreRange: true }]) {
     const served = await serveRelease(newBuild, options);
@@ -351,7 +351,8 @@ Deno.test("applyUpdate falls back to a full download without an index or Range s
     try {
       const target = join(dir, "petplay");
       await Deno.writeFile(target, oldBuild);
-      const result = await applyUpdate(served.candidate, {
+      const result = await update(served.candidate, {
+        register: false,
         targetPath: target,
         skipSmokeTest: true,
       });
@@ -364,7 +365,7 @@ Deno.test("applyUpdate falls back to a full download without an index or Range s
   }
 });
 
-Deno.test("applyUpdate refuses a binary whose SHA-256 does not match and leaves the old one", async () => {
+Deno.test("update refuses a binary whose SHA-256 does not match and leaves the old one", async () => {
   const { oldBuild, newBuild } = twoBuilds();
   const served = await serveRelease(newBuild, { chunks: false });
   const dir = await Deno.makeTempDir();
@@ -376,7 +377,7 @@ Deno.test("applyUpdate refuses a binary whose SHA-256 does not match and leaves 
     tampered.binary.browser_download_url = served.candidate.sums.browser_download_url;
     tampered.binary.size = served.candidate.sums.size;
     await assertRejects(
-      () => applyUpdate(tampered, { targetPath: target, skipSmokeTest: true }),
+      () => update(tampered, { register: false, targetPath: target, skipSmokeTest: true }),
       Error,
       "SHA-256 mismatch",
     );
@@ -399,14 +400,19 @@ Deno.test("only one update runs per install directory", async () => {
     try {
       await assertRejects(
         () =>
-          applyUpdate(served.candidate, { targetPath: join(dir, "petplay"), skipSmokeTest: true }),
+          update(served.candidate, {
+            register: false,
+            targetPath: join(dir, "petplay"),
+            skipSmokeTest: true,
+          }),
         Error,
         "already running",
       );
       // A stale one (its process is gone) is taken over.
       await Deno.writeTextFile(lock, JSON.stringify({ pid: 2 ** 22 + 12345, at: Date.now() }));
       if (Deno.build.os === "linux") {
-        await applyUpdate(served.candidate, {
+        await update(served.candidate, {
+          register: false,
           targetPath: join(dir, "petplay"),
           skipSmokeTest: true,
         });
@@ -415,6 +421,54 @@ Deno.test("only one update runs per install directory", async () => {
     } finally {
       await served.close();
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("install, update, rollback and uninstall share one backend: staged swap, kept previous, lock", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const target = join(dir, "bin", "petplay");
+    // Installing copies the running executable (here: deno itself) through the same staging swap.
+    const installed = await install({ targetPath: target, register: false });
+    assertEquals(installed.action, "install");
+    assertEquals(installed.mode, "copy");
+    assertEquals(Deno.statSync(target).size, Deno.statSync(Deno.execPath()).size);
+    assertEquals(installed.previousPath, null);
+    assertEquals([...Deno.readDirSync(join(dir, "bin"))].map((e) => e.name), ["petplay"]);
+
+    const { newBuild } = twoBuilds();
+    const served = await serveRelease(newBuild, { chunks: true });
+    try {
+      const updated = await update(served.candidate, {
+        targetPath: target,
+        register: false,
+        skipSmokeTest: true,
+      });
+      assertEquals(updated.restartNeeded, true);
+      assertEquals(await Deno.readFile(target), newBuild);
+      assertEquals(
+        Deno.statSync(previousExecutablePath(target)).size,
+        Deno.statSync(Deno.execPath()).size,
+      );
+    } finally {
+      await served.close();
+    }
+    // Installing again over the update keeps the update as the previous build: rollback-able.
+    const reinstalled = await install({ targetPath: target, register: false });
+    assertEquals(reinstalled.previousPath, previousExecutablePath(target));
+    assertEquals(await Deno.readFile(previousExecutablePath(target)), newBuild);
+
+    const removed = await uninstall({ targetPath: target, register: false });
+    assertEquals(removed.installed, null);
+    let left: string[] = [];
+    try {
+      left = [...Deno.readDirSync(join(dir, "bin"))].map((e) => e.name);
+    } catch {
+      // The directory itself is gone.
+    }
+    assertEquals(left, []);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

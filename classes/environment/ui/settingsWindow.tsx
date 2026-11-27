@@ -32,7 +32,9 @@ import {
   useRenderResolution,
 } from "../../renderResolution.ts";
 import { describeBuild, getBuildInfo } from "../../buildInfo.ts";
-import { installState, previousExecutablePath } from "../../install.ts";
+import { installState } from "../../install.ts";
+import { hasPreviousBuild, installerTarget } from "../../installer.ts";
+import { type InstallerCommand, runInstaller } from "../../installerClient.ts";
 import { logsDir } from "../../appPaths.ts";
 import { copyTextToClipboard } from "../../clipboard.ts";
 import {
@@ -43,10 +45,8 @@ import {
   listChannels,
   STABLE_CHANNEL,
   type UpdateCheckResult,
-  type UpdateProgress,
-  updateTargetPath,
 } from "../../updater.ts";
-import { describeCandidate, describeProgress } from "../../updateCli.ts";
+import { describeCandidate, describeProgress } from "../../installerCli.ts";
 import { requestProcessRestart } from "../../processExitRequest.ts";
 import { canRestart } from "../../restart.ts";
 import { resetPlayspace } from "../../playspaceMover.ts";
@@ -1222,15 +1222,6 @@ function OscPage({ showGuides }: { showGuides: boolean }) {
   );
 }
 
-/** An earlier update kept the build it replaced (`petplay --update-rollback`). */
-function hasPreviousBuild(): boolean {
-  try {
-    return Deno.statSync(previousExecutablePath(updateTargetPath())).isFile;
-  } catch {
-    return false;
-  }
-}
-
 function InstallPage({ showGuides }: { showGuides: boolean }) {
   const [, refresh] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -1257,39 +1248,51 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
     ? "Installed: starts with SteamVR"
     : `${real.installedBuild?.version ?? "Another version"} installed; this is ${real.thisBuild.version}`;
 
-  const run = async (which: "install" | "uninstall") => {
-    if (busy || !real.canInstall) return;
-    setBusy(true);
-    setMessage(which === "install" ? "Installing…" : "Uninstalling…");
+  /** Install, uninstall, update and rollback all run the one installer (classes/installer.ts). */
+  const working = busy || updateBusy;
+  const runCommand = async (
+    request: InstallerCommand,
+    label: string,
+    row: "registration" | "updates",
+  ) => {
+    if (working) return;
+    const setRowBusy = row === "registration" ? setBusy : setUpdateBusy;
+    const report = row === "registration" ? setMessage : setUpdateMessage;
+    const source = row === "registration" ? "Install" : "Updater";
+    setRowBusy(true);
+    report(`${label}…`);
     try {
-      const output = await new Deno.Command(Deno.execPath(), {
-        args: [`--${which}`],
-        stdin: "null",
-        stdout: "piped",
-        stderr: "piped",
-      }).output();
-      const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes).trim();
-      const text = output.success ? decode(output.stdout) : decode(output.stderr);
-      const summary = text.split(/\r?\n/).filter(Boolean).at(-1) ??
-        (output.success ? "Done." : "Failed.");
-      setMessage(summary);
-      pushToast({
-        source: "Install",
-        title: summary,
-        tone: output.success ? "info" : "warning",
-      });
+      const result = await runInstaller(request, (progress) => report(describeProgress(progress)));
+      const restartHint = canRestart() ? "RESTART to run it" : "Restart PetPlay to run it";
+      const summary = result == null
+        ? "Already up to date"
+        : result.restartNeeded
+        ? `${result.notes[0] ?? "Done"}. ${restartHint}.`
+        : result.notes.at(-1) ?? "Done.";
+      if (result?.restartNeeded) setRestartReady(true);
+      report(summary);
+      setUpdateCheck(null);
+      pushToast({ source, title: summary, tone: "info", timeoutMs: 10000 });
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
-      setMessage(text);
-      pushToast({ source: "Install", title: text, tone: "warning" });
+      report(text);
+      pushToast({ source, title: text, tone: "warning" });
     } finally {
-      setBusy(false);
+      setRowBusy(false);
       refresh((n) => n + 1);
     }
   };
+  const run = (which: "install" | "uninstall") => {
+    if (!real.canInstall) return;
+    void runCommand(
+      { command: which },
+      which === "install" ? "Installing" : "Uninstalling",
+      "registration",
+    );
+  };
 
   const handleCheckUpdates = async () => {
-    if (updateBusy) return;
+    if (working) return;
     setUpdateBusy(true);
     setUpdateMessage(`Checking ${channel}…`);
     try {
@@ -1311,80 +1314,17 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
     }
   };
 
-  /** Runs `petplay --update` (or `--update-rollback`) as its own process and follows its progress. */
-  const runUpdateProcess = async (args: string[], label: string) => {
-    if (updateBusy) return;
-    setUpdateBusy(true);
-    setUpdateMessage(`${label}…`);
-    try {
-      const child = new Deno.Command(Deno.execPath(), {
-        args: [...args, "--json"],
-        stdin: "null",
-        stdout: "piped",
-        stderr: "inherit",
-      }).spawn();
-      let done: Record<string, unknown> | null = null;
-      let failure: string | null = null;
-      let pending = "";
-      const decoder = new TextDecoder();
-      for await (const bytes of child.stdout) {
-        pending += decoder.decode(bytes, { stream: true });
-        let newline: number;
-        while ((newline = pending.indexOf("\n")) >= 0) {
-          const line = pending.slice(0, newline).trim();
-          pending = pending.slice(newline + 1);
-          if (!line.startsWith("{")) continue;
-          try {
-            const event = JSON.parse(line) as Record<string, unknown> & { event?: string };
-            if (event.event === "progress") {
-              setUpdateMessage(describeProgress(event as unknown as UpdateProgress));
-            } else if (event.event === "done") done = event;
-            else if (event.event === "error") failure = String(event.message);
-          } catch {
-            // Not one of ours.
-          }
-        }
-      }
-      const status = await child.status;
-      if (failure != null || !status.success) {
-        throw new Error(failure ?? `Updater exited with code ${status.code}`);
-      }
-      const result = done?.result as
-        | { installed: { version: string }; mode: string; downloadedBytes: number }
-        | null
-        | undefined;
-      const restartHint = canRestart() ? "RESTART to run it" : "Restart PetPlay to run it";
-      const summary = !result
-        ? "Already up to date"
-        : args.includes("--update-rollback")
-        ? `Rolled back to ${result.installed.version}. ${restartHint}.`
-        : `${result.installed.version} installed (${(result.downloadedBytes / 1e6).toFixed(1)} MB ${
-          result.mode === "delta" ? "delta" : "download"
-        }). ${restartHint}.`;
-      if (result) setRestartReady(true);
-      setUpdateMessage(summary);
-      setUpdateCheck(null);
-      pushToast({ source: "Updater", title: summary, tone: "info", timeoutMs: 10000 });
-      refresh((n) => n + 1);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      setUpdateMessage(text);
-      pushToast({ source: "Updater", title: text, tone: "warning" });
-    } finally {
-      setUpdateBusy(false);
-    }
-  };
-
   const handleApplyUpdate = () => {
     if (!updateCheck?.candidate || !updateCheck.canApply) return;
-    void runUpdateProcess(
-      ["--update", `--channel=${updateCheck.channel}`],
+    void runCommand(
+      { command: "update", channel: updateCheck.channel },
       `Installing ${updateCheck.candidate.version}`,
+      "updates",
     );
   };
 
   const cycleChannel = async (step: 1 | -1) => {
-    if (updateBusy) return;
+    if (working) return;
     let list = channels;
     if (list == null) {
       setUpdateBusy(true);
@@ -1460,21 +1400,21 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
                 updateCheck.candidate.version.slice(0, 14)
               }`}
             tone="accent"
-            disabled={updateBusy}
+            disabled={working}
             onClick={handleApplyUpdate}
           />
         )}
         <ActionButton
           label={updateBusy ? "WORKING…" : "CHECK"}
-          disabled={updateBusy}
+          disabled={working}
           onClick={() => void handleCheckUpdates()}
         />
-        {real.canInstall && hasPreviousBuild() && (
+        {real.canInstall && hasPreviousBuild(installerTarget()) && (
           <ActionButton
             label="ROLL BACK"
             tone="outline"
-            disabled={updateBusy}
-            onClick={() => void runUpdateProcess(["--update-rollback"], "Rolling back")}
+            disabled={working}
+            onClick={() => void runCommand({ command: "rollback" }, "Rolling back", "updates")}
           />
         )}
       </SettingRow>
@@ -1485,18 +1425,18 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
           ? `${channel} (this build's own)`
           : `${channel} · branch builds run code from that branch's CI`}
       >
-        <ActionButton label="<" disabled={updateBusy} onClick={() => void cycleChannel(-1)} />
+        <ActionButton label="<" disabled={working} onClick={() => void cycleChannel(-1)} />
         <Text color={COLOR.accent} fontSize={18}>
           {channel === STABLE_CHANNEL ? "stable" : channel.split("#")[1]!.slice(0, 18)}
         </Text>
-        <ActionButton label=">" disabled={updateBusy} onClick={() => void cycleChannel(1)} />
+        <ActionButton label=">" disabled={working} onClick={() => void cycleChannel(1)} />
       </SettingRow>
       <SettingRow row={3} title="SteamVR Registration" description={message ?? defaultStatus}>
         {showInstallBtn && (
           <ActionButton
             label={busy ? "WORKING…" : real.installed ? "UPDATE" : "INSTALL"}
             tone="accent"
-            disabled={busy || !real.canInstall}
+            disabled={working || !real.canInstall}
             onClick={() => void run("install")}
           />
         )}
@@ -1504,7 +1444,7 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
           <ActionButton
             label={busy ? "WORKING…" : "UNINSTALL"}
             tone="danger"
-            disabled={busy || !real.canInstall}
+            disabled={working || !real.canInstall}
             onClick={() => void run("uninstall")}
           />
         )}
@@ -1519,7 +1459,7 @@ function InstallPage({ showGuides }: { showGuides: boolean }) {
         <ToggleControl
           value={real.installed}
           onChange={(next) => {
-            if (busy || !real.canInstall) return;
+            if (working || !real.canInstall) return;
             if (next && !real.installed) void run("install");
             else if (!next && real.installed) void run("uninstall");
           }}

@@ -87,8 +87,14 @@ Submodule changes on a branch need the submodule commit to be reachable from the
 
 ## Updater reference
 
-- `petplay --update-channels`, `--update-check [--channel=C]`, `--update [--channel=C] [--yes]`,
-  `--update-rollback`; all take `--json`.
+- One installer backend (classes/installer.ts) does every install, update, rollback and
+  uninstall, whether it comes from the CLI, the Settings overlay (which runs `petplay … --json` as a
+  child process, classes/installerClient.ts) or the prompt a newer download shows when an older
+  build is installed. Every operation takes the install directory's lock, stages the new
+  executable, swaps it in atomically, keeps the replaced one as `petplay.previous`, records the
+  build actually installed and keeps the SteamVR registration current.
+- `petplay --install`, `--uninstall`, `--update-channels`, `--update-check [--channel=C]`,
+  `--update [--channel=C] [--yes]`, `--update-rollback`; all take `--json`.
 - An update is checked against `SHA256SUMS` and GitHub's asset digest, its new binary must answer
   `--version --json` before it is swapped in, and the replaced binary is kept as `petplay.previous`
   (`--update-rollback`).

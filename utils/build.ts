@@ -47,7 +47,8 @@ const git = async (...args: string[]) =>
   ).trim();
 const dirty = Deno.env.get("GITHUB_ACTIONS") !== "true" &&
   (await git("status", "--porcelain", "--ignore-submodules=all", "--untracked-files=no")) !== "";
-const describe = await git("describe", "--tags", "--always");
+// Release tags only: branch builds are tagged `build-…` too (utils/publish-branch-build.ts).
+const describe = await git("describe", "--tags", "--always", "--match", "v[0-9]*");
 const version = describe && dirty ? `${describe}-dirty` : describe;
 await Deno.writeTextFile(
   "dist/build-info.json",

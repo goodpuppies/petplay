@@ -5,12 +5,12 @@
  * - `--logs`: where the logs are (the running or last run is `current.log`)
  * - `--reset`: settings, layouts and the screen-capture permission back to defaults
  *
- * - `--install`, `--uninstall` (classes/install.ts, which also asks about updating on start)
- * - `--update`, `--update-check`, `--update-channels`, `--update-rollback` (classes/updateCli.ts)
+ * - `--install`, `--uninstall`, `--update`, `--update-check`, `--update-channels`,
+ *   `--update-rollback`: the installer (classes/installerCli.ts → classes/installer.ts)
  */
 import { join } from "@std/path";
 import { checkoutRoot, configDir, logsDir, tempDir } from "./appPaths.ts";
-import { describeBuild, getBuildInfo } from "./buildInfo.ts";
+import { describeBuild, getBuildInfo, INSTALLER_PROTOCOL } from "./buildInfo.ts";
 
 /** Runs a command-line action; `null` when the arguments ask for none (start PetPlay). */
 export async function runCliCommand(args: readonly string[]): Promise<number | null> {
@@ -20,12 +20,14 @@ export async function runCliCommand(args: readonly string[]): Promise<number | n
   }
   if (args.includes("--version")) {
     // `--json` is what the updater runs on a downloaded build to prove it starts.
-    console.log(args.includes("--json") ? JSON.stringify(getBuildInfo()) : describeBuild());
+    // `installer` is the --json installer protocol classes/installerClient.ts checks before it
+    // runs this build for an install, update or rollback.
+    console.log(
+      args.includes("--json")
+        ? JSON.stringify({ ...getBuildInfo(), installer: INSTALLER_PROTOCOL })
+        : describeBuild(),
+    );
     return 0;
-  }
-  if (args.some((arg) => arg === "--update" || arg.startsWith("--update-"))) {
-    const { runUpdateCli } = await import("./updateCli.ts");
-    return await runUpdateCli(args);
   }
   if (args.includes("--logs")) {
     console.log(logsDir());
@@ -37,16 +39,13 @@ export async function runCliCommand(args: readonly string[]): Promise<number | n
     const { runSelfTest } = await import("./selfTest.ts");
     return await runSelfTest(args);
   }
-  if (args.includes("--install") || args.includes("--uninstall")) {
-    const { installSelf, uninstallSelf } = await import("./install.ts");
-    try {
-      const notes = args.includes("--install") ? await installSelf() : await uninstallSelf();
-      for (const note of notes) console.log(note);
-      return 0;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      return 1;
-    }
+  if (
+    args.some((a) =>
+      a === "--install" || a === "--uninstall" || a === "--update" || a.startsWith("--update-")
+    )
+  ) {
+    const { runInstallerCli } = await import("./installerCli.ts");
+    return await runInstallerCli(args);
   }
   return null;
 }

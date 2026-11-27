@@ -34,7 +34,7 @@ if (await dispatchChildModule(Deno.args) == null) {
   if (reopenInOwnConsoleWindow(Deno.args)) Deno.exit(0);
   // A release run while a different build is installed asks whether to update it, and stops.
   if (Deno.build.standalone) {
-    const { offerUpdate } = await import("../classes/install.ts");
+    const { offerUpdate } = await import("../classes/installer.ts");
     const updateExit = await offerUpdate(Deno.args);
     if (updateExit != null) Deno.exit(updateExit);
   }

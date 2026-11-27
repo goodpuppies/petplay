@@ -75,7 +75,7 @@ async function buildVersion(dir: string, commit: string): Promise<string> {
     // Not runnable here.
   }
   const describe = await new Deno.Command("git", {
-    args: ["describe", "--tags", "--always"],
+    args: ["describe", "--tags", "--always", "--match", "v[0-9]*"],
     stdout: "piped",
     stderr: "null",
   }).output();
