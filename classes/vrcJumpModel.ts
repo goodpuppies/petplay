@@ -68,6 +68,7 @@ interface Arc {
    */
   silent: boolean;
   lastSampleAt: number;
+  lastYChangedAt: number;
   lastY: number;
 }
 
@@ -114,6 +115,7 @@ export class VrcJumpModel {
       liftedOff: false,
       silent: !this.enabled,
       lastSampleAt: 0,
+      lastYChangedAt: t,
       lastY: groundY,
     };
   }
@@ -140,6 +142,7 @@ export class VrcJumpModel {
     const arc = this.arc;
     if (!arc) return null;
     if (y > arc.ground + 0.02) arc.liftedOff = true;
+    if (Math.abs(y - arc.lastY) > 0.005) arc.lastYChangedAt = t;
     arc.samples.push([t, y]);
     arc.lastSampleAt = t;
     arc.lastY = y;
@@ -169,15 +172,30 @@ export class VrcJumpModel {
     if (!arc) return null;
     if (!arc.liftedOff && t > arc.t0 + LIFTOFF_TIMEOUT_MS) return this.miss(arc);
     if (arc.silent) {
-      const quiet = arc.lastSampleAt > 0 && t - arc.lastSampleAt > WATCH_QUIET_MS;
+      const quiet = arc.lastSampleAt > 0 && t - arc.lastYChangedAt > WATCH_QUIET_MS;
       if (quiet || t > arc.t0 + ARC_TIMEOUT_MS) {
         // Landed back where it left: a jump to learn from; anywhere else (a ledge) teaches nothing.
         this.finish(arc, Math.abs(arc.lastY - arc.ground) < 0.03);
       }
       return null;
     }
+    if (arc.liftedOff) {
+      const pred = this.evaluate(arc, t);
+      // Landing on a higher ledge stops OSC Y updates (VRChat only sends changes): if the arc is
+      // descending below the last measured Y with no Y change for >45 ms, land on the ledge.
+      if (pred.vy < -0.2 && arc.lastY - pred.y > 0.03 && t - arc.lastYChangedAt > 45) {
+        this.landedAt = arc.lastY;
+        this.finish(arc, false);
+        return "landed";
+      }
+    }
     if (t < arc.t0 + this.flightMs(arc)) return null;
-    if (t - arc.lastSampleAt < 80 && arc.lastY > arc.ground + 0.05) {
+    if (arc.lastY > arc.ground + 0.05) {
+      if (t - arc.lastYChangedAt > 45) {
+        this.landedAt = arc.lastY;
+        this.finish(arc, false);
+        return "landed";
+      }
       // Still in the air: longer than learned. Watch it down.
       arc.silent = true;
       return "abandoned";

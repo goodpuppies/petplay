@@ -123,3 +123,54 @@ Deno.test("predictor: the jump press cuts the arc's error against a velocity fil
   );
   assert(arc.below < 0.01, `the arc must not sink below the ground (${arc.below.toFixed(3)} m)`);
 });
+
+Deno.test("predictor: jumping onto a higher ledge lands on the ledge instead of plunging to old ground", () => {
+  const predictor = new VrcRootPredictor();
+  predictor.jump.params = { ...DEFAULT_VRC_JUMP };
+  const ledgeY = GROUND + 0.35;
+  let t = 0;
+  for (; t < 300; t += 20) {
+    predictor.setInput({ t, move: [0, 0], turn: 0, headYawRate: 0, jump: false });
+    predictor.add({
+      t,
+      pose: { source: "petplay-origin-v2", position: [0, GROUND, 0], yawRad: 0 },
+    });
+  }
+  const start = t;
+  // Jump up and land on ledgeY; once on the ledge, VRChat stops sending Y updates.
+  const samples = jumpSamples(start, 2.9, 9.6).filter(([ts, y]) =>
+    ts - start < 300 || y >= ledgeY
+  );
+  // Final sample lands on the ledge.
+  const landT = samples[samples.length - 1][0] + 20;
+  samples.push([landT, ledgeY]);
+
+  let i = 0;
+  let maxDropBelowLedge = 0;
+  for (; t < start + 1000; t += 10) {
+    predictor.setInput({
+      t,
+      move: [0, 0],
+      turn: 0,
+      headYawRate: 0,
+      jump: t < start + 100,
+    });
+    while (i < samples.length && samples[i][0] <= t) {
+      predictor.add({
+        t: samples[i][0],
+        pose: { source: "petplay-origin-v2", position: [0, samples[i][1], 0], yawRad: 0 },
+      });
+      i++;
+    }
+    const y = predictor.display(t).pose.position[1];
+    if (t >= landT) {
+      maxDropBelowLedge = Math.max(maxDropBelowLedge, ledgeY - y);
+    }
+  }
+  assert(
+    maxDropBelowLedge < 0.08,
+    `plunged ${(maxDropBelowLedge * 100).toFixed(1)} cm below ledge`,
+  );
+  assert(!predictor.jump.active, "jump arc should have ended on the ledge");
+  assertEquals(predictor.jump.params.jumps, 0, "ledge landing should not pollute jump learning");
+});

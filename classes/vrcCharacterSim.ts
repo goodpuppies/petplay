@@ -101,6 +101,7 @@ export class VrcCharacterSim {
   private lastOscYaw = 0;
   private lastOscT = 0;
   private lastPosOscT = 0;
+  private lastYChangedAt = 0;
   private lastYawOscT = 0;
   /** In-phase avatar yaw rate from consecutive OSC yaw bursts (rad/s). */
   private oscYawRate = 0;
@@ -318,6 +319,12 @@ export class VrcCharacterSim {
       this.pos[1] = this.groundY;
       this.velAir = [0, 0, 0];
       this.grounded = true;
+    } else if (
+      !this.grounded && this.velAir[1] < -0.2 && this.lastOscPos != null &&
+      t - this.lastYChangedAt > 50 && this.pos[1] < this.lastOscPos[1] - 0.03
+    ) {
+      // Landed on a higher ledge (OSC Y stopped changing while sim kept falling).
+      this.landAt(this.lastOscPos[1]);
     }
 
     // Shift history by applied offset so delayed-state comparisons never double-count corrections.
@@ -351,6 +358,7 @@ export class VrcCharacterSim {
       this.lastOscYaw = pose.yawRad;
       this.lastOscT = t;
       this.lastPosOscT = t;
+      this.lastYChangedAt = t;
       this.lastYawOscT = t;
       this.oscYawRate = 0;
       this.walkAnchor = null;
@@ -386,9 +394,12 @@ export class VrcCharacterSim {
           }
         }
         // Detect landing on a higher/lower surface.
-        if (!this.grounded && Math.abs(mvy) < 0.1 && pose.position[1] <= this.groundY + 0.04) {
-          this.grounded = true;
-          this.velAir = [0, 0, 0];
+        if (
+          !this.grounded && Math.abs(mvy) < 0.15 &&
+          (pose.position[1] <= this.groundY + 0.04 ||
+            (this.velAir[1] < -0.2 && t - this.lastYChangedAt > 60))
+        ) {
+          this.landAt(pose.position[1]);
         }
       }
       if (yawChanged && Math.abs(this.turn) > STICK_DEADZONE) {
@@ -458,6 +469,9 @@ export class VrcCharacterSim {
     }
 
     if (posChanged) {
+      if (!this.lastOscPos || Math.abs(pose.position[1] - this.lastOscPos[1]) > 0.005) {
+        this.lastYChangedAt = t;
+      }
       this.lastOscPos = [...pose.position];
       this.lastPosOscT = t;
     }
