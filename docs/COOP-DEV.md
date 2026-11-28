@@ -46,10 +46,17 @@ deno task peer-build --peer NAME   # build here for the peer's OS, send it, it i
 
 `peer-build` asks the peer (through the trusted link) which target it runs, compiles PetPlay for
 that target here, and sends only the chunks of the executable the peer does not already have (the
-same chunking as delta updates, usually a few MB). The peer checks the SHA-256, installs it with the
-one installer backend (`petplay.previous` kept, so ROLL BACK works) and restarts into it. It needs
-the peer to run an installed release-style build (a checkout just pulls and restarts) with Peer Code
-Patches on. `--no-restart` installs without restarting; `--binary PATH` sends an existing build.
+same chunking as delta updates). The peer checks the SHA-256, installs it with the one installer
+backend (`petplay.previous` kept, so ROLL BACK works) and restarts into it. It needs the peer to run
+an installed release-style build (a checkout just pulls and restarts) with Peer Code Patches on.
+`--no-restart` installs without restarting; `--binary PATH` sends an existing build.
+
+How much goes over (measured Linux → Windows over the internet, ~2.4 MB/s through the link): the
+first peer build to a peer on a CI build of another OS sends ~150 MB of ~490 MB, because the build
+machine's own native npm packages are embedded where CI's has the target's. After that the peer runs
+your build, and each further one sends only what changed. Same-OS peers start small. Keep Deno at
+CI's version (`deno-version` in .github/workflows); `peer-build` warns otherwise, since a different
+runtime is another ~100 MB.
 
 The Rust and C helpers inside the build cannot be cross-compiled from every OS. For another target
 `peer-build` uses the natives CI built for the same submodule and `native/overlayPresenter` commits

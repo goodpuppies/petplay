@@ -163,18 +163,11 @@ function localOnlyPaths(): string[] {
     }
   };
   walk(".");
-  // Native npm packages for the building machine's OS that nothing at runtime imports: the
-  // iroh Node binding (the link runs in petplay-media) and the tsrs type checker. They are a
-  // tenth of the binary, and differ between a cross build and the target OS's own build.
-  try {
-    for (const entry of Deno.readDirSync("./node_modules/.deno")) {
-      if (/^@number0\+iroh-|^@tsrs\+/.test(entry.name)) {
-        found.push(`./node_modules/.deno/${entry.name}`);
-      }
-    }
-  } catch {
-    // No node_modules yet.
-  }
+  // Not excludable: packages inside the root node_modules (deno 2.9.8 ignores --exclude there).
+  // So a cross build still carries the building OS's native npm packages (iroh binding, tsrs,
+  // ~120 MB) where the target's own build has the target's, and the first peer build to a
+  // CI-installed peer on another OS sends ~150 MB; later ones from the same machine send only
+  // what changed.
   return found;
 }
 
